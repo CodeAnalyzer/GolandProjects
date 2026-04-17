@@ -1,0 +1,43 @@
+# CodeBase Configuration
+# Конфигурация индексатора кодовой базы Diasoft 5NT
+
+# Корневой путь к проекту
+root_path = "D:/GITHUB/FA/fa-contracts"
+
+# Настройки подключения к PostgreSQL
+[database]
+host = "localhost"
+port = 5435
+database = "codebase"
+user = "postgres"
+password = "123456"
+sslmode = "disable"
+
+# Настройки индексатора
+[indexer]
+parallel = 12         # Количество параллельных workers
+batch_size = 1000     # Размер батча для вставки в БД
+
+# Включаемые файлы (glob-паттерны)
+include_patterns = [
+    "*.sql",
+    "*.h",
+    "*.pas",
+    "*.inc",
+    "*.js",
+    "*.smf",
+    "*.dfm",
+    "*.tpr",
+    "*.rpt",
+    "*.xml"
+]
+
+# Исключаемые файлы и директории
+exclude_patterns = [
+    "*/.*",        # Скрытые директории
+    "*~",          # Backup файлы
+    "*.bak",
+    "*.old",
+    "*/archive/*",
+    "*/backup/*"
+]
