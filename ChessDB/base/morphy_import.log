@@ -1,0 +1,649 @@
+=== IMPORT ERRORS LOG ===
+Generated: 2026-02-27 18:38:59
+Total errors: 129
+
+File: base\morphy.pgn
+Game: 54
+Time: 2026-02-27 18:32:17
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Qxd3 (tried: Qxd3, Qxd3, Qxd3): chess: could not decode algebraic notation Qxd3 for position r3k1r1/ppp2pPp/1b2b3/8/2pPNp1q/P1P5/1P2Q1PP/R1B2K1R b q d3 0 15
+---
+File: base\morphy.pgn
+Game: 64
+Time: 2026-02-27 18:32:23
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Qxd6 (tried: Qxd6, Qxd6, Qxd6): chess: could not decode algebraic notation Qxd6 for position r1bqk1nr/ppp2ppp/2n5/b2pP3/2Bp4/2P2N2/P4PPP/RNBQK2R w KQkq d6 0 8
+---
+File: base\morphy.pgn
+Game: 72
+Time: 2026-02-27 18:32:31
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Qg6 (tried: Qg6, Qg6, Qg6): chess: could not decode algebraic notation Qg6 for position r3qrk1/pp1b1pp1/2p5/2np2B1/8/6QP/PP1N1PP1/4RRK1 b - - 5 18
+---
+File: base\morphy.pgn
+Game: 73
+Time: 2026-02-27 18:32:31
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Bd3 (tried: Bd3, Bd3, Bd3): chess: could not decode algebraic notation Bd3 for position rnbqkbnr/pppp1ppp/4p3/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2
+---
+File: base\morphy.pgn
+Game: 74
+Time: 2026-02-27 18:32:31
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Bd3 (tried: Bd3, Bd3, Bd3): chess: could not decode algebraic notation Bd3 for position rnbqkbnr/ppp1pppp/3p4/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2
+---
+File: base\morphy.pgn
+Game: 75
+Time: 2026-02-27 18:32:31
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rfb1 (tried: Rfb1, Rb1, Rb1): chess: could not decode algebraic notation Rb1 for position 1nk1r2r/ppq2p1p/2pb1p2/1P3P2/P1NPp3/2P4P/4Q1P1/RN3RK1 w - - 0 19
+---
+File: base\morphy.pgn
+Game: 76
+Time: 2026-02-27 18:32:31
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rd1 (tried: Rd1, Rd1, Rd1): chess: could not decode algebraic notation Rd1 for position r1bk3r/ppp2Bpp/8/4P3/3qn3/BQ6/P4PPP/RN4K1 w - - 1 17
+---
+File: base\morphy.pgn
+Game: 77
+Time: 2026-02-27 18:32:31
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxf3 (tried: Rxf3, Rxf3, Rxf3): chess: could not decode algebraic notation Rxf3 for position r3k1nr/pp2qpb1/1npp3p/6p1/P2PPp2/1QPB1b2/1P1B2PP/RN2R1K1 w kq - 0 13
+---
+File: base\morphy.pgn
+Game: 78
+Time: 2026-02-27 18:32:31
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rd1 (tried: Rd1, Rd1, Rd1): chess: could not decode algebraic notation Rd1 for position 7q/Q2nk1pp/8/2p1p3/4P3/2p5/PP4PP/RN4K1 w - - 0 22
+---
+File: base\morphy.pgn
+Game: 79
+Time: 2026-02-27 18:32:32
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxf8+ (tried: Rxf8+, Rxf8+, Rxf8): chess: could not decode algebraic notation Rxf8 for position r4qkr/ppp5/3p2pQ/8/3PP1b1/8/PPP3P1/RN4K1 w - - 0 21
+---
+File: base\morphy.pgn
+Game: 80
+Time: 2026-02-27 18:32:32
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re1 (tried: Re1, Re1, Re1): chess: could not decode algebraic notation Re1 for position rnq3r1/ppp1k1pp/4n3/8/3Q2B1/8/PPP2PPP/RN4K1 w - - 0 17
+---
+File: base\morphy.pgn
+Game: 82
+Time: 2026-02-27 18:32:32
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rc1 (tried: Rc1, Rc1, Rc1): chess: could not decode algebraic notation Rc1 for position r2qk2r/ppp2ppp/1bn5/1B1pP3/3Pn1b1/B4N2/P4PPP/RN1QR1K1 w kq - 2 13
+---
+File: base\morphy.pgn
+Game: 83
+Time: 2026-02-27 18:32:33
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re1+ (tried: Re1+, Re1+, Re1): chess: could not decode algebraic notation Re1 for position rnb2b1r/ppppk2p/6q1/7Q/3B4/8/PPP3PP/RN4K1 w - - 2 15
+---
+File: base\morphy.pgn
+Game: 84
+Time: 2026-02-27 18:32:33
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rb1 (tried: Rb1, Rb1, Rb1): chess: could not decode algebraic notation Rb1 for position r3k1nr/ppp2ppp/1b6/1q1PN3/4P3/8/P4PPP/RN1Q1RK1 w kq - 1 15
+---
+File: base\morphy.pgn
+Game: 87
+Time: 2026-02-27 18:32:33
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Nxf3 (tried: Nxf3, Nxf3, Nxf3): chess: could not decode algebraic notation Nxf3 for position r1b2rk1/ppp2ppn/3b3p/3P4/2P1pP1q/4B2P/PPP1Q1PN/RN3RK1 b - f3 0 14
+---
+File: base\morphy.pgn
+Game: 93
+Time: 2026-02-27 18:32:43
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rf1 (tried: Rf1, Rf1, Rf1): chess: could not decode algebraic notation Rf1 for position 1n3q1k/2p1b2p/4Q3/2PpP3/3r4/8/PP4PP/RN4K1 w - - 0 26
+---
+File: base\morphy.pgn
+Game: 94
+Time: 2026-02-27 18:32:44
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rd7+ (tried: Rd7+, Rd7+, Rd7): chess: could not decode algebraic notation Rd7 for position 2r5/p1P1kppp/p1K1n3/8/1P6/7P/P6P/RN6 w - - 1 34
+---
+File: base\morphy.pgn
+Game: 95
+Time: 2026-02-27 18:32:44
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move O-O-O (tried: O-O-O, O-O-O, O-O-O): chess: could not decode algebraic notation O-O-O for position rn2kb1r/ppp2p1p/8/3PNb2/2KP1R2/6pq/PPP5/RNB1Q3 b kq - 5 17
+---
+File: base\morphy.pgn
+Game: 100
+Time: 2026-02-27 18:32:47
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Kxc1 (tried: Kxc1, Kxc1, Kxc1): chess: could not decode algebraic notation Kxc1 for position r4b1r/ppp3pp/8/4p3/2Pq4/3P4/PPk1QPPP/R1B1K2R b KQ - 0 17
+---
+File: base\morphy.pgn
+Game: 101
+Time: 2026-02-27 18:32:48
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Nxc6 (tried: Nxc6, Nxc6, Nxc6): chess: could not decode algebraic notation Nxc6 for position rn1q1r1k/pp4pp/3b1n2/2pP1p2/2PPpP1P/1B6/PP2Q1P1/RNB2RK1 w - c6 0 12
+---
+File: base\morphy.pgn
+Game: 102
+Time: 2026-02-27 18:32:48
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re1 (tried: Re1, Re1, Re1): chess: could not decode algebraic notation Re1 for position 4r2k/ppp1qp1p/3p1prB/2b2R2/4P2Q/1PP5/6P1/RN5K w - - 3 24
+---
+File: base\morphy.pgn
+Game: 132
+Time: 2026-02-27 18:33:35
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Qd7 (tried: Qd7, Qd7, Qd7): chess: could not decode algebraic notation Qd7 for position r1b1qrk1/ppp2pp1/1b4np/3pPn2/2BPN2B/5N2/PP1Q1PPP/R3R1K1 w - d6 0 16
+---
+File: base\morphy.pgn
+Game: 144
+Time: 2026-02-27 18:33:50
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxf6 (tried: Rxf6, Rxf6, Rxf6): chess: could not decode algebraic notation Rxf6 for position 5rk1/1pp5/p1p4p/2b1Ppp1/4R3/6B1/PPPr1PPP/2R3K1 w - f6 0 19
+---
+File: base\morphy.pgn
+Game: 145
+Time: 2026-02-27 18:33:50
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Kf7 (tried: Kf7, Kf7, Kf7): chess: could not decode algebraic notation Kf7 for position r1b1kb1r/ppp2pp1/3p1qnp/1B1Pp3/4P3/2N2N2/PPP2PPP/R2QK2R b KQkq - 1 9
+---
+File: base\morphy.pgn
+Game: 160
+Time: 2026-02-27 18:34:40
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Ne5+ (tried: Ne5+, Ne5+, Ne5): chess: could not decode algebraic notation Ne5 for position 8/3N1k1p/p3b3/2Pn1p1r/1P1RpP2/6K1/P7/R4B2 b - f3 0 38
+---
+File: base\morphy.pgn
+Game: 165
+Time: 2026-02-27 18:34:46
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxf6 (tried: Rxf6, Rxf6, Rxf6): chess: could not decode algebraic notation Rxf6 for position r3qrk1/pppb1ppp/2n1pB2/4N3/1b1PB3/2N5/PPP2PPP/R2Q1RK1 b - - 0 11
+---
+File: base\morphy.pgn
+Game: 166
+Time: 2026-02-27 18:34:47
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxf3 (tried: Rxf3, Rxf3, Rxf3): chess: could not decode algebraic notation Rxf3 for position r3qrk1/pp1bnpp1/2n1p2p/2bpP3/6Q1/2PB1N2/P4PPP/RNB2RK1 b - - 5 13
+---
+File: base\morphy.pgn
+Game: 167
+Time: 2026-02-27 18:34:47
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Nf7 (tried: Nf7, Nf7, Nf7): chess: could not decode algebraic notation Nf7 for position r3kb1r/1p1b1p1p/1qn1p1pn/pN1pP3/P1pP4/2P2N2/1PB2PPP/R1BQ1RK1 b kq - 3 11
+---
+File: base\morphy.pgn
+Game: 168
+Time: 2026-02-27 18:34:47
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rf7 (tried: Rf7, Rf7, Rf7): chess: could not decode algebraic notation Rf7 for position r1b1k3/pp2bp1r/1qn2nB1/2pp4/3P4/2P5/PP3PPP/RNBQR1K1 b q - 0 11
+---
+File: base\morphy.pgn
+Game: 170
+Time: 2026-02-27 18:34:48
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Bf7+ (tried: Bf7+, Bf7+, Bf7): chess: could not decode algebraic notation Bf7 for position r3k2r/pp2nppp/1bp3qn/3Bp1N1/4NPb1/1Q6/PP4PP/R1B2R1K w kq - 4 18
+---
+File: base\morphy.pgn
+Game: 207
+Time: 2026-02-27 18:35:54
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxf3 (tried: Rxf3, Rxf3, Rxf3): chess: could not decode algebraic notation Rxf3 for position 2kr1r2/bppnqp1n/p7/PP2p1pp/4P2P/2PB1NB1/5PP1/RQ3RK1 b - - 0 19
+---
+File: base\morphy.pgn
+Game: 218
+Time: 2026-02-27 18:36:20
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move axb6 (tried: axb6, axb6, axb6): chess: could not decode algebraic notation axb6 for position r4rk1/p1bn2pp/2p1b2q/1pP2p2/2BPpP2/P3P1P1/3N3P/R1BQ1RK1 w - b6 0 18
+---
+File: base\morphy.pgn
+Game: 231
+Time: 2026-02-27 18:36:43
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Qf7 (tried: Qf7, Qf7, Qf7): chess: could not decode algebraic notation Qf7 for position 4r1k1/2p2p1p/4qBpQ/pp1bP3/8/P1P4P/5PP1/4R1K1 b - - 1 28
+---
+File: base\morphy.pgn
+Game: 234
+Time: 2026-02-27 18:36:46
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move O-O-O (tried: O-O-O, O-O-O, O-O-O): chess: could not decode algebraic notation O-O-O for position r2q1rk1/pp1bbppp/2n1p2n/2p1P3/3p1PP1/1PPB1N1P/PB1PQ3/RN2K2R w KQ - 1 12
+---
+File: base\morphy.pgn
+Game: 235
+Time: 2026-02-27 18:36:46
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rfe8 (tried: Rfe8, Re8, Re8): chess: could not decode algebraic notation Re8 for position rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+---
+File: base\morphy.pgn
+Game: 236
+Time: 2026-02-27 18:36:46
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Qxd3 (tried: Qxd3, Qxd3, Qxd3): chess: could not decode algebraic notation Qxd3 for position rnbqk2r/ppp2ppp/5n2/2bP4/2BPpP2/2P5/P3N1PP/RNBQK2R b KQkq d3 0 8
+---
+File: base\morphy.pgn
+Game: 247
+Time: 2026-02-27 18:36:55
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Bd3 (tried: Bd3, Bd3, Bd3): chess: could not decode algebraic notation Bd3 for position rnbqkbnr/pppp1ppp/4p3/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2
+---
+File: base\morphy.pgn
+Game: 256
+Time: 2026-02-27 18:37:01
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Qf8 (tried: Qf8, Qf8, Qf8): chess: could not decode algebraic notation Qf8 for position rnb1k1nr/pp2qp1p/2p4b/3pP3/2B1NB2/5Q2/PPP3PP/R4R1K w kq d6 0 13
+---
+File: base\morphy.pgn
+Game: 269
+Time: 2026-02-27 18:37:13
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re1 (tried: Re1, Re1, Re1): chess: could not decode algebraic notation Re1 for position r1b3k1/pp3ppp/5n2/2pPq3/2Pn4/3B2N1/PP1Q2PP/RN4K1 w - - 0 16
+---
+File: base\morphy.pgn
+Game: 273
+Time: 2026-02-27 18:37:23
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rf7 (tried: Rf7, Rf7, Rf7): chess: could not decode algebraic notation Rf7 for position 1r1b1rk1/6p1/2p1q1b1/ppPpPpPp/3P1P1P/4QN2/P1B5/1R4RK w - h6 0 38
+---
+File: base\morphy.pgn
+Game: 277
+Time: 2026-02-27 18:37:30
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rd1+ (tried: Rd1+, Rd1+, Rd1): chess: could not decode algebraic notation Rd1 for position 6nr/pQq3pp/2pkp3/8/4P3/2p5/PP4PP/RN5K w - - 0 19
+---
+File: base\morphy.pgn
+Game: 278
+Time: 2026-02-27 18:37:30
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxf8+ (tried: Rxf8+, Rxf8+, Rxf8): chess: could not decode algebraic notation Rxf8 for position r2k1r2/pppbn1pp/1b6/1P4q1/4P3/3R4/P1P3PP/RN5K w - - 0 19
+---
+File: base\morphy.pgn
+Game: 279
+Time: 2026-02-27 18:37:31
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re1+ (tried: Re1+, Re1+, Re1): chess: could not decode algebraic notation Re1 for position 1r2kb2/1pp2r2/2n4p/7Q/5Pn1/2P5/PP4PP/RN4K1 w - - 3 24
+---
+File: base\morphy.pgn
+Game: 280
+Time: 2026-02-27 18:37:31
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move O-O-O+ (tried: O-O-O+, O-O-O+, O-O-O): chess: could not decode algebraic notation O-O-O for position r2q3r/pppkb2p/2n2np1/6B1/4P3/1Q6/PPP2PPP/RN2K2R w KQ - 4 13
+---
+File: base\morphy.pgn
+Game: 281
+Time: 2026-02-27 18:37:31
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxa1 (tried: Rxa1, Rxa1, Rxa1): chess: could not decode algebraic notation Rxa1 for position r1b2rk1/ppppnppp/8/B2PP3/2B5/5N2/P4PPP/nN3RK1 w - - 0 15
+---
+File: base\morphy.pgn
+Game: 283
+Time: 2026-02-27 18:37:32
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rb1 (tried: Rb1, Rb1, Rb1): chess: could not decode algebraic notation Rb1 for position 3N3k/p1p3pp/5n2/bp6/8/8/P4PPP/RN4K1 w - b6 0 23
+---
+File: base\morphy.pgn
+Game: 284
+Time: 2026-02-27 18:37:32
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxf1 (tried: Rxf1, Rxf1, Rxf1): chess: could not decode algebraic notation Rxf1 for position r1b3k1/pp2b1pp/1q2p3/3nP3/8/3B4/PP1BQ1PP/RN3r1K w - - 0 16
+---
+File: base\morphy.pgn
+Game: 285
+Time: 2026-02-27 18:37:33
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rab1 (tried: Rab1, Rb1, Rb1): chess: could not decode algebraic notation Rb1 for position 1rb2rk1/p3bppp/2pp1n2/q7/2B5/8/PBP1QPPP/RN2R1K1 w - - 4 15
+---
+File: base\morphy.pgn
+Game: 287
+Time: 2026-02-27 18:37:35
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxe1 (tried: Rxe1, Rxe1, Rxe1): chess: could not decode algebraic notation Rxe1 for position 8/pp1k2pp/2r5/5P2/1P6/3p2P1/P2P1nKP/RN2r3 w - - 0 31
+---
+File: base\morphy.pgn
+Game: 288
+Time: 2026-02-27 18:37:35
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Bxf1 (tried: Bxf1, Bxf1, Bxf1): chess: could not decode algebraic notation Bxf1 for position r4k1r/ppp3pp/1b1p1q2/8/4P3/BQP2nPb/P3BP1P/RN1R3K b - - 8 18
+---
+File: base\morphy.pgn
+Game: 289
+Time: 2026-02-27 18:37:35
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move O-O-O (tried: O-O-O, O-O-O, O-O-O): chess: could not decode algebraic notation O-O-O for position rn1qkb1r/pp3ppp/4p3/2pp4/4nP2/1P2PQ1P/PBPP2P1/RN2KB1R w KQkq - 2 8
+---
+File: base\morphy.pgn
+Game: 290
+Time: 2026-02-27 18:37:35
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rb1 (tried: Rb1, Rb1, Rb1): chess: could not decode algebraic notation Rb1 for position r3k2r/pp2bppp/1qn1pn2/2p5/3p1P2/1P2PB1P/PBPP2P1/RN2QRK1 w kq - 2 11
+---
+File: base\morphy.pgn
+Game: 291
+Time: 2026-02-27 18:37:35
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rc1 (tried: Rc1, Rc1, Rc1): chess: could not decode algebraic notation Rc1 for position rn1q1rk1/p1p1b1pp/bp2pn2/3p1p2/2P2P2/1P2PN2/PB1PB1PP/RN1Q1RK1 w - - 1 9
+---
+File: base\morphy.pgn
+Game: 292
+Time: 2026-02-27 18:37:35
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxe5 (tried: Rxe5, Rxe5, Rxe5): chess: could not decode algebraic notation Rxe5 for position r1b1k2r/1qp1b3/p6p/4ppp1/P7/8/1PQB1PPP/RN1R2K1 w kq - 0 23
+---
+File: base\morphy.pgn
+Game: 293
+Time: 2026-02-27 18:37:35
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re6 (tried: Re6, Re6, Re6): chess: could not decode algebraic notation Re6 for position rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+---
+File: base\morphy.pgn
+Game: 295
+Time: 2026-02-27 18:37:36
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Kc3 (tried: Kc3, Kc3, Kc3): chess: could not decode algebraic notation Kc3 for position r1b5/pp1p3p/2pq4/4nR2/3kP3/1B6/P4QPP/1N5K b - - 8 23
+---
+File: base\morphy.pgn
+Game: 296
+Time: 2026-02-27 18:37:36
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Kf7 (tried: Kf7, Kf7, Kf7): chess: could not decode algebraic notation Kf7 for position 2r1kb1r/1ppq2p1/p1np3p/1B2PpBn/4Q3/5P2/PP3P1P/RNR3K1 w k f6 0 16
+---
+File: base\morphy.pgn
+Game: 297
+Time: 2026-02-27 18:37:36
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rb1 (tried: Rb1, Rb1, Rb1): chess: could not decode algebraic notation Rb1 for position r3k1nr/bp2qppp/P1p5/P3p3/2QpP3/2P5/5PPP/RNB2RK1 w kq - 0 15
+---
+File: base\morphy.pgn
+Game: 298
+Time: 2026-02-27 18:37:36
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxe1 (tried: Rxe1, Rxe1, Rxe1): chess: could not decode algebraic notation Rxe1 for position 3r1r1k/ppq2Ppp/1bb5/2p1pPB1/2B1P2P/2P5/P1Q5/RN2n1K1 w - - 0 22
+---
+File: base\morphy.pgn
+Game: 300
+Time: 2026-02-27 18:37:37
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rd1 (tried: Rd1, Rd1, Rd1): chess: could not decode algebraic notation Rd1 for position r2qk2r/1pp2pp1/1b3nnp/pP2p3/P1B1P3/B1P2Q2/5PPP/RN2K2R w KQkq - 2 14
+---
+File: base\morphy.pgn
+Game: 301
+Time: 2026-02-27 18:37:37
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rc1 (tried: Rc1, Rc1, Rc1): chess: could not decode algebraic notation Rc1 for position 3r1rk1/2q2ppp/p2b4/np6/3PpP2/1BP1K1PP/PP6/RN1Q3R w - - 4 20
+---
+File: base\morphy.pgn
+Game: 303
+Time: 2026-02-27 18:37:38
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re8+ (tried: Re8+, Re8+, Re8): chess: could not decode algebraic notation Re8 for position 5k2/pppQ3p/2n3p1/8/3p4/8/PPq4P/RN5K w - - 0 24
+---
+File: base\morphy.pgn
+Game: 306
+Time: 2026-02-27 18:37:40
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rd1+ (tried: Rd1+, Rd1+, Rd1): chess: could not decode algebraic notation Rd1 for position r5nr/p1pk2pp/1bp2pq1/4p1B1/Q3P3/2P2N2/P4PPP/RN4K1 w - - 0 16
+---
+File: base\morphy.pgn
+Game: 307
+Time: 2026-02-27 18:37:40
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re2 (tried: Re2, Re2, Re2): chess: could not decode algebraic notation Re2 for position 6rk/pppbr1pn/1b1p1p2/3P3P/2B1PP2/1N3K2/PB6/R6R w - - 5 31
+---
+File: base\morphy.pgn
+Game: 308
+Time: 2026-02-27 18:37:41
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rd1 (tried: Rd1, Rd1, Rd1): chess: could not decode algebraic notation Rd1 for position 4k2r/3nnpp1/r6p/p1bq4/5B2/5N2/P1Q3PP/RN3K1R w k - 0 20
+---
+File: base\morphy.pgn
+Game: 309
+Time: 2026-02-27 18:37:41
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rf1 (tried: Rf1, Rf1, Rf1): chess: could not decode algebraic notation Rf1 for position r7/pp5k/2n5/2P3PP/4nB2/3p4/PP4P1/RN4K1 w - - 0 28
+---
+File: base\morphy.pgn
+Game: 315
+Time: 2026-02-27 18:37:49
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move O-O-O (tried: O-O-O, O-O-O, O-O-O): chess: could not decode algebraic notation O-O-O for position r3k1r1/p2n1qbp/1ppQ4/8/4PB1P/2P2P2/PP6/RN2K2R w KQ - 1 18
+---
+File: base\morphy.pgn
+Game: 317
+Time: 2026-02-27 18:37:50
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re1 (tried: Re1, Re1, Re1): chess: could not decode algebraic notation Re1 for position rn2k2r/pp2qpb1/2pp1n1p/6p1/2BPPp1P/1QP2R2/PP1B2P1/RN4K1 w kq - 1 12
+---
+File: base\morphy.pgn
+Game: 318
+Time: 2026-02-27 18:37:50
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxg1+ (tried: Rxg1+, Rxg1+, Rxg1): chess: could not decode algebraic notation Rxg1 for position r4rk1/p4p2/2p1bP1p/8/p1PN1p2/3B4/PPKB4/RN4q1 w - - 0 23
+---
+File: base\morphy.pgn
+Game: 321
+Time: 2026-02-27 18:37:52
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re1+ (tried: Re1+, Re1+, Re1): chess: could not decode algebraic notation Re1 for position r6r/ppp1k2p/5b2/2q3B1/8/1Q1p4/PP4PP/RN5K w - - 0 21
+---
+File: base\morphy.pgn
+Game: 324
+Time: 2026-02-27 18:37:53
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move O-O-O (tried: O-O-O, O-O-O, O-O-O): chess: could not decode algebraic notation O-O-O for position r3k2r/pppbbppp/2nq1n2/1B2N3/4pP2/1P6/PBPPQ1PP/RN2K2R w KQkq - 3 11
+---
+File: base\morphy.pgn
+Game: 325
+Time: 2026-02-27 18:37:54
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move O-O-O (tried: O-O-O, O-O-O, O-O-O): chess: could not decode algebraic notation O-O-O for position r3kb2/ppp4p/b5p1/3P4/2Pnp3/1P6/P2B1PPP/RN2K2R w KQq - 1 16
+---
+File: base\morphy.pgn
+Game: 327
+Time: 2026-02-27 18:37:55
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move e4 (tried: e4, e4, e4): chess: could not decode algebraic notation e4 for position r2k1R1Q/ppp4p/3p2n1/8/3PP2P/8/PPP3P1/6K1 b - - 0 24
+---
+File: base\morphy.pgn
+Game: 329
+Time: 2026-02-27 18:37:56
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move O-O-O (tried: O-O-O, O-O-O, O-O-O): chess: could not decode algebraic notation O-O-O for position r2q2nr/pppn1kb1/3pp2p/6p1/3PPp1P/1QP2N2/PP1B2P1/RN2K2R w KQ - 4 11
+---
+File: base\morphy.pgn
+Game: 330
+Time: 2026-02-27 18:37:56
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxf7 (tried: Rxf7, Rxf7, Rxf7): chess: could not decode algebraic notation Rxf7 for position r5k1/pppbqrp1/1b2p1p1/3pP1N1/3P2P1/2P1B2P/PP2Q3/RN4K1 w - - 0 19
+---
+File: base\morphy.pgn
+Game: 331
+Time: 2026-02-27 18:37:56
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxf3 (tried: Rxf3, Rxf3, Rxf3): chess: could not decode algebraic notation Rxf3 for position r4rk1/ppp1npb1/2np1q1p/6p1/3PPp1P/1QPB1b2/PP1B2P1/RN2R1K1 w - - 0 13
+---
+File: base\morphy.pgn
+Game: 332
+Time: 2026-02-27 18:37:56
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxe1 (tried: Rxe1, Rxe1, Rxe1): chess: could not decode algebraic notation Rxe1 for position r1bqk2r/ppp1nppp/5n2/3P4/2Bp4/BQ3N2/P4PPP/RN2b1K1 w kq - 0 12
+---
+File: base\morphy.pgn
+Game: 333
+Time: 2026-02-27 18:37:56
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rd1 (tried: Rd1, Rd1, Rd1): chess: could not decode algebraic notation Rd1 for position r3kb1r/ppp3pp/2n5/3q1p2/4nP2/4BB2/PPP1Q1PP/RN2K2R w KQkq - 2 11
+---
+File: base\morphy.pgn
+Game: 334
+Time: 2026-02-27 18:37:56
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rd5 (tried: Rd5, Rd5, Rd5): chess: could not decode algebraic notation Rd5 for position r1b1k2r/bppn2pp/P1n5/1B3p2/4p3/B1P2N2/5PPP/RN2R1K1 w kq f6 0 20
+---
+File: base\morphy.pgn
+Game: 335
+Time: 2026-02-27 18:37:57
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rd6 (tried: Rd6, Rd6, Rd6): chess: could not decode algebraic notation Rd6 for position R5nr/7p/1pp1bk2/1p4p1/4P3/7P/P5P1/RN5K w - g6 0 28
+---
+File: base\morphy.pgn
+Game: 336
+Time: 2026-02-27 18:37:58
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re1 (tried: Re1, Re1, Re1): chess: could not decode algebraic notation Re1 for position r3k1r1/pp3q2/3Q4/2p1p1Bp/2P2P2/8/PP5P/RN4K1 w q - 3 29
+---
+File: base\morphy.pgn
+Game: 337
+Time: 2026-02-27 18:37:59
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxg6 (tried: Rxg6, Rxg6, Rxg6): chess: could not decode algebraic notation Rxg6 for position 8/ppR5/6r1/3p1p2/4bk2/3p1p2/PP1K4/RN6 w - - 0 37
+---
+File: base\morphy.pgn
+Game: 338
+Time: 2026-02-27 18:37:59
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rg6 (tried: Rg6, Rg6, Rg6): chess: could not decode algebraic notation Rg6 for position rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+---
+File: base\morphy.pgn
+Game: 339
+Time: 2026-02-27 18:37:59
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Qc6+ (tried: Qc6+, Qc6+, Qc6): chess: could not decode algebraic notation Qc6 for position rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+---
+File: base\morphy.pgn
+Game: 340
+Time: 2026-02-27 18:37:59
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxe4 (tried: Rxe4, Rxe4, Rxe4): chess: could not decode algebraic notation Rxe4 for position rnbqkbnr/pppppppp/8/8/8/2P5/PP1PPPPP/RNBQKBNR b KQkq - 0 1
+---
+File: base\morphy.pgn
+Game: 341
+Time: 2026-02-27 18:37:59
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rc1 (tried: Rc1, Rc1, Rc1): chess: could not decode algebraic notation Rc1 for position r1bq1rk1/ppp1b1pp/2n2n2/3ppp2/8/1P2P1P1/PBPPNPBP/RN1Q1RK1 w - - 6 8
+---
+File: base\morphy.pgn
+Game: 345
+Time: 2026-02-27 18:38:02
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rf1 (tried: Rf1, Rf1, Rf1): chess: could not decode algebraic notation Rf1 for position rnb1kqn1/pppp1p1p/8/4P3/2BP1Q2/8/PPP3PP/RN4K1 w q - 0 14
+---
+File: base\morphy.pgn
+Game: 359
+Time: 2026-02-27 18:38:28
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rc1 (tried: Rc1, Rc1, Rc1): chess: could not decode algebraic notation Rc1 for position r1q1k2r/pp1b1ppp/1bn1p2n/3pP3/1P1P1PP1/P4NBP/4BK2/RN1Q3R w kq - 3 18
+---
+File: base\morphy.pgn
+Game: 360
+Time: 2026-02-27 18:38:28
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Nxf6 (tried: Nxf6, Nxf6, Nxf6): chess: could not decode algebraic notation Nxf6 for position r1bqk2r/pppp2pp/2n5/2bBPp2/3pn3/5N2/PPP2PPP/RNBQ1RK1 w kq f6 0 8
+---
+File: base\morphy.pgn
+Game: 364
+Time: 2026-02-27 18:38:30
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rab1 (tried: Rab1, Rb1, Rb1): chess: could not decode algebraic notation Rb1 for position 6k1/1qp3pp/4r3/P4p2/2P2P2/8/5BPP/RN3RK1 w - - 1 25
+---
+File: base\morphy.pgn
+Game: 365
+Time: 2026-02-27 18:38:30
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxc7 (tried: Rxc7, Rxc7, Rxc7): chess: could not decode algebraic notation Rxc7 for position r1b2rk1/2p3pp/2p2n2/p4pN1/1P6/2Bp2P1/P6P/RN2R1K1 w - - 0 28
+---
+File: base\morphy.pgn
+Game: 366
+Time: 2026-02-27 18:38:31
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rf1+ (tried: Rf1+, Rf1+, Rf1): chess: could not decode algebraic notation Rf1 for position r7/2p5/2pp4/p1b2k2/P5n1/6R1/6K1/RN6 w - - 4 33
+---
+File: base\morphy.pgn
+Game: 367
+Time: 2026-02-27 18:38:32
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rf3 (tried: Rf3, Rf3, Rf3): chess: could not decode algebraic notation Rf3 for position 2r2r1k/p1b3pp/4Q3/2PpPp2/5Pq1/P7/1P4PP/RN1R2K1 w - - 1 28
+---
+File: base\morphy.pgn
+Game: 368
+Time: 2026-02-27 18:38:32
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re1+ (tried: Re1+, Re1+, Re1): chess: could not decode algebraic notation Re1 for position r3k2r/pppq1ppp/1b6/8/Q7/B7/P4PPP/RN4K1 w - - 2 19
+---
+File: base\morphy.pgn
+Game: 369
+Time: 2026-02-27 18:38:32
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re1 (tried: Re1, Re1, Re1): chess: could not decode algebraic notation Re1 for position r1bq1rk1/ppppnppp/8/3B2BQ/3p4/8/PPP2PPP/RN4K1 w - - 0 12
+---
+File: base\morphy.pgn
+Game: 370
+Time: 2026-02-27 18:38:33
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxg2 (tried: Rxg2, Rxg2, Rxg2): chess: could not decode algebraic notation Rxg2 for position 5r1k/ppp5/1P3p1p/6p1/8/2Q4P/P5bK/RNB2q2 w - - 0 33
+---
+File: base\morphy.pgn
+Game: 372
+Time: 2026-02-27 18:38:34
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rd1 (tried: Rd1, Rd1, Rd1): chess: could not decode algebraic notation Rd1 for position r5k1/pp1bnrpp/3q1p1B/5P1Q/2p1P1RN/8/P2p1bPP/RN5K w - - 0 24
+---
+File: base\morphy.pgn
+Game: 373
+Time: 2026-02-27 18:38:34
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxe1 (tried: Rxe1, Rxe1, Rxe1): chess: could not decode algebraic notation Rxe1 for position r1b2k2/pppq2pQ/3p4/3P2N1/8/8/P4bPP/RN2r2K w - - 0 23
+---
+File: base\morphy.pgn
+Game: 374
+Time: 2026-02-27 18:38:35
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxd4 (tried: Rxd4, Rxd4, Rxd4): chess: could not decode algebraic notation Rxd4 for position r3k2r/pp2n3/3qP1pp/2pp1PB1/3b3Q/8/P4P1P/RN2R1K1 w kq - 0 22
+---
+File: base\morphy.pgn
+Game: 375
+Time: 2026-02-27 18:38:35
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rg1 (tried: Rg1, Rg1, Rg1): chess: could not decode algebraic notation Rg1 for position 7k/ppp3p1/1bnp2p1/4p1B1/2B1p3/2P5/PP3r2/RN5K w - - 0 21
+---
+File: base\morphy.pgn
+Game: 376
+Time: 2026-02-27 18:38:35
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rb1 (tried: Rb1, Rb1, Rb1): chess: could not decode algebraic notation Rb1 for position 4r1k1/ppp3pp/8/q2P1Q2/3b4/P4N2/5PPP/RN4K1 w - - 0 22
+---
+File: base\morphy.pgn
+Game: 378
+Time: 2026-02-27 18:38:36
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re1 (tried: Re1, Re1, Re1): chess: could not decode algebraic notation Re1 for position 4r1k1/pbqp1n1p/np2r1pb/2p2p2/5P1P/2PPPN2/PP1BBQRK/RN6 w - - 5 18
+---
+File: base\morphy.pgn
+Game: 379
+Time: 2026-02-27 18:38:37
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rc1 (tried: Rc1, Rc1, Rc1): chess: could not decode algebraic notation Rc1 for position 8/p1p2k2/5P1p/8/1P5r/P7/8/RN4K1 w - - 0 32
+---
+File: base\morphy.pgn
+Game: 381
+Time: 2026-02-27 18:38:38
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxd1 (tried: Rxd1, Rxd1, Rxd1): chess: could not decode algebraic notation Rxd1 for position 2q2rk1/ppn1n1pp/1bp1bp2/2P1p3/1P6/2Q1P1PP/PB2NPBK/RN1r4 w - - 0 19
+---
+File: base\morphy.pgn
+Game: 382
+Time: 2026-02-27 18:38:38
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move O-O-O (tried: O-O-O, O-O-O, O-O-O): chess: could not decode algebraic notation O-O-O for position rn1qk1nr/pppb1pb1/3p3p/3P4/2B1PB1P/2P2Q2/PP4P1/RN2K2R w KQkq - 1 11
+---
+File: base\morphy.pgn
+Game: 383
+Time: 2026-02-27 18:38:39
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxe7 (tried: Rxe7, Rxe7, Rxe7): chess: could not decode algebraic notation Rxe7 for position r2b1k1r/1p1bnppp/p2p4/3q4/8/5N2/PB2QPPP/RN2R1K1 w - - 0 23
+---
+File: base\morphy.pgn
+Game: 384
+Time: 2026-02-27 18:38:41
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re1 (tried: Re1, Re1, Re1): chess: could not decode algebraic notation Re1 for position 5r2/ppk3rP/4PbP1/2p2P1K/3p4/8/P7/RN6 w - - 0 40
+---
+File: base\morphy.pgn
+Game: 385
+Time: 2026-02-27 18:38:42
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rb1 (tried: Rb1, Rb1, Rb1): chess: could not decode algebraic notation Rb1 for position 5r1r/ppp5/3p2k1/2b2bP1/4pPB1/6K1/8/RN1R4 w - - 4 33
+---
+File: base\morphy.pgn
+Game: 386
+Time: 2026-02-27 18:38:42
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rf5 (tried: Rf5, Rf5, Rf5): chess: could not decode algebraic notation Rf5 for position r4r1k/ppp2P2/3p3p/8/3bP1P1/1P4p1/1P4K1/RN2R3 w - - 0 25
+---
+File: base\morphy.pgn
+Game: 388
+Time: 2026-02-27 18:38:51
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rb1 (tried: Rb1, Rb1, Rb1): chess: could not decode algebraic notation Rb1 for position r2q1rk1/ppp2ppp/2n1b3/3p4/4PN2/1P2P1P1/PbP3BP/RN1Q1RK1 w - - 0 12
+---
+File: base\morphy.pgn
+Game: 389
+Time: 2026-02-27 18:38:51
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rc1 (tried: Rc1, Rc1, Rc1): chess: could not decode algebraic notation Rc1 for position r1b2k1r/ppp3pp/1b3p1n/3Pp3/4Pq2/5P2/PB2B1PP/RN1Q1R1K w - - 0 16
+---
+File: base\morphy.pgn
+Game: 390
+Time: 2026-02-27 18:38:51
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rd1 (tried: Rd1, Rd1, Rd1): chess: could not decode algebraic notation Rd1 for position 2q2r1r/pb2k2p/1p1bp2B/1Pp1Pp1Q/5P2/8/P1P2K1P/RN6 w - - 1 25
+---
+File: base\morphy.pgn
+Game: 391
+Time: 2026-02-27 18:38:52
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Qxg4 (tried: Qxg4, Qxg4, Qxg4): chess: could not decode algebraic notation Qxg4 for position rn4k1/ppp5/3p4/3P1rp1/2q1N1p1/5NP1/P5K1/R2QR3 w - - 0 27
+---
+File: base\morphy.pgn
+Game: 392
+Time: 2026-02-27 18:38:53
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxe6 (tried: Rxe6, Rxe6, Rxe6): chess: could not decode algebraic notation Rxe6 for position 4r1rk/pp5p/8/5P2/8/2n5/P6P/RN2R2K b - - 4 33
+---
+File: base\morphy.pgn
+Game: 393
+Time: 2026-02-27 18:38:53
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move O-O-O (tried: O-O-O, O-O-O, O-O-O): chess: could not decode algebraic notation O-O-O for position 1r2k1n1/p1p3bp/b1p3p1/8/4PB2/2P5/PP3PPP/RN2K2R w KQ - 3 15
+---
+File: base\morphy.pgn
+Game: 394
+Time: 2026-02-27 18:38:54
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxf1 (tried: Rxf1, Rxf1, Rxf1): chess: could not decode algebraic notation Rxf1 for position 6Q1/ppp1k1p1/1bbp2P1/n3qP2/8/2P4K/PP6/RN3q2 w - - 0 27
+---
+File: base\morphy.pgn
+Game: 395
+Time: 2026-02-27 18:38:54
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxa1 (tried: Rxa1, Rxa1, Rxa1): chess: could not decode algebraic notation Rxa1 for position 1n1r2k1/p1p3pp/8/1B1P1p1b/5B2/5P2/P5PP/bN2R2K w - - 0 24
+---
+File: base\morphy.pgn
+Game: 396
+Time: 2026-02-27 18:38:54
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rf4 (tried: Rf4, Rf4, Rf4): chess: could not decode algebraic notation Rf4 for position r2q1r2/pp3kpp/2p5/3pPP2/2P1n3/4Q3/PP4PP/RN1R2K1 w - - 2 21
+---
+File: base\morphy.pgn
+Game: 397
+Time: 2026-02-27 18:38:55
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxg1+ (tried: Rxg1+, Rxg1+, Rxg1): chess: could not decode algebraic notation Rxg1 for position 5rk1/p1p2pb1/6n1/PP1pPQ2/3P1prn/2P2N2/3B3P/RN3R1K b - - 0 25
+---
+File: base\morphy.pgn
+Game: 399
+Time: 2026-02-27 18:38:56
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxf7+ (tried: Rxf7+, Rxf7+, Rxf7): chess: could not decode algebraic notation Rxf7 for position r5Q1/pp1k1p2/7p/3q2p1/1B4b1/4p3/PP4PP/RN5K w - - 1 24
+---
+File: base\morphy.pgn
+Game: 400
+Time: 2026-02-27 18:38:56
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move O-O-O (tried: O-O-O, O-O-O, O-O-O): chess: could not decode algebraic notation O-O-O for position r2qkb1r/p2n2pp/8/8/2Q1Pp2/2P2P2/PP3P1P/RN2K2R w KQ - 1 19
+---
+File: base\morphy.pgn
+Game: 401
+Time: 2026-02-27 18:38:56
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxf4 (tried: Rxf4, Rxf4, Rxf4): chess: could not decode algebraic notation Rxf4 for position r2nr3/1p1kn2p/p2p2p1/5p2/PPB2p2/4b2P/2K3P1/RNB1R3 w - f6 0 23
+---
+File: base\morphy.pgn
+Game: 403
+Time: 2026-02-27 18:38:57
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxa1 (tried: Rxa1, Rxa1, Rxa1): chess: could not decode algebraic notation Rxa1 for position r3kb2/pp2q1p1/4p3/2ppP1N1/5BQ1/2PPK3/PP4P1/RN5r b q - 0 18
+---
+File: base\morphy.pgn
+Game: 404
+Time: 2026-02-27 18:38:57
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Re1 (tried: Re1, Re1, Re1): chess: could not decode algebraic notation Re1 for position r5k1/pp1n3p/2pqp1p1/6b1/3P4/3N3Q/PPP3PP/RN4K1 w - - 0 18
+---
+File: base\morphy.pgn
+Game: 405
+Time: 2026-02-27 18:38:57
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Bxe4 (tried: Bxe4, Bxe4, Bxe4): chess: could not decode algebraic notation Bxe4 for position r4k1r/ppp2pp1/2nb4/3b2P1/2pp2q1/6N1/PPPQ2PP/RN2R1K1 b - - 0 17
+---
+File: base\morphy.pgn
+Game: 406
+Time: 2026-02-27 18:38:58
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rxf6+ (tried: Rxf6+, Rxf6+, Rxf6): chess: could not decode algebraic notation Rxf6 for position r2q4/pb1p3Q/1p1k1b2/2p2p2/5P2/1P2P3/P1PP3K/RN4R1 w - - 3 24
+---
+File: base\morphy.pgn
+Game: 407
+Time: 2026-02-27 18:38:58
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rc1 (tried: Rc1, Rc1, Rc1): chess: could not decode algebraic notation Rc1 for position r1bq1rk1/ppp1b1pp/2n2n2/3ppp2/8/1P2P1PN/PBPP1PBP/RN1Q1RK1 w - - 6 8
+---
+File: base\morphy.pgn
+Game: 409
+Time: 2026-02-27 18:38:58
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rg3 (tried: Rg3, Rg3, Rg3): chess: could not decode algebraic notation Rg3 for position r4r1k/ppp1q1pp/1b1pbp2/4n3/4PB2/2P4P/PPBQ2P1/RN3R1K w - - 7 18
+---
+File: base\morphy.pgn
+Game: 411
+Time: 2026-02-27 18:38:59
+Error: Error processing positions: неисправимая ошибка в партии, пропускаем: could not apply move Rb1 (tried: Rb1, Rb1, Rb1): chess: could not decode algebraic notation Rb1 for position r1b1R3/pp5p/2kp1b2/2n5/2Q2P1q/2P4P/P5P1/RN4K1 w - - 9 28
+---

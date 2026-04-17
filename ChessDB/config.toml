@@ -1,0 +1,121 @@
+[app]
+# Имя приложения для идентификации в конфигурации и логике запуска.
+name = "ChessDB"
+# Режим работы по умолчанию: init, import, web, stats, update-ratings, cache-warmup, cache-clear.
+mode = "web"
+
+[server]
+# Хост, на котором HTTP сервер принимает подключения.
+host = "0.0.0.0"
+# Порт HTTP сервера.
+port = 9001
+# Максимальное время чтения HTTP запроса.
+read_timeout = "15s"
+# Максимальное время записи HTTP ответа.
+write_timeout = "15s"
+# Время удержания idle keep-alive соединения.
+idle_timeout = "60s"
+# Таймаут graceful shutdown веб-сервера.
+shutdown_timeout = "30s"
+
+[database.postgres]
+# Хост PostgreSQL сервера.
+host = "localhost"
+# Порт PostgreSQL сервера.
+port = 5435
+# Имя пользователя PostgreSQL.
+user = "postgres"
+# Пароль PostgreSQL; лучше задавать через CHESSDB_PG_PASSWORD.
+password = ""
+# Имя базы данных PostgreSQL.
+dbname = "chessdb"
+# Режим SSL для подключения к PostgreSQL.
+sslmode = "disable"
+# Максимальное число открытых соединений PostgreSQL.
+max_open_conns = 20
+# Максимальное число простаивающих соединений PostgreSQL.
+max_idle_conns = 10
+# Максимальное время жизни одного соединения PostgreSQL.
+conn_max_lifetime = "30m"
+
+[database.redis]
+# Включение или отключение Redis кэша.
+enabled = true
+# Хост Redis сервера.
+host = "localhost"
+# Порт Redis сервера.
+port = 6379
+# Пароль Redis; лучше задавать через CHESSDB_REDIS_PASSWORD.
+password = ""
+# Индекс Redis database.
+db = 0
+
+[paths]
+# Каталог с PGN файлами для инициализации и импорта.
+pgn_dir = "base"
+# Путь к исполняемому файлу Stockfish.
+stockfish_path = "D:\\GITHUB\\stockfish-bmi2\\stockfish-windows-x86-64-bmi2.exe"
+# Имя файла лога ошибок импорта.
+import_log_file = "import.log"
+
+[import]
+# Количество параллельных workers для импорта PGN.
+max_workers = 12
+# Размер пакета записей при пакетной обработке импорта.
+batch_size = 500
+# Пропускать ли уже импортированные файлы.
+skip_processed_files = true
+# Кодировка для fallback-декодирования не-UTF8 файлов.
+encoding_fallback = "windows-1251"
+
+[cache]
+# Включение или отключение кэширования.
+enabled = true
+# Общий префикс всех ключей кэша.
+key_prefix = "chess"
+# Очищать ли позиционный кэш при старте web режима.
+cleanup_on_web_start = true
+# Выполнять ли прогрев кэша при старте web режима.
+warmup_on_web_start = true
+
+[cache.ttl]
+# TTL кэша результатов поиска.
+search = "1h"
+# TTL кэша данных по FEN.
+fen = "24h"
+# TTL кэша списка ходов.
+moves = "6h"
+# TTL кэша популярных позиций.
+popular_positions = "12h"
+
+[cache.patterns]
+# Шаблон ключей кэша позиций.
+position = "pos"
+# Шаблон ключей кэша поиска.
+search = "search"
+# Шаблон ключей кэша ходов.
+moves = "moves"
+# Шаблон ключей кэша FEN.
+fen = "fen"
+# Шаблон ключей кэша популярных позиций.
+popular_positions = "popular:positions"
+
+[cache.warmup]
+# Список ECO-кодов для прогрева популярных дебютов.
+popular_eco_codes = ["C20", "C50", "D20", "B20", "A00"]
+
+[web.defaults]
+# Количество результатов поиска по умолчанию.
+search_count = 5
+# Глубина анализа/поиска по умолчанию.
+search_depth = 3
+# Цвет стороны по умолчанию для поиска.
+color = "white"
+
+[stockfish]
+# Включение или отключение интеграции со Stockfish.
+enabled = true
+# Глубина анализа Stockfish по умолчанию.
+default_depth = 15
+# Количество MultiPV вариантов от Stockfish.
+multi_pv = 3
