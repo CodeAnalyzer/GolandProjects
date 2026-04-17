@@ -1,0 +1,1140 @@
+leg	[ leg ]	нога
+nail	[ neil ]	ноготь, гвоздь
+neck	[ nek ]	шея
+shoulder	[ '??uld? ]	плечо, толкать
+face	[ feis ]	лицо
+palm	[ p?:m ]	ладонь
+wrist	[ rist ]	наручный, запястье
+waist	[ weist ]	талия
+hip	[ hip ]	ягода шиповника
+pumpkin	[ 'p?mpkin ]	тыква
+pepper	[ 'pep? ]	перец
+turnip	[ 't?:rn?p ]	репа
+parsley	[ 'p?:sli ]	петрушка (бот.)
+lime	[ laim ]	известь
+dog	[ d?g ]	собака
+corner	[ 'k?:n? ]	угол
+cow	[ kau ]	корова
+drawer	[ 'dr?:? ]	чертежник
+goat	[ g?ut ]	козел, коза
+jaw	[ ??: ]	челюсть
+model	[ m?dl ]	модель
+pen	[ pen ]	ручка
+pupil	[ pju:pl ]	ученик
+rat	[ r?t ]	крыса
+sheep	[ '?i:p ]	овца, овцы
+swing	[ swi? ]	качание, качели, качаться, колебаться
+grater	[ 'greit? ]	терка
+briefcase	[ 'bri:f‚ke?s ]	портфель
+strawberries	[ 'str?:b?riz ]	клубника
+cherries	[ '?eriz ]	вишни (от cherry)
+dates	[ deits ]	даты (от date)
+braces	[ 'bre?s?z ]	подтяжки
+gloves	[ gl?vz ]	перчатки (от glove)
+pyjamas	[ p?'??:m?z ]	пижама
+cricket	[ 'krikit ]	крикет (спорт.)
+beetroot	[ 'bi:tru:t ]	красная свекла
+badger	[ 'b??? ]	барсук, травить
+bench	[ ben? ]	скамейка
+flea	[ fli: ]	блоха
+doll	[ d?l ]	кукла
+rattle	[ 'r?tl ]	"трещать, греметь, грохотать; треск, грохот, погремушка, трещотка"
+cradle	[ 'kreidl ]	колыбель, убаюкивать
+infant	[ 'inf?nt ]	младенец
+mason	[ 'meisn ]	каменщик
+foreman	[ 'f?:m?n ]	мастер, старший рабочий, техник, прораб
+nostril	[ 'n?stril ]	ноздря
+calf	[ k?:f ]	слоненок, теленок, молодой кит
+people	[ pi:pl ]	люди
+sadness	[ 's?dnis ]	печаль
+joy	[ ??i ]	радость
+happiness	[ 'h?pinis ]	счастье
+feeling	[ 'fi:li? ]	чувство, чувствующий (от feel)
+love	[ l?v ]	любовь, любить
+hate	[ heit ]	ненавидеть
+indifference	[ in'difr?ns ]	безразличие
+surprise	[ s?'praiz ]	удивление, удивлять
+anger	[ '??g? ]	гнев, злость
+fright	[ frait ]	испуг
+laughter	[ 'l?:ft? ]	смех, хохот
+black	[ bl?k ]	черный
+sympathy	[ 'simp??i ]	симпатия, сострадание
+fear	[ fi? ]	страх, опасение, бояться, опасаться
+tenderness	[ 'tend?nis ]	нежность (!NEW!)
+blue	[ blu: ]	синий
+brown	[ braun ]	коричневый
+gold	[ g?uld ]	золото, золотой
+green	[ gri:n ]	зеленый
+grey	[ grei ]	серый
+pink	[ pi?k ]	розовый
+purple	[ 'p?:pl ]	лиловый, малиновый
+red	[ red ]	красный
+silver	[ 'silv? ]	серебро, серебряный
+white	[ wait ]	белый
+yellow	[ 'jel?u ]	желтый
+lid	[ lid ]	крышка
+towel	[ 'tau?l ]	полотенце
+refrigerator	[ ri'fri?ireit? ]	холодильник
+cabinet	[ 'k?binet ]	кабинет (не parlour)
+stove	[ st?uv ]	печь, плита
+oven	[ ?vn ]	печь
+faucet	[ 'f?:s?t ]	водопроводный кран, вентиль
+pigeon	[ pi?in ]	голубь
+crow	[ kr?u ]	ворона
+beak	[ bi:k ]	клюв
+eagle	[ 'i:gl ]	орел
+owl	[ aul ]	сова
+feather	[ 'fe?? ]	предмет гордости, достижение
+robin	[ 'r?bin ]	малиновка
+sparrow	[ 'sp?r?u ]	воробей
+ostrich	[ '?stri? ]	страус
+egg	[ eg ]	яйцо
+parrot	[ 'p?r?t ]	попугай
+peacock	[ 'pi:k?k ]	павлин
+turkey	[ 't?:ki ]	индейка
+chicken	[ '?ikin ]	цыпленок, кура
+duck	[ d?k ]	утка
+goose	[ gu:s ]	гусь
+swan	[ sw?n ]	лебедь
+stork	[ st?:k ]	аист
+nest	[ nest ]	гнездо
+swallow	[ 'sw?l?u ]	глотать, проглатывать
+crane	[ krein ]	журавль, подъемный кран
+sky	[ skai ]	небо
+sea	[ si: ]	море, океан
+cliff	[ klif ]	утес, скала
+beach	[ bi:? ]	пляж
+crab	[ kr?b ]	краб
+island	[ 'ail?nd ]	остров
+lighthouse	[ 'laithaus ]	маяк
+pebble	[ 'pebl ]	галька, горный хрусталь
+sand	[ s?nd ]	песок
+seaweed	[ 'si:wi:d ]	морская водоросль (TR!)
+shell	[ ?el ]	раковина, скорлупа
+wave	[ weiv ]	волна
+motel	[ m?u'tel ]	мотель, гостиница
+lifeboat	[ 'laifb?ut ]	спасательная лодка
+pail	[ peil ]	ведро
+swimmer	[ 'swim? ]	пловец
+tube	[ tju:b ]	труба (не pipe)
+mask	[ m?:sk ]	маска
+tv	[ ‚ti:'vi: ]	телевизор, телевидение
+speaker	[ 'spi:k? ]	оратор
+record	[ 'rek?:d ]	запись, пластинка, отчет, рекорд
+headphones	[ 'hedf?unz ]	наушники
+radio	[ 'reidi?u ]	радио
+microphone	[ 'maikr?f?un ]	микрофон
+gardening	[ 'g?:dni? ]	садоводство
+reading	[ 'ri:di? ]	чтение
+singing	[ 'si?i? ]	пение (TR!)
+ceiling	[ 'si:li? ]	потолок
+wall	[ w?:l ]	стена
+painting	[ 'peinti? ]	живопись
+vase	[ v?:z ]	ваза
+fireplace	[ 'fa??r‚ple?s ]	камин (TR!)
+staircase	[ 'st??keis ]	лестница
+step	[ step ]	шаг, шагать (step)
+desk	[ desk ]	письменный стол
+carpet	[ 'k?:pit ]	ковер, устилать
+chair	[ ??? ]	стул
+bookcase	[ 'bukkeis ]	книжный шкаф
+curtain	[ k?:tn ]	занавеска, занавес
+cushion	[ 'ku??n ]	подушка
+sofa	[ 's?uf? ]	диван
+lamp	[ l?mp ]	лампа
+window	[ 'wind?u ]	окно, оконный
+plant	[ pl?:nt ]	завод, растение, сажать, внедрять, посадить
+photograph	[ 'f?ut?gr?:f ]	фотография, фотографировать
+stocking	[ 'st?ki? ]	чулок
+slip	[ slip ]	скольжение, скользить
+brain	[ brein ]	мозг
+throat	[ ?r?ut ]	горло
+heart	[ h?:t ]	сердце
+liver	[ 'liv? ]	печень
+stomach	[ 'st?m?k ]	живот, желудок
+muscle	[ 'm?s(?)l ]	мышца
+bone	[ b?un ]	кость
+kidney	[ 'kidni ]	почка (анатом.)
+vein	[ vein ]	вена, жила, жилка
+willow	[ 'wil?u ]	ива
+birch	[ b?:? ]	береза, розга
+oak	[ ?uk ]	дуб
+branch	[ br?:n? ]	ветвь, отрасль
+acorn	[ 'eik?:n ]	желудь
+pine	[ pain ]	сосна
+cone	[ k?un ]	конус, шишка (еловая)
+trunk	[ tr??k ]	ствол, туловище
+bark	[ b?:k ]	кора дерева
+root	[ 'ru:t ]	корень
+leaf	[ li:f ]	лист
+twig	[ tw?g ]	веточка, прутик
+beech	[ bi:? ]	бук
+ash	[ ?? ]	ясень
+chestnut	[ '?esn?t ]	каштан
+walnut	[ 'w?:ln?t ]	грецкий орех
+mountain	[ 'mauntin ]	гора
+hill	[ hil ]	холм, гора
+river	[ 'riv? ]	река
+village	[ 'vili? ]	деревня
+bridge	[ bri? ]	мост
+orchard	[ '?:??d ]	фруктовый сад
+pond	[ p?nd ]	пруд (не pool)
+stable	[ 'steibl ]	конюшня
+hay	[ hei ]	сено
+field	[ fi:ld ]	поле
+fence	[ fens ]	забор
+barn	[ b?:n ]	амбар
+tent	[ tent ]	палатка
+blocks	[ bl?ks ]	кварталы (от block)
+puzzle	[ p?zl ]	приводить в затруднение, загадка
+shovel	[ '??vl ]	лопата
+clay	[ klei ]	глина, земля
+nightingale	[ 'naiti?geil ]	соловей
+violet	[ 'vai?l?t ]	фиолетовый (не purple)
+consciousness	[ 'k?n??snis ]	сознание, сознательность
+abstract	[ '?bstr?kt ]	отвлеченный, абстрактный
+dramatic	[ dr?'m?tik ]	драматический
+grand	[ gr?nd ]	величественный
+resident	[ 'rezid?nt ]	постоянный житель
+prop	[ pr?p ]	подпорка, опора, подпирать
+odd	[ ?d ]	странный
+recommend	[ ,rek?'mend ]	рекомендовать
+comb	[ k?um ]	гребенка, расчесывать, расчесать
+brush	[ br?? ]	щетка, чистить щеткой
+razor	[ 'reiz? ]	бритва
+scissors	[ 'siz?z ]	ножницы
+powder	[ 'paud? ]	пудра
+perfume	[ 'p?:fju:m ]	духи
+pike	[ paik ]	щука (не lung)
+fry	[ frai ]	(за)жарить
+smelt	[ smelt ]	плавить
+salmon	[ 's?m?n ]	лосось
+trout	[ traut ]	форель
+oyster	[ '?ist? ]	устрица
+fin	[ fin ]	плавник
+scale	[ skeil ]	масштаб
+net	[ net ]	сеть
+bait	[ beit ]	приманка
+float	[ fl?ut ]	плавать, поплавок
+prey	[ prei ]	жертва
+glove	[ gl?v ]	перчатка
+hat	[ h?t ]	шляпа
+skirt	[ sk?:t ]	юбка
+trousers	[ 'trauz?z ]	брюки
+uniform	[ 'ju:nif?:m ]	форма, форменная одежда
+necklace	[ 'neklis ]	ожерелье
+belt	[ belt ]	пояс, ремень
+button	[ b?tn ]	кнопка, пуговица
+glasses	[ gl?:siz ]	очки
+pocket	[ 'p?kit ]	карман
+umbrella	[ ?m'brel? ]	зонт
+purse	[ p?:s ]	кошелек
+criminal	[ 'kriminl ]	преступник, уголовный
+break	[ breik ]	ломать
+timid	[ 'timid ]	робкий, застенчивый
+bomb	[ b?m ]	бомба, бомбить
+submarine	[ 's?bm?ri:n ]	подводная лодка
+tank	[ t??k ]	танк, резервуар
+cannon	[ 'k?n?n ]	пушка, орудие
+navy	[ 'neivi ]	военный флот
+sailor	[ 'seil? ]	матрос
+army	[ '?:mi ]	армия
+soldier	[ 's?ul?? ]	солдат
+marine	[ m?'ri:n ]	морской флот, морской
+rifle	[ 'raifl ]	ружье, винтовка
+trigger	[ 'trig? ]	курок
+barrel	[ 'b?r?l ]	баррель
+bullet	[ 'bulit ]	пуля
+fish	[ fi? ]	рыба
+kitten	[ kitn ]	котенок
+tortoise	[ 't?:t?s ]	черепаха
+blow	[ bl?u ]	дуть
+clap	[ kl?p ]	"хлопать, аплодировать; удар, хлопок"
+laugh	[ l?:f ]	смех, смеяться
+open	[ ?upn ]	открывать
+point	[ p?int ]	точка, пункт, суть дела, указывать, показывать
+touch	[ t?? ]	соприкосновение, контакт
+walk	[ w?:k ]	гулять, ходить пешком (не hike)
+close	[ kl?us ]	закрывать(ся)
+cough	[ k?f ]	кашель
+crawl	[ kr?:l ]	ползать (не creep)
+cry	[ krai ]	кричать, восклицать
+dance	[ d?:ns ]	танцевать
+jump	[ ??mp ]	прыгать
+hop	[ h?p ]	хмель (бот.)
+fall	[ f?:l ]	падать
+drop	[ dr?p ]	капля, падать, ронять
+draw	[ dr?: ]	рисовать
+read	[ ri:d ]	читать
+run	[ r?n ]	бегать, двигаться, бег, движение, направление
+scratch	[ skr?? ]	царапать
+scream	[ skri:m ]	вскрикнуть, зареветь, визг, вопль (не shriek)
+smile	[ smail ]	улыбаться, улыбка
+sing	[ si? ]	пение, петь
+shout	[ ?aut ]	кричать, крик
+shake	[ ?eik ]	пожать (руки), дрожать, трясти
+whisper	[ 'wisp? ]	шепот, шептать
+whistle	[ 'w?s?l ]	свист, свистеть
+write	[ rait ]	писать, записывать
+soap	[ s?up ]	мыло
+bug	[ b?g ]	клоп, насекомое, жук (амер.)
+herring	[ 'heri? ]	сельдь
+oil	[ ?il ]	масло
+engine	[ 'en?in ]	двигатель, мотор, машина
+wheel	[ wi:l ]	колесо
+tyre	[ 'ta??r ]	шина
+boot	[ bu:t ]	ботинок, сапог
+bonnet	[ 'b?nit ]	капор, дамская шляпа
+restrain	[ ris'trein ]	сдерживать
+piano	[ 'pj?n?u ]	пианино
+harp	[ h?:p ]	арфа
+bow	[ bau ]	кланяться, сгибаться
+string	[ stri? ]	вереница, ряд, струна, связывать
+drum	[ dr?m ]	барабан
+trumpet	[ 'tr?mpit ]	труба
+organ	[ '?:g?n ]	орган
+universe	[ 'ju:niv?:s ]	мир, вселенная
+substance	[ 's?bst?ns ]	вещество
+science	[ 'sai?ns ]	наука, умение
+precision	[ pri'si??n ]	точность
+stem	[ stem ]	стержень
+lily	[ 'lili ]	лилия
+daisy	[ 'deizi ]	маргаритка
+bulb	[ b?lb ]	луковица, электрическая лампочка
+rose	[ r?uz ]	роза
+bud	[ b?d ]	почка, бутон, давать почки, пускать ростки
+thorn	[ ??:n ]	шип, колючка (не prick)
+sunflower	[ 's?n,flau? ]	подсолнух
+jumper	[ '??mp? ]	джемпер
+bed	[ bed ]	постель
+pillow	[ 'pil?u ]	подушка
+sheet	[ ?i:t ]	простыня, лист, пласт
+blanket	[ 'bl??kit ]	одеяло
+mirror	[ 'mir? ]	зеркало
+mattress	[ 'm?tris ]	матрац
+closet	[ 'kl?zit ]	чулан
+diver	[ 'daiv? ]	водолаз
+engineer	[ ,en?i'ni? ]	инженер
+cook	[ kuk ]	готовить, повар
+trainer	[ 'trein? ]	тренер
+conductor	[ k?n'd?kt? ]	кондуктор
+surgeon	[ 's?:??n ]	хирург
+building	[ 'bildi? ]	здание
+store	[ st?: ]	магазин, имущество, запасать, снабжать
+bend	[ bend ]	гнуться, изгибаться
+clamp	[ kl?mp ]	складывать, скреплять (не brace)
+wood	[ wud ]	лес, древесина, дрова
+outlet	[ 'autlet ]	выход, выходное отверстие
+saw	[ s?: ]	видел, смотрел (от see)
+brace	[ breis ]	связывать, скреплять (не clamp)
+mallet	[ 'm?lit ]	деревянный молоток
+hammer	[ 'h?m? ]	молоток
+hook	[ huk ]	крючок
+hatchet	[ 'h??it ]	топор(ик)
+chisel	[ '?izl ]	резец, ваять, высекать
+level	[ levl ]	уровень
+bolt	[ b??lt ]	молния
+screw	[ skru: ]	привинчивать, завинчивать, принуждать, винт
+nut	[ n?t ]	орех
+fee	[ fi: ]	гонорар, платить гонорар
+salary	[ 's?l?ri ]	оклад
+duration	[ dju?'rei??n ]	продолжительность
+responsibility	[ ris,p?ns?'biliti ]	ответственность
+bathroom	[ 'b?:?rum ]	ванная комната
+toilet	[ 't?ilit ]	туалет
+kitchen	[ 'ki?in ]	кухня
+bookshelf	[ 'buk?elf ]	книжная полка
+dish	[ di? ]	блюдо
+law	[ l?: ]	закон, право
+bat	[ b?t ]	бить
+pony	[ 'p?uni ]	пони
+horse	[ h?:s ]	лошадь
+foal	[ f?ul ]	жеребенок
+lamb	[ l?m ]	ягненок, баранина
+hog	[ h?g ]	свинья, боров
+bull	[ bul ]	бык
+reed	[ ri:d ]	тростник, камыш (не cane)
+target	[ 't?:git ]	задание
+lobster	[ 'l?bst? ]	омар
+starling	[ 'st?:li? ]	скворец
+cuckoo	[ n'kuku: ]	кукушка
+finger	[ 'fi?g? ]	палец
+gum	[ g?m ]	"смола, клей; склеивать(ся) (не tar)"
+thumb	[ ??m ]	большой палец (руки)
+index	[ 'indeks ]	индекс, указатель, показатель
+notebook	[ 'n?utbuk ]	тетрадь
+pencil	[ 'pensil ]	карандаш
+ruler	[ 'ru:l? ]	линейка, правитель
+bell	[ bel ]	звонок
+chalk	[ ??:k ]	мел
+compass	[ 'k?mp?s ]	"объем, диапазон; компас; циркуль"
+glue	[ glu: ]	"клей; клеить, приклеивать"
+paper	[ 'peip? ]	бумага, газета
+complicated	[ 'k?mplikeitid ]	сложный
+flu	[ flu: ]	грипп
+stroke	[ str?uk ]	удар, гладить
+tall	[ t?:l ]	невероятный, высокий
+short	[ ??:t ]	короткий, слабый, внезапно
+slim	[ slim ]	стройный
+thin	[ ?in ]	тонкий, худощавый
+fat	[ f?t ]	жирный
+bold	[ b?uld ]	смелый (не dare)
+moustache	[ m?s't?:? ]	усы
+handsome	[ 'h?nds?m ]	красивый
+swift	[ swift ]	быстрый (не speed)
+fracture	[ 'fr?k?? ]	"перелом, излом; ломать"
+cold	[ k?uld ]	холод, холодный
+sneeze	[ sni:z ]	чихать, чиханье
+toes	[ tu:z ]	пальцы ноги(носки) (TR!)
+stuff	[ 'st?f ]	вещество, материал, заполнять, набивать
+learned	[ 'l?:nt ]	ученый
+box	[ b?ks ]	ящик, коробка, ложа (театр.)
+fine	[ fain ]	прекрасно, прекрасный
+action	[ '?k??n ]	действие, поступок
+tire	[ 'tai? ]	уставать, надоесть
+bamboo	[ b?m'bu: ]	бамбук
+mulberry	[ 'm?lb?ri ]	тутовое дерево (TR!)
+acacia	[ ?'ke??? ]	акация
+edible	[ 'edibl ]	съедобный
+poisonous	[ 'p?izn?s ]	ядовитый
+home	[ h?um ]	дом
+bald	[ b?:ld ]	лысый, оголенный
+blame	[ bleim ]	считать виноватым, вина, упрек, порицание
+attitude	[ '?titju:d ]	позиция, отношение, поза
+particular	[ p?'tikjul? ]	особый
+origin	[ '?ri?in ]	происхождение
+sustain	[ s?s'tein ]	поддерживать
+expectation	[ ,ekspek'tei??n ]	ожидание
+ticket	[ 'tikit ]	билет
+porter	[ 'p?:t? ]	носильщик
+suitcase	[ 's(j)u:tkeis ]	чемодан
+baggage	[ 'b?gi? ]	багаж
+cabin	[ 'k?bin ]	каюта
+update	[ ?p'de?t ]	модернизация (TR!)
+updated	[ ?p'de?t?d ]	обновленный (TR!)
+warehouse	[ 'we?r‚ha?z ]	склад, пакгауз
+check	[ ?ek ]	проверять, регистрировать
+remain	[ ri'mein ]	оставаться
+china	[ '?ain? ]	фарфор
+pitcher	[ 'pi?? ]	подающий
+table	[ teibl ]	стол, таблица, расписание
+napkin	[ 'n?pkin ]	салфетка, пеленка
+saucer	[ 's?:s? ]	блюдце
+ring	[ ri? ]	кольцо, звон, звонок, звенеть, звонить
+chain	[ ?ein ]	цепь
+pin	[ pin ]	булавка, значок, прикалывать
+watch	[ w?? ]	часы, cмотреть, наблюдать
+wallet	[ 'w?l?t ]	бумажник
+handbag	[ 'h?ndb?g ]	дамская сумочка
+test	[ test ]	анализ, проверка, испытывать
+dump	[ d?mp ]	разгружать
+strange	[ strein? ]	странный
+foreign	[ 'f?rin ]	иностранный
+huge	[ hju:? ]	огромный (не bulk)
+build	[ bild ]	строить
+whale	[ weil ]	кит
+walrus	[ 'w?:lr?s ]	морж
+seal	[ si:l ]	печать, запечатывать
+running	[ 'r?ni? ]	пробег, бегущий
+walking	[ 'w?:ki? ]	гуляющий
+tennis	[ 't?nis ]	теннис
+wrestle	[ 'resl ]	бороться
+boxing	[ 'b?ksi? ]	бокс
+football	[ 'futb?:l ]	футбол
+swimming	[ 'swimi? ]	плавание
+hen	[ hen ]	курица
+kid	[ kid ]	ребенок (разг.), обманывать (сленг.)
+secretary	[ 'sekrit?ri ]	секретарь
+manager	[ 'm?n??? ]	управляющий
+envelope	[ 'envil?up ]	конверт
+employee	[ ,empl?i'i: ]	служащий, работник
+employer	[ 'empl?i? ]	наниматель
+typewriter	[ 'ta?p‚ra?t?r ]	пишущая машинка
+cherry	[ '?eri ]	вишня
+banana	[ b?'n?:n? ]	банан
+bean	[ bi:n ]	боб
+sprout	[ spraut ]	"пускать ростки; отросток, побег"
+corn	[ k?:n ]	кукуруза
+after	[ '?:ft? ]	после
+again	[ ?'gen ]	снова
+all	[ ?:l ]	все, весь
+also	[ '?:ls?u ]	тоже, также
+always	[ '?:lw?z ]	всегда
+and	[ ?nd ]	и
+angrily	[ '??grili ]	сердито (!NEW!)
+angry	[ '??gri ]	сердитый
+animal	[ '?nim?l ]	животное
+another	[ ?'n??? ]	еще один, другой
+ask	[ ?:sk ]	просить, спрашивать
+at	[ ?t ]	в, у
+consider	[ k?n'sid? ]	считать
+crowd	[ kraud ]	толпа, толпиться
+care	[ k?? ]	заботиться, переживать
+guess	[ ges ]	отгадывать, догадка
+glance	[ gl?:ns ]	взглянуть, мелькнуть
+rise	[ raiz ]	подниматься, восходить, подъем, повышение
+pick	[ pik ]	собирать, подбирать, выбирать
+happen	[ h?pn ]	случаться, происходить
+handy	[ 'h?ndi ]	"удобный; ловкий, искусный"
+occupation	[ ,?kju'pei?n ]	занятие
+respect	[ ris'pekt ]	уважение, уважать
+faith	[ fei? ]	вера
+recognize	[ 'rek?gnaiz ]	узнавать, узнать
+coral	[ 'k?r?l ]	коралл (TR!)
+a	[ ? ]	неопределенный артикль
+shark	[ ??:k ]	акула
+abandon	[ ?'b?nd?n ]	отказываться, покидать, прекращать
+ability	[ ?'biliti ]	способность (-y не от слова capable)
+able	[ 'eibl ]	способный (-e)
+shrimp	[ ?rimp ]	креветка
+aboard	[ ?'b?:d ]	на корабле, на борту, в вагоне
+about	[ ?'baut ]	о
+above	[ ?'b?v ]	над, выше, наверху
+abruptly	[ ?'br?ptl? ]	внезапно, резко, грубо
+absolutely	[ '?bs?lu:tli ]	абсолютно, совершенно
+accent	[ '?ks?nt ]	подчеркивать, произносить
+accept	[ ?k'sept ]	принимать
+access	[ '?kses ]	доступ, подход, доступность
+accident	[ '?ksid?nt ]	несчастный случай
+accompany	[ ?'k?mp?ni ]	сопровождать
+according	[ ?'k?:di? ]	согласно
+account	[ ?'kaunt ]	счет, оценка, причина
+across	[ ?'kr?s ]	через
+act	[ ?kt ]	акт, дело, действовать
+activity	[ ?k'tiviti ]	деятельность, активность
+actually	[ '?k?u?li ]	фактически, в настоящее время
+add	[ ?d ]	добавлять, прибавлять
+address	[ ?'dres ]	адрес, обращение
+adjust	[ ?'??st ]	регулировать, приспосабливать
+admiral	[ '?dm?r?l ]	адмирал
+admire	[ ?d'mai? ]	восхищаться
+admit	[ ?d'mit ]	допускать
+advance	[ ?d'v?:ns ]	продвижение вперед, продвигать
+advantage	[ ?d'v?:nti? ]	преимущество, выгода
+advice	[ ?d'vais ]	cовет
+affair	[ ?'f?? ]	дело, занятие
+afford	[ ?'f?:d ]	позволить себе
+afraid	[ ?'freid ]	испуганный
+afternoon	[ '?:ft?'nu:n ]	время после полудня
+against	[ ?'geinst ]	против
+age	[ ei? ]	век, возраст
+agency	[ 'ei??nsi ]	агентство
+agent	[ 'ei??nt ]	деятель, исполнитель
+agree	[ ?'gri: ]	соглашаться
+agreement	[ ?'gri:m?nt ]	согласие, соглашение
+ahead	[ ?'hed ]	вперед
+aid	[ eid ]	помощь
+aim	[ eim ]	целиться, цель
+air	[ ?? ]	воздушный, авиационный, проветривать
+airport	[ '??p?:t ]	аэропорт
+alarm	[ ?'l?:m ]	тревога, (вс)тревожить (alarm)
+alert	[ ?'l?:t ]	бдительный, проворный
+alive	[ ?'laiv ]	живой
+alley	[ '?li ]	аллея, переулок
+allow	[ ?'lau ]	разрешать, разрешить
+almost	[ '?:lm?ust ]	почти, едва не
+alone	[ ?'l?un ]	один, одинокий
+along	[ ?'l?? ]	вдоль
+alongside	[ ?'l??'said ]	рядом
+already	[ ?:l'redi ]	уже
+although	[ ?:l'??u ]	хотя
+am	[ ?m ]	(я) есть (от be)
+wrinkle	[ 'r??k?l ]	морщина, морщить(ся)
+fist	[ fist ]	кулак
+heel	[ hi:l ]	пятка, каблук
+interest	[ 'intrist ]	интересовать, заинтересовывать
+draft	[ dra:ft ]	чертеж, проект
+maker	[ 'meik? ]	производитель
+bearer	[ 'b??r? ]	носитель, податель, предъявитель
+mortgage	[ 'm?:gi? ]	заклад, залог
+transfer	[ tr?ns'f?: ]	передача, переносить
+loan	[ l?un ]	заём, ссуда
+cover	[ 'k?v? ]	покрывало, крышка
+galaxy	[ 'g?l?ksi ]	галактика (TR!)
+star	[ st?: ]	звезда
+constellation	[ ,k?nst?'lei??n ]	созвездие
+sun	[ s?n ]	солнце
+moon	[ mu:n ]	луна
+planet	[ 'pl?nit ]	планета
+mercury	[ 'm?:kjuri ]	ртуть
+venus	[ 'vi:n?s ]	венера (TR!)
+earth	[ ?:? ]	земля
+dragon	[ 'dr?g?n ]	дракон ((!NEW!))
+fairy	[ 'f??ri ]	волшебный
+ghost	[ g?ust ]	привидение, дух
+giant	[ '?ai?nt ]	гигант, гигантский
+king	[ ki? ]	король
+monster	[ 'm?nst? ]	чудовище
+pirate	[ 'pai?rit ]	пират
+prince	[ prins ]	принц
+princess	[ prin'ses ]	принцесса (TR!)
+queen	[ kwi:n ]	королева
+skeleton	[ 'skelitn ]	скелет, остов
+wizard	[ 'w?z?rd ]	колдун, специалист своего дела (!NEW!)
+curve	[ k?:v ]	изгиб, гнуть
+square	[ skw?? ]	площадь, квадратный
+circle	[ s?:kl ]	амфитеатр, круг
+diameter	[ dai'?mit? ]	диаметр
+arc	[ ?:k ]	дуга (мат.)
+circumference	[ s?'k?mf?r?ns ]	окружность
+apex	[ 'eipeks ]	верхушка, вершина (не peak)
+pyramid	[ 'pir?mid ]	пирамида
+depth	[ dep? ]	глубина
+height	[ hait ]	высота
+width	[ wid? ]	ширина
+length	[ le?? ]	длина
+broom	[ bru:m ]	метла, мести
+iron	[ 'ai?n ]	железо, утюг
+mop	[ m?p ]	швабра, подтирать
+bleach	[ bli:? ]	белить (ткань)
+ammonia	[ ?'m?unj? ]	аммиак
+wax	[ w?ks ]	воск, восковой
+cream	[ kri:m ]	сливки, крем
+vote	[ v?ut ]	голос (на выборах), голосование, голосовать
+plot	[ pl?t ]	заговор
+obviously	[ '?bv??sl? ]	очевидно
+repel	[ ri'pel ]	отталкивать, внушать отвращение
+sufficient	[ s?'fi??nt ]	достаточный
+failure	[ 'feilj? ]	неудача
+occur	[ ?'k?: ]	случаться
+resemble	[ ri'zembl ]	походить
+beans	[ bi:nz ]	фасоль
+date	[ deit ]	дата
+happy	[ 'h?pi ]	счастливый
+feelings	[ 'fi:li?z ]	страсти (от feeling)
+event	[ i'vent ]	событие
+unhappy	[ ?n,h?pi ]	несчастный, неудачный (unhappy)
+violence	[ 'vail?ns ]	сила, неистовство, насилие
+died	[ d?d ]	умер, умерший (от die)
+hungry	[ 'h??gri ]	голодный (не от слова starve)
+melancholy	[ 'mel?nk?li ]	меланхолия (TR!)
+sad	[ s?d ]	печальный
+sorrowful	[ 's?r?ful ]	печальный, скорбный
+unfortunate	[ ?n'f?:?nit ]	несчастный человек, горемыка
+rear	[ ri? ]	задняя часть
+themselves	[ ??m'selvz ]	себя, себе
+gesture	[ '?es?? ]	жест
+expression	[ iks'pre?n ]	выразительность, выражение
+roar	[ r?: ]	реветь, орать, хохотать
+pop	[ p?p ]	поп, популярный
+however	[ hau'ev? ]	однако
+dozen	[ 'd?zn ]	дюжина
+crew	[ kru: ]	судовая команда, экипаж
+present	[ preznt ]	настоящее время, подарок, настоящий, присутствующий
+doubt	[ daut ]	сомнение, сомневаться
+settle	[ setl ]	поселять, устраивать, оплачивать
+grip	[ grip ]	схватывание
+completely	[ k?m'pli:tli ]	совершенно, полностью
+nearly	[ 'ni?li ]	почти, приблизительно (не almost)
+pair	[ p?? ]	пара
+gather	[ 'g??? ]	собираться
+sweat	[ swet ]	пот, потеть
+statue	[ 'st?tju: ]	статуя, памятник
+fountain	[ 'fauntin ]	источник, фонтан
+bars	[ b?:rz ]	бруски(бары) (TR!)
+slide	[ slaid ]	скользить
+bush	[ bu? ]	куст
+tree	[ tri: ]	дерево (tree)
+grass	[ gr?:s ]	трава
+buffalo	[ 'b?f?l?u ]	буйвол
+hedgehog	[ 'he?h?g ]	еж
+barge	[ b?:? ]	баржа
+boat	[ b?ut ]	лодка, пароход
+canoe	[ k?'nu: ]	челн, байдарка
+caravan	[ 'k?r?v?n ]	фургон
+ferry	[ 'feri ]	перевоз
+yacht	[ j?t ]	яхта
+ship	[ ?ip ]	корабль, пароход, грузить, перевозить
+drain	[ drein ]	вытекание
+stopper	[ 'st?p? ]	пробка, затычка
+tile	[ tail ]	черепица, кафель
+shower	[ '?au? ]	душ, ливень
+thread	[ ?red ]	нитка
+material	[ m?'ti(?)ri?l ]	материал
+seam	[ si:m ]	шов
+hem	[ hem ]	"рубец, кромка, кайма; подшивать, подрубать"
+snap	[ sn?p ]	щелкать (snap)
+needle	[ ni:dl ]	игла
+thimble	[ '??mb?l ]	наперсток, наконечник
+embroidery	[ im'br?id?ri ]	вышивка
+speedometer	[ spi:'d?m?t?r ]	спидометр
+horn	[ h?:n ]	рог, забодать
+ignition	[ ig'ni?(?)n ]	зажигание, воспламенение
+vent	[ vent ]	выпускать, испускать
+mat	[ m?t ]	коврик (не rug)
+clutch	[ kl?? ]	захват (не snatch)
+brake	[ breik ]	тормоз
+jack	[ ??k ]	домкрат
+hood	[ hud ]	капюшон, капор, колпак, крышка (тех.)
+headlight	[ 'hedlait ]	фара (автомобиля), огни (паровоза)
+radiator	[ ,reidi'eit? ]	радиатор
+battery	[ 'b?t?ri ]	аккумулятор
+windfall	[ 'w?ndf?:l ]	неожиданная удача
+smash	[ sm?? ]	бить, разбивать
+violently	[ 'vail?ntl? ]	неистово
+withdraw	[ w??'dr?: ]	брать назад, забирать
+builder	[ 'bild? ]	строитель
+ladder	[ 'l?d? ]	лестница (не stairs)
+rung	[ r?? ]	ступенька, спица колеса
+cement	[ si'ment ]	цемент, основа
+foundation	[ faun'dei??n ]	основание
+brick	[ brik ]	кирпич
+board	[ b?:d ]	"садиться на пароход, самолет; доска"
+wheelbarrow	[ 'wi:l‚b?r?? ]	тачка
+detective	[ di'tektiv ]	детектив(ный)
+suspect	[ s?s'pekt ]	подозревать
+gun	[ g?n ]	ружье, пушка
+judge	[ ??? ]	судья
+witness	[ 'witnis ]	свидетель
+jury	[ '?u?ri ]	присяжные, жюри
+petrol	[ 'petr?l ]	бензин
+gasoline	[ 'g?s?uli:n ]	газолин, бензин (амер.)
+aerial	[ '??ri?l ]	воздушный, антенна
+attachment	[ ?'t??m?nt ]	привязанность, прикрепление
+vanity	[ 'v?niti ]	тщеславие
+incomprehensible	[ in'k?mpri'hens?bl ]	непонятный, непостижимый
+apron	[ 'eipr(?)n ]	фартук
+hockey	[ 'h?ki ]	хоккей
+fencing	[ 'fensi? ]	ограждение
+flora	[ 'fl?:r? ]	флора (TR!)
+cell	[ sel ]	камера, ячейка
+evolution	[ ,i:v?'lu:??n ]	развитие (TR!)
+creation	[ kri'ei?(?)n ]	создание (похоже на creature)
+family	[ 'f?mili ]	семья
+species	[ 'spi:?i:z ]	порода
+oxygen	[ '?ksi??n ]	кислород
+grammar	[ 'gr?m? ]	грамматика
+spell	[ spel ]	писать или произносить (слово) по буквам
+spelling	[ 'speli? ]	орфография, правописание
+article	[ '?:tikl ]	статья, предмет, изделие
+word	[ w?:d ]	слово, обещание
+sentence	[ 'sent?ns ]	предложение
+phrase	[ freiz ]	фраза
+syllable	[ 'sil?bl ]	слог
+subject	[ 's?b?ikt ]	предмет, содержание, подчинять
+predicate	[ 'predikit ]	сказуемое (грам.)
+object	[ '?b?ikt ]	возражать, предмет
+case	[ keis ]	случай, состояние
+tense	[ tens ]	время (грам.)
+mood	[ mu:d ]	настроение
+voice	[ v?is ]	голос
+dialect	[ 'dai?lekt ]	диалект (TR!)
+rule	[ ru:l ]	правило, принцип, норма, управлять, решать
+exception	[ ik'sep?n ]	исключение
+temperature	[ 'tempri?? ]	температура
+headache	[ 'hedeik ]	головная боль
+rash	[ r?? ]	"стремительный, поспешный, опрометчивый; сыпь"
+pain	[ pein ]	боль, страдание
+sick	[ sik ]	больной
+hurt	[ h?:t ]	рана, болеть, причинить боль, повредить
+unconscious	[ ?n'k?n??s ]	бессознательный
+sore	[ s?: ]	больной, воспаленный (не sick)
+faint	[ feint ]	слабый
+dizzy	[ 'd?z? ]	головокружительный
+twist	[ tw?st ]	вить(ся), крутить, скручивать
+burn	[ b?:n ]	гореть, жечь, сжигать
+bruise	[ bru:z ]	ушибать, синяк, ушиб
+medicine	[ 'medsin ]	медицина, лекарство
+stitch	[ sti? ]	стежок, петля (в вязании), шить
+drug	[ dr?g ]	лекарство, наркотик
+wound	[ wu:nd ]	рана
+bandage	[ 'b?ndi? ]	бинт, повязка, перевязывать, бинтовать
+wife	[ waif ]	жена
+husband	[ 'h?zb?nd ]	муж
+mother	[ 'm??? ]	мама
+father	[ 'f?:?? ]	папа
+daughter	[ 'd?:t? ]	дочь
+son	[ s?n ]	сын
+sister	[ 'sist? ]	сестра
+brother	[ 'br??? ]	брат
+baby	[ 'beibi ]	ребенок
+grandmother	[ 'gr?ndm??? ]	бабушка
+grandfather	[ 'gr?ndf?:?? ]	дедушка
+grandson	[ 'gr?nds?n ]	внук
+aunt	[ ?:nt ]	тетя
+uncle	[ ??kl ]	дядя
+niece	[ ni:s ]	племянница
+nephew	[ 'nevju: ]	племянник
+cousin	[ k?zn ]	двоюродный брат
+stationery	[ 'stei?n?ri ]	писчебумажные принадлежности
+folder	[ 'f?uld? ]	папка (для дел), брошюра (амер.)
+strawberry	[ 'str?:b?ri ]	земляника
+raspberry	[ 'r?:zb?ri ]	малина
+shift	[ ?ift ]	смена, перемещать
+tiring	[ 'tai?ri? ]	утомительный
+tough	[ t?f ]	жесткий
+labour	[ 'leib? ]	труд, трудиться
+capital	[ 'k?pitl ]	столица
+stock	[ st?k ]	запас, снабжать (не spare, hoard)
+handle	[ h?nl ]	обращаться с, управлять (не manage)
+lean	[ li:n ]	прислоняться, наклоняться, наклон
+threaten	[ ’?ret?n ]	грозить, угрожать
+opportunity	[ ,?p?'tju:niti ]	возможность
+announce	[ ?'nauns ]	объявлять
+sure	[ ?u? ]	уверенный, убедиться, безусловно
+pressure	[ 'pre?? ]	давление
+pleasure	[ 'ple?? ]	удовольствие
+surely	[ '?u?li ]	несомненно
+assure	[ ?'?u? ]	уверять, обеспечивать
+measure	[ 'me?? ]	мера
+treasure	[ 'tre?? ]	сокровище
+deliver	[ di'liv? ]	доставлять, передавать
+entirely	[ in'tai?li ]	совершенно, полностью, исключительно
+rapidly	[ 'r?pidl? ]	быстро
+hesitate	[ 'heziteit ]	колебаться
+bit	[ bit ]	кусочек, немного
+trolley	[ 'tr?li ]	тележка
+cab	[ k?b ]	наемный экипаж, извозчик, такси
+steep	[ sti:p ]	крутой (не sharp)
+cram	[ kr?m ]	запихивать, пичкать, учить наспех, натаскивать (к экзаменам) ( не poke)
+chemist	[ 'kemist ]	химик, аптекарь
+seller	[ 'sel? ]	торговец (не trader)
+complaint	[ k?m'pleint ]	жалоба
+bargain	[ 'b?:gin ]	сделка
+resign	[ ri'zain ]	уходить в отставку
+participate	[ p?:'tisipeit ]	участвовать
+disadvantage	[ ,dis?d'v?:nti? ]	неудобство
+lumber	[ 'l?mb? ]	лесоматериалы
+crop	[ kr?p ]	урожай
+troops	[ tru:ps ]	войска
+brand	[ br?nd ]	головня, клеймо, фабричная марка, сорт, клеймить
+advise	[ ?d'vais ]	советовать
+anticipate	[ ?n'tisipeit ]	предвидеть
+appreciate	[ ?'pri:?ieit ]	оценивать
+avoid	[ ?'v?id ]	избегать, избежать
+complete	[ c?m'pli:t ]	полный, законченный
+delay	[ di'lei ]	отсрочка
+deny	[ di'nai ]	отрицать, отвергать
+discuss	[ dis'k?s ]	обсуждать
+dislike	[ dis'laik ]	"нелюбовь, неприязнь; не любить"
+beat	[ bi:t ]	ударить, бить
+bet	[ bet ]	держать пари, пари
+absorb	[ ?b's?:b ]	поглощать, всасывать, впитывать
+toast	[ t?ust ]	тост (жар. хлеб), сушить
+swig	[ swig ]	потягивать вино
+enjoy	[ in'j?i ]	любить, получать удовольствие
+excuse	[ iks'kju:s ]	извинять
+fancy	[ 'f?nsi ]	воображать, представлять себе
+finish	[ 'fini? ]	кончать(ся), заканчивать(ся), конец, финиш
+forget	[ f?'get ]	забыть
+imagine	[ im??in ]	думать, воображать
+involve	[ in'v?lv ]	втягивать, вовлекать
+mind	[ maind ]	память, мнение, помнить, возражать
+miss	[ mis ]	промах, промахнуться, пропустить, скучать
+postpone	[ p?ust'p?un ]	отсрочивать
+practise	[ 'pr?ktis ]	заниматься
+quit	[ kwit ]	прекращать
+recall	[ ri'k?:l ]	припомнить, отозвать
+recollect	[ ,rek?'lekt ]	припоминать
+regret	[ ri'gret ]	жалеть
+remember	[ ri'memb? ]	помнить
+resent	[ ri'zent ]	обижаться, возмущаться
+resist	[ ri'zist ]	сопротивляться
+risk	[ risk ]	риск, рисковать
+harsh	[ h?:? ]	грубый, резкий (не sharp)
+feeble	[ 'fi:bl ]	слабый, бледный
+juvenile	[ '?u:vinail ]	юноша, подросток
+misery	[ 'miz?ri ]	страдания, нищета
+destitute	[ 'destitju:t ]	сильно нуждающийся
+endless	[ 'endlis ]	бесконечный
+parents	[ 'p??r?nts ]	родители (от parent)
+relative	[ 'rel?tiv ]	родственник
+trick	[ trik ]	хитрость, обман, обманывать
+fake	[ feik ]	подделка (!NEW!)
+anxious	[ '??k??s ]	беспокойный
+hover	[ 'h?v? ]	парить, вертеться
+pitch	[ pi? ]	бросок, уровень, сооружать
+circuit	[ 's?:kit ]	кругооборот, окружность
+score	[ sk?: ]	счет, отметка, выигрывать
+selfish	[ 'selfi? ]	эгоистичный
+jealous	[ '?el?s ]	ревнивый
+affectionate	[ ?'fek?nit ]	любящий, нежный
+charming	[ '??:mi? ]	очаровательный, прелестный
+independent	[ ,indi'pend?nt ]	независимый
+reliable	[ ri'lai?bl ]	надежный
+sensible	[ 'sens?bl ]	разумный
+sensitive	[ 'sens?tiv ]	чувствительный
+sociable	[ 's?u??bl ]	общительный
+mean	[ mi:n ]	означать
+insecure	[ ,insi'kju? ]	ненадежный, небезопасный (insecure)
+lazy	[ 'leizi ]	ленивый
+shy	[ ?ai ]	застенчивый, робкий
+patient	[ 'pei??nt ]	пациент, терпеливый
+responsible	[ ris'p?ns?bl ]	ответственный
+tidy	[ 'taidi ]	чистый, аккуратный, убирать, приводить в порядок
+mentally	[ 'ment?li ]	умственно
+weird	[ w??rd ]	судьба, рок, таинственный, странный
+turn	[ t?:n ]	поворачивать, вращать, оборот, поворот, очередь
+false	[ f?:ls ]	ложный
+true	[ tru: ]	правильный, верный
+figure	[ 'fig? ]	фигура
+soul	[ s?ul ]	душа, воплощение
+fight	[ fait ]	бороться, бой
+strict	[ strikt ]	точный
+stuffy	[ 'st?fi ]	душный
+meat	[ mi:t ]	мясо, мясной
+ham	[ h?m ]	ветчина
+pork	[ p?:k ]	свинина
+beef	[ bi:f ]	говядина
+sausage	[ s?:si? ]	колбаса, сосиска
+milk	[ milk ]	молоко
+cheese	[ ?i:z ]	сыр
+bread	[ bred ]	хлеб
+butter	[ 'b?t? ]	масло
+sugar	[ '?ug? ]	сахар
+pie	[ pai ]	пирог
+salt	[ s?:lt ]	соль, соленый, солить
+soup	[ su:p ]	суп
+millet	[ 'milit ]	просо, пшено
+sandwich	[ 's?nwi? ]	бутерброд
+regarding	[ ri'g?:di? ]	относительно
+gain	[ gein ]	прибыль
+essential	[ i'sen?(?)l ]	обязательный, существенный, важный
+deceptive	[ di'septiv ]	обманчивый
+flood	[ fl?d ]	наводнение
+grasp	[ gr?:sp ]	понять, схватить
+aware	[ ?'w?? ]	сознающий
+stop	[ st?p ]	остановка, перестать, остановиться
+suggest	[ s?'?est ]	предлагать, советовать
+tolerate	[ 't?l?reit ]	терпеть
+understand	[ ,?nd?st?nd ]	понимать, подразумевать
+riddle	[ ridl ]	загадка (не enigma)
+accuse	[ ?'kju:z ]	обвинять
+congratulate	[ k?n'gr?tjuleit ]	поздравлять
+prevent	[ pri'vent ]	предотвращать, препятствовать
+thank	[ ???k ]	благодарить
+forgive	[ f?'giv ]	прощать
+warn	[ w?:n ]	предупреждать
+growth	[ gr?u? ]	рост
+impact	[ n'imp?kt ]	удар (не stroke)
+ample	[ '?mpl ]	обширный, просторный
+fair	[ f?? ]	любезно, хорошо, справедливый
+offensive	[ ?'fensiv ]	наступление
+appalling	[ ?'p?:li? ]	ужасный, плачевный
+dwarf	[ dw?:f ]	карлик, гном (миф.) (не gnome)
+elf	[ elf ]	Эльф (TR!)
+dormitory	[ 'd?:mitri ]	спальня
+shelter	[ '?elt? ]	приют, убежище
+business	[ 'biznis ]	дело, бизнес, деловой
+rug	[ r?g ]	ковер
+floor	[ fl?: ]	"пол, этаж; одолеть, смутить"
+court	[ k?:t ]	корт, двор
+thief	[ ?i:f ]	вор
+arson	[ '?:sn ]	поджог
+approach	[ ?'pr?u? ]	приближаться, подступ
+vaguely	[ 've?gl? ]	неопределенно (TR!)
+refuge	[ 'refju:? ]	убежище
+violent	[ 'vail?nt ]	яростный
+accommodation	[ ?,k?m?dei?n ]	удобство, согласование
+row	[ r?u ]	грести
+seat	[ si:t ]	место, сиденье, сажать, усаживать
+married	[ 'm?rid ]	женатый, замужняя
+single	[ si?gl ]	один, одинокий
+habits	[ 'h?bits ]	привычки (TR!)
+long	[ l?? ]	длинный, долгий, долго
+heavy	[ 'hevi ]	тяжелый
+early	[ '?:li ]	рано
+late	[ leit ]	поздно
+slow	[ sl?u ]	медленный, замедлять
+fast	[ f?:st ]	спешащий, сильно, быстро (fast)
+safe	[ seif ]	сейф, безопасный, надежный
+dangerous	[ 'dein??r?s ]	опасный
+big	[ big ]	большой
+small	[ sm?:l ]	маленький, тонкий, скромный
+hot	[ h?t ]	горячий
+narrow	[ 'n?r?u ]	узкий
+wide	[ waid ]	широкий
+alas	[ ?'l?s ]	увы (TR!)
+shape	[ ?eip ]	форма
+expressive	[ iks'presiv ]	выразительный
+skinny	[ 'skini ]	худой, тощий, кожа да кости (!NEW!)
+plump	[ pl?mp ]	пухлый, полный (не swell)
+bust	[ b?st ]	бюст
+acquisition	[ ,?kwi'zi??n ]	приобретение
+rare	[ r?? ]	редкий, недожаренный
+assistant	[ ?'sist?nt ]	помощник
+current	[ 'k?r?nt ]	течение, ток
+purchase	[ 'p?:??s ]	покупка, покупать
+subscription	[ s?b'skrip??n ]	подписка
+lend	[ lend ]	дать в долг
+permanently	[ 'p?:m?n?ntli ]	постоянно
+deliberately	[ di'lib?ritli ]	сознательно, обдуманно ((!NEW!))
+privacy	[ 'priv?si ]	уединенность
+host	[ h?ust ]	хозяин
+impatient	[ im'pei??nt ]	нетерпеливый
+numb	[ n?m ]	онемелый, оцепенелый (не dumb, )
+offence	[ ?'fens ]	обида
+ban	[ b?n ]	запрещать
+old	[ ?uld ]	старый
+new	[ nju: ]	новый
+lovely	[ 'l?vli ]	прекрасный, восхитительный
+interesting	[ 'intristi? ]	интересный
+bad	[ b?d ]	плохой
+expensive	[ iks'pensiv ]	дорогой
+cheap	[ ?i:p ]	дешевый
+great	[ greit ]	великий
+difficult	[ 'difik?lt ]	трудный
+easy	[ 'i:zi ]	легкий, простой
+boring	[ 'b?:ri? ]	скучный
+simple	[ simpl ]	простой, однозначный
+friendly	[ 'frendli ]	дружеский, дружелюбный
+various	[ 'v??ri?s ]	различный, разный
+limited	[ 'limitid ]	ограниченный
+modern	[ 'm?d?n ]	современный
+each	[ i:? ]	каждый
+terrible	[ 'ter?b(?)l ]	ужасный, страшный
+wet	[ wet ]	мокрый
+comfortable	[ 'k?mf?t?bl ]	удобный
+steel	[ sti:l ]	сталь
+thereby	[ '???'bai ]	таким образом
+consequences	[ 'k?nsikw?nsiz ]	последствия (TR!)
+hasty	[ 'heisti ]	поспешный, необдуманный
+debt	[ det ]	долг
+socket	[ 's?kit ]	патрон (эл. лампочки), глазная впадина
+cinema	[ 'sinim? ]	кино
+innocent	[ 'in?s?nt ]	наивный, невинный
+bloom	[ blu:m ]	цветение
+lack	[ l?k ]	недостаток
+order	[ '?:d? ]	порядок, приказ, заказ, заказывать, приказывать
+tips	[ tips ]	наконечники(чаевые) (TR!)
+careless	[ 'k??lis ]	беззаботный
+flee	[ fli: ]	бежать
+puddle	[ p?dl ]	лужица, смущать, барахтаться в воде
+futile	[ 'fju:tail ]	бесполезный, тщетный, пустой (о человеке)
+weep	[ wi:p ]	плакать
+distress	[ dis'tres ]	"горе, нужда; огорчать, расстраивать"
+pressing	[ 'presi? ]	срочный, настойчивый
+gooseberry	[ 'guzberi ]	крыжовник
+novel	[ 'n?v(?)l ]	роман
+textbook	[ 'tekstbuk ]	учебник
+handbook	[ 'h?ndbuk ]	справочник, руководство (не guidance)
+appendix	[ ?'pendiks ]	приложение, аппендикс (анат.)
+supplement	[ n's?plim?nt ]	добавление
+chapter	[ '??pt? ]	глава (книги)
+introduction	[ ,intr?'d?k??n ]	введение
+evaluation	[ i,v?lju'ei??n ]	оценка (не estimation)
+parent	[ 'p??r?nt ]	родитель, родственник
+prisoner	[ 'prizn? ]	заключенный
+victim	[ 'viktim ]	жертва
+untidy	[ ?n''taidi ]	неаккуратный
+disgrace	[ dis'greis ]	позор, немилость
+tournament	[ 'tu?n?m?nt ]	турнир
+competition	[ ,k?mpi'ti?n ]	соревнование
+lap	[ l?p ]	подол
+jet	[ ?et ]	струя (воды, пара, газа)
+diamond	[ 'dai?m?nd ]	алмаз, бриллиант
+ruby	[ 'ru:bi ]	рубиновый
+amber	[ '?mb? ]	янтарь, янтарный
+pearl	[ p?:l ]	жемчуг, жемчужный
+gem	[ ?em ]	драгоценный камень
+prefer	[ pri:f?: ]	предпочитать
+abide	[ ?'baid ]	ждать, терпеть
+desire	[ di'zai? ]	желание
+concede	[ k?n'si:d ]	уступать, допускать
+request	[ ri'kwest ]	просьба
+demand	[ di'm?:nd ]	требовать
+regard	[ ri'g?:d ]	взгляд, внимание, смотреть, считать
+effort	[ 'ef?t ]	усилие, напряжение
+generous	[ '?en?r?s ]	великодушный
+area	[ '??ri? ]	площадь, район
+repeat	[ ri'pi:t ]	твердить, говорить наизусть
+tackle	[ 't?kl ]	хватать
+install	[ in'st?:l ]	водворять, устраивать, устанавливать
+resume	[ ri'zju:m ]	итог, сводка, возобновлять, подводить итог
+produce	[ pr?'dju:s ]	производить
+explain	[ iks'plein ]	объяснять
+both	[ b?u? ]	оба
+recent	[ 'ri:s(?)nt ]	недавний
+input	[ 'input ]	вход (TR!)
+owe	[ ?u ]	быть должным
+appear	[ ?'pi? ]	появляться
+trouble	[ tr?bl ]	неприятность, беда, беспокоить(ся), волноваться
+hour	[ 'au? ]	час
+sign	[ sain ]	подписывать(ся), знак, вывеска
+spot	[ sp?t ]	пятно
+luxury	[ 'l?k??ri ]	роскошь
+coincidence	[ k?u'insid?ns ]	совпадение
+inhabitant	[ in'h?bit?nt ]	житель
+device	[ di'vais ]	прибор, схема, проект, прием, устройство
+means	[ mi:nz ]	средство, способ
+resource	[ ri's?:s ]	ресурс, средство
+tear	[ t?? ]	слеза, разрыв, (по)рвать
+spray	[ sprei ]	брызги, обрызгивать
+gear	[ gi? ]	механизм
+habit	[ 'h?bit ]	привычка
+succession	[ s?k'se??n ]	последовательность
+breast	[ brest ]	грудь
+toe	[ t?u ]	палец
+month	[ m?n? ]	месяц
+personal	[ 'p?:snl ]	личный
+success	[ s?k'ses ]	успех, удача
+statement	[ 'steitment ]	утверждение, заявление
+delivery	[ di'liv?ri ]	доставка
+share	[ ??? ]	разделять, доля, часть
+connect	[ k?'nekt ]	соединять
+notice	[ 'n?utis ]	извещение, сообщение, замечать, обращать внимание
+nod	[ n?d ]	кивать головой, кивок
+create	[ kri:'eit ]	создавать
+offend	[ ?'fend ]	обижать, обидеть
+possess	[ p?'zes ]	обладать
+behave	[ bi'heiv ]	вести себя
+efficient	[ i'fi??nt ]	эффективный
+average	[ '?v?ri? ]	средний
+financial	[ fai'n?n??l ]	финансовый
+commercial	[ k?'m?:??l ]	торговый
+common	[ 'k?m?n ]	общий
+empty	[ 'empti ]	пустой
+successful	[ s?k'sesful ]	удачный, успешный
+calmly	[ 'k?:mli ]	тихо, спокойно (!NEW!)
+politely	[ p?'laitli ]	вежливо (!NEW!)
+warily	[ 'w?r?l? ]	осторожно
+firmly	[ f?:mli ]	твердо, решительно
+sadly	[ s?dl? ]	печально
+cautiously	[ 'k?:??sl? ]	осторожно ((!NEW!))
+swiftly	[ swiftl? ]	быстро (!NEW!)
+anxiously	[ '??k??sli ]	тревожно ((!NEW!))
+carefully	[ 'k??fli ]	осторожно, внимательно
+document	[ 'd?kjum?nt ]	документ
+racing	[ 'reisi? ]	гоночный (
+quay	[ ki: ]	набережная
+mansion	[ 'm?n??n ]	дворец
+picturesque	[ ,pik??'resk ]	живописный
+dusty	[ 'd?sti ]	пыльный
+vicious	[ vi??s ]	порочный
+bully	[ 'buli ]	запугивать (не scare)
+sweetheart	[ 'swi:th?:t ]	возлюбленный(ая), дорогой(ая) (как обращение)
+incredible	[ in'kred?bl ]	невероятно
+wealth	[ wel? ]	богатство
+invade	[ in'veid ]	вторгаться
+stare	[ st?? ]	пристальный взгляд
+reason	[ ri:zn ]	причина, довод, разум, рассудок
+complain	[ k?m'plein ]	жаловаться
+notorious	[ n?u't?:ri?s ]	известный, отъявленный
+willingly	[ wil? ]	охотно
+frequently	[ fri:kw?ntl? ]	часто
+former	[ 'f?:m? ]	бывший
+similar	[ 'simil? ]	похожий
+achievement	[ ?'?i:vm?nt ]	выполнение, достижение
+fluently	[ 'flu:?ntli ]	бегло, гладко
+acquit	[ ?'kwit ]	оправдывать
+robbery	[ 'r?b?ri ]	грабеж
+swindle	[ 'swindl ]	обман, обманывать, надувать (не deceive)
+murder	[ 'm?:d? ]	убийство
+punishment	[ 'p?ni?m?nt ]	наказание
+evidence	[ 'evid?ns ]	доказательство
+indirect	[ ,indi'rekt ]	косвенный
+bar	[ b?: ]	бар
+dock	[ d?k ]	док, пристань
+robber	[ 'r?b? ]	грабитель
+convict	[ k?n'vikt ]	признать виновным, осудить
+cache	[ k?? ]	тайник (TR!)
+dove	[ d?v ]	голубь
+lark	[ l?:k ]	жаворонок
+falcon	[ 'f?:lk?n ]	сокол
+heron	[ her(?)n ]	цапля
+germany	[ 'd??:rm?n? ]	германия (TR!)
+abominable	[ ?'b?min?bl ]	отвратительный, противный
+extension	[ iks'ten??n ]	расширение
+design	[ di'zain ]	проектировать, спроектировать
+bottom	[ 'b?t?m ]	"дно, донышко; нижняя часть"
+application	[ ,?pli'kei?n ]	заявление, применение
