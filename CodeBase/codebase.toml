@@ -41,3 +41,7 @@ exclude_patterns = [
     "*/archive/*",
     "*/backup/*"
 ]
+
+# Логирование CLI-команд
+[logging]
+command_enabled = true

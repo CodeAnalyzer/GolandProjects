@@ -2,18 +2,24 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/codebase/internal/config"
 	"github.com/spf13/cobra"
 )
 
 var (
-	appName     = "CodeBase"
-	version     = "0.5.8"
-	buildNumber = "551"
-	copyright   = "Copyright (c) 2026"
-	cfgFile     string
+	appName        = "CodeBase"
+	version        = "0.6.2"
+	buildNumber    = "583"
+	copyright      = "Copyright (c) 2026"
+	cfgFile        string
+	commandLogger  *log.Logger
+	commandLogFile *os.File
 	// rootCmd описывает только общую оболочку CLI.
 	// Реальная работа выполняется в дочерних командах init/update/query/stats.
 	rootCmd = &cobra.Command{
@@ -32,8 +38,14 @@ Supported modes:
 )
 
 // Execute executes the root command.
-func Execute() error {
+func Execute() (err error) {
 	args := os.Args[1:]
+	startedAt := time.Now()
+	initCommandLogger(startedAt)
+	defer closeCommandLogger()
+	defer func() {
+		logCommandExecution(startedAt, args, err)
+	}()
 	if isMachineReadableMode(args) {
 		rootCmd.SilenceErrors = true
 		rootCmd.SilenceUsage = true
@@ -43,7 +55,7 @@ func Execute() error {
 	}
 	rootCmd.Version = version
 	// Cobra сам разбирает args/flags и вызывает подходящую подкоманду.
-	err := rootCmd.Execute()
+	err = rootCmd.Execute()
 	if err != nil {
 		if isQueryJSONMode(args) {
 			commandName := detectQueryCommandName(args)
@@ -66,6 +78,75 @@ func Execute() error {
 		}
 	}
 	return err
+}
+
+func initCommandLogger(startedAt time.Time) {
+	if !isCommandLoggingEnabled() {
+		commandLogger = nil
+		commandLogFile = nil
+		return
+	}
+	exePath, err := os.Executable()
+	if err != nil {
+		commandLogger = nil
+		commandLogFile = nil
+		return
+	}
+	exeDir := filepath.Dir(exePath)
+	logName := filepath.Join(exeDir, fmt.Sprintf("codebase_%s.log", startedAt.Format("20060102")))
+	file, err := os.OpenFile(logName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		commandLogger = nil
+		commandLogFile = nil
+		return
+	}
+	commandLogFile = file
+	commandLogger = log.New(file, "", 0)
+}
+
+func closeCommandLogger() {
+	if commandLogFile != nil {
+		_ = commandLogFile.Close()
+		commandLogFile = nil
+	}
+	commandLogger = nil
+}
+
+func logCommandExecution(startedAt time.Time, args []string, execErr error) {
+	if commandLogger == nil {
+		return
+	}
+	status := "success"
+	errorText := ""
+	if execErr != nil {
+		status = "error"
+		errorText = singleLineError(execErr)
+	}
+	commandText := strings.Join(append([]string{"codebase"}, args...), " ")
+	commandLogger.Printf(
+		"started_at=%s command=%q duration=%s duration_ms=%d status=%s error=%q",
+		startedAt.Format("2006-01-02 15:04:05"),
+		commandText,
+		time.Since(startedAt).Round(time.Millisecond),
+		time.Since(startedAt).Milliseconds(),
+		status,
+		errorText,
+	)
+}
+
+func singleLineError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return strings.Join(strings.Fields(err.Error()), " ")
+}
+
+func isCommandLoggingEnabled() bool {
+	cfg := config.Get()
+	if cfg == nil || cfg.Logging.CommandEnabled == nil {
+		return true
+	}
+	return *cfg.Logging.CommandEnabled
 }
 
 func shouldPrintBanner(args []string) bool {

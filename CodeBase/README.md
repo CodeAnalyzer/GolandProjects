@@ -14,9 +14,10 @@
   - DFM: формы, компоненты, `Caption`, встроенные запросы
   - TPR: report forms (отчётные формы), report fields (поля отчёта), report params (параметры отчёта), SQL blocks (SQL-блоки), include directives (директивы include)
   - RPT: report forms (отчётные формы), report params (параметры формы), VB functions (VBScript-функции), embedded SQL (встроенный SQL)
-  - DSArchitect XML и API macro/T01 поддерживаются парсерами и индексатором, но **не входят в дефолтные** `include_patterns` в `codebase.toml`; для их индексации нужно явно добавить `*.xml` и `*.t01` в конфиг
+  - DSArchitect XML и `.t01` поддерживаются парсерами и индексатором, но **не входят в дефолтные** `include_patterns` в `codebase.toml`; для их индексации нужно явно добавить `*.xml` и `*.t01` в конфиг
   - DSArchitect XML: `service` (сервисные контракты), `event` (событийные контракты), `used_service` (используемые сервисы), `callback_event` (callback-события), `api_table` (табличные структуры), `api_table_index` (индексы standalone API-таблиц), `api_param` (параметры BObject)
-  - API macros (макросы API) из SQL/T01: `API_CREATE_PROC`, `API_INIT_EVENT`, `API_EXEC`, dispatch-вызовы из препроцессированных `.t01`
+  - API macros (макросы API) из SQL: `API_CREATE_PROC`, `API_INIT_EVENT`, `API_EXEC`
+  - `.t01`: препроцессированный SQL (процедуры, таблицы, поля, SQL statements/query fragments, вызовы процедур) и generated subscriber calls/dispatch-вызовы из раскрытых `API_INIT_EVENT`
 - **Граф связей**:
   - SQL procedure -> SQL procedure / SQL table
   - parent entity -> query fragment
@@ -26,9 +27,10 @@
   - SQL procedure -> API contract (`implements_contract`)
   - SQL procedure -> event contract (`publishes_event`)
   - SQL procedure -> API contract (`executes_contract`)
+  - SQL procedure -> SQL procedure (`dispatches_to_subscriber`) для generated subscriber calls из `.t01`
 - **Поиск и запросы**:
   - Поиск сущностей по имени
-  - Поиск использований таблиц
+  - Поиск использований таблиц с точным совпадением по умолчанию и опциональным нечётким режимом
   - Поиск вызовов процедур
   - Поиск методов, работающих с таблицей
   - Поиск SQL/query fragments по тексту SQL
@@ -84,11 +86,16 @@ parallel = 12
 batch_size = 500
 include_patterns = ["*.sql", "*.h", "*.pas", "*.inc", "*.js", "*.smf", "*.dfm", "*.tpr", "*.rpt"]
 exclude_patterns = ["*/.*", "*~", "*.bak", "*.old"]
+
+[logging]
+command_enabled = true
 ```
 
 **Примечание:** При первом запуске `codebase init` база данных и схема создаются автоматически.
 
 Если вы хотите индексировать DSArchitect XML и препроцессированные `.t01`, добавьте `*.xml` и `*.t01` в `indexer.include_patterns`.
+
+`.sql` остаётся первичным дистрибутивным источником, а `.t01` рассматривается как опциональный временный артефакт препроцессора: он может отсутствовать и может лежать в отдельном рабочем каталоге препроцессора.
 
 Если флаг `--config` не передан, CLI ищет `codebase.toml` **в каталоге executable (исполняемого файла)**.
 
@@ -141,9 +148,14 @@ codebase query symbol --name API --ndjson
 
 ```bash
 codebase query table --name tDocument
+codebase query table --name tDocument --like
 codebase query table --name tContract --json
 codebase query table-schema --name tContract --json
 ```
+
+`query table` по умолчанию выполняет **точный поиск** по имени таблицы.
+
+Для старого режима поиска по подстроке используйте флаг `--like`.
 
 `query table-schema` показывает определения колонок таблицы из `CREATE TABLE` и schema patches (`ALTER TABLE ... ADD`, `M_ADD_FIELD`).
 
@@ -153,6 +165,8 @@ codebase query table-schema --name tContract --json
 codebase query callers --procedure API_RuleDoc_MassCreateDocument
 codebase query callers --procedure FCD_Cons_tConfigParam --limit 100 --json
 ```
+
+`query callers` показывает как обычные `calls_procedure`, так и generated subscriber calls (`dispatches_to_subscriber`) из препроцессированных `.t01`, если такие файлы были проиндексированы.
 
 #### Поиск методов, работающих с таблицей
 
@@ -281,7 +295,15 @@ codebase query js-function --name Execute --json
 ```bash
 codebase query smf-instrument --name CreditMassOperation
 codebase query smf-instrument --name Accrual --json
+codebase query smf-instrument --name ТР_ГПККНач
+codebase query smf-instrument --name TS_CardCreditMassAcrual --json
 ```
+
+Поиск выполняется по:
+
+- `instrument_name` (внутреннее имя инструмента)
+- `brief` (краткое название)
+- имени файла SMF-сценария
 
 #### Поиск SMF по типу сценария
 
@@ -405,34 +427,49 @@ SQL Entities:
 
 ```
 CodeBase/
-├── cmd/                    # CLI команды
-│   ├── root.go            # Корневая команда
-│   ├── init.go            # Команда init
-│   ├── update.go          # Команда update
-│   ├── query.go           # Команда query
-│   ├── query_api.go       # API query-команды
-│   ├── stats.go           # Команда stats
-│   └── health.go          # Команда health
+├── cmd/                           # CLI команды и wiring
+│   ├── root.go                    # Корневая команда и bootstrap CLI
+│   ├── init.go                    # Полная инициализация индекса
+│   ├── update.go                  # Инкрементальное обновление индекса
+│   ├── query.go                   # Регистрация query-флагов и подкоманд
+│   ├── query_shared.go            # Общие типы/флаги query CLI
+│   ├── query_commands.go          # Query-команды поиска по индексу
+│   ├── query_execution.go         # Выполнение query и форматирование вывода
+│   ├── query_api.go               # API query-команды
+│   ├── stats.go                   # Команда stats
+│   └── health.go                  # Команда health
 ├── internal/
-│   ├── config/            # Конфигурация
-│   ├── encoding/          # Кодировки CP866/WIN1251
-│   ├── fswalk/            # Обход файлов
-│   ├── indexer/           # Индексатор
-│   ├── model/             # Модели данных
+│   ├── config/                    # Конфигурация
+│   ├── encoding/                  # Кодировки CP866/WIN1251
+│   ├── fswalk/                    # Обход файловой системы
+│   ├── indexer/
+│   │   ├── indexer.go             # Базовый тип Indexer и общие file processors
+│   │   ├── runner.go              # Init/Update pipeline, worker pool, progress
+│   │   ├── indexer_sql_pas.go     # Индексация SQL/PAS и SQL-like pipeline для препроцессированных `.t01`
+│   │   ├── indexer_relations.go   # Построение relations и query-fragment helpers
+│   │   └── indexer_postprocess_pas.go # Постобработка PAS классов/методов/полей
+│   ├── model/                     # Модели данных
 │   ├── parser/
-│   │   ├── sql/           # SQL-парсер
-│   │   ├── h/             # H-файлов парсер
-│   │   ├── dfm/           # DFM-парсер
-│   │   ├── pas/           # PAS-парсер
-│   │   ├── js/            # JS-парсер
-│   │   ├── smf/           # SMF-парсер
-│   │   ├── tpr/           # TPR-парсер
-│   │   ├── rpt/           # RPT-парсер
-│   │   ├── dsxml/         # DSArchitect XML-парсер
-│   │   └── apimacro/      # API macro/T01 parser
-│   ├── query/             # API запросов
-│   └── store/             # Работа с БД
-└── codebase.toml          # Конфигурация
+│   │   ├── sql/                   # SQL-парсер
+│   │   ├── h/                     # H-файлов парсер
+│   │   ├── dfm/                   # DFM-парсер
+│   │   ├── pas/                   # PAS-парсер
+│   │   ├── js/                    # JS-парсер
+│   │   ├── smf/                   # SMF-парсер
+│   │   ├── tpr/                   # TPR-парсер
+│   │   ├── rpt/                   # RPT-парсер
+│   │   ├── dsxml/                 # DSArchitect XML-парсер
+│   │   └── apimacro/              # API macro parser для исходных SQL
+│   ├── query/
+│   │   ├── query.go               # Базовые query-типы и прочие read-model сценарии
+│   │   ├── query_sql.go           # SQL/table/procedure query-сценарии
+│   │   ├── query_relations.go     # Запросы relation graph
+│   │   └── api_query.go           # Query API-контрактов и DSArchitect сущностей
+│   └── store/
+│       ├── db.go                  # Основной persistence layer и batch insert helpers
+│       └── api_store.go           # Persistence для API/DSArchitect сущностей
+├── main.go                        # Точка входа приложения
+└── codebase.toml                  # Конфигурация
 ```
 
 ## Схема БД
@@ -472,9 +509,9 @@ CodeBase/
 - `api_business_object_table_index_fields` - поля индексов standalone tables BObject
 - `api_contract_return_values` - return values (возвращаемые значения) контрактов
 - `api_contract_contexts` - contexts (контексты) контрактов
-- `api_macro_invocations` - извлечённые API macros (макросы API) и dispatch facts (факты диспетчеризации)
+- `api_macro_invocations` - извлечённые API macros (макросы API) из исходных `.sql`
 - `relations` - Связи между сущностями
-- `query_fragments` - SQL-фрагменты в коде, включая отдельные SQL statements из `.sql` procedures/scripts, пригодные для текстового поиска
+- `query_fragments` - SQL-фрагменты в коде, включая отдельные SQL statements из `.sql` и препроцессированных `.t01` procedures/scripts, пригодные для текстового поиска
 - `include_directives` - include-директивы и их разрешение
 - `symbols` - Унифицированный индекс для поиска
 
@@ -501,7 +538,24 @@ CodeBase/
 - Для `api_contracts.owner_module` используется то же path-based rule (правило на основе пути).
 - Для XML с declared encoding (заявленной кодировкой) `windows-1251` поддерживается корректное decoding (декодирование) через `CharsetReader`.
 
-### Error logs
+### Препроцессированные `.t01`
+
+- `.t01` индексируются как SQL-like layer: из них извлекаются процедуры, вызовы процедур, query fragments и table usage.
+- Для `.t01` не выполняется API macro extraction: предполагается, что макросы уже раскрыты препроцессором.
+- Поверх SQL parsing для `.t01` дополнительно извлекаются generated subscriber calls по паттернам `exec GetAPIProcessID ...` и `exec @RetVal = <proc> ... @ProcessID = @GlobalProcessID`.
+- Такие вызовы сохраняются в graph как relation `dispatches_to_subscriber`.
+- Индексация `.t01` остаётся опциональной: отсутствие `.t01` не мешает базовой индексации проекта по исходным `.sql`.
+
+### Логирование
+
+#### Command logs (логи команд CLI)
+
+- Все команды CLI логируются в файл `codebase_YYYYMMDD.log` (один файл на день).
+- Лог содержит информацию о каждой выполненной команде: `started_at`, `command`, `duration`, `status`, `error`.
+- Логирование включено по умолчанию.
+- Для отключения установите `logging.command_enabled = false` в `codebase.toml`.
+
+#### Error logs (логи ошибок индексатора)
 
 - Ошибки индексатора пишутся в отдельный log file (лог-файл) на каждый запуск.
 - Формат имени: `indexer_errors_YYYYMMDD_HHMMSS.log`.
@@ -529,7 +583,7 @@ CodeBase/
 - [x] Полнотекстовый поиск по SQL/query fragments (`query sql-fragment`)
 - [x] Health command (команда health) с readiness checks (проверками готовности)
 - [x] DSArchitect XML indexing (индексация DSArchitect XML)
-- [x] API macro/T01 extraction (извлечение API-макросов и T01 dispatch)
+- [x] API macro extraction из исходных SQL и SQL-like indexing/preprocessed dispatch extraction для `.t01`
 - [x] Query mode (режим query) для `api-contract` / `api-table` / `api-param`
 - [x] Query mode (режим query) для `api-impl` / `api-publishers` / `api-consumers`
 - [x] SQL schema patches (ALTER TABLE ... ADD, M_ADD_FIELD, CREATE INDEX, M_CRT_INDEX) для обычных SQL-таблиц

@@ -129,7 +129,7 @@ func NewParser() *Parser {
 		// Параметры процедуры: @ParamName DSType [output]
 		procParamRe: regexp.MustCompile(`@([A-Za-z_][A-Za-z0-9_]*)\s+(DS[A-Za-z0-9_]*)`),
 		// Exec procedure
-		execRe: regexp.MustCompile(`(?i)exec\s+([A-Za-z_][A-Za-z0-9_]*)`),
+		execRe: regexp.MustCompile(`(?i)exec(?:ute)?\s+(?:@\w+\s*=\s*)?(?:\[?[A-Za-z_][A-Za-z0-9_]*\]?\.)?(\[?[A-Za-z_][A-Za-z0-9_]*\]?)`),
 		// Select
 		selectRe: regexp.MustCompile(`(?i)^\s*select\b`),
 		// Insert
@@ -1005,9 +1005,13 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 			if currentProc != nil {
 				callerName = currentProc.ProcName
 			}
+			calleeName := strings.TrimSpace(strings.Trim(matches[1], "[]"))
+			if calleeName == "" {
+				continue
+			}
 			result.Calls = append(result.Calls, &model.SQLProcedureCall{
 				CallerName: callerName,
-				CalleeName: matches[1],
+				CalleeName: calleeName,
 				LineNumber: lineNum,
 			})
 		}

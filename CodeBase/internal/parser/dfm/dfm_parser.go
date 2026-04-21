@@ -27,6 +27,7 @@ type Parser struct {
 	linesRe    *regexp.Regexp // Lines.Strings = (
 	linesOldRe *regexp.Regexp // Lines = (
 	sqlRe      *regexp.Regexp // SQL.Strings = (
+	propertyRe *regexp.Regexp
 
 	// SQL в строках
 	stringRe *regexp.Regexp // 'string value'
@@ -70,6 +71,7 @@ func NewParser() *Parser {
 		linesRe:    regexp.MustCompile(`(?i)^\s*Lines\.Strings\s*=\s*\(`),
 		linesOldRe: regexp.MustCompile(`(?i)^\s*Lines\s*=\s*\(`),
 		sqlRe:      regexp.MustCompile(`(?i)^\s*SQL\.Strings\s*=\s*\(`),
+		propertyRe: regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(.+)$`),
 
 		// Строки
 		stringRe: regexp.MustCompile(`'([^']*(?:''[^']*)*)'`),
@@ -218,6 +220,21 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		queryLines = nil
 	}
 
+	appendInlineQuery := func(raw string, queryLine int) {
+		decoded := decodeDFMString(raw)
+		if decoded == "" || !isLikelySQLText(decoded) {
+			return
+		}
+		query := &model.DFMQuery{
+			ComponentName: currentObjectName(),
+			ComponentType: currentObjectType(),
+			QueryText:     decoded,
+			LineNumber:    queryLine,
+		}
+		result.Queries = append(result.Queries, query)
+		p.extractTablesFromSQL(query.QueryText, query.LineNumber, result)
+	}
+
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Text()
@@ -363,6 +380,14 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 				}
 			}
 			continue
+		}
+
+		if matches := p.propertyRe.FindStringSubmatch(trimmed); matches != nil && !inLines {
+			propertyName := strings.TrimSpace(matches[1])
+			propertyValue := strings.TrimSpace(matches[2])
+			if !p.linesRe.MatchString(trimmed) && !p.linesOldRe.MatchString(trimmed) && !p.sqlRe.MatchString(trimmed) && !strings.EqualFold(propertyName, "Name") && !strings.EqualFold(propertyName, "Caption") && strings.Contains(propertyValue, "'") {
+				appendInlineQuery(propertyValue, lineNum)
+			}
 		}
 
 		// ========================================

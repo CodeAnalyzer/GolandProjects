@@ -20,9 +20,10 @@ type DBConfig struct {
 
 // Config полная конфигурация приложения
 type Config struct {
-	RootPath string   `toml:"root_path"`
-	DB       DBConfig `toml:"database"`
+	RootPath string        `toml:"root_path"`
+	DB       DBConfig      `toml:"database"`
 	Indexer  IndexerConfig `toml:"indexer"`
+	Logging  LoggingConfig `toml:"logging"`
 }
 
 // IndexerConfig конфигурация индексатора
@@ -31,6 +32,10 @@ type IndexerConfig struct {
 	BatchSize       int      `toml:"batch_size"`
 	IncludePatterns []string `toml:"include_patterns"`
 	ExcludePatterns []string `toml:"exclude_patterns"`
+}
+
+type LoggingConfig struct {
+	CommandEnabled *bool `toml:"command_enabled"`
 }
 
 var (
@@ -106,6 +111,10 @@ func Load() error {
 			"*/.*", "*~", "*.bak", "*.old",
 		}
 	}
+	if cfg.Logging.CommandEnabled == nil {
+		enabled := true
+		cfg.Logging.CommandEnabled = &enabled
+	}
 
 	return nil
 }
@@ -165,6 +174,13 @@ func CreateDefault(rootPath string) *Config {
 				"*/.*", "*~", "*.bak", "*.old",
 			},
 		},
+		Logging: LoggingConfig{
+			CommandEnabled: boolPtr(true),
+		},
 	}
 	return cfg
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }

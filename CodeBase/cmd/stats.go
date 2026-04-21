@@ -16,6 +16,7 @@ type statsFilesSummary struct {
 	PAS   int `json:"pas"`
 	INC   int `json:"inc"`
 	JS    int `json:"js"`
+	XML   int `json:"xml"`
 	SMF   int `json:"smf"`
 	DFM   int `json:"dfm"`
 	TPR   int `json:"tpr"`
@@ -38,6 +39,13 @@ type statsEntitiesSummary struct {
 	ReportFields   int `json:"report_fields"`
 	ReportParams   int `json:"report_params"`
 	VBFunctions    int `json:"vb_functions"`
+	APIBusinessObjects int `json:"api_business_objects"`
+	APIContracts       int `json:"api_contracts"`
+	APIContractParams  int `json:"api_contract_params"`
+	APIContractTables  int `json:"api_contract_tables"`
+	APIContractFields  int `json:"api_contract_fields"`
+	APIBusinessParams  int `json:"api_business_params"`
+	APIBusinessTables  int `json:"api_business_tables"`
 	QueryFragments int `json:"query_fragments"`
 	Relations      int `json:"relations"`
 	SQLTableIndexes int `json:"sql_table_indexes"`
@@ -93,6 +101,7 @@ var statsCmd = &cobra.Command{
 		fmt.Printf("  PAS files:       %d\n", stats.PASFiles)
 		fmt.Printf("  INC files:       %d\n", stats.INCFiles)
 		fmt.Printf("  JS files:        %d\n", stats.JSFiles)
+		fmt.Printf("  XML files:       %d\n", stats.XMLFiles)
 		fmt.Printf("  SMF files:       %d\n", stats.SMFFiles)
 		fmt.Printf("  DFM files:       %d\n", stats.DFMFiles)
 		fmt.Printf("  TPR files:       %d\n", stats.TPRFiles)
@@ -123,6 +132,15 @@ var statsCmd = &cobra.Command{
 		fmt.Printf("  Report fields:   %d\n", stats.ReportFields)
 		fmt.Printf("  Report params:   %d\n", stats.ReportParams)
 		fmt.Printf("  VB functions:    %d\n", stats.VBFunctions)
+		fmt.Printf("\n")
+		fmt.Printf("API XML Entities:\n")
+		fmt.Printf("  Business objects:%d\n", stats.APIBusinessObjects)
+		fmt.Printf("  Contracts:       %d\n", stats.APIContracts)
+		fmt.Printf("  Contract params: %d\n", stats.APIContractParams)
+		fmt.Printf("  Contract tables: %d\n", stats.APIContractTables)
+		fmt.Printf("  Contract fields: %d\n", stats.APIContractFields)
+		fmt.Printf("  Business params: %d\n", stats.APIBusinessParams)
+		fmt.Printf("  Business tables: %d\n", stats.APIBusinessTables)
 		fmt.Printf("\n")
 		fmt.Printf("SQL Indexes:\n")
 		fmt.Printf("  SQL table idx:   %d\n", stats.SQLTableIndexes)
@@ -183,6 +201,7 @@ func buildStatsResponse(stats *store.Stats) statsResponse {
 			PAS:   stats.PASFiles,
 			INC:   stats.INCFiles,
 			JS:    stats.JSFiles,
+			XML:   stats.XMLFiles,
 			SMF:   stats.SMFFiles,
 			DFM:   stats.DFMFiles,
 			TPR:   stats.TPRFiles,
@@ -204,6 +223,13 @@ func buildStatsResponse(stats *store.Stats) statsResponse {
 			ReportFields:   stats.ReportFields,
 			ReportParams:   stats.ReportParams,
 			VBFunctions:    stats.VBFunctions,
+			APIBusinessObjects: stats.APIBusinessObjects,
+			APIContracts:       stats.APIContracts,
+			APIContractParams:  stats.APIContractParams,
+			APIContractTables:  stats.APIContractTables,
+			APIContractFields:  stats.APIContractFields,
+			APIBusinessParams:  stats.APIBusinessParams,
+			APIBusinessTables:  stats.APIBusinessTables,
 			QueryFragments: stats.QueryFragments,
 			Relations:      stats.Relations,
 			SQLTableIndexes: stats.SQLTableIndexes,

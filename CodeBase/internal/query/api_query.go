@@ -84,6 +84,8 @@ type APIImplementationResult struct {
 	ProcedureName string `json:"procedure_name"`
 	File          string `json:"file"`
 	RelationType  string `json:"relation_type"`
+	IsIndirect    bool   `json:"is_indirect,omitempty"`
+	ViaProcedure  string `json:"via_procedure,omitempty"`
 }
 
 type APIRelatedProcedureResult struct {
@@ -93,6 +95,8 @@ type APIRelatedProcedureResult struct {
 	ProcedureName string `json:"procedure_name"`
 	File          string `json:"file"`
 	RelationType  string `json:"relation_type"`
+	IsIndirect    bool   `json:"is_indirect,omitempty"`
+	ViaProcedure  string `json:"via_procedure,omitempty"`
 }
 
 func (q *Query) SearchAPIContract(name string, limit int) ([]APIContractResult, error) {
@@ -238,14 +242,33 @@ func (q *Query) SearchAPIParam(name string, limit int) ([]APIParamResult, error)
 
 func (q *Query) SearchAPIImplementations(name string, limit int) ([]APIImplementationResult, error) {
 	rows, err := q.db.Query(`
-		SELECT c.id, c.contract_name, c.contract_kind, p.id, p.proc_name, f.rel_path, r.relation_type
-		FROM relations r
-		JOIN api_contracts c ON c.id = r.target_id AND r.target_type = 'api_contract'
-		JOIN sql_procedures p ON p.id = r.source_id AND r.source_type = 'sql_procedure'
-		JOIN files f ON f.id = p.file_id
-		WHERE r.relation_type = 'implements_contract'
-		  AND c.contract_name ILIKE $1
-		ORDER BY c.contract_name, p.proc_name
+		SELECT *
+		FROM (
+			SELECT c.id, c.contract_name, c.contract_kind, p.id, p.proc_name AS procedure_name, f.rel_path, r.relation_type,
+			       FALSE AS is_indirect, '' AS via_procedure
+			FROM relations r
+			JOIN api_contracts c ON c.id = r.target_id AND r.target_type = 'api_contract'
+			JOIN sql_procedures p ON p.id = r.source_id AND r.source_type = 'sql_procedure'
+			JOIN files f ON f.id = p.file_id
+			WHERE r.relation_type = 'implements_contract'
+			  AND c.contract_name ILIKE $1
+
+			UNION
+
+			SELECT c.id, c.contract_name, c.contract_kind, p_indirect.id, p_indirect.proc_name AS procedure_name, f_indirect.rel_path,
+			       CONCAT(r_impl.relation_type, '->', r_chain.relation_type) AS relation_type,
+			       TRUE AS is_indirect, p_direct.proc_name AS via_procedure
+			FROM relations r_impl
+			JOIN api_contracts c ON c.id = r_impl.target_id AND r_impl.target_type = 'api_contract'
+			JOIN sql_procedures p_direct ON p_direct.id = r_impl.source_id AND r_impl.source_type = 'sql_procedure'
+			JOIN relations r_chain ON r_chain.source_type = 'sql_procedure' AND r_chain.source_id = p_direct.id
+			JOIN sql_procedures p_indirect ON p_indirect.id = r_chain.target_id AND r_chain.target_type = 'sql_procedure'
+			JOIN files f_indirect ON f_indirect.id = p_indirect.file_id
+			WHERE r_impl.relation_type = 'implements_contract'
+			  AND r_chain.relation_type IN ('dispatches_to', 'dispatches_to_subscriber', 'calls_procedure')
+			  AND c.contract_name ILIKE $1
+		) impl
+		ORDER BY contract_name, is_indirect, procedure_name
 		LIMIT $2
 	`, "%"+name+"%", limit)
 	if err != nil {
@@ -255,7 +278,7 @@ func (q *Query) SearchAPIImplementations(name string, limit int) ([]APIImplement
 	items := make([]APIImplementationResult, 0)
 	for rows.Next() {
 		var item APIImplementationResult
-		if err := rows.Scan(&item.ContractID, &item.ContractName, &item.ContractKind, &item.ProcedureID, &item.ProcedureName, &item.File, &item.RelationType); err != nil {
+		if err := rows.Scan(&item.ContractID, &item.ContractName, &item.ContractKind, &item.ProcedureID, &item.ProcedureName, &item.File, &item.RelationType, &item.IsIndirect, &item.ViaProcedure); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -273,14 +296,33 @@ func (q *Query) SearchAPIConsumers(name string, limit int) ([]APIRelatedProcedur
 
 func (q *Query) searchAPIRelatedProcedures(name string, relationType string, limit int) ([]APIRelatedProcedureResult, error) {
 	rows, err := q.db.Query(`
-		SELECT c.id, c.contract_name, p.id, p.proc_name, f.rel_path, r.relation_type
-		FROM relations r
-		JOIN api_contracts c ON c.id = r.target_id AND r.target_type = 'api_contract'
-		JOIN sql_procedures p ON p.id = r.source_id AND r.source_type = 'sql_procedure'
-		JOIN files f ON f.id = p.file_id
-		WHERE r.relation_type = $1
-		  AND c.contract_name ILIKE $2
-		ORDER BY c.contract_name, p.proc_name
+		SELECT *
+		FROM (
+			SELECT c.id, c.contract_name, p.id, p.proc_name AS procedure_name, f.rel_path, r.relation_type,
+			       FALSE AS is_indirect, '' AS via_procedure
+			FROM relations r
+			JOIN api_contracts c ON c.id = r.target_id AND r.target_type = 'api_contract'
+			JOIN sql_procedures p ON p.id = r.source_id AND r.source_type = 'sql_procedure'
+			JOIN files f ON f.id = p.file_id
+			WHERE r.relation_type = $1
+			  AND c.contract_name ILIKE $2
+
+			UNION
+
+			SELECT c.id, c.contract_name, p_indirect.id, p_indirect.proc_name AS procedure_name, f_indirect.rel_path,
+			       CONCAT(r_direct.relation_type, '->', r_chain.relation_type) AS relation_type,
+			       TRUE AS is_indirect, p_direct.proc_name AS via_procedure
+			FROM relations r_direct
+			JOIN api_contracts c ON c.id = r_direct.target_id AND r_direct.target_type = 'api_contract'
+			JOIN sql_procedures p_direct ON p_direct.id = r_direct.source_id AND r_direct.source_type = 'sql_procedure'
+			JOIN relations r_chain ON r_chain.source_type = 'sql_procedure' AND r_chain.source_id = p_direct.id
+			JOIN sql_procedures p_indirect ON p_indirect.id = r_chain.target_id AND r_chain.target_type = 'sql_procedure'
+			JOIN files f_indirect ON f_indirect.id = p_indirect.file_id
+			WHERE r_direct.relation_type = $1
+			  AND r_chain.relation_type IN ('dispatches_to', 'dispatches_to_subscriber', 'calls_procedure')
+			  AND c.contract_name ILIKE $2
+		) rel
+		ORDER BY contract_name, is_indirect, procedure_name
 		LIMIT $3
 	`, relationType, "%"+name+"%", limit)
 	if err != nil {
@@ -290,7 +332,7 @@ func (q *Query) searchAPIRelatedProcedures(name string, relationType string, lim
 	items := make([]APIRelatedProcedureResult, 0)
 	for rows.Next() {
 		var item APIRelatedProcedureResult
-		if err := rows.Scan(&item.ContractID, &item.ContractName, &item.ProcedureID, &item.ProcedureName, &item.File, &item.RelationType); err != nil {
+		if err := rows.Scan(&item.ContractID, &item.ContractName, &item.ProcedureID, &item.ProcedureName, &item.File, &item.RelationType, &item.IsIndirect, &item.ViaProcedure); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
