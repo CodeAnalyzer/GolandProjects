@@ -14,7 +14,7 @@
   - DFM: формы, компоненты, `Caption`, встроенные запросы
   - TPR: report forms (отчётные формы), report fields (поля отчёта), report params (параметры отчёта), SQL blocks (SQL-блоки), include directives (директивы include)
   - RPT: report forms (отчётные формы), report params (параметры формы), VB functions (VBScript-функции), embedded SQL (встроенный SQL)
-  - DSArchitect XML и `.t01` поддерживаются парсерами и индексатором, но **не входят в дефолтные** `include_patterns` в `codebase.toml`; для их индексации нужно явно добавить `*.xml` и `*.t01` в конфиг
+  - DSArchitect XML и `.t01` поддерживаются парсерами и индексатором. `.t01` **не входит в дефолтные** `include_patterns` и для индексации требует явного добавления в конфиг; `*.xml` может уже присутствовать в вашем `codebase.toml`, но если его нет, добавьте явно
   - DSArchitect XML: `service` (сервисные контракты), `event` (событийные контракты), `used_service` (используемые сервисы), `callback_event` (callback-события), `api_table` (табличные структуры), `api_table_index` (индексы standalone API-таблиц), `api_param` (параметры BObject)
   - API macros (макросы API) из SQL: `API_CREATE_PROC`, `API_INIT_EVENT`, `API_EXEC`
   - `.t01`: препроцессированный SQL (процедуры, таблицы, поля, SQL statements/query fragments, вызовы процедур) и generated subscriber calls/dispatch-вызовы из раскрытых `API_INIT_EVENT`
@@ -84,7 +84,7 @@ sslmode = "disable"
 [indexer]
 parallel = 12
 batch_size = 500
-include_patterns = ["*.sql", "*.h", "*.pas", "*.inc", "*.js", "*.smf", "*.dfm", "*.tpr", "*.rpt"]
+include_patterns = ["*.sql", "*.h", "*.pas", "*.inc", "*.js", "*.smf", "*.dfm", "*.tpr", "*.rpt", "*.xml"]
 exclude_patterns = ["*/.*", "*~", "*.bak", "*.old"]
 
 [logging]
@@ -93,11 +93,13 @@ command_enabled = true
 
 **Примечание:** При первом запуске `codebase init` база данных и схема создаются автоматически.
 
-Если вы хотите индексировать DSArchitect XML и препроцессированные `.t01`, добавьте `*.xml` и `*.t01` в `indexer.include_patterns`.
+Если вы хотите индексировать препроцессированные `.t01`, добавьте `*.t01` в `indexer.include_patterns`.
+
+Если в вашем конфиге ещё нет поддержки DSArchitect XML, также добавьте `*.xml` в `indexer.include_patterns`.
 
 `.sql` остаётся первичным дистрибутивным источником, а `.t01` рассматривается как опциональный временный артефакт препроцессора: он может отсутствовать и может лежать в отдельном рабочем каталоге препроцессора.
 
-Если флаг `--config` не передан, CLI ищет `codebase.toml` **в каталоге executable (исполняемого файла)**.
+Если флаг `--config` не передан, CLI ищет `codebase.toml` **рядом с executable (исполняемым файлом)**. Файл в текущем рабочем каталоге автоматически не подхватывается, если это не каталог самого executable.
 
 ## Использование
 
@@ -352,7 +354,7 @@ codebase query inspect --name MassAccrual_Start --type procedure --json
 - `--json` - вывод в формате JSON
 - `--summary` - summary output (сводный вывод) по результатам запроса
 - `--ndjson` - NDJSON output (построчный JSON) для pipeline/automation
-- `--limit` - максимум результатов (по умолчанию 50)
+- `--limit` - максимум результатов (по умолчанию 100)
 
 #### CLI contract для machine-readable modes (машино-читаемых режимов)
 
@@ -405,22 +407,12 @@ codebase health --json
 Пример вывода:
 
 ```
-CodeBase Statistics
-===================
+Health status: ok
 
-Files:
-  Total files:     2500
-  SQL files:       500
-  H files:         50
-  PAS files:       800
-  ...
-
-SQL Entities:
-  Procedures:      1200
-  Tables:          350
-  Columns:         5000
-  Table indexes:   100
-  ...
+- config: ok
+- database: ok
+- schema: ok
+- index: ok
 ```
 
 ## Архитектура
