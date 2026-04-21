@@ -47,9 +47,9 @@ var queryAPITableIndexCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runQueryCommand(queryCommandSpec{
 			commandName: "query api-table-index",
-			filters: map[string]string{"name": apiTableIndexName},
+			filters: map[string]string{"name": apiTableIndexName, "like": boolFilterValue(apiTableIndexLikeSearch)},
 			run: func(q *query.Query) (interface{}, error) {
-				return q.SearchAPITableIndex(apiTableIndexName, limit)
+				return q.SearchAPITableIndex(apiTableIndexName, apiTableIndexLikeSearch, limit)
 			},
 		})
 	},
@@ -117,6 +117,7 @@ func init() {
 	queryAPITableCmd.Flags().StringVar(&apiTableName, "name", "", "API table name to search")
 	cobra.CheckErr(queryAPITableCmd.MarkFlagRequired("name"))
 	queryAPITableIndexCmd.Flags().StringVar(&apiTableIndexName, "name", "", "API table index or table name to search")
+	queryAPITableIndexCmd.Flags().BoolVar(&apiTableIndexLikeSearch, "like", false, "use partial match search for API table index or table name")
 	cobra.CheckErr(queryAPITableIndexCmd.MarkFlagRequired("name"))
 	queryAPIParamCmd.Flags().StringVar(&apiParamName, "name", "", "API param name to search")
 	cobra.CheckErr(queryAPIParamCmd.MarkFlagRequired("name"))

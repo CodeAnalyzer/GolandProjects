@@ -22,6 +22,7 @@ func init() {
 	cobra.CheckErr(queryTableSchemaCmd.MarkFlagRequired("name"))
 
 	queryTableIndexCmd.Flags().StringVar(&tableIndexName, "name", "", "table index or table name to search")
+	queryTableIndexCmd.Flags().BoolVar(&tableIndexLikeSearch, "like", false, "use partial match search for table index or table name")
 	cobra.CheckErr(queryTableIndexCmd.MarkFlagRequired("name"))
 
 	queryProcedureCmd.Flags().StringVar(&procedureName, "name", "", "procedure name to inspect")

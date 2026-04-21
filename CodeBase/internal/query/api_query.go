@@ -1,5 +1,10 @@
 package query
 
+import (
+	"fmt"
+	"strings"
+)
+
 type APIParamResult struct {
 	ID             int64  `json:"id"`
 	ContractID     int64  `json:"contract_id,omitempty"`
@@ -175,17 +180,27 @@ func (q *Query) SearchAPITable(name string, limit int) ([]APITableResult, error)
 	return items, rows.Err()
 }
 
-func (q *Query) SearchAPITableIndex(name string, limit int) ([]APITableIndexResult, error) {
-	rows, err := q.db.Query(`
+func (q *Query) SearchAPITableIndex(name string, likeSearch bool, limit int) ([]APITableIndexResult, error) {
+	queryText := `
 		SELECT i.id, i.business_table_id, t.business_object, t.table_name, i.index_name,
 		       COALESCE(i.index_fields,''), i.index_type, i.is_clustered, COALESCE(f.rel_path,''), i.line_number
 		FROM api_business_object_table_indexes i
 		JOIN api_business_object_tables t ON t.id = i.business_table_id
 		JOIN files f ON f.id = t.file_id
-		WHERE i.index_name ILIKE $1 OR t.table_name ILIKE $1
+		WHERE %s
 		ORDER BY t.table_name, i.index_name, i.id DESC
 		LIMIT $2
-	`, "%"+name+"%", limit)
+	`
+
+	searchValue := strings.TrimSpace(name)
+	whereClause := "LOWER(i.index_name) = LOWER($1) OR LOWER(t.table_name) = LOWER($1)"
+	if likeSearch {
+		whereClause = "i.index_name ILIKE $1 OR t.table_name ILIKE $1"
+		searchValue = "%" + searchValue + "%"
+	}
+	queryText = fmt.Sprintf(queryText, whereClause)
+
+	rows, err := q.db.Query(queryText, searchValue, limit)
 	if err != nil {
 		return nil, err
 	}
