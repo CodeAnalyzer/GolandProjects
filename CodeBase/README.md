@@ -141,10 +141,15 @@ codebase update
 
 ```bash
 codebase query symbol --name MassAccrual_Start
+codebase query symbol --name MassAccrual --like
 codebase query symbol --name MassAccrual --type procedure --json
 codebase query symbol --name API --summary
 codebase query symbol --name API --ndjson
 ```
+
+`query symbol` по умолчанию выполняет **точный поиск** по `name`.
+
+Для поиска по подстроке используйте флаг `--like`.
 
 #### Поиск информации о таблице
 
@@ -160,6 +165,11 @@ codebase query table-schema --name tContract --json
 Для старого режима поиска по подстроке используйте флаг `--like`.
 
 `query table-schema` показывает определения колонок таблицы из `CREATE TABLE` и schema patches (`ALTER TABLE ... ADD`, `M_ADD_FIELD`).
+
+Для name-based lookup команд ниже (`symbol`, `form`, `form-component`, `report-form`, `report-field`, `report-param`, `js-function`, `vb-function`, `smf-instrument`, `api-contract`, `api-table`, `api-param`) действует тот же принцип:
+
+- без `--like` — точный поиск,
+- с `--like` — поиск по подстроке.
 
 #### Поиск вызовов процедуры
 
@@ -193,6 +203,7 @@ codebase query sql-fragment --text "exec API_" --json
 
 ```bash
 codebase query form --name AimCnt
+codebase query form --name Aim --like
 codebase query form --name "Цель кредита" --json
 ```
 
@@ -206,6 +217,7 @@ codebase query form --name "Цель кредита" --json
 
 ```bash
 codebase query form-component --name dlName
+codebase query form-component --name Name --like
 codebase query form-component --name "Наименование" --json
 ```
 
@@ -221,6 +233,7 @@ codebase query form-component --name "Наименование" --json
 
 ```bash
 codebase query report-form --name Credit
+codebase query report-form --name Cred --like
 codebase query report-form --name Portfolio --json
 ```
 
@@ -228,12 +241,14 @@ codebase query report-form --name Portfolio --json
 
 ```bash
 codebase query report-field --name Sum
+codebase query report-field --name Su --like
 ```
 
 #### Поиск report params
 
 ```bash
 codebase query report-param --name InstitutionID
+codebase query report-param --name Date --like
 codebase query report-param --name Date --json
 ```
 
@@ -241,6 +256,7 @@ codebase query report-param --name Date --json
 
 ```bash
 codebase query vb-function --name Create
+codebase query vb-function --name Creat --like
 codebase query vb-function --name Execute --json
 ```
 
@@ -248,6 +264,7 @@ codebase query vb-function --name Execute --json
 
 ```bash
 codebase query api-contract --name API_CCred_BindClassifier
+codebase query api-contract --name API_CCred --like
 codebase query api-contract --name OnAfterLoan_MassInsert --json
 ```
 
@@ -255,6 +272,7 @@ codebase query api-contract --name OnAfterLoan_MassInsert --json
 
 ```bash
 codebase query api-table --name pAPI_CredS_InsertCCred
+codebase query api-table --name pAPI_CredS --like
 codebase query api-table --name pAPI_ContractCredit_ID --json
 ```
 
@@ -282,6 +300,7 @@ codebase query table-index --name tContract --json
 
 ```bash
 codebase query api-param --name BranchID
+codebase query api-param --name Branch --like
 codebase query api-param --name AccountID --json
 ```
 
@@ -289,6 +308,7 @@ codebase query api-param --name AccountID --json
 
 ```bash
 codebase query js-function --name OnClick
+codebase query js-function --name Click --like
 codebase query js-function --name Execute --json
 ```
 
@@ -296,6 +316,7 @@ codebase query js-function --name Execute --json
 
 ```bash
 codebase query smf-instrument --name CreditMassOperation
+codebase query smf-instrument --name Credit --like
 codebase query smf-instrument --name Accrual --json
 codebase query smf-instrument --name ТР_ГПККНач
 codebase query smf-instrument --name TS_CardCreditMassAcrual --json

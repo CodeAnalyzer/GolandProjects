@@ -302,7 +302,7 @@ func collectSummarySliceField(set map[string]struct{}, value reflect.Value, fiel
 }
 
 func runInspectQuery(q *query.Query, name string, symbolType string, limit int) ([]inspectResult, error) {
-	symbols, err := q.SearchSymbol(name, symbolType, limit)
+	symbols, err := q.SearchSymbol(name, symbolType, true, limit)
 	if err != nil {
 		return nil, err
 	}

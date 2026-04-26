@@ -6,12 +6,24 @@ import (
 )
 
 var (
-	outputJSON    bool
-	outputNDJSON  bool
-	outputSummary bool
-	limit         int
-	tableLikeSearch bool
-	tableIndexLikeSearch bool
+	outputJSON              bool
+	outputNDJSON            bool
+	outputSummary           bool
+	limit                   int
+	symbolLikeSearch        bool
+	jsFunctionLikeSearch    bool
+	vbFunctionLikeSearch    bool
+	smfInstrumentLikeSearch bool
+	formLikeSearch          bool
+	formComponentLikeSearch bool
+	reportFormLikeSearch    bool
+	reportFieldLikeSearch   bool
+	reportParamLikeSearch   bool
+	apiContractLikeSearch   bool
+	apiTableLikeSearch      bool
+	apiParamLikeSearch      bool
+	tableLikeSearch         bool
+	tableIndexLikeSearch    bool
 	apiTableIndexLikeSearch bool
 )
 

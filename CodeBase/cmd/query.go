@@ -10,8 +10,9 @@ func init() {
 	queryCmd.PersistentFlags().BoolVar(&outputSummary, "summary", false, "output summary only")
 	queryCmd.PersistentFlags().IntVar(&limit, "limit", 100, "max results to return")
 
-	querySymbolCmd.Flags().StringVar(&symbolName, "name", "", "symbol name to search")
+	querySymbolCmd.Flags().StringVar(&symbolName, "name", "", "symbol name to search (exact by default)")
 	querySymbolCmd.Flags().StringVar(&symbolType, "type", "", "symbol type (procedure, function, class, etc.)")
+	querySymbolCmd.Flags().BoolVar(&symbolLikeSearch, "like", false, "use partial match search for symbol name")
 	cobra.CheckErr(querySymbolCmd.MarkFlagRequired("name"))
 
 	queryTableCmd.Flags().StringVar(&tableName, "name", "", "table name to search")
@@ -34,10 +35,12 @@ func init() {
 	queryMethodsCmd.Flags().StringVar(&tableName, "table", "", "table name")
 	cobra.CheckErr(queryMethodsCmd.MarkFlagRequired("table"))
 
-	queryFormCmd.Flags().StringVar(&formName, "name", "", "DFM form name/class/caption to search")
+	queryFormCmd.Flags().StringVar(&formName, "name", "", "DFM form name/class/caption to search (exact by default)")
+	queryFormCmd.Flags().BoolVar(&formLikeSearch, "like", false, "use partial match search for DFM form fields")
 	cobra.CheckErr(queryFormCmd.MarkFlagRequired("name"))
 
-	queryFormComponentCmd.Flags().StringVar(&formComponentName, "name", "", "DFM component name/type/caption to search")
+	queryFormComponentCmd.Flags().StringVar(&formComponentName, "name", "", "DFM component name/type/caption to search (exact by default)")
+	queryFormComponentCmd.Flags().BoolVar(&formComponentLikeSearch, "like", false, "use partial match search for DFM component fields")
 	cobra.CheckErr(queryFormComponentCmd.MarkFlagRequired("name"))
 
 	querySQLFragmentCmd.Flags().StringVar(&queryFragmentText, "text", "", "SQL text fragment to search")
@@ -53,25 +56,31 @@ func init() {
 	queryInspectCmd.Flags().StringVar(&inspectType, "type", "", "symbol type to inspect")
 	cobra.CheckErr(queryInspectCmd.MarkFlagRequired("name"))
 
-	queryJSFunctionCmd.Flags().StringVar(&jsFuncName, "name", "", "JS function name to search")
+	queryJSFunctionCmd.Flags().StringVar(&jsFuncName, "name", "", "JS function name to search (exact by default)")
+	queryJSFunctionCmd.Flags().BoolVar(&jsFunctionLikeSearch, "like", false, "use partial match search for JS function name")
 	cobra.CheckErr(queryJSFunctionCmd.MarkFlagRequired("name"))
 
-	querySMFInstrumentCmd.Flags().StringVar(&smfInstrName, "name", "", "SMF instrument name, brief, or file name to search")
+	querySMFInstrumentCmd.Flags().StringVar(&smfInstrName, "name", "", "SMF instrument name, brief, or file name to search (exact by default)")
+	querySMFInstrumentCmd.Flags().BoolVar(&smfInstrumentLikeSearch, "like", false, "use partial match search for SMF instrument attributes")
 	cobra.CheckErr(querySMFInstrumentCmd.MarkFlagRequired("name"))
 
 	querySMFTypeCmd.Flags().StringVar(&smfType, "type", "", "SMF scenario type (instrument_model, mass_operation)")
 	cobra.CheckErr(querySMFTypeCmd.MarkFlagRequired("type"))
 
-	queryReportFormCmd.Flags().StringVar(&reportFormName, "name", "", "report form name to search")
+	queryReportFormCmd.Flags().StringVar(&reportFormName, "name", "", "report form name to search (exact by default)")
+	queryReportFormCmd.Flags().BoolVar(&reportFormLikeSearch, "like", false, "use partial match search for report form fields")
 	cobra.CheckErr(queryReportFormCmd.MarkFlagRequired("name"))
 
-	queryReportFieldCmd.Flags().StringVar(&reportFieldName, "name", "", "report field name to search")
+	queryReportFieldCmd.Flags().StringVar(&reportFieldName, "name", "", "report field name to search (exact by default)")
+	queryReportFieldCmd.Flags().BoolVar(&reportFieldLikeSearch, "like", false, "use partial match search for report field attributes")
 	cobra.CheckErr(queryReportFieldCmd.MarkFlagRequired("name"))
 
-	queryReportParamCmd.Flags().StringVar(&reportParamName, "name", "", "report param name/text to search")
+	queryReportParamCmd.Flags().StringVar(&reportParamName, "name", "", "report param name/text to search (exact by default)")
+	queryReportParamCmd.Flags().BoolVar(&reportParamLikeSearch, "like", false, "use partial match search for report param attributes")
 	cobra.CheckErr(queryReportParamCmd.MarkFlagRequired("name"))
 
-	queryVBFunctionCmd.Flags().StringVar(&vbFuncName, "name", "", "VB function name to search")
+	queryVBFunctionCmd.Flags().StringVar(&vbFuncName, "name", "", "VB function name to search (exact by default)")
+	queryVBFunctionCmd.Flags().BoolVar(&vbFunctionLikeSearch, "like", false, "use partial match search for VB function name")
 	cobra.CheckErr(queryVBFunctionCmd.MarkFlagRequired("name"))
 
 	queryCmd.AddCommand(querySymbolCmd)

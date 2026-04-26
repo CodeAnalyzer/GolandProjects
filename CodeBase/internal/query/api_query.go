@@ -104,7 +104,9 @@ type APIRelatedProcedureResult struct {
 	ViaProcedure  string `json:"via_procedure,omitempty"`
 }
 
-func (q *Query) SearchAPIContract(name string, limit int) ([]APIContractResult, error) {
+func (q *Query) SearchAPIContract(name string, like bool, limit int) ([]APIContractResult, error) {
+	lookupValue := buildLookupValue(name, like)
+	lookupCondition := buildNameLookupCondition([]string{"c.contract_name"}, like, 1)
 	rows, err := q.db.Query(`
 		SELECT c.id, c.file_id, COALESCE(c.business_object,''), c.contract_name, c.contract_kind,
 		       COALESCE(c.object_type_id,0), COALESCE(c.owner_module,''), COALESCE(c.used_object_name,''),
@@ -112,10 +114,10 @@ func (q *Query) SearchAPIContract(name string, limit int) ([]APIContractResult, 
 		       f.rel_path, c.line_start, c.line_end
 		FROM api_contracts c
 		JOIN files f ON f.id = c.file_id
-		WHERE c.contract_name ILIKE $1
+		WHERE `+lookupCondition+`
 		ORDER BY c.contract_name, c.id DESC
 		LIMIT $2
-	`, "%"+name+"%", limit)
+	`, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -141,17 +143,19 @@ func (q *Query) SearchAPIContract(name string, limit int) ([]APIContractResult, 
 	return items, rows.Err()
 }
 
-func (q *Query) SearchAPITable(name string, limit int) ([]APITableResult, error) {
+func (q *Query) SearchAPITable(name string, like bool, limit int) ([]APITableResult, error) {
+	lookupValue := buildLookupValue(name, like)
+	lookupCondition := buildNameLookupCondition([]string{"t.table_name"}, like, 1)
 	rows, err := q.db.Query(`
 		SELECT t.id, t.contract_id, COALESCE(c.business_object,''), COALESCE(c.contract_name,''), COALESCE(c.contract_kind,''),
 		       t.direction, t.table_name, COALESCE(t.description,''), COALESCE(f.rel_path,''), t.line_number
 		FROM api_contract_tables t
 		LEFT JOIN api_contracts c ON c.id = t.contract_id
 		LEFT JOIN files f ON f.id = c.file_id
-		WHERE t.table_name ILIKE $1
+		WHERE `+lookupCondition+`
 		ORDER BY t.table_name, t.id DESC
 		LIMIT $2
-	`, "%"+name+"%", limit)
+	`, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -229,17 +233,19 @@ func (q *Query) SearchAPITableIndex(name string, likeSearch bool, limit int) ([]
 	return items, rows.Err()
 }
 
-func (q *Query) SearchAPIParam(name string, limit int) ([]APIParamResult, error) {
+func (q *Query) SearchAPIParam(name string, like bool, limit int) ([]APIParamResult, error) {
+	lookupValue := buildLookupValue(name, like)
+	lookupCondition := buildNameLookupCondition([]string{"p.param_name"}, like, 1)
 	rows, err := q.db.Query(`
 		SELECT p.id, p.contract_id, COALESCE(c.business_object,''), COALESCE(c.contract_name,''), COALESCE(c.contract_kind,''),
 		       p.direction, p.param_name, COALESCE(p.type_name,''), p.required, COALESCE(p.description,''), COALESCE(f.rel_path,''), p.line_number
 		FROM api_contract_params p
 		LEFT JOIN api_contracts c ON c.id = p.contract_id
 		LEFT JOIN files f ON f.id = c.file_id
-		WHERE p.param_name ILIKE $1
+		WHERE `+lookupCondition+`
 		ORDER BY p.param_name, p.id DESC
 		LIMIT $2
-	`, "%"+name+"%", limit)
+	`, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}

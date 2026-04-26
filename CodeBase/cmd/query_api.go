@@ -14,28 +14,28 @@ var (
 )
 
 var queryAPIContractCmd = &cobra.Command{
-	Use:   "api-contract --name <name>",
-	Short: "Search DSArchitect API contracts",
+	Use:   "api-contract --name <name> [--like]",
+	Short: "Search DSArchitect API contracts (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runQueryCommand(queryCommandSpec{
 			commandName: "query api-contract",
-			filters: map[string]string{"name": apiContractName},
+			filters: map[string]string{"name": apiContractName, "like": boolFilterValue(apiContractLikeSearch)},
 			run: func(q *query.Query) (interface{}, error) {
-				return q.SearchAPIContract(apiContractName, limit)
+				return q.SearchAPIContract(apiContractName, apiContractLikeSearch, limit)
 			},
 		})
 	},
 }
 
 var queryAPITableCmd = &cobra.Command{
-	Use:   "api-table --name <name>",
-	Short: "Search DSArchitect API tables",
+	Use:   "api-table --name <name> [--like]",
+	Short: "Search DSArchitect API tables (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runQueryCommand(queryCommandSpec{
 			commandName: "query api-table",
-			filters: map[string]string{"name": apiTableName},
+			filters: map[string]string{"name": apiTableName, "like": boolFilterValue(apiTableLikeSearch)},
 			run: func(q *query.Query) (interface{}, error) {
-				return q.SearchAPITable(apiTableName, limit)
+				return q.SearchAPITable(apiTableName, apiTableLikeSearch, limit)
 			},
 		})
 	},
@@ -56,14 +56,14 @@ var queryAPITableIndexCmd = &cobra.Command{
 }
 
 var queryAPIParamCmd = &cobra.Command{
-	Use:   "api-param --name <name>",
-	Short: "Search DSArchitect API params",
+	Use:   "api-param --name <name> [--like]",
+	Short: "Search DSArchitect API params (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runQueryCommand(queryCommandSpec{
 			commandName: "query api-param",
-			filters: map[string]string{"name": apiParamName},
+			filters: map[string]string{"name": apiParamName, "like": boolFilterValue(apiParamLikeSearch)},
 			run: func(q *query.Query) (interface{}, error) {
-				return q.SearchAPIParam(apiParamName, limit)
+				return q.SearchAPIParam(apiParamName, apiParamLikeSearch, limit)
 			},
 		})
 	},
@@ -112,14 +112,17 @@ var queryAPIConsumersCmd = &cobra.Command{
 }
 
 func init() {
-	queryAPIContractCmd.Flags().StringVar(&apiContractName, "name", "", "API contract name to search")
+	queryAPIContractCmd.Flags().StringVar(&apiContractName, "name", "", "API contract name to search (exact by default)")
+	queryAPIContractCmd.Flags().BoolVar(&apiContractLikeSearch, "like", false, "use partial match search for API contract name")
 	cobra.CheckErr(queryAPIContractCmd.MarkFlagRequired("name"))
-	queryAPITableCmd.Flags().StringVar(&apiTableName, "name", "", "API table name to search")
+	queryAPITableCmd.Flags().StringVar(&apiTableName, "name", "", "API table name to search (exact by default)")
+	queryAPITableCmd.Flags().BoolVar(&apiTableLikeSearch, "like", false, "use partial match search for API table name")
 	cobra.CheckErr(queryAPITableCmd.MarkFlagRequired("name"))
 	queryAPITableIndexCmd.Flags().StringVar(&apiTableIndexName, "name", "", "API table index or table name to search")
 	queryAPITableIndexCmd.Flags().BoolVar(&apiTableIndexLikeSearch, "like", false, "use partial match search for API table index or table name")
 	cobra.CheckErr(queryAPITableIndexCmd.MarkFlagRequired("name"))
-	queryAPIParamCmd.Flags().StringVar(&apiParamName, "name", "", "API param name to search")
+	queryAPIParamCmd.Flags().StringVar(&apiParamName, "name", "", "API param name to search (exact by default)")
+	queryAPIParamCmd.Flags().BoolVar(&apiParamLikeSearch, "like", false, "use partial match search for API param name")
 	cobra.CheckErr(queryAPIParamCmd.MarkFlagRequired("name"))
 	queryAPIImplCmd.Flags().StringVar(&apiContractName, "name", "", "API contract name to search")
 	cobra.CheckErr(queryAPIImplCmd.MarkFlagRequired("name"))

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/codebase/internal/model"
 	"github.com/codebase/internal/store"
@@ -41,14 +42,14 @@ type TableResult struct {
 
 // TableSchemaColumnResult результат поиска определений колонок таблицы
 type TableSchemaColumnResult struct {
-	TableName   string `json:"table_name"`
-	ColumnName  string `json:"column_name"`
-	DataType    string `json:"data_type"`
+	TableName      string `json:"table_name"`
+	ColumnName     string `json:"column_name"`
+	DataType       string `json:"data_type"`
 	DefinitionKind string `json:"definition_kind,omitempty"`
-	File        string `json:"file,omitempty"`
-	FileID      int64  `json:"file_id"`
-	LineNumber  int    `json:"line_number"`
-	ColumnOrder int    `json:"column_order"`
+	File           string `json:"file,omitempty"`
+	FileID         int64  `json:"file_id"`
+	LineNumber     int    `json:"line_number"`
+	ColumnOrder    int    `json:"column_order"`
 }
 
 // SQLTableIndexFieldResult результат поиска определений полей индекса таблицы
@@ -75,13 +76,13 @@ type SQLTableIndexResult struct {
 
 // CallerResult результат поиска вызовов
 type CallerResult struct {
-	CallerID    int64  `json:"caller_id,omitempty"`
-	CallerName  string `json:"caller_name"`
-	CallerType  string `json:"caller_type"`
-	File        string `json:"file"`
-	LineNumber  int    `json:"line_number"`
-	CallContext string `json:"call_context,omitempty"`
-	IsIndirect  bool   `json:"is_indirect,omitempty"`
+	CallerID     int64  `json:"caller_id,omitempty"`
+	CallerName   string `json:"caller_name"`
+	CallerType   string `json:"caller_type"`
+	File         string `json:"file"`
+	LineNumber   int    `json:"line_number"`
+	CallContext  string `json:"call_context,omitempty"`
+	IsIndirect   bool   `json:"is_indirect,omitempty"`
 	ViaProcedure string `json:"via_procedure,omitempty"`
 	RelationType string `json:"relation_type,omitempty"`
 }
@@ -225,8 +226,37 @@ func New(db *store.DB) *Query {
 	return &Query{db: db}
 }
 
+func buildLookupValue(value string, like bool) string {
+	trimmed := strings.TrimSpace(value)
+	if like {
+		return "%" + trimmed + "%"
+	}
+	return trimmed
+}
+
+func buildNameLookupCondition(fields []string, like bool, argPosition int) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	operator := "="
+	if like {
+		operator = "ILIKE"
+	}
+	conditions := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		conditions = append(conditions, fmt.Sprintf("%s %s $%d", field, operator, argPosition))
+	}
+	return strings.Join(conditions, " OR ")
+}
+
 // SearchSymbol ищет сущность по имени
-func (q *Query) SearchSymbol(name string, symbolType string, limit int) ([]SymbolResult, error) {
+func (q *Query) SearchSymbol(name string, symbolType string, like bool, limit int) ([]SymbolResult, error) {
+	lookupValue := buildLookupValue(name, like)
+	lookupCondition := buildNameLookupCondition([]string{"s.symbol_name"}, like, 1)
 	// symbols — это unified index (унифицированный индекс), поэтому этот метод
 	// является самым общим способом найти сущность без знания конкретной таблицы-хранилища.
 	query := `
@@ -242,9 +272,9 @@ func (q *Query) SearchSymbol(name string, symbolType string, limit int) ([]Symbo
 			s.signature
 		FROM symbols s
 		JOIN files f ON s.file_id = f.id
-		WHERE s.symbol_name ILIKE $1
+		WHERE ` + lookupCondition + `
 	`
-	args := []interface{}{"%" + name + "%"}
+	args := []interface{}{lookupValue}
 
 	if symbolType != "" {
 		// Фильтр по типу добавляется динамически, чтобы не плодить отдельные SQL-шаблоны.
@@ -344,7 +374,9 @@ func (q *Query) SearchInContent(pattern string, limit int) ([]SymbolResult, erro
 }
 
 // SearchReportForm поиск report forms
-func (q *Query) SearchReportForm(name string, limit int) ([]ReportFormResult, error) {
+func (q *Query) SearchReportForm(name string, like bool, limit int) ([]ReportFormResult, error) {
+	lookupValue := buildLookupValue(name, like)
+	lookupCondition := buildNameLookupCondition([]string{"rf.report_name", "rf.form_name"}, like, 1)
 	query := `
 		SELECT
 			rf.id,
@@ -358,13 +390,12 @@ func (q *Query) SearchReportForm(name string, limit int) ([]ReportFormResult, er
 			rf.line_end
 		FROM report_forms rf
 		JOIN files f ON rf.file_id = f.id
-		WHERE rf.report_name ILIKE $1
-		   OR rf.form_name ILIKE $1
+		WHERE ` + lookupCondition + `
 		ORDER BY rf.report_name, rf.line_start
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, "%"+name+"%", limit)
+	rows, err := q.db.Query(query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -389,7 +420,9 @@ func (q *Query) SearchReportForm(name string, limit int) ([]ReportFormResult, er
 	return results, rows.Err()
 }
 
-func (q *Query) SearchDFMForm(name string, limit int) ([]DFMFormResult, error) {
+func (q *Query) SearchDFMForm(name string, like bool, limit int) ([]DFMFormResult, error) {
+	lookupValue := buildLookupValue(name, like)
+	lookupCondition := buildNameLookupCondition([]string{"df.form_name", "df.form_class", "df.caption"}, like, 1)
 	query := `
 		SELECT
 			df.id,
@@ -402,14 +435,12 @@ func (q *Query) SearchDFMForm(name string, limit int) ([]DFMFormResult, error) {
 			df.line_end
 		FROM dfm_forms df
 		JOIN files f ON df.file_id = f.id
-		WHERE df.form_name ILIKE $1
-		   OR df.form_class ILIKE $1
-		   OR df.caption ILIKE $1
+		WHERE ` + lookupCondition + `
 		ORDER BY df.form_name, df.line_start
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, "%"+name+"%", limit)
+	rows, err := q.db.Query(query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -431,7 +462,9 @@ func (q *Query) SearchDFMForm(name string, limit int) ([]DFMFormResult, error) {
 	return results, rows.Err()
 }
 
-func (q *Query) SearchDFMComponent(name string, limit int) ([]DFMComponentResult, error) {
+func (q *Query) SearchDFMComponent(name string, like bool, limit int) ([]DFMComponentResult, error) {
+	lookupValue := buildLookupValue(name, like)
+	lookupCondition := buildNameLookupCondition([]string{"dc.component_name", "dc.component_type", "dc.caption", "df.form_name", "df.form_class"}, like, 1)
 	query := `
 		SELECT
 			dc.id,
@@ -452,16 +485,12 @@ func (q *Query) SearchDFMComponent(name string, limit int) ([]DFMComponentResult
 		JOIN dfm_forms df ON dc.form_id = df.id
 		JOIN files f ON dc.file_id = f.id
 		LEFT JOIN pas_fields pf ON pf.dfm_component_id = dc.id
-		WHERE dc.component_name ILIKE $1
-		   OR dc.component_type ILIKE $1
-		   OR dc.caption ILIKE $1
-		   OR df.form_name ILIKE $1
-		   OR df.form_class ILIKE $1
+		WHERE ` + lookupCondition + `
 		ORDER BY df.form_name, dc.line_start
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, "%"+name+"%", limit)
+	rows, err := q.db.Query(query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -536,7 +565,9 @@ func (q *Query) SearchQueryFragment(text string, limit int) ([]QueryFragmentResu
 }
 
 // SearchReportField поиск report fields
-func (q *Query) SearchReportField(name string, limit int) ([]ReportFieldResult, error) {
+func (q *Query) SearchReportField(name string, like bool, limit int) ([]ReportFieldResult, error) {
+	lookupValue := buildLookupValue(name, like)
+	lookupCondition := buildNameLookupCondition([]string{"rfld.field_name", "rfld.source_name", "rf.report_name", "COALESCE(rfld.raw_text, '')"}, like, 1)
 	query := `
 		SELECT
 			rfld.id,
@@ -553,15 +584,12 @@ func (q *Query) SearchReportField(name string, limit int) ([]ReportFieldResult, 
 		FROM report_fields rfld
 		JOIN report_forms rf ON rfld.report_form_id = rf.id
 		JOIN files f ON rf.file_id = f.id
-		WHERE rfld.field_name ILIKE $1
-		   OR rfld.source_name ILIKE $1
-		   OR rf.report_name ILIKE $1
-		   OR COALESCE(rfld.raw_text, '') ILIKE $1
+		WHERE ` + lookupCondition + `
 		ORDER BY rf.report_name, rfld.line_number
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, "%"+name+"%", limit)
+	rows, err := q.db.Query(query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -594,7 +622,9 @@ func (q *Query) SearchReportField(name string, limit int) ([]ReportFieldResult, 
 }
 
 // SearchReportParam поиск report params
-func (q *Query) SearchReportParam(name string, limit int) ([]ReportParamResult, error) {
+func (q *Query) SearchReportParam(name string, like bool, limit int) ([]ReportParamResult, error) {
+	lookupValue := buildLookupValue(name, like)
+	lookupCondition := buildNameLookupCondition([]string{"rp.param_name", "COALESCE(rp.lookup_table, '')", "COALESCE(rp.lookup_column, '')", "COALESCE(rp.raw_text, '')"}, like, 1)
 	query := `
 		SELECT
 			rp.id,
@@ -617,15 +647,12 @@ func (q *Query) SearchReportParam(name string, limit int) ([]ReportParamResult, 
 		FROM report_params rp
 		JOIN report_forms rf ON rp.report_form_id = rf.id
 		JOIN files f ON rf.file_id = f.id
-		WHERE rp.param_name ILIKE $1
-		   OR COALESCE(rp.lookup_table, '') ILIKE $1
-		   OR COALESCE(rp.lookup_column, '') ILIKE $1
-		   OR COALESCE(rp.raw_text, '') ILIKE $1
+		WHERE ` + lookupCondition + `
 		ORDER BY rf.report_name, rp.line_number
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, "%"+name+"%", limit)
+	rows, err := q.db.Query(query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -669,7 +696,9 @@ func (q *Query) SearchReportParam(name string, limit int) ([]ReportParamResult, 
 }
 
 // SearchVBFunction поиск VB функций
-func (q *Query) SearchVBFunction(name string, limit int) ([]VBFunctionResult, error) {
+func (q *Query) SearchVBFunction(name string, like bool, limit int) ([]VBFunctionResult, error) {
+	lookupValue := buildLookupValue(name, like)
+	lookupCondition := buildNameLookupCondition([]string{"vf.function_name"}, like, 1)
 	query := `
 		SELECT
 			vf.id,
@@ -684,12 +713,12 @@ func (q *Query) SearchVBFunction(name string, limit int) ([]VBFunctionResult, er
 		FROM vb_functions vf
 		JOIN report_forms rf ON vf.report_form_id = rf.id
 		JOIN files f ON rf.file_id = f.id
-		WHERE vf.function_name ILIKE $1
+		WHERE ` + lookupCondition + `
 		ORDER BY vf.function_name, vf.line_start
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, "%"+name+"%", limit)
+	rows, err := q.db.Query(query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -724,7 +753,9 @@ type JSFunctionResult struct {
 }
 
 // SearchJSFunction поиск JS-функции
-func (q *Query) SearchJSFunction(name string, limit int) ([]JSFunctionResult, error) {
+func (q *Query) SearchJSFunction(name string, like bool, limit int) ([]JSFunctionResult, error) {
+	lookupValue := buildLookupValue(name, like)
+	lookupCondition := buildNameLookupCondition([]string{"j.function_name"}, like, 1)
 	query := `
 		SELECT
 			j.id,
@@ -737,12 +768,12 @@ func (q *Query) SearchJSFunction(name string, limit int) ([]JSFunctionResult, er
 			j.scenario_type
 		FROM js_functions j
 		JOIN files f ON j.file_id = f.id
-		WHERE j.function_name ILIKE $1
+		WHERE ` + lookupCondition + `
 		ORDER BY j.line_start
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, "%"+name+"%", limit)
+	rows, err := q.db.Query(query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -785,7 +816,9 @@ type SMFInstrumentResult struct {
 }
 
 // SearchSMFInstrument поиск SMF инструмента
-func (q *Query) SearchSMFInstrument(name string, limit int) ([]SMFInstrumentResult, error) {
+func (q *Query) SearchSMFInstrument(name string, like bool, limit int) ([]SMFInstrumentResult, error) {
+	lookupValue := buildLookupValue(name, like)
+	lookupCondition := buildNameLookupCondition([]string{"s.instrument_name", "s.brief", "f.rel_path"}, like, 1)
 	query := `
 		SELECT
 			s.id,
@@ -802,14 +835,12 @@ func (q *Query) SearchSMFInstrument(name string, limit int) ([]SMFInstrumentResu
 			s.accounts
 		FROM smf_instruments s
 		JOIN files f ON s.file_id = f.id
-		WHERE s.instrument_name ILIKE $1
-		   OR s.brief ILIKE $1
-		   OR f.rel_path ILIKE $1
+		WHERE ` + lookupCondition + `
 		ORDER BY s.instrument_name
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, "%"+name+"%", limit)
+	rows, err := q.db.Query(query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}

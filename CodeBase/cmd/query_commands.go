@@ -6,17 +6,18 @@ import (
 )
 
 var querySymbolCmd = &cobra.Command{
-	Use:   "symbol --name <name>",
-	Short: "Search entity by name",
+	Use:   "symbol --name <name> [--type <type>] [--like]",
+	Short: "Search entity by name (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runQueryCommand(queryCommandSpec{
 			commandName: "query symbol",
 			filters: map[string]string{
 				"name": symbolName,
 				"type": symbolType,
+				"like": boolFilterValue(symbolLikeSearch),
 			},
 			run: func(q *query.Query) (interface{}, error) {
-				return q.SearchSymbol(symbolName, symbolType, limit)
+				return q.SearchSymbol(symbolName, symbolType, symbolLikeSearch, limit)
 			},
 		})
 	},
@@ -158,32 +159,34 @@ var queryMethodsCmd = &cobra.Command{
 }
 
 var queryFormCmd = &cobra.Command{
-	Use:   "form --name <name>",
-	Short: "Search DFM forms",
+	Use:   "form --name <name> [--like]",
+	Short: "Search DFM forms (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runQueryCommand(queryCommandSpec{
 			commandName: "query form",
 			filters: map[string]string{
 				"name": formName,
+				"like": boolFilterValue(formLikeSearch),
 			},
 			run: func(q *query.Query) (interface{}, error) {
-				return q.SearchDFMForm(formName, limit)
+				return q.SearchDFMForm(formName, formLikeSearch, limit)
 			},
 		})
 	},
 }
 
 var queryFormComponentCmd = &cobra.Command{
-	Use:   "form-component --name <name>",
-	Short: "Search DFM form components",
+	Use:   "form-component --name <name> [--like]",
+	Short: "Search DFM form components (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runQueryCommand(queryCommandSpec{
 			commandName: "query form-component",
 			filters: map[string]string{
 				"name": formComponentName,
+				"like": boolFilterValue(formComponentLikeSearch),
 			},
 			run: func(q *query.Query) (interface{}, error) {
-				return q.SearchDFMComponent(formComponentName, limit)
+				return q.SearchDFMComponent(formComponentName, formComponentLikeSearch, limit)
 			},
 		})
 	},
@@ -206,96 +209,102 @@ var querySQLFragmentCmd = &cobra.Command{
 }
 
 var queryReportFormCmd = &cobra.Command{
-	Use:   "report-form --name <name>",
-	Short: "Search report forms",
+	Use:   "report-form --name <name> [--like]",
+	Short: "Search report forms (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runQueryCommand(queryCommandSpec{
 			commandName: "query report-form",
 			filters: map[string]string{
 				"name": reportFormName,
+				"like": boolFilterValue(reportFormLikeSearch),
 			},
 			run: func(q *query.Query) (interface{}, error) {
-				return q.SearchReportForm(reportFormName, limit)
+				return q.SearchReportForm(reportFormName, reportFormLikeSearch, limit)
 			},
 		})
 	},
 }
 
 var queryReportFieldCmd = &cobra.Command{
-	Use:   "report-field --name <name>",
-	Short: "Search TPR report fields",
+	Use:   "report-field --name <name> [--like]",
+	Short: "Search TPR report fields (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runQueryCommand(queryCommandSpec{
 			commandName: "query report-field",
 			filters: map[string]string{
 				"name": reportFieldName,
+				"like": boolFilterValue(reportFieldLikeSearch),
 			},
 			run: func(q *query.Query) (interface{}, error) {
-				return q.SearchReportField(reportFieldName, limit)
+				return q.SearchReportField(reportFieldName, reportFieldLikeSearch, limit)
 			},
 		})
 	},
 }
 
 var queryReportParamCmd = &cobra.Command{
-	Use:   "report-param --name <name>",
-	Short: "Search report params and report controls",
+	Use:   "report-param --name <name> [--like]",
+	Short: "Search report params and report controls (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runQueryCommand(queryCommandSpec{
 			commandName: "query report-param",
 			filters: map[string]string{
 				"name": reportParamName,
+				"like": boolFilterValue(reportParamLikeSearch),
 			},
 			run: func(q *query.Query) (interface{}, error) {
-				return q.SearchReportParam(reportParamName, limit)
+				return q.SearchReportParam(reportParamName, reportParamLikeSearch, limit)
 			},
 		})
 	},
 }
 
 var queryVBFunctionCmd = &cobra.Command{
-	Use:   "vb-function --name <name>",
-	Short: "Search VBScript function",
+	Use:   "vb-function --name <name> [--like]",
+	Short: "Search VBScript function (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runQueryCommand(queryCommandSpec{
 			commandName: "query vb-function",
 			filters: map[string]string{
 				"name": vbFuncName,
+				"like": boolFilterValue(vbFunctionLikeSearch),
 			},
 			run: func(q *query.Query) (interface{}, error) {
-				return q.SearchVBFunction(vbFuncName, limit)
+				return q.SearchVBFunction(vbFuncName, vbFunctionLikeSearch, limit)
 			},
 		})
 	},
 }
 
 var queryJSFunctionCmd = &cobra.Command{
-	Use:   "js-function --name <name>",
-	Short: "Search JS function",
+	Use:   "js-function --name <name> [--like]",
+	Short: "Search JS function (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runQueryCommand(queryCommandSpec{
 			commandName: "query js-function",
 			filters: map[string]string{
 				"name": jsFuncName,
+				"like": boolFilterValue(jsFunctionLikeSearch),
 			},
 			run: func(q *query.Query) (interface{}, error) {
-				return q.SearchJSFunction(jsFuncName, limit)
+				return q.SearchJSFunction(jsFuncName, jsFunctionLikeSearch, limit)
 			},
 		})
 	},
 }
 
 var querySMFInstrumentCmd = &cobra.Command{
-	Use:   "smf-instrument --name <name>",
-	Short: "Search SMF instrument",
+	Use:   "smf-instrument --name <name> [--like]",
+	Short: "Search SMF instrument (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runQueryCommand(queryCommandSpec{
 			commandName: "query smf-instrument",
 			filters: map[string]string{
 				"name": smfInstrName,
+				"like": boolFilterValue(smfInstrumentLikeSearch),
 			},
 			run: func(q *query.Query) (interface{}, error) {
-				return q.SearchSMFInstrument(smfInstrName, limit)
+				return q.SearchSMFInstrument(smfInstrName, smfInstrumentLikeSearch, limit)
 			},
 		})
 	},
