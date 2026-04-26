@@ -77,6 +77,7 @@ func mergeScanStats(dst *model.ScanStats, src *model.ScanStats) {
 	dst.APIParams += src.APIParams
 	dst.APITables += src.APITables
 	dst.APITableFields += src.APITableFields
+	dst.APITableIndexes += src.APITableIndexes
 	dst.Procedures += src.Procedures
 	dst.Tables += src.Tables
 	dst.Columns += src.Columns
