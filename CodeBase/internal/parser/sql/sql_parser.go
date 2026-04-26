@@ -15,39 +15,180 @@ import (
 // Parser SQL-парсер
 type Parser struct {
 	// Регулярки для парсинга
-	procBeginRe      *regexp.Regexp
-	procEndRe        *regexp.Regexp
-	procDeclRe       *regexp.Regexp
-	procCreateRe     *regexp.Regexp
-	createTableRe    *regexp.Regexp
-	alterTableAddRe  *regexp.Regexp
-	createIndexRe    *regexp.Regexp
-	mAddFieldRe      *regexp.Regexp
-	mCreateIndexRe   *regexp.Regexp
-	selectIntoRe     *regexp.Regexp
-	insertTableRe    *regexp.Regexp
-	deleteTableRe    *regexp.Regexp
-	deletePTableRe   *regexp.Regexp
-	logTableRe       *regexp.Regexp
-	selectTempRe     *regexp.Regexp
-	tableNameRe      *regexp.Regexp
-	continuedTableRe *regexp.Regexp
-	tableAliasRe     *regexp.Regexp
-	columnNameRe     *regexp.Regexp
-	insertColumnsRe  *regexp.Regexp
-	updateColumnsRe  *regexp.Regexp
-	varDeclRe        *regexp.Regexp
-	procParamRe      *regexp.Regexp
-	execRe           *regexp.Regexp
-	selectRe         *regexp.Regexp
-	insertRe         *regexp.Regexp
-	updateRe         *regexp.Regexp
-	deleteRe         *regexp.Regexp
-	includeRe        *regexp.Regexp
-	defineRe         *regexp.Regexp
-	commentRe        *regexp.Regexp
-	pTableRe         *regexp.Regexp
-	tempTableRe      *regexp.Regexp
+	procBeginRe        *regexp.Regexp
+	procEndRe          *regexp.Regexp
+	procDeclRe         *regexp.Regexp
+	procCreateRe       *regexp.Regexp
+	createTableRe      *regexp.Regexp
+	alterTableAddRe    *regexp.Regexp
+	createIndexRe      *regexp.Regexp
+	createIndexStartRe *regexp.Regexp
+	createIndexOnRe    *regexp.Regexp
+	mAddFieldRe        *regexp.Regexp
+	mCreateIndexRe     *regexp.Regexp
+	selectIntoRe       *regexp.Regexp
+	selectIntoTableRe  *regexp.Regexp
+	insertTableRe      *regexp.Regexp
+	deleteTableRe      *regexp.Regexp
+	deletePTableRe     *regexp.Regexp
+	logTableRe         *regexp.Regexp
+	selectTempRe       *regexp.Regexp
+	tableNameRe        *regexp.Regexp
+	continuedTableRe   *regexp.Regexp
+	tableAliasRe       *regexp.Regexp
+	columnNameRe       *regexp.Regexp
+	insertColumnsRe    *regexp.Regexp
+	updateColumnsRe    *regexp.Regexp
+	varDeclRe          *regexp.Regexp
+	procParamRe        *regexp.Regexp
+	execRe             *regexp.Regexp
+	selectRe           *regexp.Regexp
+	insertRe           *regexp.Regexp
+	updateRe           *regexp.Regexp
+	deleteRe           *regexp.Regexp
+	includeRe          *regexp.Regexp
+	defineRe           *regexp.Regexp
+	commentRe          *regexp.Regexp
+	pTableRe           *regexp.Regexp
+	tempTableRe        *regexp.Regexp
+}
+
+func extractSelectIntoColumnNames(projection string) []string {
+	segments := splitSQLByTopLevelComma(projection)
+	result := make([]string, 0, len(segments))
+	seen := make(map[string]struct{}, len(segments))
+	for _, segment := range segments {
+		name := inferSelectColumnName(segment)
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, name)
+	}
+	return result
+}
+
+func splitSQLByTopLevelComma(text string) []string {
+	parts := make([]string, 0)
+	var current strings.Builder
+	parenDepth := 0
+	inSingleQuote := false
+	runes := []rune(text)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if r == '\'' {
+			if inSingleQuote && i+1 < len(runes) && runes[i+1] == '\'' {
+				current.WriteRune(r)
+				current.WriteRune(runes[i+1])
+				i++
+				continue
+			}
+			inSingleQuote = !inSingleQuote
+			current.WriteRune(r)
+			continue
+		}
+		if !inSingleQuote {
+			switch r {
+			case '(':
+				parenDepth++
+			case ')':
+				if parenDepth > 0 {
+					parenDepth--
+				}
+			case ',':
+				if parenDepth == 0 {
+					part := strings.TrimSpace(current.String())
+					if part != "" {
+						parts = append(parts, part)
+					}
+					current.Reset()
+					continue
+				}
+			}
+		}
+		current.WriteRune(r)
+	}
+	last := strings.TrimSpace(current.String())
+	if last != "" {
+		parts = append(parts, last)
+	}
+	return parts
+}
+
+func inferSelectColumnName(expr string) string {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return ""
+	}
+	if idx := strings.Index(expr, "--"); idx >= 0 {
+		expr = strings.TrimSpace(expr[:idx])
+	}
+	if expr == "" {
+		return ""
+	}
+
+	asAliasRe := regexp.MustCompile(`(?i)\bas\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*$`)
+	if matches := asAliasRe.FindStringSubmatch(expr); matches != nil {
+		return strings.TrimSpace(matches[1])
+	}
+
+	parts := strings.Fields(expr)
+	if len(parts) >= 2 {
+		candidate := strings.Trim(parts[len(parts)-1], "[]`\",()")
+		if candidate != "" && !isSQLKeyword(candidate) {
+			return candidate
+		}
+	}
+
+	if dotIdx := strings.LastIndex(expr, "."); dotIdx >= 0 && dotIdx+1 < len(expr) {
+		candidate := strings.TrimSpace(expr[dotIdx+1:])
+		candidate = strings.Trim(candidate, "[]`\",()")
+		if candidate != "" && !isSQLKeyword(candidate) {
+			return candidate
+		}
+	}
+
+	candidate := strings.Trim(expr, "[]`\",()")
+	if candidate == "" || isSQLKeyword(candidate) {
+		return ""
+	}
+	return candidate
+}
+
+func startsWithAnyCI(value string, prefixes ...string) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(value))
+	for _, prefix := range prefixes {
+		prefix = strings.TrimSpace(strings.ToLower(prefix))
+		if prefix != "" && strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSQLKeyword(word string) bool {
+	keywords := map[string]bool{
+		"SELECT": true,
+		"FROM":   true,
+		"WHERE":  true,
+		"JOIN":   true,
+		"LEFT":   true,
+		"RIGHT":  true,
+		"INNER":  true,
+		"OUTER":  true,
+		"CASE":   true,
+		"WHEN":   true,
+		"THEN":   true,
+		"ELSE":   true,
+		"END":    true,
+		"AS":     true,
+		"INTO":   true,
+	}
+	return keywords[strings.ToUpper(strings.TrimSpace(word))]
 }
 
 // ParseResult результат парсинга SQL-файла
@@ -96,12 +237,18 @@ func NewParser() *Parser {
 		alterTableAddRe: regexp.MustCompile(`(?i)^\s*alter\s+table\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+add\s+(.+?)\s*$`),
 		// create [unique] index index_name on table_name(field1, field2)
 		createIndexRe: regexp.MustCompile(`(?i)^\s*create\s+(unique\s+)?index\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+on\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*\(([^\)]*)\)`),
+		// start of multiline create [unique] index definition
+		createIndexStartRe: regexp.MustCompile(`(?i)^\s*create\s+(unique\s+)?index\s+([A-Za-z_#][A-Za-z0-9_#]*)\b(.*)$`),
+		// ON table_name part (can be placed on the same or next lines)
+		createIndexOnRe: regexp.MustCompile(`(?i)^\s*on\s+([A-Za-z_#][A-Za-z0-9_#]*)\b(.*)$`),
 		// M_ADD_FIELD('table','column_definition')
 		mAddFieldRe: regexp.MustCompile(`(?i)\bM_ADD_FIELD\s*\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)`),
 		// M_CRT_INDEX('UNIQUE','index','table','field1,field2')
 		mCreateIndexRe: regexp.MustCompile(`(?i)\bM_CRT_INDEX\s*\(\s*'([^']*)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']*)'\s*\)`),
 		// select ... into table_name
 		selectIntoRe: regexp.MustCompile(`(?i)\bselect\b.*\binto\s+([A-Za-z_#][A-Za-z0-9_#]*)`),
+		// into table_name (for multiline SELECT ... INTO)
+		selectIntoTableRe: regexp.MustCompile(`(?i)\binto\s+([A-Za-z_#][A-Za-z0-9_#]*)`),
 		// insert [into] table_name [hint] - поддерживаем оба формата
 		insertTableRe: regexp.MustCompile(`(?i)^\s*insert\s+(?:into\s+)?([A-Za-z_#][A-Za-z0-9_#]*)\b`),
 		// delete table_name
@@ -193,6 +340,14 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		currentCreateTableOrder int
 		inFromTableList         bool
 		pendingColumns          []pendingSQLColumn
+		collectingSelectInto    bool
+		selectIntoProjection    strings.Builder
+		inCreateIndexDefinition bool
+		createIndexIsUnique     bool
+		createIndexName         string
+		createIndexTableName    string
+		createIndexFields       strings.Builder
+		createIndexStartLine    int
 		lineNum                 int
 		statementStart          int
 		statementLines          []string
@@ -231,6 +386,89 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 				FieldOrder:      idx + 1,
 				LineNumber:      currentLine,
 			})
+		}
+	}
+	flushSelectIntoProjection := func(tableName string, currentLine int) {
+		projection := strings.TrimSpace(selectIntoProjection.String())
+		if projection == "" || strings.TrimSpace(tableName) == "" {
+			collectingSelectInto = false
+			selectIntoProjection.Reset()
+			return
+		}
+		columnNames := extractSelectIntoColumnNames(projection)
+		for idx, columnName := range columnNames {
+			appendColumnDefinition(tableName, fmt.Sprintf("%s DSUNKNOWN", columnName), "select_into", currentLine, idx+1)
+		}
+		collectingSelectInto = false
+		selectIntoProjection.Reset()
+	}
+	appendMultilineCreateIndex := func(currentLine int) {
+		if !inCreateIndexDefinition {
+			return
+		}
+		if strings.TrimSpace(createIndexName) == "" || strings.TrimSpace(createIndexTableName) == "" {
+			inCreateIndexDefinition = false
+			createIndexIsUnique = false
+			createIndexName = ""
+			createIndexTableName = ""
+			createIndexFields.Reset()
+			createIndexStartLine = 0
+			return
+		}
+		indexType := ""
+		if createIndexIsUnique {
+			indexType = "UNIQUE"
+		}
+		lineForDefinition := createIndexStartLine
+		if lineForDefinition <= 0 {
+			lineForDefinition = currentLine
+		}
+		appendIndexDefinition(createIndexTableName, createIndexName, createIndexFields.String(), indexType, "create_index", createIndexIsUnique, lineForDefinition)
+		inCreateIndexDefinition = false
+		createIndexIsUnique = false
+		createIndexName = ""
+		createIndexTableName = ""
+		createIndexFields.Reset()
+		createIndexStartLine = 0
+	}
+	consumeCreateIndexTail := func(tail string, currentLine int) {
+		remaining := strings.TrimSpace(tail)
+		for remaining != "" {
+			if createIndexTableName == "" {
+				onMatch := p.createIndexOnRe.FindStringSubmatch(remaining)
+				if onMatch == nil {
+					break
+				}
+				createIndexTableName = strings.TrimSpace(onMatch[1])
+				remaining = strings.TrimSpace(onMatch[2])
+				continue
+			}
+
+			openIdx := strings.Index(remaining, "(")
+			if openIdx < 0 {
+				break
+			}
+			afterOpen := remaining[openIdx+1:]
+			closeIdx := strings.Index(afterOpen, ")")
+			if closeIdx >= 0 {
+				chunk := strings.TrimSpace(afterOpen[:closeIdx])
+				if chunk != "" {
+					if createIndexFields.Len() > 0 {
+						createIndexFields.WriteString(",")
+					}
+					createIndexFields.WriteString(chunk)
+				}
+				appendMultilineCreateIndex(currentLine)
+				break
+			}
+			chunk := strings.TrimSpace(afterOpen)
+			if chunk != "" {
+				if createIndexFields.Len() > 0 {
+					createIndexFields.WriteString(",")
+				}
+				createIndexFields.WriteString(chunk)
+			}
+			break
 		}
 	}
 
@@ -356,6 +594,55 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 			continue
 		}
 
+		if p.selectRe.MatchString(trimmed) {
+			lowerTrimmed := strings.ToLower(trimmed)
+			selectKeywordIndex := strings.Index(lowerTrimmed, "select")
+			remainder := strings.TrimSpace(trimmed)
+			if selectKeywordIndex >= 0 {
+				remainder = strings.TrimSpace(trimmed[selectKeywordIndex+len("select"):])
+			}
+			if strings.TrimSpace(remainder) != "" {
+				collectingSelectInto = true
+				selectIntoProjection.Reset()
+				selectIntoProjection.WriteString(remainder)
+			}
+		}
+
+		if collectingSelectInto {
+			candidate := strings.TrimSpace(trimmed)
+			if p.selectRe.MatchString(candidate) {
+				lowerCandidate := strings.ToLower(candidate)
+				if idx := strings.Index(lowerCandidate, "select"); idx >= 0 {
+					candidate = strings.TrimSpace(candidate[idx+len("select"):])
+				}
+			}
+			if matches := p.selectIntoTableRe.FindStringSubmatch(candidate); matches != nil {
+				intoMatchIdx := p.selectIntoTableRe.FindStringSubmatchIndex(candidate)
+				if len(intoMatchIdx) >= 2 {
+					projectionPart := strings.TrimSpace(candidate[:intoMatchIdx[0]])
+					if projectionPart != "" {
+						if selectIntoProjection.Len() > 0 {
+							selectIntoProjection.WriteString(" ")
+						}
+						selectIntoProjection.WriteString(projectionPart)
+					}
+				}
+				flushSelectIntoProjection(strings.TrimSpace(matches[1]), lineNum)
+			} else if !p.selectRe.MatchString(trimmed) {
+				if startsWithAnyCI(trimmed, "from", "join", "where", "group", "order", "union", "go") {
+					collectingSelectInto = false
+					selectIntoProjection.Reset()
+				} else {
+					if candidate != "" {
+						if selectIntoProjection.Len() > 0 {
+							selectIntoProjection.WriteString(" ")
+						}
+						selectIntoProjection.WriteString(candidate)
+					}
+				}
+			}
+		}
+
 		// Проверяем #include
 		if matches := p.includeRe.FindStringSubmatch(trimmed); matches != nil {
 			flushStatement(lineNum)
@@ -372,7 +659,6 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 
 		if matches := p.procCreateRe.FindStringSubmatch(trimmed); matches != nil {
 			flushStatement(lineNum - 1)
-			procName = matches[1]
 			continue
 		}
 
@@ -380,6 +666,9 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		// Границы процедуры важны для line range (диапазона строк) и для того,
 		// чтобы later relation builder (построитель связей) мог привязать найденные сущности к процедуре.
 		if matches := p.procBeginRe.FindStringSubmatch(trimmed); matches != nil {
+			if inProcedure && strings.Contains(strings.ToUpper(trimmed), "__BEGIN_PROCEDURE__") {
+				continue
+			}
 			flushStatement(lineNum - 1)
 			procName = matches[1]
 			procLineStart = lineNum
@@ -453,6 +742,12 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		}
 
 		if strings.EqualFold(trimmed, "go") {
+			inCreateIndexDefinition = false
+			createIndexIsUnique = false
+			createIndexName = ""
+			createIndexTableName = ""
+			createIndexFields.Reset()
+			createIndexStartLine = 0
 			flushStatement(lineNum - 1)
 			resetStatementState()
 			inCreateTableDefinition = false
@@ -497,6 +792,31 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 			definition := strings.TrimSpace(matches[2])
 			appendColumnDefinition(tableName, definition, "macro_add_field", lineNum, 0)
 		}
+		if inCreateIndexDefinition {
+			consumeCreateIndexTail(trimmed, lineNum)
+			if inCreateIndexDefinition && createIndexTableName != "" && !strings.Contains(trimmed, "(") {
+				chunk := strings.TrimSpace(strings.TrimSuffix(trimmed, ","))
+				chunk = strings.TrimSpace(strings.TrimPrefix(chunk, ","))
+				if closeIdx := strings.Index(chunk, ")"); closeIdx >= 0 {
+					chunk = strings.TrimSpace(chunk[:closeIdx])
+				}
+				if chunk != "" && !strings.EqualFold(chunk, "on") && !strings.EqualFold(chunk, ")") {
+					if p.createIndexOnRe.MatchString(chunk) {
+						chunk = ""
+					}
+				}
+				if chunk != "" && !strings.EqualFold(chunk, "on") && !strings.EqualFold(chunk, ")") {
+					if createIndexFields.Len() > 0 {
+						createIndexFields.WriteString(",")
+					}
+					createIndexFields.WriteString(chunk)
+				}
+			}
+			if inCreateIndexDefinition && strings.Contains(trimmed, ")") {
+				appendMultilineCreateIndex(lineNum)
+			}
+			continue
+		}
 		if matches := p.createIndexRe.FindStringSubmatch(trimmed); matches != nil {
 			isUnique := strings.TrimSpace(matches[1]) != ""
 			indexName := strings.TrimSpace(matches[2])
@@ -507,6 +827,20 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 				indexType = "UNIQUE"
 			}
 			appendIndexDefinition(tableName, indexName, indexFields, indexType, "create_index", isUnique, lineNum)
+			continue
+		}
+		if matches := p.createIndexStartRe.FindStringSubmatch(trimmed); matches != nil {
+			inCreateIndexDefinition = true
+			createIndexIsUnique = strings.TrimSpace(matches[1]) != ""
+			createIndexName = strings.TrimSpace(matches[2])
+			createIndexTableName = ""
+			createIndexFields.Reset()
+			createIndexStartLine = lineNum
+			consumeCreateIndexTail(strings.TrimSpace(matches[3]), lineNum)
+			if inCreateIndexDefinition && strings.Contains(trimmed, ")") {
+				appendMultilineCreateIndex(lineNum)
+			}
+			continue
 		}
 		if matches := p.mCreateIndexRe.FindStringSubmatch(trimmed); matches != nil {
 			indexType := strings.TrimSpace(matches[1])
@@ -1034,6 +1368,13 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 
 	flushPendingColumns()
 	flushStatement(lineNum)
+	if collectingSelectInto {
+		collectingSelectInto = false
+		selectIntoProjection.Reset()
+	}
+	if inCreateIndexDefinition {
+		appendMultilineCreateIndex(lineNum)
+	}
 
 	if inProcedure && currentProc != nil && currentProc.LineEnd == 0 {
 		currentProc.LineEnd = len(lines)

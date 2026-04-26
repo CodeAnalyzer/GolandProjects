@@ -39,13 +39,16 @@ func (q *Query) SearchRelationsByEntity(sourceType string, sourceID int64, targe
 	if len(conditions) == 0 {
 		return nil, fmt.Errorf("at least one relation filter must be provided")
 	}
+	relationIDs, err := q.selectRelationIDs(conditions, args, argPos, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(relationIDs) == 0 {
+		return []RelationResult{}, nil
+	}
 
-	queryText := relationSearchBaseQuery()
-	queryText += " WHERE " + strings.Join(conditions, " AND ")
-	queryText += fmt.Sprintf(" ORDER BY r.id DESC LIMIT $%d", argPos)
-	args = append(args, limit)
-
-	rows, err := q.db.Query(queryText, args...)
+	queryText, queryArgs := buildRelationDetailsQueryByIDs(relationIDs)
+	rows, err := q.db.Query(queryText, queryArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +83,97 @@ func (q *Query) SearchRelationsByEntity(sourceType string, sourceID int64, targe
 	return results, rows.Err()
 }
 
+func (q *Query) selectRelationIDs(conditions []string, args []interface{}, argPos int, limit int) ([]int64, error) {
+	queryText := "SELECT r.id FROM relations r WHERE " + strings.Join(conditions, " AND ")
+	queryText += fmt.Sprintf(" ORDER BY r.id DESC LIMIT $%d", argPos)
+	queryArgs := make([]interface{}, 0, len(args)+1)
+	queryArgs = append(queryArgs, args...)
+	queryArgs = append(queryArgs, limit)
+
+	rows, err := q.db.Query(queryText, queryArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]int64, 0, limit)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return ids, nil
+}
+
+func buildRelationDetailsQueryByIDs(ids []int64) (string, []interface{}) {
+	placeholders := make([]string, 0, len(ids))
+	args := make([]interface{}, 0, len(ids))
+	for i, id := range ids {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+		args = append(args, id)
+	}
+	queryText := relationSearchBaseQuery()
+	queryText += " WHERE r.id IN (" + strings.Join(placeholders, ",") + ")"
+	queryText += " ORDER BY r.id DESC"
+	return queryText, args
+}
+
+func buildRelationNameExistsCondition(side string, relationType string, argPos int) (string, bool) {
+	idColumn := "r.source_id"
+	if strings.EqualFold(side, "target") {
+		idColumn = "r.target_id"
+	}
+
+	var tableName string
+	var nameColumn string
+	switch strings.ToLower(strings.TrimSpace(relationType)) {
+	case "sql_procedure":
+		tableName = "sql_procedures"
+		nameColumn = "proc_name"
+	case "sql_table":
+		tableName = "sql_tables"
+		nameColumn = "table_name"
+	case "pas_method":
+		tableName = "pas_methods"
+		nameColumn = "method_name"
+	case "js_function":
+		tableName = "js_functions"
+		nameColumn = "function_name"
+	case "api_contract":
+		tableName = "api_contracts"
+		nameColumn = "contract_name"
+	case "report_form":
+		tableName = "report_forms"
+		nameColumn = "report_name"
+	case "report_field":
+		tableName = "report_fields"
+		nameColumn = "field_name"
+	case "report_param":
+		tableName = "report_params"
+		nameColumn = "param_name"
+	case "vb_function":
+		tableName = "vb_functions"
+		nameColumn = "function_name"
+	case "query_fragment":
+		tableName = "query_fragments"
+		nameColumn = "component_name"
+	case "smf_instrument":
+		tableName = "smf_instruments"
+		nameColumn = "instrument_name"
+	default:
+		return "", false
+	}
+
+	condition := fmt.Sprintf("EXISTS (SELECT 1 FROM %s n WHERE n.id = %s AND n.%s ILIKE $%d)", tableName, idColumn, nameColumn, argPos)
+	return condition, true
+}
+
 func (q *Query) SearchRelations(sourceType string, sourceName string, targetType string, targetName string, relationType string, limit int) ([]RelationResult, error) {
 	conditions := make([]string, 0, 5)
 	args := make([]interface{}, 0, 6)
@@ -101,40 +195,84 @@ func (q *Query) SearchRelations(sourceType string, sourceName string, targetType
 		argPos++
 	}
 	if sourceName != "" {
-		conditions = append(conditions, fmt.Sprintf(`(
-			CASE
-				WHEN r.source_type = 'sql_procedure' THEN sp_src.proc_name
-				WHEN r.source_type = 'sql_table' THEN st_src.table_name
-				WHEN r.source_type = 'pas_method' THEN pm_src.method_name
-				WHEN r.source_type = 'js_function' THEN jf_src.function_name
-				WHEN r.source_type = 'api_contract' THEN ac_src.contract_name
-				WHEN r.source_type = 'report_form' THEN rf_src.report_name
-				WHEN r.source_type = 'report_field' THEN rfield_src.field_name
-				WHEN r.source_type = 'report_param' THEN rparam_src.param_name
-				WHEN r.source_type = 'vb_function' THEN vf_src.function_name
-				WHEN r.source_type = 'query_fragment' THEN qf_src.component_name
-				WHEN r.source_type = 'smf_instrument' THEN smf_src.instrument_name
-				ELSE NULL
-			END ILIKE $%d)`, argPos))
+		if sourceType != "" {
+			if existsCondition, ok := buildRelationNameExistsCondition("source", sourceType, argPos); ok {
+				conditions = append(conditions, existsCondition)
+			} else {
+				conditions = append(conditions, fmt.Sprintf(`(
+					CASE
+						WHEN r.source_type = 'sql_procedure' THEN sp_src.proc_name
+						WHEN r.source_type = 'sql_table' THEN st_src.table_name
+						WHEN r.source_type = 'pas_method' THEN pm_src.method_name
+						WHEN r.source_type = 'js_function' THEN jf_src.function_name
+						WHEN r.source_type = 'api_contract' THEN ac_src.contract_name
+						WHEN r.source_type = 'report_form' THEN rf_src.report_name
+						WHEN r.source_type = 'report_field' THEN rfield_src.field_name
+						WHEN r.source_type = 'report_param' THEN rparam_src.param_name
+						WHEN r.source_type = 'vb_function' THEN vf_src.function_name
+						WHEN r.source_type = 'query_fragment' THEN qf_src.component_name
+						WHEN r.source_type = 'smf_instrument' THEN smf_src.instrument_name
+						ELSE NULL
+					END ILIKE $%d)`, argPos))
+			}
+		} else {
+			conditions = append(conditions, fmt.Sprintf(`(
+				CASE
+					WHEN r.source_type = 'sql_procedure' THEN sp_src.proc_name
+					WHEN r.source_type = 'sql_table' THEN st_src.table_name
+					WHEN r.source_type = 'pas_method' THEN pm_src.method_name
+					WHEN r.source_type = 'js_function' THEN jf_src.function_name
+					WHEN r.source_type = 'api_contract' THEN ac_src.contract_name
+					WHEN r.source_type = 'report_form' THEN rf_src.report_name
+					WHEN r.source_type = 'report_field' THEN rfield_src.field_name
+					WHEN r.source_type = 'report_param' THEN rparam_src.param_name
+					WHEN r.source_type = 'vb_function' THEN vf_src.function_name
+					WHEN r.source_type = 'query_fragment' THEN qf_src.component_name
+					WHEN r.source_type = 'smf_instrument' THEN smf_src.instrument_name
+					ELSE NULL
+				END ILIKE $%d)`, argPos))
+		}
 		args = append(args, "%"+sourceName+"%")
 		argPos++
 	}
 	if targetName != "" {
-		conditions = append(conditions, fmt.Sprintf(`(
-			CASE
-				WHEN r.target_type = 'sql_procedure' THEN sp_tgt.proc_name
-				WHEN r.target_type = 'sql_table' THEN st_tgt.table_name
-				WHEN r.target_type = 'pas_method' THEN pm_tgt.method_name
-				WHEN r.target_type = 'js_function' THEN jf_tgt.function_name
-				WHEN r.target_type = 'api_contract' THEN ac_tgt.contract_name
-				WHEN r.target_type = 'report_form' THEN rf_tgt.report_name
-				WHEN r.target_type = 'report_field' THEN rfield_tgt.field_name
-				WHEN r.target_type = 'report_param' THEN rparam_tgt.param_name
-				WHEN r.target_type = 'vb_function' THEN vf_tgt.function_name
-				WHEN r.target_type = 'query_fragment' THEN qf_tgt.component_name
-				WHEN r.target_type = 'smf_instrument' THEN smf_tgt.instrument_name
-				ELSE NULL
-			END ILIKE $%d)`, argPos))
+		if targetType != "" {
+			if existsCondition, ok := buildRelationNameExistsCondition("target", targetType, argPos); ok {
+				conditions = append(conditions, existsCondition)
+			} else {
+				conditions = append(conditions, fmt.Sprintf(`(
+					CASE
+						WHEN r.target_type = 'sql_procedure' THEN sp_tgt.proc_name
+						WHEN r.target_type = 'sql_table' THEN st_tgt.table_name
+						WHEN r.target_type = 'pas_method' THEN pm_tgt.method_name
+						WHEN r.target_type = 'js_function' THEN jf_tgt.function_name
+						WHEN r.target_type = 'api_contract' THEN ac_tgt.contract_name
+						WHEN r.target_type = 'report_form' THEN rf_tgt.report_name
+						WHEN r.target_type = 'report_field' THEN rfield_tgt.field_name
+						WHEN r.target_type = 'report_param' THEN rparam_tgt.param_name
+						WHEN r.target_type = 'vb_function' THEN vf_tgt.function_name
+						WHEN r.target_type = 'query_fragment' THEN qf_tgt.component_name
+						WHEN r.target_type = 'smf_instrument' THEN smf_tgt.instrument_name
+						ELSE NULL
+					END ILIKE $%d)`, argPos))
+			}
+		} else {
+			conditions = append(conditions, fmt.Sprintf(`(
+				CASE
+					WHEN r.target_type = 'sql_procedure' THEN sp_tgt.proc_name
+					WHEN r.target_type = 'sql_table' THEN st_tgt.table_name
+					WHEN r.target_type = 'pas_method' THEN pm_tgt.method_name
+					WHEN r.target_type = 'js_function' THEN jf_tgt.function_name
+					WHEN r.target_type = 'api_contract' THEN ac_tgt.contract_name
+					WHEN r.target_type = 'report_form' THEN rf_tgt.report_name
+					WHEN r.target_type = 'report_field' THEN rfield_tgt.field_name
+					WHEN r.target_type = 'report_param' THEN rparam_tgt.param_name
+					WHEN r.target_type = 'vb_function' THEN vf_tgt.function_name
+					WHEN r.target_type = 'query_fragment' THEN qf_tgt.component_name
+					WHEN r.target_type = 'smf_instrument' THEN smf_tgt.instrument_name
+					ELSE NULL
+				END ILIKE $%d)`, argPos))
+		}
 		args = append(args, "%"+targetName+"%")
 		argPos++
 	}
@@ -142,13 +280,16 @@ func (q *Query) SearchRelations(sourceType string, sourceName string, targetType
 	if len(conditions) == 0 {
 		return nil, fmt.Errorf("at least one relation filter must be provided")
 	}
+	relationIDs, err := q.selectRelationIDs(conditions, args, argPos, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(relationIDs) == 0 {
+		return []RelationResult{}, nil
+	}
 
-	queryText := relationSearchBaseQuery()
-	queryText += " WHERE " + strings.Join(conditions, " AND ")
-	queryText += fmt.Sprintf(" ORDER BY r.id DESC LIMIT $%d", argPos)
-	args = append(args, limit)
-
-	rows, err := q.db.Query(queryText, args...)
+	queryText, queryArgs := buildRelationDetailsQueryByIDs(relationIDs)
+	rows, err := q.db.Query(queryText, queryArgs...)
 	if err != nil {
 		return nil, err
 	}
