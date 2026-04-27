@@ -2014,6 +2014,23 @@ func (db *DB) insertSQLColumnDefinitionsBatch(columns []*model.SQLColumnDefiniti
 	})
 }
 
+func (db *DB) FindLatestSQLColumnDefinitionType(tableName string, columnName string) (string, error) {
+	var dataType string
+	err := db.QueryRow(`
+		SELECT data_type
+		FROM sql_column_definitions
+		WHERE LOWER(table_name) = LOWER($1)
+		  AND LOWER(column_name) = LOWER($2)
+		  AND TRIM(COALESCE(data_type, '')) <> ''
+		ORDER BY id DESC
+		LIMIT 1
+	`, strings.TrimSpace(tableName), strings.TrimSpace(columnName)).Scan(&dataType)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(dataType), nil
+}
+
 // FindSQLIndexDefinitionIDsByFile возвращает id SQL-индексов по file_id.
 func (db *DB) FindSQLIndexDefinitionIDsByFile(fileID int64) (map[string]int64, error) {
 	rows, err := db.Query(`

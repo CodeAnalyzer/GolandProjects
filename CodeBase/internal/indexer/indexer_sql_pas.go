@@ -1,7 +1,10 @@
 package indexer
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	cbencoding "github.com/codebase/internal/encoding"
@@ -21,6 +24,9 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 	result, err := parser.ParseFile(path)
 	if err != nil {
 		return fmt.Errorf("failed to parse SQL file: %w", err)
+	}
+	if err := idx.enrichSelectIntoDataTypes(result); err != nil {
+		return fmt.Errorf("failed to enrich select_into data types: %w", err)
 	}
 
 	// Готовим batch-срезы для всех сущностей
@@ -278,6 +284,310 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 	}
 
 	return nil
+}
+
+type selectIntoFragmentInfo struct {
+	ProjectionSegments []string
+	AliasToTable       map[string]string
+}
+
+func (idx *Indexer) enrichSelectIntoDataTypes(result *sqlparser.ParseResult) error {
+	if result == nil || len(result.ColumnDefinitions) == 0 || len(result.Fragments) == 0 {
+		return nil
+	}
+	fragmentCache := make(map[int64]*selectIntoFragmentInfo)
+	typeCache := make(map[string]string)
+	for _, definition := range result.ColumnDefinitions {
+		if definition == nil || !strings.EqualFold(strings.TrimSpace(definition.DefinitionKind), "select_into") {
+			continue
+		}
+		fragment := findSelectIntoFragment(result.Fragments, definition.LineNumber, definition.TableName)
+		if fragment == nil {
+			continue
+		}
+		cacheKey := int64(fragment.LineNumber)*1000000 + int64(fragment.LineEnd)
+		info, ok := fragmentCache[cacheKey]
+		if !ok {
+			parsed, parseOk := parseSelectIntoFragmentInfo(fragment.QueryText, definition.TableName)
+			if !parseOk {
+				fragmentCache[cacheKey] = nil
+				continue
+			}
+			fragmentCache[cacheKey] = parsed
+			info = parsed
+		}
+		if info == nil || definition.ColumnOrder <= 0 || definition.ColumnOrder > len(info.ProjectionSegments) {
+			continue
+		}
+		segment := strings.TrimSpace(info.ProjectionSegments[definition.ColumnOrder-1])
+		if segment == "" {
+			continue
+		}
+		if outputName := inferSelectIntoOutputName(segment); outputName != "" {
+			definition.ColumnName = outputName
+		}
+		if !strings.EqualFold(strings.TrimSpace(definition.DataType), "DSUNKNOWN") {
+			continue
+		}
+		qualifier, sourceColumn, ok := extractSimpleSourceColumn(segment)
+		if !ok {
+			continue
+		}
+		resolvedTable := strings.TrimSpace(qualifier)
+		if mapped, hasAlias := info.AliasToTable[strings.ToLower(resolvedTable)]; hasAlias {
+			resolvedTable = mapped
+		}
+		if resolvedTable == "" || sourceColumn == "" {
+			continue
+		}
+		typeKey := strings.ToLower(strings.TrimSpace(resolvedTable)) + "|" + strings.ToLower(strings.TrimSpace(sourceColumn))
+		if cachedType, hasCached := typeCache[typeKey]; hasCached {
+			if cachedType != "" {
+				definition.DataType = cachedType
+			}
+			continue
+		}
+		resolvedType, err := idx.db.FindLatestSQLColumnDefinitionType(resolvedTable, sourceColumn)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				typeCache[typeKey] = ""
+				continue
+			}
+			return err
+		}
+		resolvedType = strings.TrimSpace(resolvedType)
+		typeCache[typeKey] = resolvedType
+		if resolvedType != "" {
+			definition.DataType = resolvedType
+		}
+	}
+	return nil
+}
+
+func findSelectIntoFragment(fragments []*model.QueryFragment, lineNumber int, tableName string) *model.QueryFragment {
+	if lineNumber <= 0 || strings.TrimSpace(tableName) == "" {
+		return nil
+	}
+	tablePattern := regexp.MustCompile(`(?i)\binto\s+` + regexp.QuoteMeta(strings.TrimSpace(tableName)) + `\b`)
+	for _, fragment := range fragments {
+		if fragment == nil {
+			continue
+		}
+		if lineNumber < fragment.LineNumber {
+			continue
+		}
+		if fragment.LineEnd > 0 && lineNumber > fragment.LineEnd {
+			continue
+		}
+		if !tablePattern.MatchString(fragment.QueryText) {
+			continue
+		}
+		return fragment
+	}
+	return nil
+}
+
+func parseSelectIntoFragmentInfo(queryText string, targetTable string) (*selectIntoFragmentInfo, bool) {
+	projection, tail, ok := extractTopLevelSelectIntoParts(queryText, targetTable)
+	if !ok {
+		return nil, false
+	}
+	segments := splitSQLByTopLevelCommaLocal(projection)
+	if len(segments) == 0 {
+		return nil, false
+	}
+	aliasToTable := make(map[string]string)
+	aliasMatches := regexp.MustCompile(`(?i)\b(?:from|join)\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_]*)\b`).FindAllStringSubmatch(tail, -1)
+	for _, match := range aliasMatches {
+		if len(match) < 3 {
+			continue
+		}
+		tableName := strings.TrimSpace(match[1])
+		alias := strings.TrimSpace(match[2])
+		if tableName == "" || alias == "" {
+			continue
+		}
+		aliasToTable[strings.ToLower(alias)] = tableName
+	}
+	return &selectIntoFragmentInfo{ProjectionSegments: segments, AliasToTable: aliasToTable}, true
+}
+
+func extractTopLevelSelectIntoParts(text string, targetTable string) (string, string, bool) {
+	runes := []rune(text)
+	parenDepth := 0
+	inSingleQuote := false
+	for i := 0; i+4 <= len(runes); i++ {
+		r := runes[i]
+		if r == '\'' {
+			if inSingleQuote && i+1 < len(runes) && runes[i+1] == '\'' {
+				i++
+				continue
+			}
+			inSingleQuote = !inSingleQuote
+			continue
+		}
+		if inSingleQuote {
+			continue
+		}
+		switch r {
+		case '(':
+			parenDepth++
+			continue
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+			continue
+		}
+		if parenDepth != 0 {
+			continue
+		}
+		if !strings.EqualFold(string(runes[i:i+4]), "into") {
+			continue
+		}
+		if i > 0 {
+			prev := runes[i-1]
+			if !(prev == ' ' || prev == '\t' || prev == '\n' || prev == '\r' || prev == ',') {
+				continue
+			}
+		}
+		j := i + 4
+		for j < len(runes) && (runes[j] == ' ' || runes[j] == '\t' || runes[j] == '\n' || runes[j] == '\r') {
+			j++
+		}
+		if j >= len(runes) {
+			continue
+		}
+		start := j
+		for j < len(runes) {
+			ch := runes[j]
+			if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '#' {
+				j++
+				continue
+			}
+			break
+		}
+		tableName := strings.TrimSpace(string(runes[start:j]))
+		if strings.TrimSpace(targetTable) != "" && !strings.EqualFold(tableName, strings.TrimSpace(targetTable)) {
+			continue
+		}
+		prefix := strings.TrimSpace(string(runes[:i]))
+		selectPos := strings.Index(strings.ToLower(prefix), "select")
+		if selectPos < 0 {
+			continue
+		}
+		projection := strings.TrimSpace(prefix[selectPos+len("select"):])
+		if projection == "" {
+			continue
+		}
+		tail := strings.TrimSpace(string(runes[j:]))
+		return projection, tail, true
+	}
+	return "", "", false
+}
+
+func splitSQLByTopLevelCommaLocal(text string) []string {
+	parts := make([]string, 0)
+	var current strings.Builder
+	parenDepth := 0
+	inSingleQuote := false
+	runes := []rune(text)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if r == '\'' {
+			if inSingleQuote && i+1 < len(runes) && runes[i+1] == '\'' {
+				current.WriteRune(r)
+				current.WriteRune(runes[i+1])
+				i++
+				continue
+			}
+			inSingleQuote = !inSingleQuote
+			current.WriteRune(r)
+			continue
+		}
+		if !inSingleQuote {
+			switch r {
+			case '(':
+				parenDepth++
+			case ')':
+				if parenDepth > 0 {
+					parenDepth--
+				}
+			case ',':
+				if parenDepth == 0 {
+					part := strings.TrimSpace(current.String())
+					if part != "" {
+						parts = append(parts, part)
+					}
+					current.Reset()
+					continue
+				}
+			}
+		}
+		current.WriteRune(r)
+	}
+	last := strings.TrimSpace(current.String())
+	if last != "" {
+		parts = append(parts, last)
+	}
+	return parts
+}
+
+func inferSelectIntoOutputName(segment string) string {
+	value := strings.TrimSpace(segment)
+	if value == "" {
+		return ""
+	}
+	if idx := strings.Index(value, "--"); idx >= 0 {
+		value = strings.TrimSpace(value[:idx])
+	}
+	value = strings.TrimSpace(strings.TrimSuffix(value, ","))
+	if value == "" {
+		return ""
+	}
+	if matches := regexp.MustCompile(`(?i)\bas\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*$`).FindStringSubmatch(value); len(matches) > 1 {
+		return strings.TrimSpace(matches[1])
+	}
+	parts := strings.Fields(value)
+	if len(parts) >= 2 {
+		candidate := strings.Trim(parts[len(parts)-1], "[]`\",()")
+		if candidate != "" {
+			return candidate
+		}
+	}
+	if dotIdx := strings.LastIndex(value, "."); dotIdx >= 0 && dotIdx+1 < len(value) {
+		candidate := strings.TrimSpace(value[dotIdx+1:])
+		candidate = strings.Trim(candidate, "[]`\",()")
+		if candidate != "" {
+			return candidate
+		}
+	}
+	candidate := strings.Trim(value, "[]`\",()")
+	return strings.TrimSpace(candidate)
+}
+
+func extractSimpleSourceColumn(segment string) (string, string, bool) {
+	value := strings.TrimSpace(segment)
+	if value == "" {
+		return "", "", false
+	}
+	if idx := strings.Index(value, "--"); idx >= 0 {
+		value = strings.TrimSpace(value[:idx])
+	}
+	value = strings.TrimSpace(strings.TrimSuffix(value, ","))
+	if value == "" {
+		return "", "", false
+	}
+	value = regexp.MustCompile(`(?i)\s+as\s+[A-Za-z_#][A-Za-z0-9_#]*\s*$`).ReplaceAllString(value, "")
+	if direct := regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*$`).FindStringSubmatch(value); len(direct) == 3 {
+		return strings.TrimSpace(direct[1]), strings.TrimSpace(direct[2]), true
+	}
+	if regexp.MustCompile(`(?i)^\s*(?:isnull|coalesce)\s*\(`).MatchString(value) {
+		if ref := regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)`).FindStringSubmatch(value); len(ref) == 3 {
+			return strings.TrimSpace(ref[1]), strings.TrimSpace(ref[2]), true
+		}
+	}
+	return "", "", false
 }
 
 func (idx *Indexer) buildT01GeneratedSubscriberRelations(path string, fileID int64, procedures []*model.SQLProcedure, calls []*model.SQLProcedureCall) ([]*model.Relation, error) {
