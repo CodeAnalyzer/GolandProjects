@@ -308,7 +308,62 @@ func (q *Query) SearchAPIImplementations(name string, limit int) ([]APIImplement
 }
 
 func (q *Query) SearchAPIPublishers(name string, limit int) ([]APIRelatedProcedureResult, error) {
-	return q.searchAPIRelatedProcedures(name, "publishes_event", limit)
+	rows, err := q.db.Query(`
+		SELECT *
+		FROM (
+			SELECT c.id, c.contract_name, p.id, p.proc_name AS procedure_name, f.rel_path, r.relation_type,
+			       FALSE AS is_indirect, '' AS via_procedure
+			FROM relations r
+			JOIN api_contracts c ON c.id = r.target_id AND r.target_type = 'api_contract'
+			JOIN sql_procedures p ON p.id = r.source_id AND r.source_type = 'sql_procedure'
+			JOIN files f ON f.id = p.file_id
+			WHERE r.relation_type = 'publishes_event'
+			  AND c.contract_name ILIKE $1
+
+			UNION
+
+			SELECT c.id, c.contract_name, p_indirect.id, p_indirect.proc_name AS procedure_name, f_indirect.rel_path,
+			       CONCAT(r_direct.relation_type, '->', r_chain.relation_type) AS relation_type,
+			       TRUE AS is_indirect, p_direct.proc_name AS via_procedure
+			FROM relations r_direct
+			JOIN api_contracts c ON c.id = r_direct.target_id AND r_direct.target_type = 'api_contract'
+			JOIN sql_procedures p_direct ON p_direct.id = r_direct.source_id AND r_direct.source_type = 'sql_procedure'
+			JOIN relations r_chain ON r_chain.source_type = 'sql_procedure' AND r_chain.source_id = p_direct.id
+			JOIN sql_procedures p_indirect ON p_indirect.id = r_chain.target_id AND r_chain.target_type = 'sql_procedure'
+			JOIN files f_indirect ON f_indirect.id = p_indirect.file_id
+			WHERE r_direct.relation_type = 'publishes_event'
+			  AND r_chain.relation_type IN ('dispatches_to', 'dispatches_to_subscriber', 'calls_procedure')
+			  AND c.contract_name ILIKE $1
+
+			UNION
+
+			SELECT ev.id, ev.contract_name, cb.id, cb.contract_name AS procedure_name, f_cb.rel_path,
+			       r.relation_type, FALSE AS is_indirect, '' AS via_procedure
+			FROM relations r
+			JOIN api_contracts cb ON cb.id = r.source_id AND r.source_type = 'api_contract'
+			JOIN api_contracts ev ON ev.id = r.target_id AND r.target_type = 'api_contract'
+			JOIN files f_cb ON f_cb.id = cb.file_id
+			WHERE r.relation_type = 'subscribes_to_event'
+			  AND LOWER(cb.contract_kind) = 'callback_event'
+			  AND LOWER(ev.contract_kind) = 'event'
+			  AND ev.contract_name ILIKE $1
+		) rel
+		ORDER BY contract_name, is_indirect, procedure_name
+		LIMIT $2
+	`, "%"+name+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]APIRelatedProcedureResult, 0)
+	for rows.Next() {
+		var item APIRelatedProcedureResult
+		if err := rows.Scan(&item.ContractID, &item.ContractName, &item.ProcedureID, &item.ProcedureName, &item.File, &item.RelationType, &item.IsIndirect, &item.ViaProcedure); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (q *Query) SearchAPIConsumers(name string, limit int) ([]APIRelatedProcedureResult, error) {

@@ -170,6 +170,79 @@ func startsWithAnyCI(value string, prefixes ...string) bool {
 	return false
 }
 
+func findTopLevelIntoClause(text string) (string, string, bool) {
+	runes := []rune(text)
+	parenDepth := 0
+	inSingleQuote := false
+
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if r == '\'' {
+			if inSingleQuote && i+1 < len(runes) && runes[i+1] == '\'' {
+				i++
+				continue
+			}
+			inSingleQuote = !inSingleQuote
+			continue
+		}
+		if inSingleQuote {
+			continue
+		}
+		switch r {
+		case '(':
+			parenDepth++
+			continue
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+			continue
+		}
+		if parenDepth != 0 {
+			continue
+		}
+		if i+4 > len(runes) || !strings.EqualFold(string(runes[i:i+4]), "into") {
+			continue
+		}
+		if i > 0 {
+			prev := runes[i-1]
+			if !(prev == ' ' || prev == '\t' || prev == '\n' || prev == '\r' || prev == ',') {
+				continue
+			}
+		}
+
+		j := i + 4
+		for j < len(runes) && (runes[j] == ' ' || runes[j] == '\t' || runes[j] == '\n' || runes[j] == '\r') {
+			j++
+		}
+		if j >= len(runes) {
+			continue
+		}
+		if !((runes[j] >= 'A' && runes[j] <= 'Z') || (runes[j] >= 'a' && runes[j] <= 'z') || runes[j] == '_' || runes[j] == '#') {
+			continue
+		}
+
+		start := j
+		for j < len(runes) {
+			ch := runes[j]
+			if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '#' {
+				j++
+				continue
+			}
+			break
+		}
+
+		projection := strings.TrimSpace(string(runes[:i]))
+		tableName := strings.TrimSpace(string(runes[start:j]))
+		if projection == "" || tableName == "" {
+			continue
+		}
+		return projection, tableName, true
+	}
+
+	return "", "", false
+}
+
 func isSQLKeyword(word string) bool {
 	keywords := map[string]bool{
 		"SELECT": true,
@@ -601,7 +674,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 			if selectKeywordIndex >= 0 {
 				remainder = strings.TrimSpace(trimmed[selectKeywordIndex+len("select"):])
 			}
-			if strings.TrimSpace(remainder) != "" {
+			if strings.TrimSpace(remainder) != "" && !strings.HasPrefix(strings.TrimSpace(remainder), "@") {
 				collectingSelectInto = true
 				selectIntoProjection.Reset()
 				selectIntoProjection.WriteString(remainder)
@@ -610,24 +683,25 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 
 		if collectingSelectInto {
 			candidate := strings.TrimSpace(trimmed)
+			if !p.selectRe.MatchString(trimmed) && startsWithAnyCI(trimmed, "insert", "update", "delete", "exec", "execute", "truncate", "declare", "set", "if", "begin", "end", "profile_time", "grant", "x_anymode", "go") {
+				collectingSelectInto = false
+				selectIntoProjection.Reset()
+				continue
+			}
 			if p.selectRe.MatchString(candidate) {
 				lowerCandidate := strings.ToLower(candidate)
 				if idx := strings.Index(lowerCandidate, "select"); idx >= 0 {
 					candidate = strings.TrimSpace(candidate[idx+len("select"):])
 				}
 			}
-			if matches := p.selectIntoTableRe.FindStringSubmatch(candidate); matches != nil {
-				intoMatchIdx := p.selectIntoTableRe.FindStringSubmatchIndex(candidate)
-				if len(intoMatchIdx) >= 2 {
-					projectionPart := strings.TrimSpace(candidate[:intoMatchIdx[0]])
-					if projectionPart != "" {
-						if selectIntoProjection.Len() > 0 {
-							selectIntoProjection.WriteString(" ")
-						}
-						selectIntoProjection.WriteString(projectionPart)
+			if projectionPart, tableName, ok := findTopLevelIntoClause(candidate); ok {
+				if projectionPart != "" {
+					if selectIntoProjection.Len() > 0 {
+						selectIntoProjection.WriteString(" ")
 					}
+					selectIntoProjection.WriteString(projectionPart)
 				}
-				flushSelectIntoProjection(strings.TrimSpace(matches[1]), lineNum)
+				flushSelectIntoProjection(strings.TrimSpace(tableName), lineNum)
 			} else if !p.selectRe.MatchString(trimmed) {
 				if startsWithAnyCI(trimmed, "from", "join", "where", "group", "order", "union", "go") {
 					collectingSelectInto = false

@@ -218,6 +218,23 @@ func (db *DB) FindLatestAPIContractIDByNameAndKind(name string, kind string) (in
 	return id, nil
 }
 
+func (db *DB) FindLatestAPIContractIDByNameKindAndOwnerModule(name string, kind string, ownerModule string) (int64, error) {
+	trimmedName := strings.TrimSpace(name)
+	trimmedKind := strings.TrimSpace(kind)
+	trimmedOwnerModule := strings.TrimSpace(ownerModule)
+	if trimmedOwnerModule != "" {
+		var id int64
+		err := db.QueryRow(`SELECT id FROM api_contracts WHERE LOWER(contract_name)=LOWER($1) AND LOWER(contract_kind)=LOWER($2) AND LOWER(owner_module)=LOWER($3) ORDER BY id DESC LIMIT 1`, trimmedName, trimmedKind, trimmedOwnerModule).Scan(&id)
+		if err == nil {
+			return id, nil
+		}
+		if err != sql.ErrNoRows {
+			return 0, err
+		}
+	}
+	return db.FindLatestAPIContractIDByNameAndKind(trimmedName, trimmedKind)
+}
+
 func BuildAPIContractLookupKey(name string, kind string) string {
 	return strings.ToLower(strings.TrimSpace(name)) + "|" + strings.ToLower(strings.TrimSpace(kind))
 }
