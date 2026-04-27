@@ -53,6 +53,35 @@ type Parser struct {
 	tempTableRe        *regexp.Regexp
 }
 
+func topLevelParenDepth(text string) int {
+	runes := []rune(text)
+	parenDepth := 0
+	inSingleQuote := false
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if r == '\'' {
+			if inSingleQuote && i+1 < len(runes) && runes[i+1] == '\'' {
+				i++
+				continue
+			}
+			inSingleQuote = !inSingleQuote
+			continue
+		}
+		if inSingleQuote {
+			continue
+		}
+		switch r {
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		}
+	}
+	return parenDepth
+}
+
 func extractSelectIntoColumnNames(projection string) []string {
 	segments := splitSQLByTopLevelComma(projection)
 	result := make([]string, 0, len(segments))
@@ -241,6 +270,47 @@ func findTopLevelIntoClause(text string) (string, string, bool) {
 	}
 
 	return "", "", false
+}
+
+func findStandaloneIntoTableName(text string) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return "", false
+	}
+	runes := []rune(trimmed)
+	if len(runes) < 5 || !strings.EqualFold(string(runes[:4]), "into") {
+		return "", false
+	}
+	if len(runes) > 4 {
+		next := runes[4]
+		if !(next == ' ' || next == '\t' || next == '\n' || next == '\r') {
+			return "", false
+		}
+	}
+	j := 4
+	for j < len(runes) && (runes[j] == ' ' || runes[j] == '\t' || runes[j] == '\n' || runes[j] == '\r') {
+		j++
+	}
+	if j >= len(runes) {
+		return "", false
+	}
+	if !((runes[j] >= 'A' && runes[j] <= 'Z') || (runes[j] >= 'a' && runes[j] <= 'z') || runes[j] == '_' || runes[j] == '#') {
+		return "", false
+	}
+	start := j
+	for j < len(runes) {
+		ch := runes[j]
+		if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '#' {
+			j++
+			continue
+		}
+		break
+	}
+	tableName := strings.TrimSpace(string(runes[start:j]))
+	if tableName == "" {
+		return "", false
+	}
+	return tableName, true
 }
 
 func isSQLKeyword(word string) bool {
@@ -683,7 +753,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 
 		if collectingSelectInto {
 			candidate := strings.TrimSpace(trimmed)
-			if !p.selectRe.MatchString(trimmed) && startsWithAnyCI(trimmed, "insert", "update", "delete", "exec", "execute", "truncate", "declare", "set", "if", "begin", "end", "profile_time", "grant", "x_anymode", "go") {
+			if !p.selectRe.MatchString(trimmed) && startsWithAnyCI(trimmed, "insert", "update", "delete", "exec", "execute", "truncate", "declare", "set", "if", "begin", "profile_time", "grant", "x_anymode", "go") {
 				collectingSelectInto = false
 				selectIntoProjection.Reset()
 				continue
@@ -702,10 +772,21 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 					selectIntoProjection.WriteString(projectionPart)
 				}
 				flushSelectIntoProjection(strings.TrimSpace(tableName), lineNum)
+			} else if tableName, ok := findStandaloneIntoTableName(candidate); ok {
+				flushSelectIntoProjection(strings.TrimSpace(tableName), lineNum)
 			} else if !p.selectRe.MatchString(trimmed) {
 				if startsWithAnyCI(trimmed, "from", "join", "where", "group", "order", "union", "go") {
-					collectingSelectInto = false
-					selectIntoProjection.Reset()
+					if topLevelParenDepth(selectIntoProjection.String()) == 0 {
+						collectingSelectInto = false
+						selectIntoProjection.Reset()
+					} else {
+						if candidate != "" {
+							if selectIntoProjection.Len() > 0 {
+								selectIntoProjection.WriteString(" ")
+							}
+							selectIntoProjection.WriteString(candidate)
+						}
+					}
 				} else {
 					if candidate != "" {
 						if selectIntoProjection.Len() > 0 {
