@@ -235,6 +235,39 @@ func (db *DB) FindLatestAPIContractIDByNameKindAndOwnerModule(name string, kind 
 	return db.FindLatestAPIContractIDByNameAndKind(trimmedName, trimmedKind)
 }
 
+func (db *DB) FindAPIContractsByKind(kind string) ([]*model.APIContract, error) {
+	rows, err := db.Query(`
+		SELECT id, contract_name, contract_kind, used_object_name, used_module_sys_name
+		FROM api_contracts
+		WHERE LOWER(contract_kind)=LOWER($1)
+		ORDER BY id DESC
+	`, strings.TrimSpace(kind))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]*model.APIContract, 0)
+	for rows.Next() {
+		item := &model.APIContract{}
+		if err := rows.Scan(&item.ID, &item.ContractName, &item.ContractKind, &item.UsedObjectName, &item.UsedModuleSysName); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (db *DB) DeleteSubscribesToEventRelations() error {
+	_, err := db.Exec(`
+		DELETE FROM relations
+		WHERE source_type = 'api_contract'
+		  AND target_type = 'api_contract'
+		  AND relation_type = 'subscribes_to_event'
+	`)
+	return err
+}
+
 func BuildAPIContractLookupKey(name string, kind string) string {
 	return strings.ToLower(strings.TrimSpace(name)) + "|" + strings.ToLower(strings.TrimSpace(kind))
 }

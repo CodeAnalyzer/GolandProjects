@@ -149,52 +149,6 @@ func (idx *Indexer) saveRelations(relations []*model.Relation, path string, stat
 	return nil
 }
 
-func (idx *Indexer) buildCallbackEventRelations(contracts []*model.APIContract, contractIDs map[string]int64) ([]*model.Relation, error) {
-	if len(contracts) == 0 || len(contractIDs) == 0 {
-		return nil, nil
-	}
-	relations := make([]*model.Relation, 0)
-	seen := make(map[string]struct{})
-	for _, contract := range contracts {
-		if contract == nil || !strings.EqualFold(strings.TrimSpace(contract.ContractKind), "callback_event") {
-			continue
-		}
-		usedObjectName := strings.TrimSpace(contract.UsedObjectName)
-		if usedObjectName == "" {
-			continue
-		}
-		sourceID := contractIDs[store.BuildAPIContractLookupKey(contract.ContractName, contract.ContractKind)]
-		if sourceID == 0 {
-			continue
-		}
-		targetID, err := idx.db.FindLatestAPIContractIDByNameKindAndOwnerModule(usedObjectName, "event", strings.TrimSpace(contract.UsedModuleSysName))
-		if err != nil {
-			if err == dbsql.ErrNoRows {
-				continue
-			}
-			return nil, err
-		}
-		if targetID == 0 {
-			continue
-		}
-		key := fmt.Sprintf("api_contract|%d|api_contract|%d|subscribes_to_event", sourceID, targetID)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		relations = append(relations, &model.Relation{
-			SourceType:   "api_contract",
-			SourceID:     sourceID,
-			TargetType:   "api_contract",
-			TargetID:     targetID,
-			RelationType: "subscribes_to_event",
-			Confidence:   "xml",
-			LineNumber:   1,
-		})
-	}
-	return relations, nil
-}
-
 func (idx *Indexer) buildSQLProcedureRelations(fileID int64, procedures []*model.SQLProcedure, tables []*model.SQLTable, calls []*model.SQLProcedureCall) ([]*model.Relation, error) {
 	procedureIDs, err := idx.db.FindSQLProcedureIDsByFile(fileID)
 	if err != nil {

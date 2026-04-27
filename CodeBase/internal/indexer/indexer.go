@@ -791,13 +791,6 @@ func (idx *Indexer) parseXMLFile(path string, fileID int64, stats *model.ScanSta
 	if err != nil {
 		return err
 	}
-	callbackRelations, err := idx.buildCallbackEventRelations(result.Contracts, contractIDs)
-	if err != nil {
-		return fmt.Errorf("failed to build callback event relations: %w", err)
-	}
-	if err := idx.saveRelations(callbackRelations, path, stats); err != nil {
-		return err
-	}
 	for _, item := range result.Params {
 		if len(result.Contracts) > 0 {
 			key := store.BuildAPIContractLookupKey(result.Contracts[0].ContractName, result.Contracts[0].ContractKind)

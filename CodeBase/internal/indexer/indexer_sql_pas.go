@@ -88,9 +88,7 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 		indexDefinitionsBatch = append(indexDefinitionsBatch, indexDefinition)
 	}
 
-	for _, indexField := range result.IndexFields {
-		indexDefinitionFieldsBatch = append(indexDefinitionFieldsBatch, indexField)
-	}
+	indexDefinitionFieldsBatch = append(indexDefinitionFieldsBatch, result.IndexFields...)
 
 	for _, fragment := range result.Fragments {
 		if fragment == nil {

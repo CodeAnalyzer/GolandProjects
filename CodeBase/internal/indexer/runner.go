@@ -100,6 +100,7 @@ func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error
 
 	workersWG.Wait()
 	idx.postProcessPASPending(collector)
+	idx.postProcessCallbackEventRelations(collector)
 	stats := collector.Snapshot()
 	status := "completed"
 	if stats.Errors > 0 {
@@ -177,6 +178,7 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 
 	workersWG.Wait()
 	idx.postProcessPASPending(collector)
+	idx.postProcessCallbackEventRelations(collector)
 
 	for path := range existing {
 		if _, ok := seen[path]; ok {
