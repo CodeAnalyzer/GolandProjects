@@ -174,6 +174,41 @@ func buildRelationNameExistsCondition(side string, relationType string, argPos i
 	return condition, true
 }
 
+func buildRelationAnyNameExistsCondition(side string, argPos int) string {
+	idColumn := "r.source_id"
+	typeColumn := "r.source_type"
+	if strings.EqualFold(side, "target") {
+		idColumn = "r.target_id"
+		typeColumn = "r.target_type"
+	}
+
+	return fmt.Sprintf(`(
+		(%s = 'sql_procedure' AND EXISTS (SELECT 1 FROM sql_procedures n WHERE n.id = %s AND n.proc_name ILIKE $%d)) OR
+		(%s = 'sql_table' AND EXISTS (SELECT 1 FROM sql_tables n WHERE n.id = %s AND n.table_name ILIKE $%d)) OR
+		(%s = 'pas_method' AND EXISTS (SELECT 1 FROM pas_methods n WHERE n.id = %s AND n.method_name ILIKE $%d)) OR
+		(%s = 'js_function' AND EXISTS (SELECT 1 FROM js_functions n WHERE n.id = %s AND n.function_name ILIKE $%d)) OR
+		(%s = 'api_contract' AND EXISTS (SELECT 1 FROM api_contracts n WHERE n.id = %s AND n.contract_name ILIKE $%d)) OR
+		(%s = 'report_form' AND EXISTS (SELECT 1 FROM report_forms n WHERE n.id = %s AND n.report_name ILIKE $%d)) OR
+		(%s = 'report_field' AND EXISTS (SELECT 1 FROM report_fields n WHERE n.id = %s AND n.field_name ILIKE $%d)) OR
+		(%s = 'report_param' AND EXISTS (SELECT 1 FROM report_params n WHERE n.id = %s AND n.param_name ILIKE $%d)) OR
+		(%s = 'vb_function' AND EXISTS (SELECT 1 FROM vb_functions n WHERE n.id = %s AND n.function_name ILIKE $%d)) OR
+		(%s = 'query_fragment' AND EXISTS (SELECT 1 FROM query_fragments n WHERE n.id = %s AND n.component_name ILIKE $%d)) OR
+		(%s = 'smf_instrument' AND EXISTS (SELECT 1 FROM smf_instruments n WHERE n.id = %s AND n.instrument_name ILIKE $%d))
+	)`,
+		typeColumn, idColumn, argPos,
+		typeColumn, idColumn, argPos,
+		typeColumn, idColumn, argPos,
+		typeColumn, idColumn, argPos,
+		typeColumn, idColumn, argPos,
+		typeColumn, idColumn, argPos,
+		typeColumn, idColumn, argPos,
+		typeColumn, idColumn, argPos,
+		typeColumn, idColumn, argPos,
+		typeColumn, idColumn, argPos,
+		typeColumn, idColumn, argPos,
+	)
+}
+
 func (q *Query) SearchRelations(sourceType string, sourceName string, targetType string, targetName string, relationType string, limit int) ([]RelationResult, error) {
 	conditions := make([]string, 0, 5)
 	args := make([]interface{}, 0, 6)
@@ -199,38 +234,10 @@ func (q *Query) SearchRelations(sourceType string, sourceName string, targetType
 			if existsCondition, ok := buildRelationNameExistsCondition("source", sourceType, argPos); ok {
 				conditions = append(conditions, existsCondition)
 			} else {
-				conditions = append(conditions, fmt.Sprintf(`(
-					CASE
-						WHEN r.source_type = 'sql_procedure' THEN sp_src.proc_name
-						WHEN r.source_type = 'sql_table' THEN st_src.table_name
-						WHEN r.source_type = 'pas_method' THEN pm_src.method_name
-						WHEN r.source_type = 'js_function' THEN jf_src.function_name
-						WHEN r.source_type = 'api_contract' THEN ac_src.contract_name
-						WHEN r.source_type = 'report_form' THEN rf_src.report_name
-						WHEN r.source_type = 'report_field' THEN rfield_src.field_name
-						WHEN r.source_type = 'report_param' THEN rparam_src.param_name
-						WHEN r.source_type = 'vb_function' THEN vf_src.function_name
-						WHEN r.source_type = 'query_fragment' THEN qf_src.component_name
-						WHEN r.source_type = 'smf_instrument' THEN smf_src.instrument_name
-						ELSE NULL
-					END ILIKE $%d)`, argPos))
+				return nil, fmt.Errorf("unsupported source-type for --source-name filter: %s", sourceType)
 			}
 		} else {
-			conditions = append(conditions, fmt.Sprintf(`(
-				CASE
-					WHEN r.source_type = 'sql_procedure' THEN sp_src.proc_name
-					WHEN r.source_type = 'sql_table' THEN st_src.table_name
-					WHEN r.source_type = 'pas_method' THEN pm_src.method_name
-					WHEN r.source_type = 'js_function' THEN jf_src.function_name
-					WHEN r.source_type = 'api_contract' THEN ac_src.contract_name
-					WHEN r.source_type = 'report_form' THEN rf_src.report_name
-					WHEN r.source_type = 'report_field' THEN rfield_src.field_name
-					WHEN r.source_type = 'report_param' THEN rparam_src.param_name
-					WHEN r.source_type = 'vb_function' THEN vf_src.function_name
-					WHEN r.source_type = 'query_fragment' THEN qf_src.component_name
-					WHEN r.source_type = 'smf_instrument' THEN smf_src.instrument_name
-					ELSE NULL
-				END ILIKE $%d)`, argPos))
+			conditions = append(conditions, buildRelationAnyNameExistsCondition("source", argPos))
 		}
 		args = append(args, "%"+sourceName+"%")
 		argPos++
@@ -240,38 +247,10 @@ func (q *Query) SearchRelations(sourceType string, sourceName string, targetType
 			if existsCondition, ok := buildRelationNameExistsCondition("target", targetType, argPos); ok {
 				conditions = append(conditions, existsCondition)
 			} else {
-				conditions = append(conditions, fmt.Sprintf(`(
-					CASE
-						WHEN r.target_type = 'sql_procedure' THEN sp_tgt.proc_name
-						WHEN r.target_type = 'sql_table' THEN st_tgt.table_name
-						WHEN r.target_type = 'pas_method' THEN pm_tgt.method_name
-						WHEN r.target_type = 'js_function' THEN jf_tgt.function_name
-						WHEN r.target_type = 'api_contract' THEN ac_tgt.contract_name
-						WHEN r.target_type = 'report_form' THEN rf_tgt.report_name
-						WHEN r.target_type = 'report_field' THEN rfield_tgt.field_name
-						WHEN r.target_type = 'report_param' THEN rparam_tgt.param_name
-						WHEN r.target_type = 'vb_function' THEN vf_tgt.function_name
-						WHEN r.target_type = 'query_fragment' THEN qf_tgt.component_name
-						WHEN r.target_type = 'smf_instrument' THEN smf_tgt.instrument_name
-						ELSE NULL
-					END ILIKE $%d)`, argPos))
+				return nil, fmt.Errorf("unsupported target-type for --target-name filter: %s", targetType)
 			}
 		} else {
-			conditions = append(conditions, fmt.Sprintf(`(
-				CASE
-					WHEN r.target_type = 'sql_procedure' THEN sp_tgt.proc_name
-					WHEN r.target_type = 'sql_table' THEN st_tgt.table_name
-					WHEN r.target_type = 'pas_method' THEN pm_tgt.method_name
-					WHEN r.target_type = 'js_function' THEN jf_tgt.function_name
-					WHEN r.target_type = 'api_contract' THEN ac_tgt.contract_name
-					WHEN r.target_type = 'report_form' THEN rf_tgt.report_name
-					WHEN r.target_type = 'report_field' THEN rfield_tgt.field_name
-					WHEN r.target_type = 'report_param' THEN rparam_tgt.param_name
-					WHEN r.target_type = 'vb_function' THEN vf_tgt.function_name
-					WHEN r.target_type = 'query_fragment' THEN qf_tgt.component_name
-					WHEN r.target_type = 'smf_instrument' THEN smf_tgt.instrument_name
-					ELSE NULL
-				END ILIKE $%d)`, argPos))
+			conditions = append(conditions, buildRelationAnyNameExistsCondition("target", argPos))
 		}
 		args = append(args, "%"+targetName+"%")
 		argPos++

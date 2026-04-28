@@ -1,6 +1,7 @@
 package query
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -35,22 +36,22 @@ type APITableIndexFieldResult struct {
 }
 
 type APITableIndexResult struct {
-	ID             int64                    `json:"id"`
-	BusinessTableID int64                   `json:"business_table_id,omitempty"`
-	BusinessObject string                   `json:"business_object,omitempty"`
-	TableName      string                   `json:"table_name"`
-	IndexName      string                   `json:"index_name"`
-	IndexFields    string                   `json:"index_fields,omitempty"`
-	IndexType      int                      `json:"index_type,omitempty"`
-	IsClustered    bool                     `json:"is_clustered,omitempty"`
-	File           string                   `json:"file,omitempty"`
-	LineNumber     int                      `json:"line_number,omitempty"`
-	Fields         []APITableIndexFieldResult `json:"fields,omitempty"`
+	ID              int64                      `json:"id"`
+	BusinessTableID int64                      `json:"business_table_id,omitempty"`
+	BusinessObject  string                     `json:"business_object,omitempty"`
+	TableName       string                     `json:"table_name"`
+	IndexName       string                     `json:"index_name"`
+	IndexFields     string                     `json:"index_fields,omitempty"`
+	IndexType       int                        `json:"index_type,omitempty"`
+	IsClustered     bool                       `json:"is_clustered,omitempty"`
+	File            string                     `json:"file,omitempty"`
+	LineNumber      int                        `json:"line_number,omitempty"`
+	Fields          []APITableIndexFieldResult `json:"fields,omitempty"`
 }
 
 type APITableResult struct {
 	ID             int64                 `json:"id"`
-	ContractID     int64                 `json:"contract_id,omitempty"`
+	ContractID     *int64                `json:"contract_id,omitempty"`
 	BusinessObject string                `json:"business_object,omitempty"`
 	ContractName   string                `json:"contract_name,omitempty"`
 	ContractKind   string                `json:"contract_kind,omitempty"`
@@ -59,6 +60,7 @@ type APITableResult struct {
 	Description    string                `json:"description,omitempty"`
 	File           string                `json:"file,omitempty"`
 	LineNumber     int                   `json:"line_number,omitempty"`
+	Source         string                `json:"source,omitempty"`
 	Fields         []APITableFieldResult `json:"fields,omitempty"`
 }
 
@@ -145,17 +147,30 @@ func (q *Query) SearchAPIContract(name string, like bool, limit int) ([]APIContr
 
 func (q *Query) SearchAPITable(name string, like bool, limit int) ([]APITableResult, error) {
 	lookupValue := buildLookupValue(name, like)
-	lookupCondition := buildNameLookupCondition([]string{"t.table_name"}, like, 1)
-	rows, err := q.db.Query(`
+	lookupCondition1 := buildNameLookupCondition([]string{"t.table_name"}, like, 1)
+	lookupCondition2 := buildNameLookupCondition([]string{"bt.table_name"}, like, 1)
+
+	queryText := `
 		SELECT t.id, t.contract_id, COALESCE(c.business_object,''), COALESCE(c.contract_name,''), COALESCE(c.contract_kind,''),
-		       t.direction, t.table_name, COALESCE(t.description,''), COALESCE(f.rel_path,''), t.line_number
+		       t.direction, t.table_name, COALESCE(t.description,''), COALESCE(f.rel_path,''), t.line_number, 'contract' as source
 		FROM api_contract_tables t
 		LEFT JOIN api_contracts c ON c.id = t.contract_id
 		LEFT JOIN files f ON f.id = c.file_id
-		WHERE `+lookupCondition+`
-		ORDER BY t.table_name, t.id DESC
+		WHERE ` + lookupCondition1 + `
+
+		UNION ALL
+
+		SELECT bt.id, NULL::bigint, bt.business_object, ''::text, ''::text,
+		       ''::text, bt.table_name, COALESCE(bt.description,''), COALESCE(f.rel_path,''), bt.line_number, 'business_object' as source
+		FROM api_business_object_tables bt
+		LEFT JOIN files f ON f.id = bt.file_id
+		WHERE ` + lookupCondition2 + `
+
+		ORDER BY table_name, id DESC
 		LIMIT $2
-	`, lookupValue, limit)
+	`
+
+	rows, err := q.db.Query(queryText, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -163,10 +178,19 @@ func (q *Query) SearchAPITable(name string, like bool, limit int) ([]APITableRes
 	items := make([]APITableResult, 0)
 	for rows.Next() {
 		var item APITableResult
-		if err := rows.Scan(&item.ID, &item.ContractID, &item.BusinessObject, &item.ContractName, &item.ContractKind, &item.Direction, &item.TableName, &item.Description, &item.File, &item.LineNumber); err != nil {
+		if err := rows.Scan(&item.ID, &item.ContractID, &item.BusinessObject, &item.ContractName, &item.ContractKind, &item.Direction, &item.TableName, &item.Description, &item.File, &item.LineNumber, &item.Source); err != nil {
 			return nil, err
 		}
-		fieldRows, err := q.db.Query(`SELECT field_name, COALESCE(type_name,''), required, COALESCE(description,''), line_number FROM api_contract_table_fields WHERE contract_table_id = $1 ORDER BY param_order, id`, item.ID)
+
+		var fieldRows *sql.Rows
+		var err error
+
+		if item.Source == "contract" {
+			fieldRows, err = q.db.Query(`SELECT field_name, COALESCE(type_name,''), required, COALESCE(description,''), line_number FROM api_contract_table_fields WHERE contract_table_id = $1 ORDER BY param_order, id`, item.ID)
+		} else {
+			fieldRows, err = q.db.Query(`SELECT field_name, COALESCE(type_name,''), FALSE, COALESCE(description,''), line_number FROM api_business_object_table_fields WHERE business_table_id = $1 ORDER BY param_order, id`, item.ID)
+		}
+
 		if err != nil {
 			return nil, err
 		}
@@ -442,9 +466,11 @@ func (q *Query) loadAPIContractTables(contractID int64) ([]APITableResult, error
 	items := make([]APITableResult, 0)
 	for rows.Next() {
 		var item APITableResult
-		if err := rows.Scan(&item.ID, &item.ContractID, &item.Direction, &item.TableName, &item.Description, &item.LineNumber); err != nil {
+		var contractIDVal int64
+		if err := rows.Scan(&item.ID, &contractIDVal, &item.Direction, &item.TableName, &item.Description, &item.LineNumber); err != nil {
 			return nil, err
 		}
+		item.ContractID = &contractIDVal
 		fieldRows, err := q.db.Query(`SELECT field_name, COALESCE(type_name,''), required, COALESCE(description,''), line_number FROM api_contract_table_fields WHERE contract_table_id = $1 ORDER BY param_order, id`, item.ID)
 		if err != nil {
 			return nil, err
