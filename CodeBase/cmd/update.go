@@ -70,6 +70,7 @@ Uses file hashes to detect changes.`,
 		fmt.Printf("  Procedures:     %d\n", stats.Procedures)
 		fmt.Printf("  Tables:         %d\n", stats.Tables)
 		fmt.Printf("  Columns:        %d\n", stats.Columns)
+		fmt.Printf("  Defines:        %d\n", stats.Defines)
 		fmt.Printf("\n")
 		fmt.Printf("Pascal Entities:\n")
 		fmt.Printf("  Units:          %d\n", stats.Units)

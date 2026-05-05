@@ -397,6 +397,7 @@ type ScanStats struct {
 	JSFunctions     int
 	SMFInstruments  int
 	Forms           int
+	Defines         int
 	ReportFields    int
 	ReportParams    int
 	VBFunctions     int

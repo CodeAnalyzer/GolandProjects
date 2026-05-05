@@ -48,6 +48,11 @@ type Parser struct {
 	deleteRe           *regexp.Regexp
 	includeRe          *regexp.Regexp
 	defineRe           *regexp.Regexp
+	emptyDefineRe      *regexp.Regexp
+	macroDefineRe      *regexp.Regexp
+	emptyMacroDefineRe *regexp.Regexp
+	constDefineRe      *regexp.Regexp
+	constCommentRe     *regexp.Regexp
 	commentRe          *regexp.Regexp
 	pTableRe           *regexp.Regexp
 	tempTableRe        *regexp.Regexp
@@ -345,7 +350,7 @@ type ParseResult struct {
 	Calls             []*model.SQLProcedureCall
 	Fragments         []*model.QueryFragment
 	Includes          []model.IncludeRef
-	Defines           map[string]string
+	Defines           []*model.HDefine
 	Errors            []ParseError
 }
 
@@ -431,7 +436,17 @@ func NewParser() *Parser {
 		// #include <file.h> или #include "file.h"
 		includeRe: regexp.MustCompile(`(?i)#include\s*[<"]([^>"]+)[>"]`),
 		// #define NAME value
-		defineRe: regexp.MustCompile(`(?i)#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.*)`),
+		defineRe: regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.*)$`),
+		// #define NAME
+		emptyDefineRe: regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*$`),
+		// #define MACRO(a,b) body
+		macroDefineRe: regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s+(.+)$`),
+		// #define MACRO(a,b)
+		emptyMacroDefineRe: regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*$`),
+		// #define NAME number
+		constDefineRe: regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+([+-]?\d+)$`),
+		// #define NAME number -- comment
+		constCommentRe: regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+([+-]?\d+)\s*(/\*.*\*/|--.*)$`),
 		// Комментарии --
 		commentRe: regexp.MustCompile(`^\s*--.*$`),
 		// Временные таблицы: pAPI_*, #temp
@@ -465,7 +480,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		Calls:             make([]*model.SQLProcedureCall, 0),
 		Fragments:         make([]*model.QueryFragment, 0),
 		Includes:          make([]model.IncludeRef, 0),
-		Defines:           make(map[string]string),
+		Defines:           make([]*model.HDefine, 0),
 		Errors:            make([]ParseError, 0),
 	}
 
@@ -806,9 +821,55 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		}
 
 		// Проверяем #define
+		if matches := p.macroDefineRe.FindStringSubmatch(trimmed); matches != nil {
+			flushStatement(lineNum)
+			result.Defines = append(result.Defines, &model.HDefine{
+				DefineName:  matches[1],
+				DefineValue: strings.TrimSpace(matches[3]),
+				DefineType:  "macro",
+				LineNumber:  lineNum,
+			})
+			continue
+		}
+		if matches := p.emptyMacroDefineRe.FindStringSubmatch(trimmed); matches != nil {
+			flushStatement(lineNum)
+			result.Defines = append(result.Defines, &model.HDefine{
+				DefineName:  matches[1],
+				DefineValue: "",
+				DefineType:  "macro",
+				LineNumber:  lineNum,
+			})
+			continue
+		}
 		if matches := p.defineRe.FindStringSubmatch(trimmed); matches != nil {
 			flushStatement(lineNum)
-			result.Defines[matches[1]] = matches[2]
+			defineType := "macro"
+			defineValue := matches[2]
+			if p.constDefineRe.MatchString(trimmed) {
+				defineType = "const"
+			} else if constMatches := p.constCommentRe.FindStringSubmatch(trimmed); constMatches != nil {
+				defineType = "const"
+				defineValue = constMatches[2]
+			} else if strings.Contains(defineValue, "--") {
+				defineType = "comment"
+				defineValue = strings.Split(defineValue, "--")[0]
+			}
+			result.Defines = append(result.Defines, &model.HDefine{
+				DefineName:  matches[1],
+				DefineValue: strings.TrimSpace(defineValue),
+				DefineType:  defineType,
+				LineNumber:  lineNum,
+			})
+			continue
+		}
+		if matches := p.emptyDefineRe.FindStringSubmatch(trimmed); matches != nil {
+			flushStatement(lineNum)
+			result.Defines = append(result.Defines, &model.HDefine{
+				DefineName:  matches[1],
+				DefineValue: "",
+				DefineType:  "const",
+				LineNumber:  lineNum,
+			})
 			continue
 		}
 

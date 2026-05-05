@@ -24,21 +24,21 @@ type statsFilesSummary struct {
 }
 
 type statsEntitiesSummary struct {
-	Procedures     int `json:"procedures"`
-	Tables         int `json:"tables"`
-	Columns        int `json:"columns"`
-	Units          int `json:"units"`
-	Classes        int `json:"classes"`
-	Methods        int `json:"methods"`
-	PASFields      int `json:"pas_fields"`
-	JSFunctions    int `json:"js_functions"`
-	SMFInstruments int `json:"smf_instruments"`
-	Forms          int `json:"forms"`
-	Defines        int `json:"defines"`
-	ReportForms    int `json:"report_forms"`
-	ReportFields   int `json:"report_fields"`
-	ReportParams   int `json:"report_params"`
-	VBFunctions    int `json:"vb_functions"`
+	Procedures         int `json:"procedures"`
+	Tables             int `json:"tables"`
+	Columns            int `json:"columns"`
+	Units              int `json:"units"`
+	Classes            int `json:"classes"`
+	Methods            int `json:"methods"`
+	PASFields          int `json:"pas_fields"`
+	JSFunctions        int `json:"js_functions"`
+	SMFInstruments     int `json:"smf_instruments"`
+	Forms              int `json:"forms"`
+	Defines            int `json:"defines"`
+	ReportForms        int `json:"report_forms"`
+	ReportFields       int `json:"report_fields"`
+	ReportParams       int `json:"report_params"`
+	VBFunctions        int `json:"vb_functions"`
 	APIBusinessObjects int `json:"api_business_objects"`
 	APIContracts       int `json:"api_contracts"`
 	APIContractParams  int `json:"api_contract_params"`
@@ -46,10 +46,10 @@ type statsEntitiesSummary struct {
 	APIContractFields  int `json:"api_contract_fields"`
 	APIBusinessParams  int `json:"api_business_params"`
 	APIBusinessTables  int `json:"api_business_tables"`
-	QueryFragments int `json:"query_fragments"`
-	Relations      int `json:"relations"`
-	SQLTableIndexes int `json:"sql_table_indexes"`
-	APITableIndexes int `json:"api_table_indexes"`
+	QueryFragments     int `json:"query_fragments"`
+	Relations          int `json:"relations"`
+	SQLTableIndexes    int `json:"sql_table_indexes"`
+	APITableIndexes    int `json:"api_table_indexes"`
 }
 
 type statsLastScanSummary struct {
@@ -111,6 +111,7 @@ var statsCmd = &cobra.Command{
 		fmt.Printf("  Procedures:      %d\n", stats.Procedures)
 		fmt.Printf("  Tables:          %d\n", stats.Tables)
 		fmt.Printf("  Columns:         %d\n", stats.Columns)
+		fmt.Printf("  Defines:         %d\n", stats.Defines)
 		fmt.Printf("\n")
 		fmt.Printf("Pascal Entities:\n")
 		fmt.Printf("  Units:           %d\n", stats.Units)
@@ -208,21 +209,21 @@ func buildStatsResponse(stats *store.Stats) statsResponse {
 			RPT:   stats.RPTFiles,
 		},
 		Entities: statsEntitiesSummary{
-			Procedures:     stats.Procedures,
-			Tables:         stats.Tables,
-			Columns:        stats.Columns,
-			Units:          stats.Units,
-			Classes:        stats.Classes,
-			Methods:        stats.Methods,
-			PASFields:      stats.PASFields,
-			JSFunctions:    stats.JSFunctions,
-			SMFInstruments: stats.SMFInstruments,
-			Forms:          stats.Forms,
-			Defines:        stats.Defines,
-			ReportForms:    stats.ReportForms,
-			ReportFields:   stats.ReportFields,
-			ReportParams:   stats.ReportParams,
-			VBFunctions:    stats.VBFunctions,
+			Procedures:         stats.Procedures,
+			Tables:             stats.Tables,
+			Columns:            stats.Columns,
+			Units:              stats.Units,
+			Classes:            stats.Classes,
+			Methods:            stats.Methods,
+			PASFields:          stats.PASFields,
+			JSFunctions:        stats.JSFunctions,
+			SMFInstruments:     stats.SMFInstruments,
+			Forms:              stats.Forms,
+			Defines:            stats.Defines,
+			ReportForms:        stats.ReportForms,
+			ReportFields:       stats.ReportFields,
+			ReportParams:       stats.ReportParams,
+			VBFunctions:        stats.VBFunctions,
 			APIBusinessObjects: stats.APIBusinessObjects,
 			APIContracts:       stats.APIContracts,
 			APIContractParams:  stats.APIContractParams,
@@ -230,10 +231,10 @@ func buildStatsResponse(stats *store.Stats) statsResponse {
 			APIContractFields:  stats.APIContractFields,
 			APIBusinessParams:  stats.APIBusinessParams,
 			APIBusinessTables:  stats.APIBusinessTables,
-			QueryFragments: stats.QueryFragments,
-			Relations:      stats.Relations,
-			SQLTableIndexes: stats.SQLTableIndexes,
-			APITableIndexes: stats.APITableIndexes,
+			QueryFragments:     stats.QueryFragments,
+			Relations:          stats.Relations,
+			SQLTableIndexes:    stats.SQLTableIndexes,
+			APITableIndexes:    stats.APITableIndexes,
 		},
 		LastScan: statsLastScanSummary{
 			RunID:  stats.LastScanID,

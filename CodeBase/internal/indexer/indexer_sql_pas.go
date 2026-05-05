@@ -37,7 +37,8 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 	indexDefinitionsBatch := make([]*model.SQLIndexDefinition, 0, len(result.IndexDefinitions))
 	indexDefinitionFieldsBatch := make([]*model.SQLIndexDefinitionField, 0, len(result.IndexFields))
 	fragmentsBatch := make([]*model.QueryFragment, 0, len(result.Fragments))
-	symbolsBatch := make([]*model.Symbol, 0, len(result.Procedures)+len(result.Tables))
+	definesBatch := make([]*model.HDefine, 0, len(result.Defines))
+	symbolsBatch := make([]*model.Symbol, 0, len(result.Procedures)+len(result.Tables)+len(result.Defines))
 
 	// Собираем процедуры в batch
 	for _, proc := range result.Procedures {
@@ -113,6 +114,22 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 		}
 		fragment.TablesReferenced = uniqueStrings(tablesReferenced)
 		fragmentsBatch = append(fragmentsBatch, fragment)
+	}
+
+	for _, define := range result.Defines {
+		if define == nil {
+			continue
+		}
+		define.FileID = fileID
+		definesBatch = append(definesBatch, define)
+		symbolsBatch = append(symbolsBatch, &model.Symbol{
+			FileID:     fileID,
+			SymbolName: define.DefineName,
+			SymbolType: "define",
+			EntityType: "sql",
+			LineNumber: define.LineNumber,
+			Signature:  define.DefineValue,
+		})
 	}
 
 	// Выполняем batch-вставку процедур
@@ -248,6 +265,15 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 		}
 	}
 
+	if len(definesBatch) > 0 {
+		if err := idx.db.BatchInsertHDefines(definesBatch, idx.config.Indexer.BatchSize); err != nil {
+			idx.logError(path, "Error batch inserting SQL defines: %v", err)
+			stats.Errors += len(definesBatch)
+			return err
+		}
+		stats.Defines += len(definesBatch)
+	}
+
 	procedureIDs, err := idx.db.FindSQLProcedureIDsByFile(fileID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve SQL procedure ids for symbols: %w", err)
@@ -256,6 +282,10 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 	if err != nil {
 		return fmt.Errorf("failed to resolve SQL table ids for symbols: %w", err)
 	}
+	defineIDs, err := idx.db.FindHDefineIDsByFile(fileID)
+	if err != nil {
+		return fmt.Errorf("failed to resolve SQL define ids for symbols: %w", err)
+	}
 	for _, symbol := range symbolsBatch {
 		switch symbol.SymbolType {
 		case "procedure":
@@ -263,6 +293,8 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 		case "table":
 			key := store.BuildSQLTableLookupKey(symbol.SymbolName, symbol.SQLContext, symbol.LineNumber)
 			symbol.EntityID = tableIDs[key]
+		case "define":
+			symbol.EntityID = defineIDs[store.BuildHDefineLookupKey(symbol.SymbolName, symbol.LineNumber)]
 		}
 	}
 	for _, fragment := range fragmentsBatch {

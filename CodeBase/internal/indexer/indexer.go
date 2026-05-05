@@ -88,6 +88,7 @@ func mergeScanStats(dst *model.ScanStats, src *model.ScanStats) {
 	dst.JSFunctions += src.JSFunctions
 	dst.SMFInstruments += src.SMFInstruments
 	dst.Forms += src.Forms
+	dst.Defines += src.Defines
 	dst.ReportFields += src.ReportFields
 	dst.ReportParams += src.ReportParams
 	dst.VBFunctions += src.VBFunctions
@@ -198,6 +199,7 @@ func (idx *Indexer) parseHFile(path string, fileID int64, stats *model.ScanStats
 	if err := idx.db.BatchInsertSymbols(symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
+	stats.Defines += len(definesBatch)
 
 	for _, inc := range result.Includes {
 		if err := idx.saveIncludeDirective(fileID, path, inc.IncludePath, inc.LineNumber); err != nil {
