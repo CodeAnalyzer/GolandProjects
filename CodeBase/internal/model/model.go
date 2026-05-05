@@ -120,14 +120,14 @@ type SQLColumn struct {
 
 // SQLColumnDefinition определение поля таблицы из CREATE TABLE
 type SQLColumnDefinition struct {
-	ID          int64
-	FileID      int64
-	TableName   string
-	ColumnName  string
-	DataType    string
+	ID             int64
+	FileID         int64
+	TableName      string
+	ColumnName     string
+	DataType       string
 	DefinitionKind string
-	LineNumber  int
-	ColumnOrder int
+	LineNumber     int
+	ColumnOrder    int
 }
 
 // SQLIndexDefinition определение индекса обычной SQL-таблицы.
@@ -262,8 +262,11 @@ type JSQueryCall struct {
 
 // JSConstant константа JS
 type JSConstant struct {
-	Name  string
-	Value string
+	ID         int64
+	FileID     int64
+	Name       string
+	Value      string
+	LineNumber int
 }
 
 // SMFInstrument модель финансовой операции из SMF
@@ -371,40 +374,40 @@ type Symbol struct {
 
 // ScanStats Статистика сканирования
 type ScanStats struct {
-	FilesScanned   int
-	FilesIndexed   int
-	FilesUpdated   int
-	FilesAdded     int
-	FilesDeleted   int
-	SQLFiles       int
-	PASFiles       int
-	JSFiles        int
-	HFiles         int
-	DFMFiles       int
-	SMFFiles       int
-	TPRFiles       int
-	RPTFiles       int
-	Procedures     int
-	Tables         int
-	Columns        int
-	Units          int
-	Classes        int
-	Methods        int
-	PASFields      int
-	JSFunctions    int
-	SMFInstruments int
-	Forms          int
-	ReportFields   int
-	ReportParams   int
-	VBFunctions    int
-	QueryFragments int
-	Relations      int
-	Errors         int
-	XMLFiles       int
-	APIContracts   int
-	APIParams      int
-	APITables      int
-	APITableFields int
+	FilesScanned    int
+	FilesIndexed    int
+	FilesUpdated    int
+	FilesAdded      int
+	FilesDeleted    int
+	SQLFiles        int
+	PASFiles        int
+	JSFiles         int
+	HFiles          int
+	DFMFiles        int
+	SMFFiles        int
+	TPRFiles        int
+	RPTFiles        int
+	Procedures      int
+	Tables          int
+	Columns         int
+	Units           int
+	Classes         int
+	Methods         int
+	PASFields       int
+	JSFunctions     int
+	SMFInstruments  int
+	Forms           int
+	ReportFields    int
+	ReportParams    int
+	VBFunctions     int
+	QueryFragments  int
+	Relations       int
+	Errors          int
+	XMLFiles        int
+	APIContracts    int
+	APIParams       int
+	APITables       int
+	APITableFields  int
 	APITableIndexes int
 }
 
@@ -547,14 +550,14 @@ type APIBusinessObjectTableIndex struct {
 
 // APIBusinessObjectTableIndexField поле индекса standalone API table.
 type APIBusinessObjectTableIndexField struct {
-	ID             int64
-	TableIndexID   int64
+	ID              int64
+	TableIndexID    int64
 	ParentIndexName string
 	ParentTableName string
-	BusinessObject string
-	FieldName      string
-	FieldOrder     int
-	LineNumber     int
+	BusinessObject  string
+	FieldName       string
+	FieldOrder      int
+	LineNumber      int
 }
 
 // APIContractReturnValue коды возврата контракта.

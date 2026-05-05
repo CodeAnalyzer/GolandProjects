@@ -216,9 +216,11 @@ type MethodResult struct {
 	MethodName string `json:"method_name"`
 	ClassName  string `json:"class_name"`
 	UnitName   string `json:"unit_name"`
+	Signature  string `json:"signature,omitempty"`
+	Visibility string `json:"visibility,omitempty"`
 	File       string `json:"file"`
 	LineNumber int    `json:"line_number"`
-	TableUsage string `json:"table_usage"`
+	TableUsage string `json:"table_usage,omitempty"`
 }
 
 // New создаёт новый Query API

@@ -158,6 +158,23 @@ var queryMethodsCmd = &cobra.Command{
 	},
 }
 
+var queryMethodCmd = &cobra.Command{
+	Use:   "method --name <name> [--like]",
+	Short: "Search PAS methods by name",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runQueryCommand(queryCommandSpec{
+			commandName: "query method",
+			filters: map[string]string{
+				"name": methodName,
+				"like": boolFilterValue(methodLikeSearch),
+			},
+			run: func(q *query.Query) (interface{}, error) {
+				return q.FindPASMethodsByName(methodName, methodLikeSearch, limit)
+			},
+		})
+	},
+}
+
 var queryFormCmd = &cobra.Command{
 	Use:   "form --name <name> [--like]",
 	Short: "Search DFM forms (exact by default)",

@@ -4,12 +4,12 @@
 
 ## Возможности
 
-- **Индексация файлов**: SQL, H, PAS, INC, JS, SMF, DFM, TPR, RPT
+- **Индексация файлов**: SQL, H, PAS, INC, JS, SMF, DFM, TPR, RPT, XML; опционально `.t01`
 - **Извлечение сущностей**:
-  - SQL: процедуры, таблицы, поля, отдельные SQL statements/query fragments, schema patches (ALTER TABLE ... ADD, M_ADD_FIELD, CREATE INDEX, M_CRT_INDEX)
+  - SQL: процедуры, таблицы, поля, определения колонок, определения индексов, отдельные SQL statements/query fragments, schema patches (ALTER TABLE ... ADD, M_ADD_FIELD, CREATE INDEX, M_CRT_INDEX)
   - H-файлы: константы, макросы, определения
   - PAS: юниты, классы, методы, поля, SQL-фрагменты, прямые ссылки на DFM forms/components
-  - JS: функции, вызовы процедур, SQL-запросы
+  - JS: функции, константы, вызовы процедур, SQL-запросы
   - SMF: модели Ф.О. (состояния, действия, счета), встроенный JavaScript
   - DFM: формы, компоненты, `Caption`, встроенные запросы
   - TPR: report forms (отчётные формы), report fields (поля отчёта), report params (параметры отчёта), SQL blocks (SQL-блоки), include directives (директивы include)
@@ -29,10 +29,10 @@
   - SQL procedure -> API contract (`executes_contract`)
   - SQL procedure -> SQL procedure (`dispatches_to_subscriber`) для generated subscriber calls из `.t01`
 - **Поиск и запросы**:
-  - Поиск сущностей по имени
+  - Поиск сущностей по имени через unified symbols index
   - Поиск использований таблиц с точным совпадением по умолчанию и опциональным нечётким режимом
   - Поиск вызовов процедур
-  - Поиск методов, работающих с таблицей
+  - Поиск PAS-методов по имени и методов, работающих с таблицей
   - Поиск SQL/query fragments по тексту SQL
   - Поиск schema таблиц (определений колонок из CREATE TABLE и schema patches)
   - Поиск индексов обычных SQL-таблиц (CREATE INDEX, M_CRT_INDEX)
@@ -45,6 +45,7 @@
   - Поиск report params (параметров отчёта)
   - Поиск VBScript functions (VBScript-функций)
   - Поиск API contracts (контрактов API), API tables (таблиц API), API table indexes (индексов API-таблиц), API params (параметров API), implementations (реализаций), publishers (публикаторов событий), consumers (потребителей контрактов)
+  - Unified `query symbol` для SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects и XML/API symbols
 - **Кодировки**: CP866/WIN1251/UTF8 с эвристическим выбором для legacy-форматов, включая TPR и препроцессированные `.t01`
 
 ## Требования
@@ -143,6 +144,13 @@ codebase update
 codebase query symbol --name MassAccrual_Start
 codebase query symbol --name MassAccrual --like
 codebase query symbol --name MassAccrual --type procedure --json
+codebase query symbol --name TMyForm --type class
+codebase query symbol --name Execute --type method --like
+codebase query symbol --name SomeColumn --type column_definition
+codebase query symbol --name XIE0SomeIndex --type index
+codebase query symbol --name SomeComponent --type component
+codebase query symbol --name SOME_CONST --type constant
+codebase query symbol --name SomeBObject --type api_business_object
 codebase query symbol --name API --summary
 codebase query symbol --name API --ndjson
 ```
@@ -150,6 +158,8 @@ codebase query symbol --name API --ndjson
 `query symbol` по умолчанию выполняет **точный поиск** по `name`.
 
 Для поиска по подстроке используйте флаг `--like`.
+
+В `symbols` индексируются основные name-based сущности: SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects и XML/API symbols. Сущности начинают появляться в `query symbol` после переиндексации соответствующих файлов.
 
 #### Поиск информации о таблице
 
@@ -166,7 +176,7 @@ codebase query table-schema --name tContract --json
 
 `query table-schema` показывает определения колонок таблицы из `CREATE TABLE` и schema patches (`ALTER TABLE ... ADD`, `M_ADD_FIELD`).
 
-Для name-based lookup команд ниже (`symbol`, `form`, `form-component`, `report-form`, `report-field`, `report-param`, `js-function`, `vb-function`, `smf-instrument`, `api-contract`, `api-table`, `api-param`) действует тот же принцип:
+Для name-based lookup команд ниже (`symbol`, `method`, `form`, `form-component`, `report-form`, `report-field`, `report-param`, `js-function`, `vb-function`, `smf-instrument`, `api-contract`, `api-table`, `api-param`, `api-table-index`) действует тот же принцип:
 
 - без `--like` — точный поиск,
 - с `--like` — поиск по подстроке.
@@ -180,11 +190,23 @@ codebase query callers --procedure FCD_Cons_tConfigParam --limit 100 --json
 
 `query callers` показывает как обычные `calls_procedure`, так и generated subscriber calls (`dispatches_to_subscriber`) из препроцессированных `.t01`, если такие файлы были проиндексированы.
 
+#### Поиск PAS-методов по имени
+
+```bash
+codebase query method --name Execute
+codebase query method --name Exec --like
+codebase query method --name Execute --json
+```
+
+`query method` ищет PAS-методы напрямую в `pas_methods` и возвращает unit, class, файл, строку, signature и visibility.
+
 #### Поиск методов, работающих с таблицей
 
 ```bash
 codebase query methods --table pAPI_Accrual_Object
 ```
+
+`query methods --table` использует graph relations и показывает PAS-методы, связанные с указанной SQL-таблицей через query fragments.
 
 #### Поиск SQL/query fragments по тексту
 
@@ -581,10 +603,14 @@ CodeBase/
 - [x] Каркас CLI и БД
 - [x] Индекс файлов и метаданных
 - [x] SQL-парсер (процедуры, таблицы, поля)
+- [x] SQL schema symbols (определения колонок и индексов в `query symbol`)
 - [x] H-парсер (константы, макросы)
 - [x] PAS-парсер (юниты, классы, методы, поля, SQL-фрагменты)
-- [x] JS-парсер (функции, SQL-запросы)
+- [x] PAS symbols (юниты, классы и методы в `query symbol`)
+- [x] JS-парсер (функции, константы, SQL-запросы)
+- [x] JS constants storage и symbols (`js_constants`, `query symbol --type constant`)
 - [x] DFM-парсер (формы, компоненты, `Caption`, запросы)
+- [x] DFM component symbols (`query symbol --type component`)
 - [x] SMF-парсер (модели Ф.О., встроенный JavaScript)
 - [x] TPR-парсер
 - [x] RPT-парсер
@@ -596,6 +622,7 @@ CodeBase/
 - [x] Полнотекстовый поиск по SQL/query fragments (`query sql-fragment`)
 - [x] Health command (команда health) с readiness checks (проверками готовности)
 - [x] DSArchitect XML indexing (индексация DSArchitect XML)
+- [x] API business object symbols (`query symbol --type api_business_object`)
 - [x] API macro extraction из исходных SQL и SQL-like indexing/preprocessed dispatch extraction для `.t01`
 - [x] Query mode (режим query) для `api-contract` / `api-table` / `api-param`
 - [x] Query mode (режим query) для `api-impl` / `api-publishers` / `api-consumers`

@@ -35,6 +35,10 @@ func init() {
 	queryMethodsCmd.Flags().StringVar(&tableName, "table", "", "table name")
 	cobra.CheckErr(queryMethodsCmd.MarkFlagRequired("table"))
 
+	queryMethodCmd.Flags().StringVar(&methodName, "name", "", "PAS method name to search (exact by default)")
+	queryMethodCmd.Flags().BoolVar(&methodLikeSearch, "like", false, "use partial match search for PAS method name")
+	cobra.CheckErr(queryMethodCmd.MarkFlagRequired("name"))
+
 	queryFormCmd.Flags().StringVar(&formName, "name", "", "DFM form name/class/caption to search (exact by default)")
 	queryFormCmd.Flags().BoolVar(&formLikeSearch, "like", false, "use partial match search for DFM form fields")
 	cobra.CheckErr(queryFormCmd.MarkFlagRequired("name"))
@@ -90,6 +94,7 @@ func init() {
 	queryCmd.AddCommand(queryProcedureCmd)
 	queryCmd.AddCommand(queryCallersCmd)
 	queryCmd.AddCommand(queryMethodsCmd)
+	queryCmd.AddCommand(queryMethodCmd)
 	queryCmd.AddCommand(queryFormCmd)
 	queryCmd.AddCommand(queryFormComponentCmd)
 	queryCmd.AddCommand(querySQLFragmentCmd)

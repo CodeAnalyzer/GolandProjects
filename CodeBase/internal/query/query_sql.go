@@ -204,7 +204,7 @@ func (q *Query) FindCallers(procedureName string, limit int) ([]CallerResult, er
 		FROM (
 			SELECT
 				r.source_id,
-				CASE
+				COALESCE(CASE
 					WHEN r.source_type = 'sql_procedure' THEN sp.proc_name
 					WHEN r.source_type = 'pas_method' THEN pm.method_name
 					WHEN r.source_type = 'js_function' THEN jf.function_name
@@ -212,8 +212,8 @@ func (q *Query) FindCallers(procedureName string, limit int) ([]CallerResult, er
 					WHEN r.source_type = 'vb_function' THEN vf.function_name
 					WHEN r.source_type = 'query_fragment' THEN COALESCE(NULLIF(qf.component_name, ''), NULLIF(qf.component_type, ''), 'query_fragment')
 					ELSE 'unknown'
-				 END as caller_name,
-				 r.source_type as caller_type,
+				 END, 'unknown') as caller_name,
+				r.source_type as caller_type,
 				 COALESCE(f_sql.rel_path, f_pas.rel_path, f_js.rel_path, f_rf.rel_path, f_vf.rel_path, f_qf.rel_path) as file,
 				 r.line_number,
 				 CASE
@@ -338,6 +338,47 @@ func (q *Query) FindMethodsByTable(tableName string, limit int) ([]MethodResult,
 	}
 
 	return results, nil
+}
+
+func (q *Query) FindPASMethodsByName(methodName string, like bool, limit int) ([]MethodResult, error) {
+	lookupValue := buildLookupValue(methodName, like)
+	lookupCondition := buildNameLookupCondition([]string{"pm.method_name"}, like, 1)
+	query := `
+		SELECT
+			pm.id,
+			pm.unit_id,
+			pm.method_name,
+			COALESCE(pc.class_name, ''),
+			pu.unit_name,
+			COALESCE(pm.signature, ''),
+			COALESCE(pm.visibility, ''),
+			f.rel_path,
+			pm.line_number
+		FROM pas_methods pm
+		LEFT JOIN pas_classes pc ON pm.class_id = pc.id
+		JOIN pas_units pu ON pm.unit_id = pu.id
+		JOIN files f ON pu.file_id = f.id
+		WHERE ` + lookupCondition + `
+		ORDER BY pu.unit_name, pc.class_name, pm.method_name, pm.line_number
+		LIMIT $2
+	`
+
+	rows, err := q.db.Query(query, lookupValue, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []MethodResult
+	for rows.Next() {
+		var r MethodResult
+		if err := rows.Scan(&r.ID, &r.UnitID, &r.MethodName, &r.ClassName, &r.UnitName, &r.Signature, &r.Visibility, &r.File, &r.LineNumber); err != nil {
+			return nil, err
+		}
+		results = append(results, r)
+	}
+
+	return results, rows.Err()
 }
 
 type SQLParamResult struct {

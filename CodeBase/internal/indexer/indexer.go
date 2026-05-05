@@ -220,7 +220,7 @@ func (idx *Indexer) parseDFMFile(path string, fileID int64, stats *model.ScanSta
 	componentsBatch := make([]*model.DFMComponent, 0, len(result.Components))
 	fragmentsBatch := make([]*model.QueryFragment, 0, len(result.Queries))
 	tablesBatch := make([]*model.SQLTable, 0, len(result.Tables))
-	symbolsBatch := make([]*model.Symbol, 0, len(result.Forms))
+	symbolsBatch := make([]*model.Symbol, 0, len(result.Forms)+len(result.Components))
 
 	for _, form := range result.Forms {
 		form.FileID = fileID
@@ -311,6 +311,29 @@ func (idx *Indexer) parseDFMFile(path string, fileID int64, stats *model.ScanSta
 	if err := idx.db.BatchInsertDFMComponents(componentsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
+	for _, component := range componentsBatch {
+		componentIDs, err := idx.db.FindDFMComponentIDsByForm(component.FormID)
+		if err != nil {
+			return fmt.Errorf("failed to resolve DFM component ids for symbols: %w", err)
+		}
+		componentID := componentIDs[store.BuildDFMComponentLookupKey(component.ComponentName, component.LineStart)]
+		if componentID == 0 {
+			continue
+		}
+		signature := component.ComponentType
+		if strings.TrimSpace(component.Caption) != "" {
+			signature = strings.TrimSpace(signature + " " + component.Caption)
+		}
+		symbolsBatch = append(symbolsBatch, &model.Symbol{
+			FileID:     fileID,
+			SymbolName: component.ComponentName,
+			SymbolType: "component",
+			EntityType: "dfm",
+			EntityID:   componentID,
+			LineNumber: component.LineStart,
+			Signature:  signature,
+		})
+	}
 	if err := idx.db.BatchInsertSQLTables(tablesBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
@@ -391,6 +414,9 @@ func (idx *Indexer) parseJSFile(path string, fileID int64, stats *model.ScanStat
 	if err := idx.db.BatchInsertQueryFragments(fragmentsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
+	if err := idx.saveJSConstantSymbols(fileID, result.Constants); err != nil {
+		return err
+	}
 	if err := idx.db.BatchInsertSymbols(symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
@@ -398,12 +424,59 @@ func (idx *Indexer) parseJSFile(path string, fileID int64, stats *model.ScanStat
 	if err != nil {
 		return fmt.Errorf("failed to build JS query relations: %w", err)
 	}
+	procedureRelations, err := idx.buildJSProcedureCallRelations(fileID, result.ProcedureCalls)
+	if err != nil {
+		return fmt.Errorf("failed to build JS procedure call relations: %w", err)
+	}
+	relations = append(relations, procedureRelations...)
 	if err := idx.saveRelations(relations, path, stats); err != nil {
 		return err
 	}
 
 	stats.JSFunctions += len(functionsBatch)
 	stats.QueryFragments += len(fragmentsBatch)
+	return nil
+}
+
+func (idx *Indexer) saveJSConstantSymbols(fileID int64, constants []*model.JSConstant) error {
+	for _, constant := range constants {
+		if constant == nil {
+			continue
+		}
+		constant.FileID = fileID
+	}
+	if err := idx.db.BatchInsertJSConstants(constants, idx.config.Indexer.BatchSize); err != nil {
+		return fmt.Errorf("failed to save JS constants: %w", err)
+	}
+	constantIDs, err := idx.db.FindJSConstantIDsByFile(fileID)
+	if err != nil {
+		return fmt.Errorf("failed to resolve JS constant ids for symbols: %w", err)
+	}
+	symbolsBatch := make([]*model.Symbol, 0, len(constants))
+	for _, constant := range constants {
+		if constant == nil {
+			continue
+		}
+		constantID := constantIDs[store.BuildJSConstantLookupKey(constant.Name, constant.LineNumber)]
+		if constantID == 0 {
+			continue
+		}
+		symbolsBatch = append(symbolsBatch, &model.Symbol{
+			FileID:     fileID,
+			SymbolName: constant.Name,
+			SymbolType: "constant",
+			EntityType: "js",
+			EntityID:   constantID,
+			LineNumber: constant.LineNumber,
+			Signature:  constant.Value,
+		})
+	}
+	if len(symbolsBatch) == 0 {
+		return nil
+	}
+	if err := idx.db.BatchInsertSymbols(symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+		return fmt.Errorf("failed to save JS constant symbols: %w", err)
+	}
 	return nil
 }
 
@@ -745,7 +818,17 @@ func (idx *Indexer) parseSMFFile(path string, fileID int64, stats *model.ScanSta
 		for _, symbol := range symbolsBatch {
 			symbol.EntityID = functionIDs[store.BuildJSFunctionLookupKey(symbol.SymbolName, symbol.LineNumber)]
 		}
+		if err := idx.saveJSConstantSymbols(fileID, result.JSResult.Constants); err != nil {
+			return err
+		}
 		if err := idx.db.BatchInsertSymbols(symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+			return err
+		}
+		procedureRelations, err := idx.buildJSProcedureCallRelations(fileID, result.JSResult.ProcedureCalls)
+		if err != nil {
+			return fmt.Errorf("failed to build SMF JS procedure call relations: %w", err)
+		}
+		if err := idx.saveRelations(procedureRelations, path, stats); err != nil {
 			return err
 		}
 		stats.JSFunctions += len(functionsBatch)
@@ -778,6 +861,30 @@ func (idx *Indexer) parseXMLFile(path string, fileID int64, stats *model.ScanSta
 	businessObjectIDs, err := idx.db.FindAPIBusinessObjectIDsByFile(fileID)
 	if err != nil {
 		return err
+	}
+	businessObjectSymbolsBatch := make([]*model.Symbol, 0, len(result.BusinessObjects))
+	for _, item := range result.BusinessObjects {
+		if item == nil {
+			continue
+		}
+		businessObjectID := businessObjectIDs[strings.ToLower(strings.TrimSpace(item.BusinessObject))]
+		if businessObjectID == 0 {
+			continue
+		}
+		businessObjectSymbolsBatch = append(businessObjectSymbolsBatch, &model.Symbol{
+			FileID:     fileID,
+			SymbolName: item.BusinessObject,
+			SymbolType: "api_business_object",
+			EntityType: "api",
+			EntityID:   businessObjectID,
+			LineNumber: item.LineStart,
+			Signature:  item.ModuleName,
+		})
+	}
+	if len(businessObjectSymbolsBatch) > 0 {
+		if err := idx.db.BatchInsertSymbols(businessObjectSymbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+			return fmt.Errorf("failed to save API business object symbols: %w", err)
+		}
 	}
 	for _, item := range result.Contracts {
 		if item.BusinessObject != "" {

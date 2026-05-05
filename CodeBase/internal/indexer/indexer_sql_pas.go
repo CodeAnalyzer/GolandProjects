@@ -151,6 +151,35 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 			stats.Errors += len(columnDefinitionsBatch)
 			return err
 		}
+		columnDefinitionIDs, err := idx.db.FindSQLColumnDefinitionIDsByFile(fileID)
+		if err != nil {
+			return fmt.Errorf("failed to resolve SQL column definition ids for symbols: %w", err)
+		}
+		columnDefinitionSymbolsBatch := make([]*model.Symbol, 0, len(columnDefinitionsBatch))
+		for _, columnDefinition := range columnDefinitionsBatch {
+			if columnDefinition == nil {
+				continue
+			}
+			columnDefinitionID := columnDefinitionIDs[store.BuildSQLColumnDefinitionLookupKey(columnDefinition.TableName, columnDefinition.ColumnName, columnDefinition.LineNumber, columnDefinition.ColumnOrder)]
+			if columnDefinitionID == 0 {
+				continue
+			}
+			signature := strings.TrimSpace(columnDefinition.TableName + "." + columnDefinition.ColumnName + " " + columnDefinition.DataType)
+			columnDefinitionSymbolsBatch = append(columnDefinitionSymbolsBatch, &model.Symbol{
+				FileID:     fileID,
+				SymbolName: columnDefinition.ColumnName,
+				SymbolType: "column_definition",
+				EntityType: "sql",
+				EntityID:   columnDefinitionID,
+				LineNumber: columnDefinition.LineNumber,
+				Signature:  signature,
+			})
+		}
+		if len(columnDefinitionSymbolsBatch) > 0 {
+			if err := idx.db.BatchInsertSymbols(columnDefinitionSymbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+				return fmt.Errorf("failed to save SQL column definition symbols: %w", err)
+			}
+		}
 	}
 
 	if len(indexDefinitionsBatch) > 0 {
@@ -158,6 +187,38 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 			idx.logError(path, "Error batch inserting SQL index definitions: %v", err)
 			stats.Errors += len(indexDefinitionsBatch)
 			return err
+		}
+		indexIDs, err := idx.db.FindSQLIndexDefinitionIDsByFile(fileID)
+		if err != nil {
+			return fmt.Errorf("failed to resolve SQL index definition ids for symbols: %w", err)
+		}
+		indexSymbolsBatch := make([]*model.Symbol, 0, len(indexDefinitionsBatch))
+		for _, indexDefinition := range indexDefinitionsBatch {
+			if indexDefinition == nil {
+				continue
+			}
+			indexID := indexIDs[store.BuildSQLIndexDefinitionLookupKey(indexDefinition.TableName, indexDefinition.IndexName, indexDefinition.LineNumber)]
+			if indexID == 0 {
+				continue
+			}
+			signature := strings.TrimSpace(indexDefinition.TableName + "(" + indexDefinition.IndexFields + ")")
+			if signature == "()" {
+				signature = indexDefinition.IndexType
+			}
+			indexSymbolsBatch = append(indexSymbolsBatch, &model.Symbol{
+				FileID:     fileID,
+				SymbolName: indexDefinition.IndexName,
+				SymbolType: "index",
+				EntityType: "sql",
+				EntityID:   indexID,
+				LineNumber: indexDefinition.LineNumber,
+				Signature:  signature,
+			})
+		}
+		if len(indexSymbolsBatch) > 0 {
+			if err := idx.db.BatchInsertSymbols(indexSymbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+				return fmt.Errorf("failed to save SQL index definition symbols: %w", err)
+			}
 		}
 	}
 
@@ -707,6 +768,19 @@ func (idx *Indexer) parsePASFile(path string, fileID int64, stats *model.ScanSta
 
 	classIDs := make(map[string]int64)
 	methodIDs := make(map[string]int64)
+	symbolsBatch := make([]*model.Symbol, 0, 1+len(result.Classes)+len(result.Methods))
+	symbolsBatch = append(symbolsBatch, &model.Symbol{
+		FileID:     fileID,
+		SymbolName: unit.UnitName,
+		SymbolType: "unit",
+		EntityType: "pas",
+		EntityID:   unitID,
+		LineNumber: unit.LineStart,
+	})
+	if err := idx.db.BatchInsertSymbols(symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+		return fmt.Errorf("failed to save PAS unit symbol: %w", err)
+	}
+	unitSymbolCount := len(symbolsBatch)
 	classesBatch := make([]*model.PASClass, 0, len(result.Classes))
 	for _, class := range result.Classes {
 		class.UnitID = unitID
@@ -728,7 +802,22 @@ func (idx *Indexer) parsePASFile(path string, fileID int64, stats *model.ScanSta
 		}
 		classIDs[strings.ToLower(strings.TrimSpace(class.ClassName))] = classID
 		idx.addPendingClass(classID, class.ClassName, path)
+		symbolsBatch = append(symbolsBatch, &model.Symbol{
+			FileID:     fileID,
+			SymbolName: class.ClassName,
+			SymbolType: "class",
+			EntityType: "pas",
+			EntityID:   classID,
+			LineNumber: class.LineStart,
+			Signature:  class.ParentClass,
+		})
 	}
+	if len(symbolsBatch) > unitSymbolCount {
+		if err := idx.db.BatchInsertSymbols(symbolsBatch[unitSymbolCount:], idx.config.Indexer.BatchSize); err != nil {
+			return fmt.Errorf("failed to save PAS class symbols: %w", err)
+		}
+	}
+	classSymbolCount := len(symbolsBatch)
 
 	methodsBatch := make([]*model.PASMethod, 0, len(result.Methods))
 	for _, method := range result.Methods {
@@ -754,8 +843,26 @@ func (idx *Indexer) parsePASFile(path string, fileID int64, stats *model.ScanSta
 		}
 		methodKey := strings.ToLower(strings.TrimSpace(method.ClassName)) + "|" + strings.ToLower(strings.TrimSpace(method.MethodName))
 		methodIDs[methodKey] = methodID
+		signature := strings.TrimSpace(method.Signature)
+		if signature == "" {
+			signature = strings.Trim(strings.TrimSpace(method.ClassName)+"."+strings.TrimSpace(method.MethodName), ".")
+		}
+		symbolsBatch = append(symbolsBatch, &model.Symbol{
+			FileID:     fileID,
+			SymbolName: method.MethodName,
+			SymbolType: "method",
+			EntityType: "pas",
+			EntityID:   methodID,
+			LineNumber: method.LineNumber,
+			Signature:  signature,
+		})
 		if method.ClassID == 0 && strings.TrimSpace(method.ClassName) != "" {
 			idx.addPendingMethod(methodID, method.ClassName, method.MethodName, path)
+		}
+	}
+	if len(symbolsBatch) > classSymbolCount {
+		if err := idx.db.BatchInsertSymbols(symbolsBatch[classSymbolCount:], idx.config.Indexer.BatchSize); err != nil {
+			return fmt.Errorf("failed to save PAS method symbols: %w", err)
 		}
 	}
 

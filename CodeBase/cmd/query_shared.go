@@ -11,6 +11,7 @@ var (
 	outputSummary           bool
 	limit                   int
 	symbolLikeSearch        bool
+	methodLikeSearch        bool
 	jsFunctionLikeSearch    bool
 	vbFunctionLikeSearch    bool
 	smfInstrumentLikeSearch bool
@@ -88,6 +89,7 @@ var (
 	symbolName         string
 	symbolType         string
 	tableName          string
+	methodName         string
 	tableIndexName     string
 	procedureName      string
 	jsFuncName         string

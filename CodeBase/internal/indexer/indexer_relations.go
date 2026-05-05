@@ -149,6 +149,78 @@ func (idx *Indexer) saveRelations(relations []*model.Relation, path string, stat
 	return nil
 }
 
+func (idx *Indexer) buildJSProcedureCallRelations(fileID int64, calls []*model.JSProcedureCall) ([]*model.Relation, error) {
+	return buildJSProcedureCallRelationsWithResolvers(
+		calls,
+		func(lineNumber int) (int64, error) {
+			return idx.db.FindJSFunctionIDByFileAndLine(fileID, lineNumber)
+		},
+		func(procName string) (int64, error) {
+			return idx.db.FindLatestSQLProcedureIDByName(procName)
+		},
+	)
+}
+
+func buildJSProcedureCallRelationsWithResolvers(
+	calls []*model.JSProcedureCall,
+	resolveSourceID func(lineNumber int) (int64, error),
+	resolveTargetID func(procName string) (int64, error),
+) ([]*model.Relation, error) {
+	if len(calls) == 0 {
+		return []*model.Relation{}, nil
+	}
+
+	relations := make([]*model.Relation, 0, len(calls))
+	seen := make(map[string]struct{}, len(calls))
+
+	for _, call := range calls {
+		if call == nil {
+			continue
+		}
+		procName := strings.TrimSpace(call.ProcName)
+		if procName == "" {
+			continue
+		}
+		if call.LineNumber <= 0 {
+			continue
+		}
+
+		sourceID, err := resolveSourceID(call.LineNumber)
+		if err != nil {
+			if err == dbsql.ErrNoRows {
+				continue
+			}
+			return nil, err
+		}
+
+		targetID, err := resolveTargetID(procName)
+		if err != nil {
+			if err == dbsql.ErrNoRows {
+				continue
+			}
+			return nil, err
+		}
+
+		key := fmt.Sprintf("js_function|%d|sql_procedure|%d|calls_procedure|%d", sourceID, targetID, call.LineNumber)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		relations = append(relations, &model.Relation{
+			SourceType:   "js_function",
+			SourceID:     sourceID,
+			TargetType:   "sql_procedure",
+			TargetID:     targetID,
+			RelationType: "calls_procedure",
+			Confidence:   "regex",
+			LineNumber:   call.LineNumber,
+		})
+	}
+
+	return relations, nil
+}
+
 func (idx *Indexer) buildSQLProcedureRelations(fileID int64, procedures []*model.SQLProcedure, tables []*model.SQLTable, calls []*model.SQLProcedureCall) ([]*model.Relation, error) {
 	procedureIDs, err := idx.db.FindSQLProcedureIDsByFile(fileID)
 	if err != nil {

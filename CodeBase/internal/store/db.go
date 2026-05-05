@@ -279,6 +279,13 @@ func (db *DB) InitSchema() error {
 			scenario_type TEXT,
 			parent_object TEXT
 		)`,
+		`CREATE TABLE IF NOT EXISTS js_constants (
+			id BIGSERIAL PRIMARY KEY,
+			file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+			constant_name TEXT NOT NULL,
+			constant_value TEXT,
+			line_number INTEGER NOT NULL DEFAULT 0
+		)`,
 		`CREATE TABLE IF NOT EXISTS smf_instruments (
 			id BIGSERIAL PRIMARY KEY,
 			file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -582,6 +589,8 @@ func (db *DB) InitSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_pas_units_file_id ON pas_units(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_h_files_defines_file_id ON h_files_defines(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_js_functions_file_id ON js_functions(file_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_js_constants_file_id ON js_constants(file_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_js_constants_name ON js_constants(constant_name)`,
 		`CREATE INDEX IF NOT EXISTS idx_smf_instruments_file_id ON smf_instruments(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_dfm_forms_file_id ON dfm_forms(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_dfm_components_file_id ON dfm_components(file_id)`,
@@ -1382,6 +1391,80 @@ func (db *DB) FindJSFunctionIDsByFile(fileID int64) (map[string]int64, error) {
 	return result, nil
 }
 
+func (db *DB) BatchInsertJSConstants(constants []*model.JSConstant, batchSize int) error {
+	if len(constants) == 0 {
+		return nil
+	}
+	if len(constants) <= batchSize {
+		return db.insertJSConstantsBatch(constants)
+	}
+	for i := 0; i < len(constants); i += batchSize {
+		end := i + batchSize
+		if end > len(constants) {
+			end = len(constants)
+		}
+		if err := db.insertJSConstantsBatch(constants[i:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (db *DB) insertJSConstantsBatch(constants []*model.JSConstant) error {
+	if len(constants) == 0 {
+		return nil
+	}
+	return db.withCopyInTx(func(tx *sql.Tx) error {
+		stmt, err := tx.Prepare(pq.CopyIn("js_constants", "file_id", "constant_name", "constant_value", "line_number"))
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for _, constant := range constants {
+			if _, err := stmt.Exec(constant.FileID, sanitizeUTF8String(constant.Name), sanitizeUTF8String(constant.Value), constant.LineNumber); err != nil {
+				return err
+			}
+		}
+		_, err = stmt.Exec()
+		return err
+	})
+}
+
+func (db *DB) FindJSConstantIDsByFile(fileID int64) (map[string]int64, error) {
+	rows, err := db.Query(`
+		SELECT id, constant_name, line_number
+		FROM js_constants
+		WHERE file_id = $1
+		ORDER BY id DESC
+	`, fileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]int64)
+	for rows.Next() {
+		var id int64
+		var constantName string
+		var lineNumber int
+		if err := rows.Scan(&id, &constantName, &lineNumber); err != nil {
+			return nil, err
+		}
+		key := BuildJSConstantLookupKey(constantName, lineNumber)
+		if _, exists := result[key]; !exists {
+			result[key] = id
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func BuildJSConstantLookupKey(constantName string, lineNumber int) string {
+	return strings.ToLower(strings.TrimSpace(constantName)) + "|" + fmt.Sprintf("%d", lineNumber)
+}
+
 // FindDFMFormIDsByFile возвращает id DFM форм файла по имени и line_start.
 func (db *DB) FindDFMFormIDsByFile(fileID int64) (map[string]int64, error) {
 	rows, err := db.Query(`
@@ -2029,6 +2112,40 @@ func (db *DB) FindLatestSQLColumnDefinitionType(tableName string, columnName str
 		return "", err
 	}
 	return strings.TrimSpace(dataType), nil
+}
+
+func (db *DB) FindSQLColumnDefinitionIDsByFile(fileID int64) (map[string]int64, error) {
+	rows, err := db.Query(`
+		SELECT id, table_name, column_name, line_number, column_order
+		FROM sql_column_definitions
+		WHERE file_id = $1
+		ORDER BY id DESC
+	`, fileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]int64)
+	for rows.Next() {
+		var id int64
+		var tableName string
+		var columnName string
+		var lineNumber int
+		var columnOrder int
+		if err := rows.Scan(&id, &tableName, &columnName, &lineNumber, &columnOrder); err != nil {
+			return nil, err
+		}
+		key := BuildSQLColumnDefinitionLookupKey(tableName, columnName, lineNumber, columnOrder)
+		if _, exists := result[key]; !exists {
+			result[key] = id
+		}
+	}
+	return result, rows.Err()
+}
+
+func BuildSQLColumnDefinitionLookupKey(tableName string, columnName string, lineNumber int, columnOrder int) string {
+	return strings.ToLower(strings.TrimSpace(tableName)) + "|" + strings.ToLower(strings.TrimSpace(columnName)) + "|" + fmt.Sprintf("%d", lineNumber) + "|" + fmt.Sprintf("%d", columnOrder)
 }
 
 // FindSQLIndexDefinitionIDsByFile возвращает id SQL-индексов по file_id.

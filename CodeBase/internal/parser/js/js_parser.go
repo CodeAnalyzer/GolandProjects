@@ -189,8 +189,9 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 				constValue := strings.Trim(m[2], `"`)
 
 				result.Constants = append(result.Constants, &model.JSConstant{
-					Name:  constName,
-					Value: constValue,
+					Name:       constName,
+					Value:      constValue,
+					LineNumber: lineNum,
 				})
 			}
 		}
