@@ -255,10 +255,21 @@ func buildNameLookupCondition(fields []string, like bool, argPosition int) strin
 	return strings.Join(conditions, " OR ")
 }
 
+func buildSymbolLookupCondition(symbolType string, like bool, argPosition int) string {
+	nameCondition := buildNameLookupCondition([]string{"s.symbol_name"}, like, argPosition)
+	formClassCondition := buildNameLookupCondition([]string{"s.signature"}, like, argPosition)
+
+	if strings.TrimSpace(symbolType) == "form" {
+		return nameCondition + " OR " + formClassCondition
+	}
+
+	return nameCondition + " OR (s.symbol_type = 'form' AND " + formClassCondition + ")"
+}
+
 // SearchSymbol ищет сущность по имени
 func (q *Query) SearchSymbol(name string, symbolType string, like bool, limit int) ([]SymbolResult, error) {
 	lookupValue := buildLookupValue(name, like)
-	lookupCondition := buildNameLookupCondition([]string{"s.symbol_name"}, like, 1)
+	lookupCondition := buildSymbolLookupCondition(symbolType, like, 1)
 	// symbols — это unified index (унифицированный индекс), поэтому этот метод
 	// является самым общим способом найти сущность без знания конкретной таблицы-хранилища.
 	query := `
@@ -274,7 +285,7 @@ func (q *Query) SearchSymbol(name string, symbolType string, like bool, limit in
 			s.signature
 		FROM symbols s
 		JOIN files f ON s.file_id = f.id
-		WHERE ` + lookupCondition + `
+		WHERE (` + lookupCondition + `)
 	`
 	args := []interface{}{lookupValue}
 

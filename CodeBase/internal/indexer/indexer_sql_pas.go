@@ -339,7 +339,9 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 		stats.QueryFragments += len(fragmentsBatch)
 	}
 
-	relations, err := idx.buildSQLProcedureRelations(fileID, proceduresBatch, tablesBatch, result.Calls)
+	idx.addPendingSQLCalls(fileID, path, proceduresBatch, procedureIDs, result.Calls)
+
+	relations, err := idx.buildSQLProcedureTableRelations(fileID, proceduresBatch, tablesBatch)
 	if err != nil {
 		return fmt.Errorf("failed to build SQL relations: %w", err)
 	}

@@ -31,9 +31,18 @@ type Indexer struct {
 	errorLogger *log.Logger
 	pendingMu   sync.Mutex
 	// Для пост-обработки методов и полей с отсутствующими классами
-	pendingClasses []*PendingClass
-	pendingMethods []*PendingMethod
-	pendingFields  []*PendingField
+	pendingClasses  []*PendingClass
+	pendingMethods  []*PendingMethod
+	pendingFields   []*PendingField
+	pendingSQLCalls []*PendingSQLCallFile
+}
+
+type PendingSQLCallFile struct {
+	FileID       int64
+	FilePath     string
+	Procedures   []*model.SQLProcedure
+	ProcedureIDs map[string]int64
+	Calls        []*model.SQLProcedureCall
 }
 
 type statsCollector struct {
@@ -137,22 +146,24 @@ func New(db *store.DB, cfg *config.Config) *Indexer {
 		log.Printf("Failed to create error log file: %v", err)
 		// Если не удалось создать файл, используем стандартный лог
 		return &Indexer{
-			db:             db,
-			config:         cfg,
-			errorLogger:    log.New(os.Stderr, "ERROR: ", log.LstdFlags),
-			pendingClasses: make([]*PendingClass, 0),
-			pendingMethods: make([]*PendingMethod, 0),
-			pendingFields:  make([]*PendingField, 0),
+			db:              db,
+			config:          cfg,
+			errorLogger:     log.New(os.Stderr, "ERROR: ", log.LstdFlags),
+			pendingClasses:  make([]*PendingClass, 0),
+			pendingMethods:  make([]*PendingMethod, 0),
+			pendingFields:   make([]*PendingField, 0),
+			pendingSQLCalls: make([]*PendingSQLCallFile, 0),
 		}
 	}
 
 	return &Indexer{
-		db:             db,
-		config:         cfg,
-		errorLogger:    log.New(errorFile, "", log.LstdFlags),
-		pendingClasses: make([]*PendingClass, 0),
-		pendingMethods: make([]*PendingMethod, 0),
-		pendingFields:  make([]*PendingField, 0),
+		db:              db,
+		config:          cfg,
+		errorLogger:     log.New(errorFile, "", log.LstdFlags),
+		pendingClasses:  make([]*PendingClass, 0),
+		pendingMethods:  make([]*PendingMethod, 0),
+		pendingFields:   make([]*PendingField, 0),
+		pendingSQLCalls: make([]*PendingSQLCallFile, 0),
 	}
 }
 
@@ -161,6 +172,37 @@ func (idx *Indexer) logError(filePath string, format string, args ...interface{}
 	// Добавляем путь файла к сообщению об ошибке
 	message := fmt.Sprintf("File: %s - %s", filePath, fmt.Sprintf(format, args...))
 	idx.errorLogger.Print(message)
+}
+
+func (idx *Indexer) addPendingSQLCalls(fileID int64, filePath string, procedures []*model.SQLProcedure, procedureIDs map[string]int64, calls []*model.SQLProcedureCall) {
+	if len(calls) == 0 {
+		return
+	}
+	idx.pendingMu.Lock()
+	defer idx.pendingMu.Unlock()
+	idx.pendingSQLCalls = append(idx.pendingSQLCalls, &PendingSQLCallFile{
+		FileID:       fileID,
+		FilePath:     filePath,
+		Procedures:   append([]*model.SQLProcedure(nil), procedures...),
+		ProcedureIDs: cloneInt64Map(procedureIDs),
+		Calls:        append([]*model.SQLProcedureCall(nil), calls...),
+	})
+}
+
+func (idx *Indexer) snapshotPendingSQLCalls() []*PendingSQLCallFile {
+	idx.pendingMu.Lock()
+	defer idx.pendingMu.Unlock()
+	pending := append([]*PendingSQLCallFile(nil), idx.pendingSQLCalls...)
+	idx.pendingSQLCalls = nil
+	return pending
+}
+
+func cloneInt64Map(values map[string]int64) map[string]int64 {
+	cloned := make(map[string]int64, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func (idx *Indexer) parseHFile(path string, fileID int64, stats *model.ScanStats) error {

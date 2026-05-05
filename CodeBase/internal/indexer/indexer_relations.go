@@ -221,7 +221,7 @@ func buildJSProcedureCallRelationsWithResolvers(
 	return relations, nil
 }
 
-func (idx *Indexer) buildSQLProcedureRelations(fileID int64, procedures []*model.SQLProcedure, tables []*model.SQLTable, calls []*model.SQLProcedureCall) ([]*model.Relation, error) {
+func (idx *Indexer) buildSQLProcedureTableRelations(fileID int64, procedures []*model.SQLProcedure, tables []*model.SQLTable) ([]*model.Relation, error) {
 	procedureIDs, err := idx.db.FindSQLProcedureIDsByFile(fileID)
 	if err != nil {
 		return nil, err
@@ -233,37 +233,6 @@ func (idx *Indexer) buildSQLProcedureRelations(fileID int64, procedures []*model
 
 	relations := make([]*model.Relation, 0)
 	seen := make(map[string]struct{})
-
-	for _, call := range calls {
-		if call == nil {
-			continue
-		}
-		sourceID := procedureIDs[strings.ToLower(strings.TrimSpace(call.CallerName))]
-		if sourceID == 0 {
-			continue
-		}
-		targetID, err := idx.db.FindLatestSQLProcedureIDByName(call.CalleeName)
-		if err != nil {
-			if err == dbsql.ErrNoRows {
-				continue
-			}
-			return nil, err
-		}
-		key := fmt.Sprintf("sql_procedure|%d|sql_procedure|%d|calls_procedure|%d", sourceID, targetID, call.LineNumber)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		relations = append(relations, &model.Relation{
-			SourceType:   "sql_procedure",
-			SourceID:     sourceID,
-			TargetType:   "sql_procedure",
-			TargetID:     targetID,
-			RelationType: "calls_procedure",
-			Confidence:   "regex",
-			LineNumber:   call.LineNumber,
-		})
-	}
 
 	for _, proc := range procedures {
 		if proc == nil {
@@ -298,6 +267,53 @@ func (idx *Indexer) buildSQLProcedureRelations(fileID int64, procedures []*model
 				RelationType: relationType,
 				Confidence:   "regex",
 				LineNumber:   table.LineNumber,
+			})
+		}
+	}
+
+	return relations, nil
+}
+
+func buildSQLProcedureCallRelationsWithResolvers(pending []*PendingSQLCallFile, resolveTarget func(string) (int64, error)) ([]*model.Relation, error) {
+	relations := make([]*model.Relation, 0)
+	seen := make(map[string]struct{})
+
+	for _, item := range pending {
+		if item == nil {
+			continue
+		}
+		for _, call := range item.Calls {
+			if call == nil || strings.TrimSpace(call.CalleeName) == "" {
+				continue
+			}
+			sourceProc := findProcedureForLine(item.Procedures, call.LineNumber, call.CallerName)
+			if sourceProc == nil {
+				continue
+			}
+			sourceID := item.ProcedureIDs[strings.ToLower(strings.TrimSpace(sourceProc.ProcName))]
+			if sourceID == 0 {
+				continue
+			}
+			targetID, err := resolveTarget(call.CalleeName)
+			if err != nil {
+				if err == dbsql.ErrNoRows {
+					continue
+				}
+				return nil, err
+			}
+			key := fmt.Sprintf("sql_procedure|%d|sql_procedure|%d|calls_procedure|%d", sourceID, targetID, call.LineNumber)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			relations = append(relations, &model.Relation{
+				SourceType:   "sql_procedure",
+				SourceID:     sourceID,
+				TargetType:   "sql_procedure",
+				TargetID:     targetID,
+				RelationType: "calls_procedure",
+				Confidence:   "regex",
+				LineNumber:   call.LineNumber,
 			})
 		}
 	}
