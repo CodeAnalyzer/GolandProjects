@@ -104,6 +104,7 @@ func mergeScanStats(dst *model.ScanStats, src *model.ScanStats) {
 	dst.QueryFragments += src.QueryFragments
 	dst.Relations += src.Relations
 	dst.Errors += src.Errors
+	dst.PostProcessed += src.PostProcessed
 }
 
 func normalizeParallel(parallel int) int {
@@ -139,9 +140,25 @@ func (idx *Indexer) processFilesWorkerPool(parallel int, jobs <-chan indexedFile
 
 // New создаёт новый индексатор
 func New(db *store.DB, cfg *config.Config) *Indexer {
-	// Создаем файл для логирования ошибок
+	// Создаем файл для логирования ошибок в каталоге с исполняемым файлом
+	exePath, err := os.Executable()
+	if err != nil {
+		log.Printf("Failed to get executable path: %v", err)
+		errorLogger := log.New(os.Stderr, "ERROR: ", log.LstdFlags)
+		return &Indexer{
+			db:              db,
+			config:          cfg,
+			errorLogger:     errorLogger,
+			pendingClasses:  make([]*PendingClass, 0),
+			pendingMethods:  make([]*PendingMethod, 0),
+			pendingFields:   make([]*PendingField, 0),
+			pendingSQLCalls: make([]*PendingSQLCallFile, 0),
+		}
+	}
+	exeDir := filepath.Dir(exePath)
 	errorLogName := fmt.Sprintf("indexer_errors_%s.log", time.Now().Format("20060102_150405"))
-	errorFile, err := os.OpenFile(errorLogName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+	errorLogPath := filepath.Join(exeDir, errorLogName)
+	errorFile, err := os.OpenFile(errorLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 	if err != nil {
 		log.Printf("Failed to create error log file: %v", err)
 		// Если не удалось создать файл, используем стандартный лог
@@ -1258,11 +1275,12 @@ func startProgressReporter(mode string, snapshot func() model.ScanStats) func() 
 				stats := snapshot()
 				frame := frames[frameIndex%len(frames)]
 				fmt.Printf(
-					"\r%s %c scanned=%d indexed=%d errors=%d",
+					"\r%s %c scanned=%d indexed=%d post-processed=%d errors=%d",
 					mode,
 					frame,
 					stats.FilesScanned,
 					stats.FilesIndexed,
+					stats.PostProcessed,
 					stats.Errors,
 				)
 				frameIndex++

@@ -404,6 +404,7 @@ type ScanStats struct {
 	QueryFragments  int
 	Relations       int
 	Errors          int
+	PostProcessed   int
 	XMLFiles        int
 	APIContracts    int
 	APIParams       int

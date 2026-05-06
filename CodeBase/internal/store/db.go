@@ -979,6 +979,54 @@ func (db *DB) FindLatestSQLProcedureIDByName(procName string) (int64, error) {
 	return id, nil
 }
 
+func (db *DB) FindLatestSQLProcedureIDsByNames(procNames []string) (map[string]int64, error) {
+	normalized := make([]string, 0, len(procNames))
+	seen := make(map[string]struct{}, len(procNames))
+	for _, procName := range procNames {
+		key := strings.ToLower(strings.TrimSpace(procName))
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, key)
+	}
+	result := make(map[string]int64, len(normalized))
+	if len(normalized) == 0 {
+		return result, nil
+	}
+
+	rows, err := db.Query(`
+		SELECT DISTINCT ON (proc_key) proc_key, id
+		FROM (
+			SELECT LOWER(TRIM(proc_name)) AS proc_key, id
+			FROM sql_procedures
+			WHERE LOWER(TRIM(proc_name)) = ANY($1)
+		) AS procedures
+		ORDER BY proc_key, id DESC
+	`, pq.Array(normalized))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var procName string
+		var id int64
+		if err := rows.Scan(&procName, &id); err != nil {
+			return nil, err
+		}
+		result[strings.ToLower(strings.TrimSpace(procName))] = id
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 // FindSQLProcedureIDsByFile возвращает id процедур файла по имени.
 func (db *DB) FindSQLProcedureIDsByFile(fileID int64) (map[string]int64, error) {
 	rows, err := db.Query(`

@@ -274,13 +274,19 @@ func (idx *Indexer) buildSQLProcedureTableRelations(fileID int64, procedures []*
 	return relations, nil
 }
 
-func buildSQLProcedureCallRelationsWithResolvers(pending []*PendingSQLCallFile, resolveTarget func(string) (int64, error)) ([]*model.Relation, error) {
+func buildSQLProcedureCallRelationsWithTargetIDs(pending []*PendingSQLCallFile, targetIDs map[string]int64, reportProgress func(int)) []*model.Relation {
 	relations := make([]*model.Relation, 0)
 	seen := make(map[string]struct{})
 
 	for _, item := range pending {
 		if item == nil {
+			if reportProgress != nil {
+				reportProgress(1)
+			}
 			continue
+		}
+		if reportProgress != nil {
+			reportProgress(1)
 		}
 		for _, call := range item.Calls {
 			if call == nil || strings.TrimSpace(call.CalleeName) == "" {
@@ -294,12 +300,9 @@ func buildSQLProcedureCallRelationsWithResolvers(pending []*PendingSQLCallFile, 
 			if sourceID == 0 {
 				continue
 			}
-			targetID, err := resolveTarget(call.CalleeName)
-			if err != nil {
-				if err == dbsql.ErrNoRows {
-					continue
-				}
-				return nil, err
+			targetID := targetIDs[strings.ToLower(strings.TrimSpace(call.CalleeName))]
+			if targetID == 0 {
+				continue
 			}
 			key := fmt.Sprintf("sql_procedure|%d|sql_procedure|%d|calls_procedure|%d", sourceID, targetID, call.LineNumber)
 			if _, exists := seen[key]; exists {
@@ -318,7 +321,7 @@ func buildSQLProcedureCallRelationsWithResolvers(pending []*PendingSQLCallFile, 
 		}
 	}
 
-	return relations, nil
+	return relations
 }
 
 func (idx *Indexer) buildReportStructureRelations(reportFormID int64, fields []*model.ReportField, params []*model.ReportParam) ([]*model.Relation, error) {
