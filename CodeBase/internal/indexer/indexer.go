@@ -1034,6 +1034,21 @@ func (idx *Indexer) parseXMLFile(path string, fileID int64, stats *model.ScanSta
 	if err != nil {
 		return err
 	}
+	// Добавить API table indexes в symbols для unified search
+	for _, item := range result.BusinessTableIndexes {
+		key := store.BuildAPIBusinessObjectTableIndexLookupKey(item.BusinessObject, item.ParentTableName, item.IndexName)
+		if indexID, exists := businessTableIndexIDs[key]; exists {
+			result.Symbols = append(result.Symbols, &model.Symbol{
+				FileID:     fileID,
+				SymbolName: item.IndexName,
+				SymbolType: "api_table_index",
+				EntityType: "api",
+				EntityID:   indexID,
+				LineNumber: item.LineNumber,
+				Signature:  item.IndexName,
+			})
+		}
+	}
 	for _, item := range result.BusinessIndexFields {
 		key := store.BuildAPIBusinessObjectTableIndexLookupKey(item.BusinessObject, item.ParentTableName, item.ParentIndexName)
 		item.TableIndexID = businessTableIndexIDs[key]
