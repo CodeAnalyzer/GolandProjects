@@ -256,10 +256,15 @@ func buildNameLookupCondition(fields []string, like bool, argPosition int) strin
 }
 
 func buildSymbolLookupCondition(symbolType string, like bool, argPosition int) string {
+	normalizedType := strings.TrimSpace(symbolType)
+	if !like && normalizedType != "" && normalizedType != "form" {
+		return fmt.Sprintf("LOWER(s.symbol_name) = LOWER($%d)", argPosition)
+	}
+
 	nameCondition := buildNameLookupCondition([]string{"s.symbol_name"}, like, argPosition)
 	formClassCondition := buildNameLookupCondition([]string{"s.signature"}, like, argPosition)
 
-	if strings.TrimSpace(symbolType) == "form" {
+	if normalizedType == "form" {
 		return nameCondition + " OR " + formClassCondition
 	}
 
@@ -535,6 +540,42 @@ func (q *Query) SearchDFMComponent(name string, like bool, limit int) ([]DFMComp
 }
 
 func (q *Query) SearchQueryFragment(text string, limit int) ([]QueryFragmentResult, error) {
+	idRows, err := q.db.Query(`
+		SELECT qf.id
+		FROM query_fragments qf
+		WHERE qf.query_text ILIKE $1
+		ORDER BY qf.file_id, qf.line_number
+		LIMIT $2
+	`, "%"+text+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer idRows.Close()
+
+	ids := make([]int64, 0, limit)
+	positions := make(map[int64]int, limit)
+	for idRows.Next() {
+		var id int64
+		if err := idRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		positions[id] = len(ids)
+		ids = append(ids, id)
+	}
+	if err := idRows.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return []QueryFragmentResult{}, nil
+	}
+
+	placeholders := make([]string, 0, len(ids))
+	args := make([]interface{}, 0, len(ids))
+	for i, id := range ids {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+		args = append(args, id)
+	}
+
 	query := `
 		SELECT
 			qf.id,
@@ -550,18 +591,16 @@ func (q *Query) SearchQueryFragment(text string, limit int) ([]QueryFragmentResu
 			qf.line_number
 		FROM query_fragments qf
 		JOIN files f ON qf.file_id = f.id
-		WHERE qf.query_text ILIKE $1
-		ORDER BY qf.file_id, qf.line_number
-		LIMIT $2
+		WHERE qf.id IN (` + strings.Join(placeholders, ",") + `)
 	`
 
-	rows, err := q.db.Query(query, "%"+text+"%", limit)
+	rows, err := q.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	results := make([]QueryFragmentResult, 0)
+	results := make([]QueryFragmentResult, len(ids))
 	for rows.Next() {
 		var r QueryFragmentResult
 		var tablesJSON []byte
@@ -571,7 +610,9 @@ func (q *Query) SearchQueryFragment(text string, limit int) ([]QueryFragmentResu
 		if len(tablesJSON) > 0 {
 			_ = json.Unmarshal(tablesJSON, &r.TablesReferenced)
 		}
-		results = append(results, r)
+		if position, ok := positions[r.ID]; ok {
+			results[position] = r
+		}
 	}
 
 	return results, rows.Err()

@@ -14,8 +14,8 @@ import (
 
 var (
 	appName        = "CodeBase"
-	version        = "0.6.8"
-	buildNumber    = "651"
+	version        = "0.6.9"
+	buildNumber    = "658"
 	copyright      = "Copyright (c) 2026"
 	cfgFile        string
 	commandLogger  *log.Logger

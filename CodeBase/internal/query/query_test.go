@@ -20,7 +20,15 @@ func TestBuildSymbolLookupCondition_EmptyTypeSearchesNameAndFormSignature(t *tes
 
 func TestBuildSymbolLookupCondition_OtherTypeKeepsFormSignatureGuarded(t *testing.T) {
 	got := buildSymbolLookupCondition("class", false, 1)
-	want := "s.symbol_name = $1 OR (s.symbol_type = 'form' AND s.signature = $1)"
+	want := "LOWER(s.symbol_name) = LOWER($1)"
+	if got != want {
+		t.Fatalf("condition: got=%q want=%q", got, want)
+	}
+}
+
+func TestBuildSymbolLookupCondition_ProcedureExactUsesLowerNameOnly(t *testing.T) {
+	got := buildSymbolLookupCondition("procedure", false, 3)
+	want := "LOWER(s.symbol_name) = LOWER($3)"
 	if got != want {
 		t.Fatalf("condition: got=%q want=%q", got, want)
 	}

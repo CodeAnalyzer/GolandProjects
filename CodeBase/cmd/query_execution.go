@@ -302,11 +302,18 @@ func collectSummarySliceField(set map[string]struct{}, value reflect.Value, fiel
 }
 
 func runInspectQuery(q *query.Query, name string, symbolType string, limit int) ([]inspectResult, error) {
-	symbols, err := q.SearchSymbol(name, symbolType, true, limit)
+	symbols, err := q.SearchSymbol(name, symbolType, false, limit)
 	if err != nil {
 		return nil, err
 	}
+	if len(symbols) == 0 {
+		symbols, err = q.SearchSymbol(name, symbolType, true, limit)
+		if err != nil {
+			return nil, err
+		}
+	}
 	ordered := prioritizeExactSymbolMatches(symbols, name, symbolType)
+	ordered = limitInspectSymbols(ordered, limit)
 	results := make([]inspectResult, 0, len(ordered))
 	for _, symbol := range ordered {
 		relationType := inspectRelationType(symbol)
@@ -327,6 +334,17 @@ func runInspectQuery(q *query.Query, name string, symbolType string, limit int) 
 		})
 	}
 	return results, nil
+}
+
+func limitInspectSymbols(symbols []query.SymbolResult, limit int) []query.SymbolResult {
+	maxInspectSymbols := 5
+	if limit > 0 && limit < maxInspectSymbols {
+		maxInspectSymbols = limit
+	}
+	if len(symbols) <= maxInspectSymbols {
+		return symbols
+	}
+	return symbols[:maxInspectSymbols]
 }
 
 func inspectRelationType(symbol query.SymbolResult) string {

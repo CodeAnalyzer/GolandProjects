@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/codebase/internal/model"
+	"github.com/lib/pq"
 )
 
 func (q *Query) SearchTable(name string, likeSearch bool, limit int) ([]TableResult, error) {
@@ -45,69 +46,145 @@ func (q *Query) SearchTable(name string, likeSearch bool, limit int) ([]TableRes
 		}
 		results = append(results, r)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		return results, nil
+	}
 
+	tableNames := make([]string, 0, len(results))
+	tableResults := make(map[string]*TableResult, len(results))
 	for i := range results {
-		filesQuery := `
-			SELECT DISTINCT f.id, f.rel_path
-			FROM sql_tables st
-			JOIN files f ON st.file_id = f.id
-			WHERE st.table_name = $1
-			LIMIT 20
-		`
-		fileRows, err := q.db.Query(filesQuery, results[i].TableName)
-		if err == nil {
-			for fileRows.Next() {
-				var fileID int64
-				var file string
-				if err := fileRows.Scan(&fileID, &file); err == nil {
-					results[i].FileIDs = append(results[i].FileIDs, fileID)
-					results[i].Files = append(results[i].Files, file)
-				}
-			}
-			fileRows.Close()
-		}
+		tableNames = append(tableNames, results[i].TableName)
+		tableResults[results[i].TableName] = &results[i]
+	}
 
-		columnsQuery := `
-			SELECT DISTINCT column_name
-			FROM sql_columns
-			WHERE table_name = $1
-			LIMIT 50
-		`
-		colRows, err := q.db.Query(columnsQuery, results[i].TableName)
-		if err == nil {
-			for colRows.Next() {
-				var col string
-				if err := colRows.Scan(&col); err == nil {
-					results[i].Columns = append(results[i].Columns, col)
-				}
-			}
-			colRows.Close()
-		}
-
-		procsQuery := `
-			SELECT DISTINCT sp.proc_name
-			FROM relations r
-			JOIN sql_procedures sp ON r.source_id = sp.id
-			JOIN sql_tables st ON r.target_id = st.id
-			WHERE st.table_name = $1
-			  AND r.source_type = 'sql_procedure'
-			  AND r.target_type = 'sql_table'
-			  AND r.relation_type IN ('selects_from', 'inserts_into', 'updates', 'deletes_from', 'references_table')
-			LIMIT 20
-		`
-		procRows, err := q.db.Query(procsQuery, results[i].TableName)
-		if err == nil {
-			for procRows.Next() {
-				var proc string
-				if err := procRows.Scan(&proc); err == nil {
-					results[i].Procedures = append(results[i].Procedures, proc)
-				}
-			}
-			procRows.Close()
-		}
+	if err := q.loadTableFiles(tableResults, tableNames); err != nil {
+		return nil, err
+	}
+	if err := q.loadTableColumns(tableResults, tableNames); err != nil {
+		return nil, err
+	}
+	if err := q.loadTableProcedures(tableResults, tableNames); err != nil {
+		return nil, err
 	}
 
 	return results, nil
+}
+
+func (q *Query) loadTableFiles(results map[string]*TableResult, tableNames []string) error {
+	rows, err := q.db.Query(`
+		SELECT table_name, file_id, rel_path
+		FROM (
+			SELECT
+				st.table_name,
+				f.id AS file_id,
+				f.rel_path,
+				ROW_NUMBER() OVER (PARTITION BY st.table_name ORDER BY f.rel_path, f.id) AS rn
+			FROM (
+				SELECT DISTINCT table_name, file_id
+				FROM sql_tables
+				WHERE table_name = ANY($1)
+			) st
+			JOIN files f ON st.file_id = f.id
+		) ranked
+		WHERE rn <= 20
+		ORDER BY table_name, rn
+	`, pq.Array(tableNames))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var tableName string
+		var fileID int64
+		var file string
+		if err := rows.Scan(&tableName, &fileID, &file); err != nil {
+			return err
+		}
+		if result := results[tableName]; result != nil {
+			result.FileIDs = append(result.FileIDs, fileID)
+			result.Files = append(result.Files, file)
+		}
+	}
+	return rows.Err()
+}
+
+func (q *Query) loadTableColumns(results map[string]*TableResult, tableNames []string) error {
+	rows, err := q.db.Query(`
+		SELECT table_name, column_name
+		FROM (
+			SELECT
+				table_name,
+				column_name,
+				ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY column_name) AS rn
+			FROM (
+				SELECT DISTINCT table_name, column_name
+				FROM sql_columns
+				WHERE table_name = ANY($1)
+			) columns
+		) ranked
+		WHERE rn <= 50
+		ORDER BY table_name, rn
+	`, pq.Array(tableNames))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var tableName string
+		var column string
+		if err := rows.Scan(&tableName, &column); err != nil {
+			return err
+		}
+		if result := results[tableName]; result != nil {
+			result.Columns = append(result.Columns, column)
+		}
+	}
+	return rows.Err()
+}
+
+func (q *Query) loadTableProcedures(results map[string]*TableResult, tableNames []string) error {
+	rows, err := q.db.Query(`
+		SELECT table_name, proc_name
+		FROM (
+			SELECT
+				table_name,
+				proc_name,
+				ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY proc_name) AS rn
+			FROM (
+				SELECT DISTINCT st.table_name, sp.proc_name
+				FROM relations r
+				JOIN sql_procedures sp ON r.source_id = sp.id
+				JOIN sql_tables st ON r.target_id = st.id
+				WHERE st.table_name = ANY($1)
+				  AND r.source_type = 'sql_procedure'
+				  AND r.target_type = 'sql_table'
+				  AND r.relation_type IN ('selects_from', 'inserts_into', 'updates', 'deletes_from', 'references_table')
+			) procedures
+		) ranked
+		WHERE rn <= 20
+		ORDER BY table_name, rn
+	`, pq.Array(tableNames))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var tableName string
+		var proc string
+		if err := rows.Scan(&tableName, &proc); err != nil {
+			return err
+		}
+		if result := results[tableName]; result != nil {
+			result.Procedures = append(result.Procedures, proc)
+		}
+	}
+	return rows.Err()
 }
 
 func (q *Query) SearchTableSchema(name string, limit int) ([]TableSchemaColumnResult, error) {

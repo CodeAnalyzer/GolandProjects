@@ -38,6 +38,10 @@ Uses file hashes to detect changes.`,
 		}
 		defer db.Close()
 
+		if err := db.InitSchema(); err != nil {
+			return fmt.Errorf("failed to init schema: %w", err)
+		}
+
 		// onlyModified позволяет переключаться между настоящим incremental update
 		// и принудительным повторным проходом по всем файлам без полной re-init операции.
 		idx := indexer.New(db, cfg)

@@ -5,6 +5,11 @@ import (
 	"strings"
 )
 
+type relationEntityMatch struct {
+	Type string
+	ID   int64
+}
+
 func (q *Query) SearchRelationsByEntity(sourceType string, sourceID int64, targetType string, targetID int64, relationType string, limit int) ([]RelationResult, error) {
 	conditions := make([]string, 0, 5)
 	args := make([]interface{}, 0, 6)
@@ -210,6 +215,13 @@ func buildRelationAnyNameExistsCondition(side string, argPos int) string {
 }
 
 func (q *Query) SearchRelations(sourceType string, sourceName string, targetType string, targetName string, relationType string, limit int) ([]RelationResult, error) {
+	if sourceName != "" && sourceType == "" && targetName == "" {
+		return q.searchRelationsByNameMatches("source", sourceName, targetType, relationType, limit)
+	}
+	if targetName != "" && targetType == "" && sourceName == "" {
+		return q.searchRelationsByNameMatches("target", targetName, sourceType, relationType, limit)
+	}
+
 	conditions := make([]string, 0, 5)
 	args := make([]interface{}, 0, 6)
 	argPos := 1
@@ -301,6 +313,205 @@ func (q *Query) SearchRelations(sourceType string, sourceName string, targetType
 	}
 
 	return results, rows.Err()
+}
+
+func (q *Query) searchRelationsByNameMatches(side string, name string, oppositeType string, relationType string, limit int) ([]RelationResult, error) {
+	matches, err := q.findRelationEntityMatches(name, "", relationEntityMatchLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	if len(matches) == 0 {
+		return []RelationResult{}, nil
+	}
+
+	relationIDs, err := q.selectRelationIDsByEntityMatches(side, matches, oppositeType, relationType, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(relationIDs) == 0 {
+		return []RelationResult{}, nil
+	}
+
+	queryText, queryArgs := buildRelationDetailsQueryByIDs(relationIDs)
+	rows, err := q.db.Query(queryText, queryArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := make([]RelationResult, 0, len(relationIDs))
+	for rows.Next() {
+		var r RelationResult
+		if err := rows.Scan(
+			&r.ID,
+			&r.RelationType,
+			&r.Confidence,
+			&r.LineNumber,
+			&r.Source.ID,
+			&r.Source.Type,
+			&r.Source.Name,
+			&r.Source.FileID,
+			&r.Source.File,
+			&r.Source.LineNumber,
+			&r.Target.ID,
+			&r.Target.Type,
+			&r.Target.Name,
+			&r.Target.FileID,
+			&r.Target.File,
+			&r.Target.LineNumber,
+		); err != nil {
+			return nil, err
+		}
+		results = append(results, r)
+	}
+
+	return results, rows.Err()
+}
+
+func relationEntityMatchLimit(limit int) int {
+	if limit <= 0 {
+		return 100
+	}
+	matchLimit := limit * 4
+	if matchLimit < 50 {
+		return 50
+	}
+	return matchLimit
+}
+
+func (q *Query) findRelationEntityMatches(name string, entityType string, limit int) ([]relationEntityMatch, error) {
+	matches, err := q.findRelationEntityMatchesWithCondition(name, entityType, limit, true)
+	if err != nil {
+		return nil, err
+	}
+	if len(matches) > 0 {
+		return matches, nil
+	}
+	return q.findRelationEntityMatchesWithCondition("%"+name+"%", entityType, limit, false)
+}
+
+func (q *Query) findRelationEntityMatchesWithCondition(value string, entityType string, limit int, exact bool) ([]relationEntityMatch, error) {
+	queryParts, ok := relationEntityMatchQueryParts(entityType, exact)
+	if !ok {
+		return nil, fmt.Errorf("unsupported relation entity type for name filter: %s", entityType)
+	}
+	queryText := strings.Join(queryParts, "\nUNION ALL\n")
+	queryText += "\nLIMIT $2"
+
+	rows, err := q.db.Query(queryText, value, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	matches := make([]relationEntityMatch, 0, limit)
+	for rows.Next() {
+		var match relationEntityMatch
+		if err := rows.Scan(&match.Type, &match.ID); err != nil {
+			return nil, err
+		}
+		matches = append(matches, match)
+	}
+	return matches, rows.Err()
+}
+
+func relationEntityMatchQueryParts(entityType string, exact bool) ([]string, bool) {
+	type entitySource struct {
+		entityType string
+		tableName  string
+		nameColumn string
+	}
+	sources := []entitySource{
+		{"sql_procedure", "sql_procedures", "proc_name"},
+		{"sql_table", "sql_tables", "table_name"},
+		{"pas_method", "pas_methods", "method_name"},
+		{"js_function", "js_functions", "function_name"},
+		{"api_contract", "api_contracts", "contract_name"},
+		{"report_form", "report_forms", "report_name"},
+		{"report_field", "report_fields", "field_name"},
+		{"report_param", "report_params", "param_name"},
+		{"vb_function", "vb_functions", "function_name"},
+		{"query_fragment", "query_fragments", "component_name"},
+		{"smf_instrument", "smf_instruments", "instrument_name"},
+	}
+
+	normalizedType := strings.ToLower(strings.TrimSpace(entityType))
+	parts := make([]string, 0, len(sources))
+	for _, source := range sources {
+		if normalizedType != "" && normalizedType != source.entityType {
+			continue
+		}
+		condition := fmt.Sprintf("LOWER(%s) = LOWER($1)", source.nameColumn)
+		if !exact {
+			condition = fmt.Sprintf("%s ILIKE $1", source.nameColumn)
+		}
+		parts = append(parts, fmt.Sprintf("SELECT '%s' AS entity_type, id FROM %s WHERE %s", source.entityType, source.tableName, condition))
+	}
+	if len(parts) == 0 {
+		return nil, false
+	}
+	return parts, true
+}
+
+func (q *Query) selectRelationIDsByEntityMatches(side string, matches []relationEntityMatch, oppositeType string, relationType string, limit int) ([]int64, error) {
+	typeColumn := "r.source_type"
+	idColumn := "r.source_id"
+	oppositeTypeColumn := "r.target_type"
+	if strings.EqualFold(side, "target") {
+		typeColumn = "r.target_type"
+		idColumn = "r.target_id"
+		oppositeTypeColumn = "r.source_type"
+	}
+
+	values := make([]string, 0, len(matches))
+	args := make([]interface{}, 0, len(matches)*2+3)
+	argPos := 1
+	for _, match := range matches {
+		values = append(values, fmt.Sprintf("($%d, $%d)", argPos, argPos+1))
+		args = append(args, match.Type, match.ID)
+		argPos += 2
+	}
+
+	conditions := make([]string, 0, 2)
+	if oppositeType != "" {
+		conditions = append(conditions, fmt.Sprintf("%s = $%d", oppositeTypeColumn, argPos))
+		args = append(args, oppositeType)
+		argPos++
+	}
+	if relationType != "" {
+		conditions = append(conditions, fmt.Sprintf("r.relation_type = $%d", argPos))
+		args = append(args, relationType)
+		argPos++
+	}
+
+	queryText := fmt.Sprintf(`
+		SELECT r.id
+		FROM relations r
+		JOIN (VALUES %s) AS matched(entity_type, entity_id)
+		  ON %s = matched.entity_type
+		 AND %s = matched.entity_id::BIGINT
+	`, strings.Join(values, ","), typeColumn, idColumn)
+	if len(conditions) > 0 {
+		queryText += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	queryText += fmt.Sprintf(" ORDER BY r.id DESC LIMIT $%d", argPos)
+	args = append(args, limit)
+
+	rows, err := q.db.Query(queryText, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]int64, 0, limit)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func relationSearchBaseQuery() string {
