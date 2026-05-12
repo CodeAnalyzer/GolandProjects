@@ -1,6 +1,10 @@
 package smf
 
-import "testing"
+import (
+	"regexp"
+	"strings"
+	"testing"
+)
 
 func TestParseContent_ParsesXMLJobInstrumentAndScript(t *testing.T) {
 	content := `<job>
@@ -144,4 +148,60 @@ func findActionByName(actions []map[string]interface{}, name string) map[string]
 		}
 	}
 	return nil
+}
+
+func TestSMFHelpers(t *testing.T) {
+	parser := NewParser()
+
+	candidates := parser.buildIncludeCandidates("Common.inc", "/repo/jobs")
+	if len(candidates) == 0 {
+		t.Fatalf("buildIncludeCandidates returned empty list")
+	}
+	normalizedFound := false
+	for _, c := range candidates {
+		if c == "Common.inc" || c == "Include\\Common.inc" || c == "Include/Common.inc" {
+			normalizedFound = true
+		}
+	}
+	if !normalizedFound {
+		t.Fatalf("unexpected buildIncludeCandidates result: %+v", candidates)
+	}
+
+	if !parser.isValidEncoding("select ID from tAccount") {
+		t.Fatalf("expected valid encoding for plain ASCII")
+	}
+	if !parser.isValidEncoding("выборка из таблицы") {
+		t.Fatalf("expected valid encoding for Russian text without garbage")
+	}
+
+	script := `with (Instrument) {
+  Name = "Credit";
+  Brief = "Brief";
+}`
+	re := regexp.MustCompile(`with\s*\(\s*Instrument\s*\)\s*\{`)
+	if got := parser.extractWithBlock(script, re); got == "" {
+		t.Fatalf("extractWithBlock should return non-empty for correct block")
+	}
+	unclosed := `with (Instrument) { Name = "Credit"`
+	if got := parser.extractWithBlock(unclosed, re); got == "" {
+		t.Fatalf("extractWithBlock should return remainder for unclosed block")
+	}
+	if got := parser.extractWithBlock("no block here", re); got != "" {
+		t.Fatalf("extractWithBlock should return empty when pattern not found")
+	}
+
+	sources := []string{
+		`function HelperA(param, "target") { Into("STATE"); PropVal = CONSUMER_ACTION_APPROVE; }`,
+		`function HelperB(param, "other") { Priority = 5; }`,
+	}
+	body := parser.findHelperFunctionBody("HelperA", sources)
+	if body == "" {
+		t.Fatalf("findHelperFunctionBody should find HelperA body")
+	}
+	if !strings.Contains(body, `Into("STATE")`) || !strings.Contains(body, `PropVal = CONSUMER_ACTION_APPROVE`) {
+		t.Fatalf("unexpected helper body: %q", body)
+	}
+	if parser.findHelperFunctionBody("NonExistent", sources) != "" {
+		t.Fatalf("findHelperFunctionBody should return empty for non-existent helper")
+	}
 }

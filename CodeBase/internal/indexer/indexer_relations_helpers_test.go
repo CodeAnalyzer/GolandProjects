@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -99,5 +100,46 @@ func TestExtractReportParamRefsAndFindByName(t *testing.T) {
 	}
 	if got := findReportParamByName(params, "missing"); got != nil {
 		t.Fatalf("missing param = %+v, want nil", got)
+	}
+}
+
+func TestCloneInt64Map(t *testing.T) {
+	original := map[string]int64{"a": 1, "b": 2, "c": 3}
+	cloned := cloneInt64Map(original)
+
+	if !reflect.DeepEqual(cloned, original) {
+		t.Fatalf("cloned map differs from original: cloned=%#v original=%#v", cloned, original)
+	}
+	if &cloned == &original {
+		t.Fatalf("cloned map is same reference as original")
+	}
+	cloned["a"] = 999
+	if original["a"] != 1 {
+		t.Fatalf("modifying cloned map affected original: original[a]=%d", original["a"])
+	}
+	if cloned["a"] != 999 {
+		t.Fatalf("cloned map modification failed: cloned[a]=%d", cloned["a"])
+	}
+}
+
+func TestBuildIncludePathCandidates(t *testing.T) {
+	idx := &Indexer{}
+
+	candidates := idx.buildIncludePathCandidates("/repo/scripts/Main.sql", "Common.inc")
+	if len(candidates) == 0 {
+		t.Fatalf("candidates should not be empty")
+	}
+	foundCommon := false
+	for _, c := range candidates {
+		if c == "Common.inc" || c == "scripts/Common.inc" || filepath.ToSlash(filepath.Join("scripts", "Common.inc")) == c {
+			foundCommon = true
+		}
+	}
+	if !foundCommon {
+		t.Fatalf("expected Common.inc candidate in %#v", candidates)
+	}
+
+	if candidates := idx.buildIncludePathCandidates("/repo/scripts/Main.sql", ""); candidates != nil {
+		t.Fatalf("empty include path should return nil, got %#v", candidates)
 	}
 }
