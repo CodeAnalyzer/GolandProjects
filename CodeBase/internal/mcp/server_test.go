@@ -51,18 +51,18 @@ func TestHandleRequestToolsListIncludesPing(t *testing.T) {
 
 	found := false
 	for _, tool := range result.Tools {
-		if tool.Name == "codebase.ping" {
+		if tool.Name == "codebase_ping" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("codebase.ping tool is not registered")
+		t.Fatal("codebase_ping tool is not registered")
 	}
 }
 
 func TestHandleRequestToolsCallPing(t *testing.T) {
-	params := `{"name":"codebase.ping","arguments":{}}`
+	params := `{"name":"codebase_ping","arguments":{}}`
 	req := rpcRequest{
 		JSONRPC: "2.0",
 		ID:      json.RawMessage("3"),
@@ -91,7 +91,7 @@ func TestHandleRequestToolsCallPing(t *testing.T) {
 }
 
 func TestHandleRequestToolsCallUnknownToolReturnsToolError(t *testing.T) {
-	params := `{"name":"codebase.unknown","arguments":{}}`
+	params := `{"name":"codebase_unknown","arguments":{}}`
 	req := rpcRequest{
 		JSONRPC: "2.0",
 		ID:      json.RawMessage("4"),

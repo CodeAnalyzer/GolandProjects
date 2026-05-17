@@ -2,7 +2,7 @@ package mcp
 
 import "encoding/json"
 
-const protocolVersion = "2024-11-05"
+const protocolVersion = "2025-11-25"
 
 type rpcRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -57,4 +57,5 @@ type toolDefinition struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description,omitempty"`
 	InputSchema map[string]interface{} `json:"inputSchema,omitempty"`
+	OutputSchema map[string]interface{} `json:"outputSchema,omitempty"`
 }

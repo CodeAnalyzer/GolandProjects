@@ -17,10 +17,12 @@ type registeredTool struct {
 	Handler    toolHandler
 }
 
-var toolRegistry = map[string]registeredTool{
-	"codebase.ping": {
+var toolRegistry = fullToolRegistry
+
+var fullToolRegistry = map[string]registeredTool{
+	"codebase_ping": {
 		Definition: toolDefinition{
-			Name:        "codebase.ping",
+			Name:        "codebase_ping",
 			Description: "Health check tool for MCP transport",
 			InputSchema: objectSchema(map[string]interface{}{}),
 		},
@@ -28,9 +30,9 @@ var toolRegistry = map[string]registeredTool{
 			return map[string]interface{}{"ok": true, "service": "codebase-mcp"}, nil
 		},
 	},
-	"codebase.health": {
+	"codebase_health": {
 		Definition: toolDefinition{
-			Name:        "codebase.health",
+			Name:        "codebase_health",
 			Description: "Check CodeBase readiness",
 			InputSchema: objectSchema(map[string]interface{}{}),
 		},
@@ -38,9 +40,9 @@ var toolRegistry = map[string]registeredTool{
 			return systemsvc.ExecuteHealth()
 		},
 	},
-	"codebase.stats": {
+	"codebase_stats": {
 		Definition: toolDefinition{
-			Name:        "codebase.stats",
+			Name:        "codebase_stats",
 			Description: "Get CodeBase index statistics",
 			InputSchema: objectSchema(map[string]interface{}{}),
 		},
@@ -48,8 +50,8 @@ var toolRegistry = map[string]registeredTool{
 			return systemsvc.ExecuteStats()
 		},
 	},
-	"codebase.query.symbol": {
-		Definition: toolDefinition{Name: "codebase.query.symbol", Description: "Search symbol", InputSchema: querySchema("name", stringProp("Symbol name"), map[string]interface{}{"type": stringProp("Symbol type"), "like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_symbol": {
+		Definition: toolDefinition{Name: "codebase_query_symbol", Description: "Search symbol", InputSchema: querySchema("name", stringProp("Symbol name"), map[string]interface{}{"type": stringProp("Symbol type"), "like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -63,8 +65,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.table": {
-		Definition: toolDefinition{Name: "codebase.query.table", Description: "Search table", InputSchema: querySchema("name", stringProp("Table name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_table": {
+		Definition: toolDefinition{Name: "codebase_query_table", Description: "Search table", InputSchema: querySchema("name", stringProp("Table name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -77,8 +79,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.table-schema": {
-		Definition: toolDefinition{Name: "codebase.query.table-schema", Description: "Search table schema", InputSchema: querySchema("name", stringProp("Table name"), map[string]interface{}{"limit": intProp("Max results")})},
+	"codebase_query_table_schema": {
+		Definition: toolDefinition{Name: "codebase_query_table_schema", Description: "Search table schema", InputSchema: querySchema("name", stringProp("Table name"), map[string]interface{}{"limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -90,8 +92,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.table-index": {
-		Definition: toolDefinition{Name: "codebase.query.table-index", Description: "Search SQL table indexes", InputSchema: querySchema("name", stringProp("Table/index name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_table_index": {
+		Definition: toolDefinition{Name: "codebase_query_table_index", Description: "Search SQL table indexes", InputSchema: querySchema("name", stringProp("Table/index name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -104,8 +106,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.procedure": {
-		Definition: toolDefinition{Name: "codebase.query.procedure", Description: "Get SQL procedure details", InputSchema: querySchema("name", stringProp("Procedure name"), map[string]interface{}{})},
+	"codebase_query_procedure": {
+		Definition: toolDefinition{Name: "codebase_query_procedure", Description: "Get SQL procedure details", InputSchema: querySchema("name", stringProp("Procedure name"), map[string]interface{}{})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -116,8 +118,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.callers": {
-		Definition: toolDefinition{Name: "codebase.query.callers", Description: "Find procedure callers", InputSchema: querySchema("procedure", stringProp("Procedure name"), map[string]interface{}{"limit": intProp("Max results")})},
+	"codebase_query_callers": {
+		Definition: toolDefinition{Name: "codebase_query_callers", Description: "Find procedure callers", InputSchema: querySchema("procedure", stringProp("Procedure name"), map[string]interface{}{"limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "procedure")
 			if err != nil {
@@ -129,8 +131,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.methods": {
-		Definition: toolDefinition{Name: "codebase.query.methods", Description: "Find methods by table", InputSchema: querySchema("table", stringProp("Table name"), map[string]interface{}{"limit": intProp("Max results")})},
+	"codebase_query_methods": {
+		Definition: toolDefinition{Name: "codebase_query_methods", Description: "Find methods by table", InputSchema: querySchema("table", stringProp("Table name"), map[string]interface{}{"limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			table, err := requiredString(args, "table")
 			if err != nil {
@@ -142,8 +144,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.method": {
-		Definition: toolDefinition{Name: "codebase.query.method", Description: "Find PAS methods", InputSchema: querySchema("name", stringProp("Method name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_method": {
+		Definition: toolDefinition{Name: "codebase_query_method", Description: "Find PAS methods", InputSchema: querySchema("name", stringProp("Method name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -156,8 +158,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.form": {
-		Definition: toolDefinition{Name: "codebase.query.form", Description: "Find DFM forms", InputSchema: querySchema("name", stringProp("Form name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_form": {
+		Definition: toolDefinition{Name: "codebase_query_form", Description: "Find DFM forms", InputSchema: querySchema("name", stringProp("Form name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -170,8 +172,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.form-component": {
-		Definition: toolDefinition{Name: "codebase.query.form-component", Description: "Find DFM form components", InputSchema: querySchema("name", stringProp("Component name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_form_component": {
+		Definition: toolDefinition{Name: "codebase_query_form_component", Description: "Find DFM form components", InputSchema: querySchema("name", stringProp("Component name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -184,8 +186,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.sql-fragment": {
-		Definition: toolDefinition{Name: "codebase.query.sql-fragment", Description: "Search SQL fragments", InputSchema: querySchema("text", stringProp("Text fragment"), map[string]interface{}{"limit": intProp("Max results")})},
+	"codebase_query_sql_fragment": {
+		Definition: toolDefinition{Name: "codebase_query_sql_fragment", Description: "Search SQL fragments", InputSchema: querySchema("text", stringProp("Text fragment"), map[string]interface{}{"limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			text, err := requiredString(args, "text")
 			if err != nil {
@@ -197,8 +199,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.relations": {
-		Definition: toolDefinition{Name: "codebase.query.relations", Description: "Search relations", InputSchema: objectSchema(map[string]interface{}{"source_type": stringProp("Source entity type"), "source_name": stringProp("Source entity name"), "target_type": stringProp("Target entity type"), "target_name": stringProp("Target entity name"), "relation_type": stringProp("Relation type"), "limit": intProp("Max results")})},
+	"codebase_query_relations": {
+		Definition: toolDefinition{Name: "codebase_query_relations", Description: "Search relations", InputSchema: objectSchema(map[string]interface{}{"source_type": stringProp("Source entity type"), "source_name": stringProp("Source entity name"), "target_type": stringProp("Target entity type"), "target_name": stringProp("Target entity name"), "relation_type": stringProp("Relation type"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			sourceType, _ := optionalString(args, "source_type")
 			sourceName, _ := optionalString(args, "source_name")
@@ -211,8 +213,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.inspect": {
-		Definition: toolDefinition{Name: "codebase.query.inspect", Description: "Inspect symbol and graph neighborhood", InputSchema: querySchema("name", stringProp("Symbol name"), map[string]interface{}{"type": stringProp("Symbol type"), "limit": intProp("Max results")})},
+	"codebase_query_inspect": {
+		Definition: toolDefinition{Name: "codebase_query_inspect", Description: "Inspect symbol and graph neighborhood", InputSchema: querySchema("name", stringProp("Symbol name"), map[string]interface{}{"type": stringProp("Symbol type"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -225,8 +227,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.js-function": {
-		Definition: toolDefinition{Name: "codebase.query.js-function", Description: "Search JS functions", InputSchema: querySchema("name", stringProp("Function name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_js_function": {
+		Definition: toolDefinition{Name: "codebase_query_js_function", Description: "Search JS functions", InputSchema: querySchema("name", stringProp("Function name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -239,8 +241,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.smf-instrument": {
-		Definition: toolDefinition{Name: "codebase.query.smf-instrument", Description: "Search SMF instruments", InputSchema: querySchema("name", stringProp("Instrument name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_smf_instrument": {
+		Definition: toolDefinition{Name: "codebase_query_smf_instrument", Description: "Search SMF instruments", InputSchema: querySchema("name", stringProp("Instrument name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -253,8 +255,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.smf-type": {
-		Definition: toolDefinition{Name: "codebase.query.smf-type", Description: "Search SMF by scenario type", InputSchema: querySchema("type", stringProp("Scenario type"), map[string]interface{}{"limit": intProp("Max results")})},
+	"codebase_query_smf_type": {
+		Definition: toolDefinition{Name: "codebase_query_smf_type", Description: "Search SMF by scenario type", InputSchema: querySchema("type", stringProp("Scenario type"), map[string]interface{}{"limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			smfType, err := requiredString(args, "type")
 			if err != nil {
@@ -266,8 +268,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.report-form": {
-		Definition: toolDefinition{Name: "codebase.query.report-form", Description: "Search report forms", InputSchema: querySchema("name", stringProp("Report form name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_report_form": {
+		Definition: toolDefinition{Name: "codebase_query_report_form", Description: "Search report forms", InputSchema: querySchema("name", stringProp("Report form name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -280,8 +282,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.report-field": {
-		Definition: toolDefinition{Name: "codebase.query.report-field", Description: "Search report fields", InputSchema: querySchema("name", stringProp("Report field name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_report_field": {
+		Definition: toolDefinition{Name: "codebase_query_report_field", Description: "Search report fields", InputSchema: querySchema("name", stringProp("Report field name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -294,8 +296,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.report-param": {
-		Definition: toolDefinition{Name: "codebase.query.report-param", Description: "Search report params", InputSchema: querySchema("name", stringProp("Report param name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_report_param": {
+		Definition: toolDefinition{Name: "codebase_query_report_param", Description: "Search report params", InputSchema: querySchema("name", stringProp("Report param name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -308,8 +310,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.vb-function": {
-		Definition: toolDefinition{Name: "codebase.query.vb-function", Description: "Search VB functions", InputSchema: querySchema("name", stringProp("Function name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_vb_function": {
+		Definition: toolDefinition{Name: "codebase_query_vb_function", Description: "Search VB functions", InputSchema: querySchema("name", stringProp("Function name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -322,8 +324,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.api-contract": {
-		Definition: toolDefinition{Name: "codebase.query.api-contract", Description: "Search API contracts", InputSchema: querySchema("name", stringProp("Contract name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_api_contract": {
+		Definition: toolDefinition{Name: "codebase_query_api_contract", Description: "Search API contracts", InputSchema: querySchema("name", stringProp("Contract name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -336,8 +338,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.api-table": {
-		Definition: toolDefinition{Name: "codebase.query.api-table", Description: "Search API tables", InputSchema: querySchema("name", stringProp("Table name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_api_table": {
+		Definition: toolDefinition{Name: "codebase_query_api_table", Description: "Search API tables", InputSchema: querySchema("name", stringProp("Table name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -350,8 +352,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.api-table-index": {
-		Definition: toolDefinition{Name: "codebase.query.api-table-index", Description: "Search API table indexes", InputSchema: querySchema("name", stringProp("Table/index name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_api_table_index": {
+		Definition: toolDefinition{Name: "codebase_query_api_table_index", Description: "Search API table indexes", InputSchema: querySchema("name", stringProp("Table/index name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -364,8 +366,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.api-param": {
-		Definition: toolDefinition{Name: "codebase.query.api-param", Description: "Search API params", InputSchema: querySchema("name", stringProp("Param name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+	"codebase_query_api_param": {
+		Definition: toolDefinition{Name: "codebase_query_api_param", Description: "Search API params", InputSchema: querySchema("name", stringProp("Param name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -378,8 +380,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.api-impl": {
-		Definition: toolDefinition{Name: "codebase.query.api-impl", Description: "Find SQL implementations for API contract", InputSchema: querySchema("name", stringProp("Contract name"), map[string]interface{}{"limit": intProp("Max results")})},
+	"codebase_query_api_impl": {
+		Definition: toolDefinition{Name: "codebase_query_api_impl", Description: "Find SQL implementations for API contract", InputSchema: querySchema("name", stringProp("Contract name"), map[string]interface{}{"limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
@@ -391,8 +393,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.api-publishers": {
-		Definition: toolDefinition{Name: "codebase.query.api-publishers", Description: "Find API event publishers", InputSchema: querySchema("event", stringProp("Event name"), map[string]interface{}{"limit": intProp("Max results")})},
+	"codebase_query_api_publishers": {
+		Definition: toolDefinition{Name: "codebase_query_api_publishers", Description: "Find API event publishers", InputSchema: querySchema("event", stringProp("Event name"), map[string]interface{}{"limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			eventName, err := requiredString(args, "event")
 			if err != nil {
@@ -404,8 +406,8 @@ var toolRegistry = map[string]registeredTool{
 			})
 		},
 	},
-	"codebase.query.api-consumers": {
-		Definition: toolDefinition{Name: "codebase.query.api-consumers", Description: "Find API contract consumers", InputSchema: querySchema("name", stringProp("Contract name"), map[string]interface{}{"limit": intProp("Max results")})},
+	"codebase_query_api_consumers": {
+		Definition: toolDefinition{Name: "codebase_query_api_consumers", Description: "Find API contract consumers", InputSchema: querySchema("name", stringProp("Contract name"), map[string]interface{}{"limit": intProp("Max results")})},
 		Handler: func(args map[string]interface{}) (interface{}, error) {
 			name, err := requiredString(args, "name")
 			if err != nil {
