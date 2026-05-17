@@ -4,8 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/codebase/internal/config"
-	"github.com/codebase/internal/store"
+	"github.com/codebase/internal/systemsvc"
 	"github.com/spf13/cobra"
 )
 
@@ -57,59 +56,25 @@ var healthCmd = &cobra.Command{
 }
 
 func executeHealth() (healthResponse, error) {
+	result, err := systemsvc.ExecuteHealth()
+	if err != nil {
+		return healthResponse{}, err
+	}
+
 	response := healthResponse{
 		Success:       true,
 		FormatVersion: "1.0",
 		Command:       "health",
-		Status:        "ok",
-		Checks:        make([]healthCheck, 0, 4),
+		Status:        result.Status,
+		Checks:        make([]healthCheck, 0, len(result.Checks)),
 	}
-
-	cfg := config.Get()
-	if cfg == nil {
-		return response, fmt.Errorf("config not loaded")
-	}
-	response.Checks = append(response.Checks, healthCheck{
-		Name:   "config",
-		Status: "ok",
-	})
-
-	db, err := store.NewDB(cfg.DB)
-	if err != nil {
-		return response, fmt.Errorf("failed to connect to database: %w", err)
-	}
-	defer db.Close()
-	response.Checks = append(response.Checks, healthCheck{
-		Name:   "database",
-		Status: "ok",
-	})
-
-	if err := db.InitSchema(); err != nil {
-		return response, fmt.Errorf("failed to init schema: %w", err)
-	}
-	response.Checks = append(response.Checks, healthCheck{
-		Name:   "schema",
-		Status: "ok",
-	})
-
-	hasIndex, err := db.HasCompletedInit()
-	if err != nil {
-		return response, fmt.Errorf("failed to inspect index readiness: %w", err)
-	}
-	if hasIndex {
+	for _, check := range result.Checks {
 		response.Checks = append(response.Checks, healthCheck{
-			Name:   "index",
-			Status: "ok",
+			Name:    check.Name,
+			Status:  check.Status,
+			Message: check.Message,
 		})
-		return response, nil
 	}
-
-	response.Status = "degraded"
-	response.Checks = append(response.Checks, healthCheck{
-		Name:    "index",
-		Status:  "missing",
-		Message: "no completed scan run found",
-	})
 	return response, nil
 }
 

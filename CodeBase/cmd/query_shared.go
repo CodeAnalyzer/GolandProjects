@@ -72,13 +72,6 @@ type querySummary struct {
 	DistinctTargets int            `json:"distinct_targets,omitempty"`
 }
 
-type inspectResult struct {
-	Symbol    query.SymbolResult     `json:"symbol"`
-	Incoming  []query.RelationResult `json:"incoming"`
-	Outgoing  []query.RelationResult `json:"outgoing"`
-	Neighbors []query.SymbolResult   `json:"neighbors,omitempty"`
-}
-
 var queryCmd = &cobra.Command{
 	Use:   "query",
 	Short: "Point-in-time index queries",

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"github.com/codebase/internal/query"
+	"github.com/codebase/internal/querysvc"
 	"github.com/spf13/cobra"
 )
 
@@ -34,7 +35,7 @@ var queryInspectCmd = &cobra.Command{
 				"type": inspectType,
 			},
 			run: func(q *query.Query) (interface{}, error) {
-				return runInspectQuery(q, inspectName, inspectType, limit)
+				return querysvc.RunInspectQuery(q, inspectName, inspectType, limit)
 			},
 		})
 	},

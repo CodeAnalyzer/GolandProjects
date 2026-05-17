@@ -14,8 +14,8 @@ import (
 
 var (
 	appName        = "CodeBase"
-	version        = "0.7.0"
-	buildNumber    = "683"
+	version        = "0.7.1"
+	buildNumber    = "689"
 	copyright      = "Copyright (c) 2026"
 	cfgFile        string
 	commandLogger  *log.Logger
@@ -32,7 +32,8 @@ Supported modes:
   init   - full scan and index building
   update - incremental update by modified files
   query  - point-in-time index queries for symbols, tables, DFM forms/components/captions, SQL fragments, reports, JS, SMF and relations
-  stats  - index summary`,
+  stats  - index summary
+  mcp    - MCP JSON-RPC server over stdio`,
 		Version: version,
 	}
 )
@@ -198,7 +199,11 @@ func isHealthJSONMode(args []string) bool {
 }
 
 func isMachineReadableMode(args []string) bool {
-	return isQueryJSONMode(args) || isStatsJSONMode(args) || isHealthJSONMode(args)
+	return isQueryJSONMode(args) || isStatsJSONMode(args) || isHealthJSONMode(args) || isMCPMode(args)
+}
+
+func isMCPMode(args []string) bool {
+	return len(args) > 0 && args[0] == "mcp"
 }
 
 func detectQueryCommandName(args []string) string {

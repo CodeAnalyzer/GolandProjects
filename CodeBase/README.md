@@ -458,6 +458,31 @@ Health status: ok
 - index: ok
 ```
 
+### MCP режим (stdio JSON-RPC)
+
+Запуск MCP сервера:
+
+```bash
+codebase mcp
+```
+
+Особенности режима:
+
+- используется явный запуск `codebase mcp` (авто-детект по TTY не используется)
+- `stdout` зарезервирован под JSON-RPC транспорт (без баннера и лишнего текстового вывода)
+- инструменты MCP реализованы поверх внутреннего сервисного слоя, без вызова Cobra-команд
+
+Ключевые MCP tools:
+
+- `codebase.health`
+- `codebase.stats`
+- `codebase.query.*` для всех query-подкоманд CLI
+
+Контракт формата:
+
+- **MCP**: tools возвращают чистые доменные данные (например `{ "count": N, "items": [...] }`)
+- **CLI**: сохраняет текущий JSON envelope (`success`, `format_version`, `command`, `meta`, ...)
+
 ## Архитектура
 
 ```
@@ -472,7 +497,8 @@ CodeBase/
 │   ├── query_execution.go         # Выполнение query и форматирование вывода
 │   ├── query_api.go               # API query-команды
 │   ├── stats.go                   # Команда stats
-│   └── health.go                  # Команда health
+│   ├── health.go                  # Команда health
+│   └── mcp.go                     # Команда запуска MCP сервера
 ├── internal/
 │   ├── config/                    # Конфигурация
 │   ├── encoding/                  # Кодировки CP866/WIN1251
@@ -500,6 +526,9 @@ CodeBase/
 │   │   ├── query_sql.go           # SQL/table/procedure query-сценарии
 │   │   ├── query_relations.go     # Запросы relation graph
 │   │   └── api_query.go           # Query API-контрактов и DSArchitect сущностей
+│   ├── querysvc/                  # Внутренний runtime и compose-логика query (CLI + MCP)
+│   ├── systemsvc/                 # Внутренний runtime для health/stats (CLI + MCP)
+│   ├── mcp/                       # MCP stdio JSON-RPC transport, tools registry, handlers
 │   └── store/
 │       ├── db.go                  # Основной persistence layer и batch insert helpers
 │       └── api_store.go           # Persistence для API/DSArchitect сущностей
