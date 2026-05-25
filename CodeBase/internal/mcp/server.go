@@ -4,37 +4,64 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"strings"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/codebase/internal/config"
+	"github.com/codebase/internal/store"
 )
 
 // RunStdio запускает минимальный MCP JSON-RPC сервер поверх stdin/stdout.
 // stdout используется только для protocol-сообщений.
-func RunStdio(serverVersion string) error {
+// logger — опциональный логгер для записи длительности каждого tool-вызова; nil отключает логирование.
+func RunStdio(serverVersion string, logger *log.Logger) error {
+	cfg := config.Get()
+	if cfg == nil {
+		return fmt.Errorf("config not loaded")
+	}
+
+	db, err := store.NewDB(cfg.DB)
+	if err != nil {
+		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+	defer db.Close()
+
+	if err := db.InitSchema(); err != nil {
+		return fmt.Errorf("failed to init schema: %w", err)
+	}
+
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "codebase",
 		Version: serverVersion,
 	}, nil)
 
-	registerSDKCoreTools(server)
+	registerSDKCoreTools(server, buildToolRegistry(db), logger)
 
 	return server.Run(context.Background(), &mcpsdk.StdioTransport{})
 }
 
-func registerSDKCoreTools(server *mcpsdk.Server) {
-	for _, tool := range toolRegistry {
+func registerSDKCoreTools(server *mcpsdk.Server, registry map[string]registeredTool, logger *log.Logger) {
+	for _, tool := range registry {
 		server.AddTool(&mcpsdk.Tool{
 			Name:         tool.Definition.Name,
 			Description:  tool.Definition.Description,
 			InputSchema:  tool.Definition.InputSchema,
 			OutputSchema: defaultToolOutputSchema,
 		}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			start := time.Now()
+
 			args, err := decodeSDKToolArgs(req)
 			if err != nil {
+				logMCPToolCall(logger, tool.Definition.Name, nil, time.Since(start), err)
 				return sdkToolErrorResult(err), nil
 			}
 
 			result, err := tool.Handler(args)
+			elapsed := time.Since(start)
+			logMCPToolCall(logger, tool.Definition.Name, args, elapsed, err)
 			if err != nil {
 				return sdkToolErrorResult(err), nil
 			}
@@ -81,6 +108,42 @@ func sdkToolJSONResult(value interface{}) (*mcpsdk.CallToolResult, error) {
 	}, nil
 }
 
+func logMCPToolCall(logger *log.Logger, toolName string, args map[string]interface{}, duration time.Duration, callErr error) {
+	if logger == nil {
+		return
+	}
+	status := "success"
+	errorText := ""
+	if callErr != nil {
+		status = "error"
+		errorText = strings.Join(strings.Fields(callErr.Error()), " ")
+	}
+	logger.Printf(
+		"tool=%s args=%s duration=%s duration_ms=%d status=%s error=%q",
+		toolName,
+		formatToolArgs(args),
+		duration.Round(time.Millisecond),
+		duration.Milliseconds(),
+		status,
+		errorText,
+	)
+}
+
+func formatToolArgs(args map[string]interface{}) string {
+	if len(args) == 0 {
+		return "-"
+	}
+	for _, key := range []string{"name", "procedure", "text", "event", "table", "type"} {
+		if v, ok := args[key]; ok {
+			return fmt.Sprintf("%s=%q", key, fmt.Sprintf("%v", v))
+		}
+	}
+	for k, v := range args {
+		return fmt.Sprintf("%s=%q", k, fmt.Sprintf("%v", v))
+	}
+	return "-"
+}
+
 func sdkToolErrorResult(err error) *mcpsdk.CallToolResult {
 	return &mcpsdk.CallToolResult{
 		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: err.Error()}},
@@ -88,120 +151,3 @@ func sdkToolErrorResult(err error) *mcpsdk.CallToolResult {
 	}
 }
 
-func handleRequest(req rpcRequest, serverVersion string) *rpcResponse {
-	id := decodeID(req.ID)
-
-	switch req.Method {
-	case "initialize":
-		return &rpcResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Result: initializeResult{
-				ProtocolVersion: protocolVersion,
-				ServerInfo: serverInfo{
-					Name:    "codebase-mcp",
-					Version: serverVersion,
-				},
-				Capabilities: map[string]interface{}{
-					"experimental": map[string]interface{}{},
-					"prompts": map[string]interface{}{
-						"listChanged": false,
-					},
-					"resources": map[string]interface{}{
-						"subscribe":   false,
-						"listChanged": false,
-					},
-					"tools": map[string]interface{}{
-						"listChanged": false,
-					},
-				},
-			},
-		}
-	case "notifications/initialized":
-		return nil
-	case "prompts/list":
-		return &rpcResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Result: map[string]interface{}{
-				"prompts": []interface{}{},
-			},
-		}
-	case "resources/list":
-		return &rpcResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Result: map[string]interface{}{
-				"resources": []interface{}{},
-			},
-		}
-	case "resources/templates/list":
-		return &rpcResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Result: map[string]interface{}{
-				"resourceTemplates": []interface{}{},
-			},
-		}
-	case "tools/list":
-		return &rpcResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Result:  listToolsResult{Tools: tools()},
-		}
-	case "tools/call":
-		var params callToolParams
-		if len(req.Params) > 0 {
-			if err := json.Unmarshal(req.Params, &params); err != nil {
-				return rpcInvalidParams(id, "invalid tools/call params")
-			}
-		}
-		result, err := handleToolCall(params)
-		if err != nil {
-			return &rpcResponse{
-				JSONRPC: "2.0",
-				ID:      id,
-				Result: callToolResult{
-					Content: []toolContent{{Type: "text", Text: err.Error()}},
-					IsError: true,
-				},
-			}
-		}
-		return &rpcResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Result:  result,
-		}
-	default:
-		return &rpcResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Error: &rpcError{
-				Code:    -32601,
-				Message: "method not found",
-			},
-		}
-	}
-}
-
-func rpcInvalidParams(id interface{}, message string) *rpcResponse {
-	return &rpcResponse{
-		JSONRPC: "2.0",
-		ID:      id,
-		Error: &rpcError{
-			Code:    -32602,
-			Message: message,
-		},
-	}
-}
-
-func decodeID(raw json.RawMessage) interface{} {
-	if len(raw) == 0 {
-		return nil
-	}
-	var generic interface{}
-	if err := json.Unmarshal(raw, &generic); err != nil {
-		return nil
-	}
-	return generic
-}

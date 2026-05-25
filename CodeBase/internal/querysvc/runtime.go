@@ -8,6 +8,17 @@ import (
 	"github.com/codebase/internal/store"
 )
 
+// ExecuteWith выполняет query-runner на уже открытом соединении.
+// InitSchema не вызывается — предполагается, что схема уже инициализирована.
+func ExecuteWith(db *store.DB, run func(q *query.Query) (interface{}, error)) (interface{}, error) {
+	q := query.New(db)
+	results, err := run(q)
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
+	return results, nil
+}
+
 // Execute открывает БД, инициализирует схему и выполняет переданный query-runner.
 func Execute(run func(q *query.Query) (interface{}, error)) (interface{}, error) {
 	cfg := config.Get()

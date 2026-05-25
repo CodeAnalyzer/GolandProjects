@@ -7,6 +7,7 @@ import (
 
 	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/querysvc"
+	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/systemsvc"
 )
 
@@ -17,412 +18,420 @@ type registeredTool struct {
 	Handler    toolHandler
 }
 
-var toolRegistry = fullToolRegistry
+var toolRegistry = buildToolRegistry(nil)
 
-var fullToolRegistry = map[string]registeredTool{
-	"codebase_ping": {
-		Definition: toolDefinition{
-			Name:        "codebase_ping",
-			Description: "Health check tool for MCP transport",
-			InputSchema: objectSchema(map[string]interface{}{}),
+func buildToolRegistry(db *store.DB) map[string]registeredTool {
+	return map[string]registeredTool{
+		"codebase_ping": {
+			Definition: toolDefinition{
+				Name:        "codebase_ping",
+				Description: "Health check tool for MCP transport",
+				InputSchema: objectSchema(map[string]interface{}{}),
+			},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				return map[string]interface{}{"ok": true, "service": "codebase-mcp"}, nil
+			},
 		},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			return map[string]interface{}{"ok": true, "service": "codebase-mcp"}, nil
+		"codebase_health": {
+			Definition: toolDefinition{
+				Name:        "codebase_health",
+				Description: "Check CodeBase readiness",
+				InputSchema: objectSchema(map[string]interface{}{}),
+			},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				return systemsvc.ExecuteHealth()
+			},
 		},
-	},
-	"codebase_health": {
-		Definition: toolDefinition{
-			Name:        "codebase_health",
-			Description: "Check CodeBase readiness",
-			InputSchema: objectSchema(map[string]interface{}{}),
+		"codebase_stats": {
+			Definition: toolDefinition{
+				Name:        "codebase_stats",
+				Description: "Get CodeBase index statistics",
+				InputSchema: objectSchema(map[string]interface{}{}),
+			},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				return systemsvc.ExecuteStats()
+			},
 		},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			return systemsvc.ExecuteHealth()
+		"codebase_query_symbol": {
+			Definition: toolDefinition{Name: "codebase_query_symbol", Description: "Search symbol", InputSchema: querySchema("name", stringProp("Symbol name"), map[string]interface{}{"type": stringProp("Symbol type"), "like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				typeName, _ := optionalString(args, "type")
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchSymbol(name, typeName, like, limit)
+				})
+			},
 		},
-	},
-	"codebase_stats": {
-		Definition: toolDefinition{
-			Name:        "codebase_stats",
-			Description: "Get CodeBase index statistics",
-			InputSchema: objectSchema(map[string]interface{}{}),
+		"codebase_query_table": {
+			Definition: toolDefinition{Name: "codebase_query_table", Description: "Search table", InputSchema: querySchema("name", stringProp("Table name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchTable(name, like, limit)
+				})
+			},
 		},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			return systemsvc.ExecuteStats()
+		"codebase_query_table_schema": {
+			Definition: toolDefinition{Name: "codebase_query_table_schema", Description: "Search table schema", InputSchema: querySchema("name", stringProp("Table name"), map[string]interface{}{"limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchTableSchema(name, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_symbol": {
-		Definition: toolDefinition{Name: "codebase_query_symbol", Description: "Search symbol", InputSchema: querySchema("name", stringProp("Symbol name"), map[string]interface{}{"type": stringProp("Symbol type"), "like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			typeName, _ := optionalString(args, "type")
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchSymbol(name, typeName, like, limit)
-			})
+		"codebase_query_table_index": {
+			Definition: toolDefinition{Name: "codebase_query_table_index", Description: "Search SQL table indexes", InputSchema: querySchema("name", stringProp("Table/index name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchSQLTableIndex(name, like, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_table": {
-		Definition: toolDefinition{Name: "codebase_query_table", Description: "Search table", InputSchema: querySchema("name", stringProp("Table name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchTable(name, like, limit)
-			})
+		"codebase_query_procedure": {
+			Definition: toolDefinition{Name: "codebase_query_procedure", Description: "Get SQL procedure details", InputSchema: querySchema("name", stringProp("Procedure name"), map[string]interface{}{})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.GetProcedureResult(name)
+				})
+			},
 		},
-	},
-	"codebase_query_table_schema": {
-		Definition: toolDefinition{Name: "codebase_query_table_schema", Description: "Search table schema", InputSchema: querySchema("name", stringProp("Table name"), map[string]interface{}{"limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchTableSchema(name, limit)
-			})
+		"codebase_query_callers": {
+			Definition: toolDefinition{Name: "codebase_query_callers", Description: "Find procedure callers", InputSchema: querySchema("procedure", stringProp("Procedure name"), map[string]interface{}{"limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "procedure")
+				if err != nil {
+					return nil, err
+				}
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.FindCallers(name, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_table_index": {
-		Definition: toolDefinition{Name: "codebase_query_table_index", Description: "Search SQL table indexes", InputSchema: querySchema("name", stringProp("Table/index name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchSQLTableIndex(name, like, limit)
-			})
+		"codebase_query_methods": {
+			Definition: toolDefinition{Name: "codebase_query_methods", Description: "Find methods by table", InputSchema: querySchema("table", stringProp("Table name"), map[string]interface{}{"limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				table, err := requiredString(args, "table")
+				if err != nil {
+					return nil, err
+				}
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.FindMethodsByTable(table, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_procedure": {
-		Definition: toolDefinition{Name: "codebase_query_procedure", Description: "Get SQL procedure details", InputSchema: querySchema("name", stringProp("Procedure name"), map[string]interface{}{})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.GetProcedureResult(name)
-			})
+		"codebase_query_method": {
+			Definition: toolDefinition{Name: "codebase_query_method", Description: "Find PAS methods", InputSchema: querySchema("name", stringProp("Method name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.FindPASMethodsByName(name, like, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_callers": {
-		Definition: toolDefinition{Name: "codebase_query_callers", Description: "Find procedure callers", InputSchema: querySchema("procedure", stringProp("Procedure name"), map[string]interface{}{"limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "procedure")
-			if err != nil {
-				return nil, err
-			}
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.FindCallers(name, limit)
-			})
+		"codebase_query_form": {
+			Definition: toolDefinition{Name: "codebase_query_form", Description: "Find DFM forms", InputSchema: querySchema("name", stringProp("Form name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchDFMForm(name, like, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_methods": {
-		Definition: toolDefinition{Name: "codebase_query_methods", Description: "Find methods by table", InputSchema: querySchema("table", stringProp("Table name"), map[string]interface{}{"limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			table, err := requiredString(args, "table")
-			if err != nil {
-				return nil, err
-			}
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.FindMethodsByTable(table, limit)
-			})
+		"codebase_query_form_component": {
+			Definition: toolDefinition{Name: "codebase_query_form_component", Description: "Find DFM form components", InputSchema: querySchema("name", stringProp("Component name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchDFMComponent(name, like, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_method": {
-		Definition: toolDefinition{Name: "codebase_query_method", Description: "Find PAS methods", InputSchema: querySchema("name", stringProp("Method name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.FindPASMethodsByName(name, like, limit)
-			})
+		"codebase_query_sql_fragment": {
+			Definition: toolDefinition{Name: "codebase_query_sql_fragment", Description: "Search SQL fragments", InputSchema: querySchema("text", stringProp("Text fragment"), map[string]interface{}{"limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				text, err := requiredString(args, "text")
+				if err != nil {
+					return nil, err
+				}
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchQueryFragment(text, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_form": {
-		Definition: toolDefinition{Name: "codebase_query_form", Description: "Find DFM forms", InputSchema: querySchema("name", stringProp("Form name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchDFMForm(name, like, limit)
-			})
+		"codebase_query_relations": {
+			Definition: toolDefinition{Name: "codebase_query_relations", Description: "Search relations", InputSchema: objectSchema(map[string]interface{}{"source_type": stringProp("Source entity type"), "source_name": stringProp("Source entity name"), "target_type": stringProp("Target entity type"), "target_name": stringProp("Target entity name"), "relation_type": stringProp("Relation type"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				sourceType, _ := optionalString(args, "source_type")
+				sourceName, _ := optionalString(args, "source_name")
+				targetType, _ := optionalString(args, "target_type")
+				targetName, _ := optionalString(args, "target_name")
+				relationType, _ := optionalString(args, "relation_type")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchRelations(sourceType, sourceName, targetType, targetName, relationType, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_form_component": {
-		Definition: toolDefinition{Name: "codebase_query_form_component", Description: "Find DFM form components", InputSchema: querySchema("name", stringProp("Component name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchDFMComponent(name, like, limit)
-			})
+		"codebase_query_inspect": {
+			Definition: toolDefinition{Name: "codebase_query_inspect", Description: "Inspect symbol and graph neighborhood", InputSchema: querySchema("name", stringProp("Symbol name"), map[string]interface{}{"type": stringProp("Symbol type"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				typeName, _ := optionalString(args, "type")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return querysvc.RunInspectQuery(q, name, typeName, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_sql_fragment": {
-		Definition: toolDefinition{Name: "codebase_query_sql_fragment", Description: "Search SQL fragments", InputSchema: querySchema("text", stringProp("Text fragment"), map[string]interface{}{"limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			text, err := requiredString(args, "text")
-			if err != nil {
-				return nil, err
-			}
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchQueryFragment(text, limit)
-			})
+		"codebase_query_js_function": {
+			Definition: toolDefinition{Name: "codebase_query_js_function", Description: "Search JS functions", InputSchema: querySchema("name", stringProp("Function name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchJSFunction(name, like, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_relations": {
-		Definition: toolDefinition{Name: "codebase_query_relations", Description: "Search relations", InputSchema: objectSchema(map[string]interface{}{"source_type": stringProp("Source entity type"), "source_name": stringProp("Source entity name"), "target_type": stringProp("Target entity type"), "target_name": stringProp("Target entity name"), "relation_type": stringProp("Relation type"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			sourceType, _ := optionalString(args, "source_type")
-			sourceName, _ := optionalString(args, "source_name")
-			targetType, _ := optionalString(args, "target_type")
-			targetName, _ := optionalString(args, "target_name")
-			relationType, _ := optionalString(args, "relation_type")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchRelations(sourceType, sourceName, targetType, targetName, relationType, limit)
-			})
+		"codebase_query_smf_instrument": {
+			Definition: toolDefinition{Name: "codebase_query_smf_instrument", Description: "Search SMF instruments", InputSchema: querySchema("name", stringProp("Instrument name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchSMFInstrument(name, like, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_inspect": {
-		Definition: toolDefinition{Name: "codebase_query_inspect", Description: "Inspect symbol and graph neighborhood", InputSchema: querySchema("name", stringProp("Symbol name"), map[string]interface{}{"type": stringProp("Symbol type"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			typeName, _ := optionalString(args, "type")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return querysvc.RunInspectQuery(q, name, typeName, limit)
-			})
+		"codebase_query_smf_type": {
+			Definition: toolDefinition{Name: "codebase_query_smf_type", Description: "Search SMF by scenario type", InputSchema: querySchema("type", stringProp("Scenario type"), map[string]interface{}{"limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				smfType, err := requiredString(args, "type")
+				if err != nil {
+					return nil, err
+				}
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchSMFByType(smfType, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_js_function": {
-		Definition: toolDefinition{Name: "codebase_query_js_function", Description: "Search JS functions", InputSchema: querySchema("name", stringProp("Function name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchJSFunction(name, like, limit)
-			})
+		"codebase_query_report_form": {
+			Definition: toolDefinition{Name: "codebase_query_report_form", Description: "Search report forms", InputSchema: querySchema("name", stringProp("Report form name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchReportForm(name, like, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_smf_instrument": {
-		Definition: toolDefinition{Name: "codebase_query_smf_instrument", Description: "Search SMF instruments", InputSchema: querySchema("name", stringProp("Instrument name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchSMFInstrument(name, like, limit)
-			})
+		"codebase_query_report_field": {
+			Definition: toolDefinition{Name: "codebase_query_report_field", Description: "Search report fields", InputSchema: querySchema("name", stringProp("Report field name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchReportField(name, like, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_smf_type": {
-		Definition: toolDefinition{Name: "codebase_query_smf_type", Description: "Search SMF by scenario type", InputSchema: querySchema("type", stringProp("Scenario type"), map[string]interface{}{"limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			smfType, err := requiredString(args, "type")
-			if err != nil {
-				return nil, err
-			}
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchSMFByType(smfType, limit)
-			})
+		"codebase_query_report_param": {
+			Definition: toolDefinition{Name: "codebase_query_report_param", Description: "Search report params", InputSchema: querySchema("name", stringProp("Report param name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchReportParam(name, like, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_report_form": {
-		Definition: toolDefinition{Name: "codebase_query_report_form", Description: "Search report forms", InputSchema: querySchema("name", stringProp("Report form name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchReportForm(name, like, limit)
-			})
+		"codebase_query_vb_function": {
+			Definition: toolDefinition{Name: "codebase_query_vb_function", Description: "Search VB functions", InputSchema: querySchema("name", stringProp("Function name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchVBFunction(name, like, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_report_field": {
-		Definition: toolDefinition{Name: "codebase_query_report_field", Description: "Search report fields", InputSchema: querySchema("name", stringProp("Report field name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchReportField(name, like, limit)
-			})
+		"codebase_query_api_contract": {
+			Definition: toolDefinition{Name: "codebase_query_api_contract", Description: "Search API contracts", InputSchema: querySchema("name", stringProp("Contract name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchAPIContract(name, like, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_report_param": {
-		Definition: toolDefinition{Name: "codebase_query_report_param", Description: "Search report params", InputSchema: querySchema("name", stringProp("Report param name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchReportParam(name, like, limit)
-			})
+		"codebase_query_api_table": {
+			Definition: toolDefinition{Name: "codebase_query_api_table", Description: "Search API tables", InputSchema: querySchema("name", stringProp("Table name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchAPITable(name, like, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_vb_function": {
-		Definition: toolDefinition{Name: "codebase_query_vb_function", Description: "Search VB functions", InputSchema: querySchema("name", stringProp("Function name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchVBFunction(name, like, limit)
-			})
+		"codebase_query_api_table_index": {
+			Definition: toolDefinition{Name: "codebase_query_api_table_index", Description: "Search API table indexes", InputSchema: querySchema("name", stringProp("Table/index name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchAPITableIndex(name, like, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_api_contract": {
-		Definition: toolDefinition{Name: "codebase_query_api_contract", Description: "Search API contracts", InputSchema: querySchema("name", stringProp("Contract name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchAPIContract(name, like, limit)
-			})
+		"codebase_query_api_param": {
+			Definition: toolDefinition{Name: "codebase_query_api_param", Description: "Search API params", InputSchema: querySchema("name", stringProp("Param name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				like, _ := optionalBool(args, "like")
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchAPIParam(name, like, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_api_table": {
-		Definition: toolDefinition{Name: "codebase_query_api_table", Description: "Search API tables", InputSchema: querySchema("name", stringProp("Table name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchAPITable(name, like, limit)
-			})
+		"codebase_query_api_impl": {
+			Definition: toolDefinition{Name: "codebase_query_api_impl", Description: "Find SQL implementations for API contract", InputSchema: querySchema("name", stringProp("Contract name"), map[string]interface{}{"limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchAPIImplementations(name, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_api_table_index": {
-		Definition: toolDefinition{Name: "codebase_query_api_table_index", Description: "Search API table indexes", InputSchema: querySchema("name", stringProp("Table/index name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchAPITableIndex(name, like, limit)
-			})
+		"codebase_query_api_publishers": {
+			Definition: toolDefinition{Name: "codebase_query_api_publishers", Description: "Find API event publishers", InputSchema: querySchema("event", stringProp("Event name"), map[string]interface{}{"limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				eventName, err := requiredString(args, "event")
+				if err != nil {
+					return nil, err
+				}
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchAPIPublishers(eventName, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_api_param": {
-		Definition: toolDefinition{Name: "codebase_query_api_param", Description: "Search API params", InputSchema: querySchema("name", stringProp("Param name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			like, _ := optionalBool(args, "like")
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchAPIParam(name, like, limit)
-			})
+		"codebase_query_api_consumers": {
+			Definition: toolDefinition{Name: "codebase_query_api_consumers", Description: "Find API contract consumers", InputSchema: querySchema("name", stringProp("Contract name"), map[string]interface{}{"limit": intProp("Max results")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					return q.SearchAPIConsumers(name, limit)
+				})
+			},
 		},
-	},
-	"codebase_query_api_impl": {
-		Definition: toolDefinition{Name: "codebase_query_api_impl", Description: "Find SQL implementations for API contract", InputSchema: querySchema("name", stringProp("Contract name"), map[string]interface{}{"limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchAPIImplementations(name, limit)
-			})
-		},
-	},
-	"codebase_query_api_publishers": {
-		Definition: toolDefinition{Name: "codebase_query_api_publishers", Description: "Find API event publishers", InputSchema: querySchema("event", stringProp("Event name"), map[string]interface{}{"limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			eventName, err := requiredString(args, "event")
-			if err != nil {
-				return nil, err
-			}
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchAPIPublishers(eventName, limit)
-			})
-		},
-	},
-	"codebase_query_api_consumers": {
-		Definition: toolDefinition{Name: "codebase_query_api_consumers", Description: "Find API contract consumers", InputSchema: querySchema("name", stringProp("Contract name"), map[string]interface{}{"limit": intProp("Max results")})},
-		Handler: func(args map[string]interface{}) (interface{}, error) {
-			name, err := requiredString(args, "name")
-			if err != nil {
-				return nil, err
-			}
-			limit := optionalLimit(args)
-			return runQuery(func(q *query.Query) (interface{}, error) {
-				return q.SearchAPIConsumers(name, limit)
-			})
-		},
-	},
+	}
 }
 
-func runQuery(run func(q *query.Query) (interface{}, error)) (interface{}, error) {
-	items, err := querysvc.Execute(run)
+func runQueryOpt(db *store.DB, run func(q *query.Query) (interface{}, error)) (interface{}, error) {
+	var items interface{}
+	var err error
+	if db != nil {
+		items, err = querysvc.ExecuteWith(db, run)
+	} else {
+		items, err = querysvc.Execute(run)
+	}
 	if err != nil {
 		return nil, err
 	}

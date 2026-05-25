@@ -10,7 +10,7 @@ var mcpCmd = &cobra.Command{
 	Short: "Run MCP server over stdio",
 	Long:  `Starts CodeBase as MCP JSON-RPC server over stdin/stdout transport.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return mcp.RunStdio(version)
+		return mcp.RunStdio(version, commandLogger)
 	},
 }
 

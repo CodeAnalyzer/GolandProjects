@@ -3,112 +3,77 @@ package mcp
 import (
 	"encoding/json"
 	"testing"
+
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestHandleRequestInitialize(t *testing.T) {
-	req := rpcRequest{
-		JSONRPC: "2.0",
-		ID:      json.RawMessage("1"),
-		Method:  "initialize",
-	}
-
-	resp := handleRequest(req, "0.7.1")
-	if resp == nil {
-		t.Fatal("expected response")
-	}
-	if resp.Error != nil {
-		t.Fatalf("unexpected error: %+v", resp.Error)
-	}
-
-	result, ok := resp.Result.(initializeResult)
+func TestToolRegistryContainsPing(t *testing.T) {
+	tool, ok := toolRegistry["codebase_ping"]
 	if !ok {
-		t.Fatalf("unexpected result type: %T", resp.Result)
+		t.Fatal("codebase_ping not in toolRegistry")
 	}
-	if result.ServerInfo.Name != "codebase-mcp" {
-		t.Fatalf("unexpected server name: %s", result.ServerInfo.Name)
-	}
-	if result.ServerInfo.Version != "0.7.1" {
-		t.Fatalf("unexpected server version: %s", result.ServerInfo.Version)
+	if tool.Definition.Name != "codebase_ping" {
+		t.Fatalf("unexpected name: %s", tool.Definition.Name)
 	}
 }
 
-func TestHandleRequestToolsListIncludesPing(t *testing.T) {
-	req := rpcRequest{
-		JSONRPC: "2.0",
-		ID:      json.RawMessage("2"),
-		Method:  "tools/list",
-	}
-
-	resp := handleRequest(req, "0.7.1")
-	if resp == nil || resp.Error != nil {
-		t.Fatalf("unexpected response: %+v", resp)
-	}
-
-	result, ok := resp.Result.(listToolsResult)
-	if !ok {
-		t.Fatalf("unexpected result type: %T", resp.Result)
-	}
-
+func TestToolsListIncludesPing(t *testing.T) {
+	list := tools()
 	found := false
-	for _, tool := range result.Tools {
+	for _, tool := range list {
 		if tool.Name == "codebase_ping" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("codebase_ping tool is not registered")
+		t.Fatal("codebase_ping not in tools()")
 	}
 }
 
-func TestHandleRequestToolsCallPing(t *testing.T) {
-	params := `{"name":"codebase_ping","arguments":{}}`
-	req := rpcRequest{
-		JSONRPC: "2.0",
-		ID:      json.RawMessage("3"),
-		Method:  "tools/call",
-		Params:  json.RawMessage(params),
-	}
-
-	resp := handleRequest(req, "0.7.1")
-	if resp == nil || resp.Error != nil {
-		t.Fatalf("unexpected response: %+v", resp)
-	}
-
-	result, ok := resp.Result.(callToolResult)
+func TestPingHandlerReturnsOK(t *testing.T) {
+	tool, ok := toolRegistry["codebase_ping"]
 	if !ok {
-		t.Fatalf("unexpected result type: %T", resp.Result)
+		t.Fatal("codebase_ping not in toolRegistry")
 	}
-	if result.IsError {
-		t.Fatal("expected non-error tool result")
+	result, err := tool.Handler(map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(result.Content) != 1 {
-		t.Fatalf("unexpected content length: %d", len(result.Content))
+	m, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected result type: %T", result)
 	}
-	if result.Content[0].Type != "text" {
-		t.Fatalf("unexpected content type: %s", result.Content[0].Type)
+	if v, _ := m["ok"].(bool); !v {
+		t.Fatal("expected ok=true in ping response")
 	}
 }
 
-func TestHandleRequestToolsCallUnknownToolReturnsToolError(t *testing.T) {
-	params := `{"name":"codebase_unknown","arguments":{}}`
-	req := rpcRequest{
-		JSONRPC: "2.0",
-		ID:      json.RawMessage("4"),
-		Method:  "tools/call",
-		Params:  json.RawMessage(params),
+func TestUnknownToolNotInRegistry(t *testing.T) {
+	if _, ok := toolRegistry["codebase_unknown"]; ok {
+		t.Fatal("unexpected tool codebase_unknown found in registry")
 	}
+}
 
-	resp := handleRequest(req, "0.7.1")
-	if resp == nil || resp.Error != nil {
-		t.Fatalf("unexpected response: %+v", resp)
+func TestDecodeSDKToolArgsNil(t *testing.T) {
+	args, err := decodeSDKToolArgs(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
+	if args == nil {
+		t.Fatal("expected non-nil args map")
+	}
+}
 
-	result, ok := resp.Result.(callToolResult)
-	if !ok {
-		t.Fatalf("unexpected result type: %T", resp.Result)
+func TestDecodeSDKToolArgsValid(t *testing.T) {
+	raw, _ := json.Marshal(map[string]interface{}{"name": "foo"})
+	req := &mcpsdk.CallToolRequest{}
+	req.Params = &mcpsdk.CallToolParamsRaw{Arguments: raw}
+	args, err := decodeSDKToolArgs(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.IsError {
-		t.Fatal("expected tool error")
+	if args["name"] != "foo" {
+		t.Fatalf("unexpected args: %v", args)
 	}
 }
