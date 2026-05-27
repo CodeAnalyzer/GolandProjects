@@ -8,6 +8,8 @@ import (
 	"github.com/codebase/internal/model"
 )
 
+// Дополнительные юнит-тесты для чистых функций SQL parser
+
 func TestParseContent_SQLDefines(t *testing.T) {
 	parser := NewParser()
 	content := `#include <macros.h>
@@ -267,6 +269,180 @@ select a.ID from tReal a where a.Name = 'join tIgnored'
 	}
 	if !found["tReal"] {
 		t.Fatalf("expected tReal table, got %+v", found)
+	}
+}
+
+func TestTopLevelParenDepth(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int
+	}{
+		{"select (1 + (2)) + '('", 0},
+		{"select (1 + (2)", 1},
+		{"select ((a + b) * c)", 0},
+		{"select (a + (b + c", 2},
+		{"select 'string with (parens)'", 0},
+		{"select ''', not (balanced", 0},
+		{"", 0},
+		{"select 1", 0},
+	}
+	for _, tt := range tests {
+		if got := topLevelParenDepth(tt.input); got != tt.want {
+			t.Fatalf("topLevelParenDepth(%q) = %d, want %d", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestSplitSQLByTopLevelComma(t *testing.T) {
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{"a, isnull(b, 'x,y') as B, c", []string{"a", "isnull(b, 'x,y') as B", "c"}},
+		{"col1, col2, col3", []string{"col1", "col2", "col3"}},
+		{"func(a, b, c)", []string{"func(a, b, c)"}},
+		{"'', ''", []string{"''", "''"}},
+		{"single", []string{"single"}},
+		{"", []string{}},
+		{"a, '', c", []string{"a", "''", "c"}},
+	}
+	for _, tt := range tests {
+		got := splitSQLByTopLevelComma(tt.input)
+		if !reflect.DeepEqual(got, tt.want) {
+			t.Fatalf("splitSQLByTopLevelComma(%q) = %#v, want %#v", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestInferSelectColumnName(t *testing.T) {
+	tests := map[string]string{
+		"u.UserID":                         "UserID",
+		"isnull(u.Name, '') nm":            "nm",
+		"case when 1=1 then 1 end as Flag": "Flag",
+		"select":                           "",
+		"column_name":                      "column_name",
+		"table.column as alias":            "alias",
+		"func(a, b) -- comment":            "b",
+		"[Bracketed]":                      "Bracketed",
+		"'literal'":                        "'literal'",
+		"count(*)":                         "count(*",
+	}
+	for expr, want := range tests {
+		if got := inferSelectColumnName(expr); got != want {
+			t.Fatalf("inferSelectColumnName(%q) = %q, want %q", expr, got, want)
+		}
+	}
+}
+
+func TestStartsWithAnyCI(t *testing.T) {
+	tests := []struct {
+		value    string
+		prefixes []string
+		want     bool
+	}{
+		{"SELECT * FROM t", []string{"select", "insert", "update"}, true},
+		{"  insert into t", []string{"select", "insert"}, true},
+		{"UPDATE t SET", []string{"select", "delete"}, false},
+		{"from t", []string{"FROM", "JOIN"}, true},
+		{"", []string{"select"}, false},
+		{"select", nil, false},
+	}
+	for _, tt := range tests {
+		if got := startsWithAnyCI(tt.value, tt.prefixes...); got != tt.want {
+			t.Fatalf("startsWithAnyCI(%q, %v) = %v, want %v", tt.value, tt.prefixes, got, tt.want)
+		}
+	}
+}
+
+func TestIsSQLKeyword(t *testing.T) {
+	keywords := []string{"SELECT", "FROM", "WHERE", "JOIN", "LEFT", "AS", "INTO", "CASE", "WHEN", "END"}
+	nonKeywords := []string{"users", "table_name", "column", "mySelect", "fromage"}
+
+	for _, kw := range keywords {
+		if !isSQLKeyword(kw) {
+			t.Fatalf("isSQLKeyword(%q) = false, want true", kw)
+		}
+		if !isSQLKeyword(strings.ToLower(kw)) {
+			t.Fatalf("isSQLKeyword(%q) = false, want true (case-insensitive)", strings.ToLower(kw))
+		}
+	}
+	for _, word := range nonKeywords {
+		if isSQLKeyword(word) {
+			t.Fatalf("isSQLKeyword(%q) = true, want false", word)
+		}
+	}
+}
+
+func TestExtractSelectIntoColumnNames(t *testing.T) {
+	tests := []struct {
+		projection string
+		want       []string
+	}{
+		{"a, b, c", []string{"a", "b", "c"}},
+		{"u.UserID, u.Name as UserName, isnull(u.Email, '') Email", []string{"UserID", "UserName", "Email"}},
+		{"case when 1=1 then 1 end as Flag, 2 as Num", []string{"Flag", "Num"}},
+		{"", []string{}},
+		{"select", []string{}},
+	}
+	for _, tt := range tests {
+		got := extractSelectIntoColumnNames(tt.projection)
+		if !reflect.DeepEqual(got, tt.want) {
+			t.Fatalf("extractSelectIntoColumnNames(%q) = %v, want %v", tt.projection, got, tt.want)
+		}
+	}
+}
+
+func TestFindTopLevelIntoClause(t *testing.T) {
+	tests := []struct {
+		text           string
+		wantProjection string
+		wantTable      string
+		wantFound      bool
+	}{
+		{"a, b into #Temp from t", "a, b", "#Temp", true},
+		{"* into tTarget", "*", "tTarget", true},
+		{"a, b from t", "", "", false},
+		{"into #OnlyTable", "", "", false},
+		{"", "", "", false},
+	}
+	for _, tt := range tests {
+		gotProj, gotTable, gotFound := findTopLevelIntoClause(tt.text)
+		if gotFound != tt.wantFound {
+			t.Fatalf("findTopLevelIntoClause(%q) found = %v, want %v", tt.text, gotFound, tt.wantFound)
+		}
+		if gotFound {
+			if gotProj != tt.wantProjection {
+				t.Fatalf("findTopLevelIntoClause(%q) projection = %q, want %q", tt.text, gotProj, tt.wantProjection)
+			}
+			if gotTable != tt.wantTable {
+				t.Fatalf("findTopLevelIntoClause(%q) table = %q, want %q", tt.text, gotTable, tt.wantTable)
+			}
+		}
+	}
+}
+
+func TestFindStandaloneIntoTableName(t *testing.T) {
+	tests := []struct {
+		text      string
+		wantTable string
+		wantFound bool
+	}{
+		{"into #TempTable", "#TempTable", true},
+		{"into tTarget  ", "tTarget", true},
+		{"INTO pAPI_MyTable", "pAPI_MyTable", true},
+		{"not into", "", false},
+		{"into", "", false},
+		{"into123", "", false},
+		{"", "", false},
+	}
+	for _, tt := range tests {
+		gotTable, gotFound := findStandaloneIntoTableName(tt.text)
+		if gotFound != tt.wantFound {
+			t.Fatalf("findStandaloneIntoTableName(%q) found = %v, want %v", tt.text, gotFound, tt.wantFound)
+		}
+		if gotFound && gotTable != tt.wantTable {
+			t.Fatalf("findStandaloneIntoTableName(%q) = %q, want %q", tt.text, gotTable, tt.wantTable)
+		}
 	}
 }
 

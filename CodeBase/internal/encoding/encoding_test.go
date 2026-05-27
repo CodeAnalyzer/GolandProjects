@@ -112,3 +112,21 @@ func TestConvertToUTF8(t *testing.T) {
 		t.Fatalf("ConvertToUTF8 = %q, want %q", got, "Привет")
 	}
 }
+
+func TestHasCyrillic(t *testing.T) {
+	if !hasCyrillic([]byte("Привет")) {
+		t.Fatalf("hasCyrillic(Привет) = false, want true")
+	}
+	if !hasCyrillic([]byte{0x80}) {
+		t.Fatalf("hasCyrillic(0x80) = false, want true")
+	}
+	if hasCyrillic([]byte("Hello World")) {
+		t.Fatalf("hasCyrillic(ascii) = true, want false")
+	}
+	if hasCyrillic([]byte("")) {
+		t.Fatalf("hasCyrillic(empty) = true, want false")
+	}
+	if hasCyrillic(nil) {
+		t.Fatalf("hasCyrillic(nil) = true, want false")
+	}
+}
