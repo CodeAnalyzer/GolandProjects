@@ -14,8 +14,8 @@ import (
 
 var (
 	appName        = "CodeBase"
-	version        = "0.7.3"
-	buildNumber    = "733"
+	version        = "0.7.4"
+	buildNumber    = "740"
 	copyright      = "Copyright (c) 2026"
 	cfgFile        string
 	commandLogger  *log.Logger
@@ -31,6 +31,7 @@ of Diasoft 5NT codebase (SQL, H, PAS, DFM, SMF, JS, TPR, RPT, XML files).
 Supported modes:
   init   - full scan and index building
   update - incremental update by modified files
+  review - SQL file checks before deployment
   query  - point-in-time index queries for symbols, tables, DFM forms/components/captions, SQL fragments, reports, JS, SMF and relations
   stats  - index summary
   mcp    - MCP JSON-RPC server over stdio`,
@@ -73,6 +74,12 @@ func Execute() (err error) {
 		}
 		if isHealthJSONMode(args) {
 			if writeErr := writeHealthErrorResponse(err); writeErr != nil {
+				return writeErr
+			}
+			return nil
+		}
+		if isReviewJSONMode(args) {
+			if writeErr := writeReviewErrorResponse(err); writeErr != nil {
 				return writeErr
 			}
 			return nil
@@ -199,7 +206,7 @@ func isHealthJSONMode(args []string) bool {
 }
 
 func isMachineReadableMode(args []string) bool {
-	return isQueryJSONMode(args) || isStatsJSONMode(args) || isHealthJSONMode(args) || isMCPMode(args)
+	return isQueryJSONMode(args) || isStatsJSONMode(args) || isHealthJSONMode(args) || isReviewJSONMode(args) || isMCPMode(args)
 }
 
 func isMCPMode(args []string) bool {

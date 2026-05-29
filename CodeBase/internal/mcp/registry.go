@@ -7,6 +7,8 @@ import (
 
 	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/querysvc"
+	"github.com/codebase/internal/review"
+	"github.com/codebase/internal/reviewsvc"
 	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/systemsvc"
 )
@@ -16,6 +18,43 @@ type toolHandler func(args map[string]interface{}) (interface{}, error)
 type registeredTool struct {
 	Definition toolDefinition
 	Handler    toolHandler
+}
+
+func optionalStringSlice(args map[string]interface{}, key string) ([]string, error) {
+	value, ok := args[key]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	items, ok := value.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("argument %s must be string array", key)
+	}
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		text, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("argument %s must be string array", key)
+		}
+		if text != "" {
+			result = append(result, text)
+		}
+	}
+	return result, nil
+}
+
+func optionalInt(args map[string]interface{}, key string) (int, error) {
+	value, ok := args[key]
+	if !ok || value == nil {
+		return 0, nil
+	}
+	switch v := value.(type) {
+	case int:
+		return v, nil
+	case float64:
+		return int(v), nil
+	default:
+		return 0, fmt.Errorf("argument %s must be integer", key)
+	}
 }
 
 var toolRegistry = buildToolRegistry(nil)
@@ -50,6 +89,38 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				return systemsvc.ExecuteStats()
+			},
+		},
+		"codebase_review_sql": {
+			Definition: toolDefinition{Name: "codebase_review_sql", Description: "Run SQL review checks for one file", InputSchema: objectSchema(map[string]interface{}{"file_path": stringProp("Full SQL file path"), "rules": map[string]interface{}{"type": "array", "description": "Optional rule ids", "items": map[string]interface{}{"type": "string"}}, "min_severity": intProp("Minimum severity")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				filePath, err := requiredString(args, "file_path")
+				if err != nil {
+					return nil, err
+				}
+				rulesRaw, err := optionalStringSlice(args, "rules")
+				if err != nil {
+					return nil, err
+				}
+				minSeverity, err := optionalInt(args, "min_severity")
+				if err != nil {
+					return nil, err
+				}
+				rules := make([]review.RuleID, 0, len(rulesRaw))
+				for _, rule := range rulesRaw {
+					ruleID := review.RuleID(rule)
+					switch ruleID {
+					case review.RuleForeignTablesUsing, review.RuleForeignPTablesUsing, review.RuleForeignProcedureUsing, review.RuleExecNotExistsProc, review.RuleDatatype:
+						rules = append(rules, ruleID)
+					default:
+						return nil, fmt.Errorf("unknown review rule: %s", rule)
+					}
+				}
+				opts := review.Options{Rules: rules, MinSeverity: minSeverity}
+				if db != nil {
+					return reviewsvc.ExecuteWith(db, filePath, opts)
+				}
+				return reviewsvc.Execute(filePath, opts)
 			},
 		},
 		"codebase_query_symbol": {
