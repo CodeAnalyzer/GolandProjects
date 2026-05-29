@@ -6,6 +6,7 @@ import "time"
 type File struct {
 	ID         int64
 	ScanRunID  int64
+	DsProductID int64
 	Path       string
 	RelPath    string
 	Extension  string

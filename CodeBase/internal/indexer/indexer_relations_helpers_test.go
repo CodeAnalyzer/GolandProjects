@@ -143,3 +143,35 @@ func TestBuildIncludePathCandidates(t *testing.T) {
 		t.Fatalf("empty include path should return nil, got %#v", candidates)
 	}
 }
+
+func TestExtractCanonicalDSProductFromPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "regular fa product", path: "fa-cards/Cards/Server/A.sql", want: "fa-cards"},
+		{name: "branched fa product", path: "fa-contracts-ext-develop/API_Credit/A.sql", want: "fa-contracts-ext"},
+		{name: "branched fa product with many suffixes", path: "fa-contracts-ext-factr-nomcost/API_Credit/A.sql", want: "fa-contracts-ext"},
+		{name: "absolute windows path", path: `D:\\GITHUB\\FA\\fa-contracts-ext-develop\\Consumer\\A.sql`, want: "fa-contracts-ext"},
+		{name: "no fa segment", path: "Consumer/Server/A.sql", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractCanonicalDSProductFromPath(tt.path); got != tt.want {
+				t.Fatalf("extractCanonicalDSProductFromPath(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractCanonicalDSProductName(t *testing.T) {
+	if got := extractCanonicalDSProductName(`D:\\GITHUB\\FA\\fa-contracts-ext-develop\\Consumer\\A.sql`, "Consumer/A.sql"); got != "fa-contracts-ext" {
+		t.Fatalf("extractCanonicalDSProductName fallback to absolute path = %q, want fa-contracts-ext", got)
+	}
+
+	if got := extractCanonicalDSProductName(`D:\\GITHUB\\FA\\fa-contracts\\Consumer\\A.sql`, "fa-cards/Cards/A.sql"); got != "fa-cards" {
+		t.Fatalf("extractCanonicalDSProductName should prefer relPath = %q, want fa-cards", got)
+	}
+}

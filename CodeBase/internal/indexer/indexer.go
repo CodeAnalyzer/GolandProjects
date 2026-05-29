@@ -1201,13 +1201,24 @@ func (idx *Indexer) processFile(file fswalk.FileInfo, fileID int64, stats *model
 }
 
 func (idx *Indexer) saveFile(file fswalk.FileInfo, scanRunID int64) (int64, error) {
+	productName := extractCanonicalDSProductName(file.Path, file.RelPath)
+	var dsProductID interface{}
+	if productName != "" {
+		productID, err := idx.db.GetOrCreateDSProductIDByName(productName)
+		if err != nil {
+			return 0, fmt.Errorf("failed to resolve ds product id for %q: %w", productName, err)
+		}
+		dsProductID = productID
+	}
+
 	var id int64
 	err := idx.db.QueryRow(`
-		INSERT INTO files (scan_run_id, path, rel_path, extension, size_bytes, hash_sha256, modified_at, encoding, language)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO files (scan_run_id, ds_product_id, path, rel_path, extension, size_bytes, hash_sha256, modified_at, encoding, language)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id
 	`,
 		scanRunID,
+		dsProductID,
 		file.Path,
 		file.RelPath,
 		file.Extension,
@@ -1221,6 +1232,37 @@ func (idx *Indexer) saveFile(file fswalk.FileInfo, scanRunID int64) (int64, erro
 		return 0, err
 	}
 	return id, nil
+}
+
+func extractCanonicalDSProductName(path string, relPath string) string {
+	if product := extractCanonicalDSProductFromPath(relPath); product != "" {
+		return product
+	}
+	return extractCanonicalDSProductFromPath(path)
+}
+
+func extractCanonicalDSProductFromPath(path string) string {
+	normalized := strings.ToLower(strings.TrimSpace(path))
+	if normalized == "" {
+		return ""
+	}
+	normalized = strings.ReplaceAll(normalized, `\\`, "/")
+	parts := strings.Split(normalized, "/")
+	for _, part := range parts {
+		segment := strings.TrimSpace(part)
+		if !strings.HasPrefix(segment, "fa-") {
+			continue
+		}
+		tokens := strings.Split(segment, "-")
+		if len(tokens) < 2 || tokens[0] != "fa" {
+			return ""
+		}
+		if len(tokens) >= 3 {
+			return strings.Join(tokens[:3], "-")
+		}
+		return strings.Join(tokens, "-")
+	}
+	return ""
 }
 
 func (idx *Indexer) saveIncludeDirective(fileID int64, path string, includePath string, lineNum int) error {

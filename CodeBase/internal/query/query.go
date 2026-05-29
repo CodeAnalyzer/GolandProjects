@@ -330,7 +330,7 @@ func (q *Query) GetFileByPath(path string) (*model.File, error) {
 	// Поддерживаем поиск и по абсолютному path, и по rel_path,
 	// чтобы API было удобно использовать и из CLI, и из внешних интеграций.
 	query := `
-		SELECT id, scan_run_id, path, rel_path, extension, size_bytes, 
+		SELECT id, scan_run_id, ds_product_id, path, rel_path, extension, size_bytes, 
 		       hash_sha256, modified_at, encoding, language, created_at, updated_at
 		FROM files
 		WHERE path = $1 OR rel_path = $1
@@ -339,10 +339,14 @@ func (q *Query) GetFileByPath(path string) (*model.File, error) {
 	row := q.db.QueryRow(query, path)
 
 	var f model.File
-	err := row.Scan(&f.ID, &f.ScanRunID, &f.Path, &f.RelPath, &f.Extension, &f.SizeBytes,
+	var dsProductID sql.NullInt64
+	err := row.Scan(&f.ID, &f.ScanRunID, &dsProductID, &f.Path, &f.RelPath, &f.Extension, &f.SizeBytes,
 		&f.HashSHA256, &f.ModifiedAt, &f.Encoding, &f.Language, &f.CreatedAt, &f.UpdatedAt)
 	if err != nil {
 		return nil, err
+	}
+	if dsProductID.Valid {
+		f.DsProductID = dsProductID.Int64
 	}
 
 	return &f, nil

@@ -15,9 +15,16 @@ func (db *DB) InitSchema() error {
 			files_indexed INTEGER NOT NULL DEFAULT 0,
 			errors_count INTEGER NOT NULL DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS ds_products (
+			id BIGSERIAL PRIMARY KEY,
+			product_name TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 		`CREATE TABLE IF NOT EXISTS files (
 			id BIGSERIAL PRIMARY KEY,
 			scan_run_id BIGINT NOT NULL REFERENCES scan_runs(id) ON DELETE CASCADE,
+			ds_product_id BIGINT REFERENCES ds_products(id) ON DELETE SET NULL,
 			path TEXT NOT NULL,
 			rel_path TEXT NOT NULL,
 			extension TEXT NOT NULL,
@@ -415,7 +422,9 @@ func (db *DB) InitSchema() error {
 			line_number INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ds_products_product_name ON ds_products(product_name)`,
 		`CREATE INDEX IF NOT EXISTS idx_files_scan_run_id ON files(scan_run_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_files_ds_product_id ON files(ds_product_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_files_extension ON files(extension)`,
 		`CREATE INDEX IF NOT EXISTS idx_symbols_file_id ON symbols(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_symbols_symbol_name_lower ON symbols(LOWER(symbol_name))`,

@@ -2,7 +2,7 @@
 # Конфигурация индексатора кодовой базы Diasoft 5NT
 
 # Корневой путь к проекту
-root_path = "D:/GITHUB/FA/fa-contracts"
+root_path = "D:/GITHUB/GolandProjects/FA/fa-contracts"
 
 # Настройки подключения к PostgreSQL
 [database]

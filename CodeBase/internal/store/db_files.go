@@ -14,7 +14,7 @@ func (db *DB) GetLatestFilesByRootPath(rootPath string) (map[string]*model.File,
 	normalizedRoot := strings.ReplaceAll(strings.TrimSpace(rootPath), `\`, "/")
 	rows, err := db.Query(`
 		SELECT DISTINCT ON (path)
-			id, scan_run_id, path, rel_path, extension, size_bytes,
+			id, scan_run_id, ds_product_id, path, rel_path, extension, size_bytes,
 			hash_sha256, modified_at, encoding, language, created_at, updated_at
 		FROM files
 		WHERE path = $1 OR path LIKE $2
@@ -28,9 +28,11 @@ func (db *DB) GetLatestFilesByRootPath(rootPath string) (map[string]*model.File,
 	files := make(map[string]*model.File)
 	for rows.Next() {
 		var f model.File
+		var dsProductID sql.NullInt64
 		if err := rows.Scan(
 			&f.ID,
 			&f.ScanRunID,
+			&dsProductID,
 			&f.Path,
 			&f.RelPath,
 			&f.Extension,
@@ -43,6 +45,9 @@ func (db *DB) GetLatestFilesByRootPath(rootPath string) (map[string]*model.File,
 			&f.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan indexed file row: %w", err)
+		}
+		if dsProductID.Valid {
+			f.DsProductID = dsProductID.Int64
 		}
 		files[f.Path] = &f
 	}
