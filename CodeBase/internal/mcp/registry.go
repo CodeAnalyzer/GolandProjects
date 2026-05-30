@@ -110,7 +110,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				for _, rule := range rulesRaw {
 					ruleID := review.RuleID(rule)
 					switch ruleID {
-					case review.RuleForeignTablesUsing, review.RuleForeignPTablesUsing, review.RuleForeignProcedureUsing, review.RuleExecNotExistsProc, review.RuleDatatype:
+					case review.RuleForeignTablesUsing, review.RuleForeignPTablesUsing, review.RuleForeignProcedureUsing, review.RuleExecNotExistsProc, review.RuleProcDuplicate, review.RuleProcParamDefValue, review.RuleProcElseCase, review.RuleUseSelectAll, review.RuleTruncTbl, review.RuleDatatype:
 						rules = append(rules, ruleID)
 					default:
 						return nil, fmt.Errorf("unknown review rule: %s", rule)

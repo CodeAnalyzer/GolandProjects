@@ -87,9 +87,10 @@ type SQLProcedure struct {
 
 // SQLParam параметр SQL-процедуры
 type SQLParam struct {
-	Name      string
-	Type      string
-	Direction string // in, out, inout
+	Name         string
+	Type         string
+	Direction    string // in, out, inout
+	DefaultValue string // значение по умолчанию (например, "null", "0", "'19000101'")
 }
 
 type SQLProcedureCall struct {

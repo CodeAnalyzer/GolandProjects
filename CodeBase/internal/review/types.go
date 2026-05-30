@@ -7,6 +7,11 @@ const (
 	RuleForeignPTablesUsing   RuleID = "foreignPTablesUsing"
 	RuleForeignProcedureUsing RuleID = "foreignProcedureUsing"
 	RuleExecNotExistsProc     RuleID = "execNotExistsProc"
+	RuleProcDuplicate         RuleID = "procDuplicate"
+	RuleProcParamDefValue     RuleID = "procParamDefValue"
+	RuleProcElseCase          RuleID = "procElseCase"
+	RuleUseSelectAll          RuleID = "useSelectAll"
+	RuleTruncTbl              RuleID = "truncTbl"
 	RuleDatatype              RuleID = "datatype"
 )
 

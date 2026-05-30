@@ -102,6 +102,66 @@ func TestEnabledRuleSet_ExecNotExistsProc(t *testing.T) {
 	}
 }
 
+func TestEnabledRuleSet_ProcDuplicate(t *testing.T) {
+	rules := []RuleID{RuleProcDuplicate}
+	set := enabledRuleSet(rules)
+
+	if !set[RuleProcDuplicate] {
+		t.Fatalf("RuleProcDuplicate should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestEnabledRuleSet_ProcParamDefValue(t *testing.T) {
+	rules := []RuleID{RuleProcParamDefValue}
+	set := enabledRuleSet(rules)
+
+	if !set[RuleProcParamDefValue] {
+		t.Fatalf("RuleProcParamDefValue should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestEnabledRuleSet_ProcElseCase(t *testing.T) {
+	rules := []RuleID{RuleProcElseCase}
+	set := enabledRuleSet(rules)
+
+	if !set[RuleProcElseCase] {
+		t.Fatalf("RuleProcElseCase should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestEnabledRuleSet_UseSelectAll(t *testing.T) {
+	rules := []RuleID{RuleUseSelectAll}
+	set := enabledRuleSet(rules)
+
+	if !set[RuleUseSelectAll] {
+		t.Fatalf("RuleUseSelectAll should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestEnabledRuleSet_TruncTbl(t *testing.T) {
+	rules := []RuleID{RuleTruncTbl}
+	set := enabledRuleSet(rules)
+
+	if !set[RuleTruncTbl] {
+		t.Fatalf("RuleTruncTbl should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
 func TestParseInsertSelectStatement_WithCaseExpression(t *testing.T) {
 	query := `insert pCons_AutoFullPrepDate (
 		SPID,

@@ -104,7 +104,7 @@ func parseReviewRules(raw string) ([]review.RuleID, []string, error) {
 			continue
 		}
 		switch rule {
-		case review.RuleForeignTablesUsing, review.RuleForeignPTablesUsing, review.RuleForeignProcedureUsing, review.RuleExecNotExistsProc, review.RuleDatatype:
+		case review.RuleForeignTablesUsing, review.RuleForeignPTablesUsing, review.RuleForeignProcedureUsing, review.RuleExecNotExistsProc, review.RuleProcDuplicate, review.RuleProcParamDefValue, review.RuleProcElseCase, review.RuleUseSelectAll, review.RuleTruncTbl, review.RuleDatatype:
 		default:
 			return nil, nil, fmt.Errorf("unknown review rule: %s", rule)
 		}
@@ -170,7 +170,7 @@ func isReviewJSONMode(args []string) bool {
 
 func init() {
 	reviewCmd.Flags().BoolVar(&reviewOutputJSON, "json", false, "output as JSON")
-	reviewCmd.Flags().StringVar(&reviewRulesRaw, "rules", "", "comma-separated rules (foreignTablesUsing,foreignPTablesUsing,foreignProcedureUsing,execNotExistsProc,datatype)")
+	reviewCmd.Flags().StringVar(&reviewRulesRaw, "rules", "", "comma-separated rules (foreignTablesUsing,foreignPTablesUsing,foreignProcedureUsing,execNotExistsProc,procDuplicate,procParamDefValue,procElseCase,useSelectAll,truncTbl,datatype)")
 	reviewCmd.Flags().IntVar(&reviewMinSeverity, "min-severity", review.SeverityFineCode, "minimum severity to output")
 	rootCmd.AddCommand(reviewCmd)
 }

@@ -19,6 +19,71 @@ func TestParseReviewRules_AcceptsExecNotExistsProc(t *testing.T) {
 	}
 }
 
+func TestParseReviewRules_ProcDuplicate(t *testing.T) {
+	rules, raw, err := parseReviewRules("procDuplicate")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RuleProcDuplicate {
+		t.Fatalf("expected procDuplicate, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "procDuplicate" {
+		t.Fatalf("expected raw procDuplicate, got %v", raw)
+	}
+}
+
+func TestParseReviewRules_ProcParamDefValue(t *testing.T) {
+	rules, raw, err := parseReviewRules("procParamDefValue")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RuleProcParamDefValue {
+		t.Fatalf("expected procParamDefValue, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "procParamDefValue" {
+		t.Fatalf("expected raw procParamDefValue, got %v", raw)
+	}
+}
+
+func TestParseReviewRules_ProcElseCase(t *testing.T) {
+	rules, raw, err := parseReviewRules("procElseCase")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RuleProcElseCase {
+		t.Fatalf("expected procElseCase, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "procElseCase" {
+		t.Fatalf("expected raw procElseCase, got %v", raw)
+	}
+}
+
+func TestParseReviewRules_UseSelectAll(t *testing.T) {
+	rules, raw, err := parseReviewRules("useSelectAll")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RuleUseSelectAll {
+		t.Fatalf("expected useSelectAll, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "useSelectAll" {
+		t.Fatalf("expected raw useSelectAll, got %v", raw)
+	}
+}
+
+func TestParseReviewRules_TruncTbl(t *testing.T) {
+	rules, raw, err := parseReviewRules("truncTbl")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RuleTruncTbl {
+		t.Fatalf("expected truncTbl, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "truncTbl" {
+		t.Fatalf("expected raw truncTbl, got %v", raw)
+	}
+}
+
 func TestParseReviewRules_UnknownRule(t *testing.T) {
 	_, _, err := parseReviewRules("unknownRule")
 	if err == nil {
