@@ -13,6 +13,8 @@ const (
 	RuleUseSelectAll          RuleID = "useSelectAll"
 	RuleTruncTbl              RuleID = "truncTbl"
 	RuleDatatype              RuleID = "datatype"
+	RuleAnsiInJoin            RuleID = "ansiInJoin"
+	RuleInsertRowLock         RuleID = "insertRowLock"
 )
 
 const (

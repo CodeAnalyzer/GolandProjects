@@ -88,6 +88,8 @@ func enabledRuleSet(rules []RuleID) map[RuleID]bool {
 		RuleUseSelectAll:          true,
 		RuleTruncTbl:              true,
 		RuleDatatype:              true,
+		RuleAnsiInJoin:            true,
+		RuleInsertRowLock:         true,
 	}
 	if len(rules) == 0 {
 		return result

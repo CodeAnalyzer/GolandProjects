@@ -733,3 +733,398 @@ func datetimePrecisionRank(dataType string) int {
 		return 0
 	}
 }
+
+func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+
+	// Читаем содержимое файла
+	content, err := os.ReadFile(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(content), "\n")
+
+	// Состояние парсера
+	inFromClause := false
+	fromStartLine := 0
+	parenDepth := 0
+	hasJoin := false
+	hasComma := false
+	commaLine := 0
+
+	for i, line := range lines {
+		lineNum := i + 1
+
+		// Пропускаем комментарии целиком
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+
+		lower := strings.ToLower(line)
+
+		// Ищем начало FROM clause
+		if !inFromClause {
+			fromIdx := findKeywordPosition(lower, "from")
+			if fromIdx >= 0 && !isInComment(line, fromIdx) {
+				// Проверяем, что это не подзапрос (проверяем глубину скобок до FROM)
+				depthBefore := 0
+				for j := 0; j < fromIdx; j++ {
+					switch line[j] {
+					case '(':
+						depthBefore++
+					case ')':
+						depthBefore--
+					}
+				}
+				if depthBefore == 0 {
+					inFromClause = true
+					fromStartLine = lineNum
+					parenDepth = 0
+					hasJoin = false
+					hasComma = false
+					// Считаем скобки в оставшейся части строки после FROM
+					for j := fromIdx + 4; j < len(line); j++ {
+						switch line[j] {
+						case '(':
+							parenDepth++
+						case ')':
+							parenDepth--
+						}
+					}
+				}
+			}
+		}
+
+		if !inFromClause {
+			continue
+		}
+
+		// Мы внутри FROM clause - анализируем строку
+		fromPart := lower
+		if i == fromStartLine-1 {
+			// Первая строка - берем только после FROM
+			fromIdx := strings.Index(lower, "from")
+			if fromIdx >= 0 {
+				fromPart = lower[fromIdx+4:]
+			}
+		}
+
+		// Проверяем наличие JOIN ключевых слов
+		if strings.Contains(fromPart, " join ") ||
+			strings.Contains(fromPart, "inner join") ||
+			strings.Contains(fromPart, "left join") ||
+			strings.Contains(fromPart, "right join") ||
+			strings.Contains(fromPart, "full join") ||
+			strings.Contains(fromPart, "cross join") {
+			hasJoin = true
+		}
+
+		// Считаем скобки и ищем запятую
+		for j, ch := range line {
+			switch ch {
+			case '(':
+				parenDepth++
+			case ')':
+				parenDepth--
+			case ',':
+				if parenDepth == 0 && !isInComment(line, j) {
+					hasComma = true
+					commaLine = lineNum
+				}
+			}
+		}
+
+		// Проверяем конец FROM clause (WHERE, GROUP BY, HAVING, ORDER BY, UNION, EXCEPT, INTERSECT, ;)
+		if hasFromClauseEnded(lower) {
+			// Проверяем результат
+			if hasComma && !hasJoin {
+				findings = append(findings, Finding{
+					Rule:             RuleAnsiInJoin,
+					Severity:         SeverityDeployStopper,
+					Message:          "Используйте ANSI-синтаксис для соединения таблиц (JOIN вместо запятой в FROM)",
+					File:             file.Path,
+					Line:             commaLine,
+					CurrentProductID: file.DsProductID,
+				})
+			}
+			inFromClause = false
+			hasJoin = false
+			hasComma = false
+			commaLine = 0
+		}
+	}
+
+	// Проверяем, если файл закончился во время FROM clause
+	if inFromClause && hasComma && !hasJoin {
+		findings = append(findings, Finding{
+			Rule:             RuleAnsiInJoin,
+			Severity:         SeverityDeployStopper,
+			Message:          "Используйте ANSI-синтаксис для соединения таблиц (JOIN вместо запятой в FROM)",
+			File:             file.Path,
+			Line:             commaLine,
+			CurrentProductID: file.DsProductID,
+		})
+	}
+
+	return findings, nil
+}
+
+// findKeywordPosition ищет позицию ключевого слова (полное слово)
+func findKeywordPosition(text, keyword string) int {
+	lower := strings.ToLower(text)
+	keyword = strings.ToLower(keyword)
+	for i := 0; i <= len(lower)-len(keyword); i++ {
+		if lower[i:i+len(keyword)] == keyword {
+			// Проверяем границы слова
+			if i > 0 && isWordChar(lower[i-1]) {
+				continue
+			}
+			if i+len(keyword) < len(lower) && isWordChar(lower[i+len(keyword)]) {
+				continue
+			}
+			return i
+		}
+	}
+	return -1
+}
+
+// hasFromClauseEnded проверяет, закончился ли FROM clause
+func hasFromClauseEnded(lowerLine string) bool {
+	keywords := []string{"where", "group by", "having", "order by", "union", "except", "intersect"}
+	for _, kw := range keywords {
+		if strings.Contains(lowerLine, " "+kw+" ") ||
+			strings.HasPrefix(lowerLine, kw+" ") ||
+			strings.HasSuffix(lowerLine, " "+kw) ||
+			lowerLine == kw {
+			return true
+		}
+	}
+	// Проверяем точку с запятой (конец запроса)
+	if strings.Contains(lowerLine, ";") {
+		return true
+	}
+	return false
+}
+
+// isNewSQLStatement проверяет, начинается ли строка с нового SQL оператора (не INSERT)
+func isNewSQLStatement(line string) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(line))
+	// Ключевые слова начала операторов (кроме INSERT который мы уже обрабатываем)
+	keywords := []string{"if", "exec", "execute", "select", "update", "delete", "begin", "end", "return", "goto", "while", "declare", "fetch", "close", "open", "commit", "rollback"}
+	for _, kw := range keywords {
+		if strings.HasPrefix(trimmed, kw+" ") ||
+			strings.HasPrefix(trimmed, kw+"\t") ||
+			trimmed == kw {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runner) checkInsertRowLock(file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+
+	// Читаем содержимое файла
+	content, err := os.ReadFile(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(content), "\n")
+
+	// Состояние парсера
+	inInsert := false
+	insertStartLine := 0
+	insertBuffer := make([]string, 0)
+	parenDepth := 0
+
+	for i, line := range lines {
+		lineNum := i + 1
+
+		// Пропускаем комментарии целиком (но учитываем если мы внутри INSERT)
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+
+		lower := strings.ToLower(line)
+
+		// Ищем начало INSERT
+		if !inInsert {
+			insertIdx := findKeywordPosition(lower, "insert")
+			if insertIdx >= 0 && !isInComment(line, insertIdx) {
+				// Проверяем, что INSERT не внутри подзапроса
+				if !isInsertInSubquery(line) {
+					inInsert = true
+					insertStartLine = lineNum
+					insertBuffer = []string{line}
+					// Считаем скобки в строке
+					parenDepth = countParens(line)
+				}
+			}
+		} else {
+			// Мы внутри INSERT - добавляем строку в буфер
+			insertBuffer = append(insertBuffer, line)
+			parenDepth += countParens(line)
+
+			// Проверяем конец INSERT (точка с запятой, начало нового оператора, или конец запроса)
+			if strings.Contains(lower, ";") || parenDepth < 0 || isNewSQLStatement(line) {
+				// Анализируем собранный INSERT
+				if finding := analyzeInsertForRowLock(insertBuffer, insertStartLine, file); finding != nil {
+					findings = append(findings, *finding)
+				}
+				inInsert = false
+				insertBuffer = nil
+				parenDepth = 0
+
+				// Если начался новый оператор, обрабатываем текущую строку как начало нового цикла
+				if isNewSQLStatement(line) && !strings.Contains(lower, "insert") {
+					continue
+				}
+			}
+		}
+	}
+
+	// Проверяем, если файл закончился во время INSERT
+	if inInsert && len(insertBuffer) > 0 {
+		if finding := analyzeInsertForRowLock(insertBuffer, insertStartLine, file); finding != nil {
+			findings = append(findings, *finding)
+		}
+	}
+
+	return findings, nil
+}
+
+// countParens считает баланс скобок в строке (открывающие - закрывающие)
+func countParens(line string) int {
+	depth := 0
+	for _, ch := range line {
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+	}
+	return depth
+}
+
+// analyzeInsertForRowLock анализирует многострочный INSERT на наличие ROWLOCK
+func analyzeInsertForRowLock(lines []string, startLine int, file *indexedFile) *Finding {
+	if len(lines) == 0 {
+		return nil
+	}
+
+	// Объединяем все строки для анализа
+	fullText := strings.Join(lines, " ")
+	lower := strings.ToLower(fullText)
+
+	// Проверяем наличие M_WITH_ROWLOCK или WITH (ROWLOCK)
+	if hasRowLock(lower) {
+		return nil
+	}
+
+	// Парсим имя таблицы из первой строки
+	tableName := parseInsertTableName(lines[0])
+	if tableName == "" {
+		// Пробуем найти имя таблицы во всем тексте
+		tableName = parseInsertTableName(fullText)
+	}
+	if tableName == "" {
+		return nil
+	}
+
+	return &Finding{
+		Rule:             RuleInsertRowLock,
+		Severity:         SeverityDeployStopper,
+		Message:          "Для INSERT необходимо использовать M_WITH_ROWLOCK для предотвращения эскалации блокировок",
+		File:             file.Path,
+		Line:             startLine,
+		Object:           tableName,
+		CurrentProductID: file.DsProductID,
+	}
+}
+
+// isInsertInSubquery проверяет, находится ли INSERT внутри подзапроса/CTE
+func isInsertInSubquery(line string) bool {
+	// Если перед INSERT есть открывающая скобка - это подзапрос
+	lower := strings.ToLower(line)
+	insertIdx := strings.Index(lower, "insert")
+	if insertIdx == -1 {
+		return false
+	}
+
+	// Считаем скобки до INSERT
+	parenDepth := 0
+	for i := 0; i < insertIdx; i++ {
+		switch line[i] {
+		case '(':
+			parenDepth++
+		case ')':
+			parenDepth--
+		}
+	}
+
+	return parenDepth > 0
+}
+
+// hasRowLock проверяет наличие M_WITH_ROWLOCK или WITH (ROWLOCK)
+func hasRowLock(line string) bool {
+	lower := strings.ToLower(line)
+
+	// Проверяем M_WITH_ROWLOCK
+	if strings.Contains(lower, "m_with_rowlock") {
+		return true
+	}
+
+	// Проверяем WITH (ROWLOCK)
+	if strings.Contains(lower, "with") && strings.Contains(lower, "rowlock") {
+		return true
+	}
+
+	return false
+}
+
+// parseInsertTableName извлекает имя таблицы из INSERT оператора
+func parseInsertTableName(line string) string {
+	lower := strings.ToLower(line)
+
+	// Находим INSERT
+	insertIdx := strings.Index(lower, "insert")
+	if insertIdx == -1 {
+		return ""
+	}
+
+	// Пропускаем INSERT
+	pos := insertIdx + 6
+
+	// Пропускаем пробелы
+	for pos < len(line) && (line[pos] == ' ' || line[pos] == '\t') {
+		pos++
+	}
+
+	// Пропускаем INTO если есть
+	if pos+4 <= len(lower) && lower[pos:pos+4] == "into" {
+		pos += 4
+		// Пропускаем пробелы
+		for pos < len(line) && (line[pos] == ' ' || line[pos] == '\t') {
+			pos++
+		}
+	}
+
+	// Извлекаем имя таблицы
+	if pos >= len(line) {
+		return ""
+	}
+
+	start := pos
+	for pos < len(line) && (line[pos] != ' ' && line[pos] != '\t' && line[pos] != '(' && line[pos] != ';') {
+		pos++
+	}
+
+	if start < pos {
+		return strings.TrimSpace(line[start:pos])
+	}
+
+	return ""
+}

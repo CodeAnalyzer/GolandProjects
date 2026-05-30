@@ -111,8 +111,22 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 		}
 		findings = append(findings, items...)
 	}
+	if ruleSet[RuleAnsiInJoin] {
+		items, err := r.checkAnsiInJoin(file)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, items...)
+	}
 	if ruleSet[RuleDatatype] {
 		items := r.checkDatatype(parsed, file)
+		findings = append(findings, items...)
+	}
+	if ruleSet[RuleInsertRowLock] {
+		items, err := r.checkInsertRowLock(file)
+		if err != nil {
+			return nil, err
+		}
 		findings = append(findings, items...)
 	}
 

@@ -84,6 +84,32 @@ func TestParseReviewRules_TruncTbl(t *testing.T) {
 	}
 }
 
+func TestParseReviewRules_AnsiInJoin(t *testing.T) {
+	rules, raw, err := parseReviewRules("ansiInJoin")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RuleAnsiInJoin {
+		t.Fatalf("expected ansiInJoin, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "ansiInJoin" {
+		t.Fatalf("expected raw ansiInJoin, got %v", raw)
+	}
+}
+
+func TestParseReviewRules_InsertRowLock(t *testing.T) {
+	rules, raw, err := parseReviewRules("insertRowLock")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RuleInsertRowLock {
+		t.Fatalf("expected insertRowLock, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "insertRowLock" {
+		t.Fatalf("expected raw insertRowLock, got %v", raw)
+	}
+}
+
 func TestParseReviewRules_UnknownRule(t *testing.T) {
 	_, _, err := parseReviewRules("unknownRule")
 	if err == nil {
