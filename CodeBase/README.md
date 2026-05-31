@@ -46,6 +46,7 @@
   - Поиск VBScript functions (VBScript-функций)
   - Поиск API contracts (контрактов API), API tables (таблиц API), API table indexes (индексов API-таблиц), API params (параметров API), implementations (реализаций), publishers (публикаторов событий), consumers (потребителей контрактов)
   - Unified `query symbol` для SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects и XML/API symbols
+- **Review (проверка SQL перед деплоем)**: статический анализ SQL-файлов с детекцией deploy stoppers (использование внешних таблиц/процедур, небезопасные конструкции IF/EXISTS, отсутствие required hints, и т.д.)
 - **Кодировки**: CP866/WIN1251/UTF8 с эвристическим выбором для legacy-форматов, включая TPR и препроцессированные `.t01`
 
 ## Требования
@@ -458,6 +459,69 @@ Health status: ok
 - index: ok
 ```
 
+### Review (проверка SQL перед деплоем)
+
+Статический анализ SQL-файлов для выявления проблем перед деплоем:
+
+```bash
+codebase review <путь_к_файлу.sql>
+codebase review <путь_к_файлу.sql> --json
+codebase review <путь_к_файлу.sql> --rules foreignTablesUsing,execNotExistsProc
+```
+
+**Deploy stoppers** (критические ошибки, блокирующие деплой):
+
+- `foreignTablesUsing` — использование таблиц из других продуктов
+- `foreignPTablesUsing` — использование p-таблиц из других продуктов
+- `foreignProcedureUsing` — вызов процедур из других продуктов
+- `execNotExistsProc` — `EXEC` несуществующей процедуры (проверка по индексу)
+- `procDuplicate` — дублирование имени процедуры в одном файле
+- `procParamDefValue` — параметр процедуры с DEFAULT значением
+- `procElseCase` — `ELSE` в `CASE` без обработки ошибок
+- `useSelectAll` — использование `SELECT *`
+- `truncTbl` — использование `TRUNCATE TABLE`
+- `datatype` — потенциальная потеря точности при assignment/conversion
+- `ansiInJoin` — ANSI-89 join syntax (comma joins)
+- `insertRowLock` — `INSERT` без `ROWLOCK`
+- `useEqColumn` — сравнение колонок разных типов
+- `tableFullScan` — условия, приводящие к full scan
+- `tableHintExists` — отсутствие required table hints
+- `tableHintIsRight` — проверка корректности table hints
+- `indexExistsInDB` — использование индекса, отсутствующего в БД
+- `indexWrong` — неправильное использование индекса (проверка SPID для p-таблиц)
+- `updateOnlyVar` — `UPDATE` только переменных без обновления полей таблицы
+- `pTableSpid` — отсутствие условия по `SPID` для p-таблицы
+- `forceOrder2Tbl` — запрос с 2+ таблицами без `M_FORCEORDER`
+- `saveTran` — использование `SAVE TRAN/TRANSACTION`
+- `useDrop` — использование `DROP`/`DROP_CREATE` в теле процедуры
+- `mathOperations` — математические операции в `BETWEEN` и сравнениях (риск overflow)
+- `existsWithAndInIf` — `IF` с запросом к таблицам и `AND` (нет гарантии short-circuit)
+
+Опции:
+- `--rules` — список проверяемых правил (по умолчанию все deploy stoppers)
+- `--min-severity` — минимальный уровень серьезности (1=deploy stopper, 3=fine code)
+- `--json` — вывод в формате JSON
+
+Пример JSON вывода:
+```json
+{
+  "success": true,
+  "format_version": "1.0",
+  "command": "review",
+  "count": 2,
+  "items": [
+    {
+      "rule": "foreignTablesUsing",
+      "severity": 1,
+      "message": "Использование таблицы из другого продукта: OtherProduct.tTable",
+      "file": "D:/.../Procedure.sql",
+      "line": 42,
+      "object": "MyProcedure"
+    }
+  ]
+}
+```
+
 ### MCP режим (stdio JSON-RPC)
 
 Запуск MCP сервера:
@@ -496,6 +560,7 @@ CodeBase/
 │   ├── query_commands.go          # Query-команды поиска по индексу
 │   ├── query_execution.go         # Выполнение query и форматирование вывода
 │   ├── query_api.go               # API query-команды
+│   ├── review.go                  # Review команда (проверка SQL перед деплоем)
 │   ├── stats.go                   # Команда stats
 │   ├── health.go                  # Команда health
 │   └── mcp.go                     # Команда запуска MCP сервера
@@ -528,6 +593,12 @@ CodeBase/
 │   │   └── api_query.go           # Query API-контрактов и DSArchitect сущностей
 │   ├── querysvc/                  # Внутренний runtime и compose-логика query (CLI + MCP)
 │   ├── systemsvc/                 # Внутренний runtime для health/stats (CLI + MCP)
+│   ├── review/                    # Review rules engine и SQL checker
+│   │   ├── types.go               # Типы Finding, RuleID, Severity
+│   │   ├── review_rules.go        # Реализация проверок (deploy stoppers)
+│   │   ├── review_helpers.go      # Вспомогательные функции
+│   │   ├── runner.go              # Review runner и execution pipeline
+│   │   └── runner_test.go         # Тесты для review rules
 │   ├── mcp/                       # MCP stdio JSON-RPC transport, tools registry, handlers
 │   └── store/
 │       ├── db.go                  # Основной persistence layer и batch insert helpers
