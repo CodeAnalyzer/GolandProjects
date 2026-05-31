@@ -129,6 +129,97 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 		}
 		findings = append(findings, items...)
 	}
+	if ruleSet[RuleUseEqColumn] {
+		items, err := r.checkUseEqColumn(file)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, items...)
+	}
+	if ruleSet[RuleTableFullScan] {
+		items, err := r.checkTableFullScan(file)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, items...)
+	}
+	if ruleSet[RuleTableHintExists] {
+		items, err := r.checkTableHintExists(file)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, items...)
+	}
+	if ruleSet[RuleTableHintIsRight] {
+		items, err := r.checkTableHintIsRight(file)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, items...)
+	}
+	if ruleSet[RuleIndexExistsInDB] {
+		items, err := r.checkIndexExistsInDB(file)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, items...)
+	}
+	if ruleSet[RuleIndexWrong] {
+		items, err := r.checkIndexWrong(file)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, items...)
+	}
+	if ruleSet[RuleUpdateOnlyVar] {
+		items, err := r.checkUpdateOnlyVar(file)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, items...)
+	}
+	if ruleSet[RulePTableSpid] {
+		items, err := r.checkPTableSpid(file)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, items...)
+	}
+	if ruleSet[RuleForceOrder2Tbl] {
+		items, err := r.checkForceOrder2Tbl(file)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, items...)
+	}
+	if ruleSet[RuleSaveTran] {
+		items, err := r.checkSaveTran(file)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, items...)
+	}
+	if ruleSet[RuleUseDrop] {
+		items, err := r.checkUseDrop(file)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, items...)
+	}
+	if ruleSet[RuleMathOperations] {
+		items, err := r.checkMathOperations(file)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, items...)
+	}
+	if ruleSet[RuleExistsWithAndInIf] {
+		items, err := r.checkExistsWithAndInIf(file)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, items...)
+	}
 
 	minSeverity := opts.MinSeverity
 	if minSeverity <= 0 {

@@ -110,7 +110,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				for _, rule := range rulesRaw {
 					ruleID := review.RuleID(rule)
 					switch ruleID {
-					case review.RuleForeignTablesUsing, review.RuleForeignPTablesUsing, review.RuleForeignProcedureUsing, review.RuleExecNotExistsProc, review.RuleProcDuplicate, review.RuleProcParamDefValue, review.RuleProcElseCase, review.RuleUseSelectAll, review.RuleTruncTbl, review.RuleDatatype, review.RuleAnsiInJoin, review.RuleInsertRowLock:
+					case review.RuleForeignTablesUsing, review.RuleForeignPTablesUsing, review.RuleForeignProcedureUsing, review.RuleExecNotExistsProc, review.RuleProcDuplicate, review.RuleProcParamDefValue, review.RuleProcElseCase, review.RuleUseSelectAll, review.RuleTruncTbl, review.RuleDatatype, review.RuleAnsiInJoin, review.RuleInsertRowLock, review.RuleUseEqColumn, review.RuleTableFullScan, review.RuleTableHintExists, review.RuleTableHintIsRight, review.RuleIndexExistsInDB, review.RuleIndexWrong, review.RuleUpdateOnlyVar, review.RulePTableSpid, review.RuleForceOrder2Tbl, review.RuleSaveTran, review.RuleUseDrop, review.RuleMathOperations, review.RuleExistsWithAndInIf:
 						rules = append(rules, ruleID)
 					default:
 						return nil, fmt.Errorf("unknown review rule: %s", rule)

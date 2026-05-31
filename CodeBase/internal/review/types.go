@@ -15,6 +15,19 @@ const (
 	RuleDatatype              RuleID = "datatype"
 	RuleAnsiInJoin            RuleID = "ansiInJoin"
 	RuleInsertRowLock         RuleID = "insertRowLock"
+	RuleUseEqColumn           RuleID = "useEqColumn"
+	RuleTableFullScan         RuleID = "tableFullScan"
+	RuleTableHintExists       RuleID = "tableHintExists"
+	RuleTableHintIsRight      RuleID = "tableHintIsRight"
+	RuleIndexExistsInDB       RuleID = "indexExistsInDB"
+	RuleIndexWrong            RuleID = "indexWrong"
+	RuleUpdateOnlyVar         RuleID = "updateOnlyVar"
+	RulePTableSpid            RuleID = "pTableSpid"
+	RuleForceOrder2Tbl        RuleID = "forceOrder2Tbl"
+	RuleSaveTran              RuleID = "saveTran"
+	RuleUseDrop               RuleID = "useDrop"
+	RuleMathOperations        RuleID = "mathOperations"
+	RuleExistsWithAndInIf     RuleID = "existsWithAndInIf"
 )
 
 const (

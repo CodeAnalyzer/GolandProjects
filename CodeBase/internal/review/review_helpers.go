@@ -90,6 +90,19 @@ func enabledRuleSet(rules []RuleID) map[RuleID]bool {
 		RuleDatatype:              true,
 		RuleAnsiInJoin:            true,
 		RuleInsertRowLock:         true,
+		RuleUseEqColumn:           true,
+		RuleTableFullScan:         true,
+		RuleTableHintExists:       true,
+		RuleTableHintIsRight:      true,
+		RuleIndexExistsInDB:       true,
+		RuleIndexWrong:            true,
+		RuleUpdateOnlyVar:         true,
+		RulePTableSpid:            true,
+		RuleForceOrder2Tbl:        true,
+		RuleSaveTran:              true,
+		RuleUseDrop:               true,
+		RuleMathOperations:        true,
+		RuleExistsWithAndInIf:     true,
 	}
 	if len(rules) == 0 {
 		return result
