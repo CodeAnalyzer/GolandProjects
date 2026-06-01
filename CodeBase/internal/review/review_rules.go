@@ -3176,12 +3176,12 @@ func analyzeStatementForFullScan(lines []string, startLine int, file *indexedFil
 	}
 
 	// Извлекаем условия из WHERE и ON
-	whereRefs := extractColumnRefsFromWhere(lower)
+	whereResult := extractColumnRefsFromWhere(lower)
 	onRefs := extractColumnRefsFromOn(lower)
 
 	// Проверяем каждую таблицу
 	for _, table := range tables {
-		if !isTableFiltered(table, whereRefs, onRefs) {
+		if !isTableFiltered(table, tables, whereResult, onRefs) {
 			return &Finding{
 				Rule:             RuleTableFullScan,
 				Severity:         SeverityDeployStopper,
@@ -3321,6 +3321,7 @@ func parseTableWithAlias(part string) tableFromClause {
 			// Проверяем, что это не подсказка индекса
 			if !strings.Contains(token, "(") {
 				result.Alias = tokens[i]
+				break
 			}
 		}
 	}
@@ -3328,8 +3329,16 @@ func parseTableWithAlias(part string) tableFromClause {
 	return result
 }
 
-func extractColumnRefsFromWhere(lower string) []string {
-	result := make([]string, 0)
+type whereAnalysisResult struct {
+	Aliases                  []string
+	HasUnqualifiedConditions bool
+}
+
+func extractColumnRefsFromWhere(lower string) whereAnalysisResult {
+	result := whereAnalysisResult{
+		Aliases:                  []string{},
+		HasUnqualifiedConditions: false,
+	}
 
 	// Находим WHERE clause
 	whereIdx := strings.Index(lower, " where ")
@@ -3350,12 +3359,20 @@ func extractColumnRefsFromWhere(lower string) []string {
 	wherePart = wherePart[:endIdx]
 
 	// Извлекаем alias.column ссылки
-	re := regexp.MustCompile(`(?i)(\w+)\.(\w+)`)
-	matches := re.FindAllStringSubmatch(wherePart, -1)
+	reQualified := regexp.MustCompile(`(?i)(\w+)\.(\w+)`)
+	matches := reQualified.FindAllStringSubmatch(wherePart, -1)
 	for _, m := range matches {
 		if len(m) >= 2 {
-			result = append(result, strings.ToLower(m[1]))
+			result.Aliases = append(result.Aliases, strings.ToLower(m[1]))
 		}
+	}
+
+	// Проверяем наличие неквалифицированных условий (column = value без alias)
+	// Удаляем все квалифицированные ссылки и проверяем оставшиеся условия
+	cleaned := reQualified.ReplaceAllString(wherePart, "")
+	reCondition := regexp.MustCompile(`(?i)\b(\w+)\s*(=|<>|!=|<|>|<=|>=|like|in|between)`)
+	if reCondition.MatchString(cleaned) {
+		result.HasUnqualifiedConditions = true
 	}
 
 	return result
@@ -3392,11 +3409,16 @@ func extractColumnRefsFromOn(lower string) []string {
 	return result
 }
 
-func isTableFiltered(table tableFromClause, whereRefs, onRefs []string) bool {
+func isTableFiltered(table tableFromClause, tables []tableFromClause, whereResult whereAnalysisResult, onRefs []string) bool {
+	// Если одна таблица в запросе и есть неквалифицированные условия - считаем отфильтрованной
+	if len(tables) == 1 && whereResult.HasUnqualifiedConditions {
+		return true
+	}
+
 	// Проверяем по алиасу
 	alias := strings.ToLower(table.Alias)
 	if alias != "" {
-		for _, ref := range whereRefs {
+		for _, ref := range whereResult.Aliases {
 			if ref == alias {
 				return true
 			}
@@ -3410,7 +3432,7 @@ func isTableFiltered(table tableFromClause, whereRefs, onRefs []string) bool {
 
 	// Проверяем по имени таблицы (если нет алиаса)
 	tableName := strings.ToLower(table.TableName)
-	for _, ref := range whereRefs {
+	for _, ref := range whereResult.Aliases {
 		if ref == tableName {
 			return true
 		}

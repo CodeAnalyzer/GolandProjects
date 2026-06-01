@@ -105,6 +105,9 @@ func (r *Runner) lookupProcedureCreateFiles(procName string) ([]int64, error) {
 		FROM sql_procedures p
 		JOIN files f ON f.id = p.file_id
 		WHERE LOWER(p.proc_name) = LOWER($1)
+		  AND LOWER(f.path) NOT LIKE '%/upload/%'
+		  AND LOWER(f.path) NOT LIKE '%\upload\%'
+		  AND LOWER(f.path) NOT LIKE '%.t01'
 		ORDER BY f.id
 	`, strings.TrimSpace(procName))
 	if err != nil {
