@@ -32,6 +32,36 @@ var selectAllRe = regexp.MustCompile(`(?i)\bselect\s+\*`)
 // truncateTblRe находит TRUNCATE TABLE и имя таблицы (включая схему dbo.table)
 var truncateTblRe = regexp.MustCompile(`(?i)\btruncate\s+table\s+(\S+)`)
 
+// removeMacros удаляет определения макросов #define и их тело
+// Удаляет строку с #define, все продолжения (заканчивающиеся на \) и финальную строку
+func removeMacros(content string) string {
+	// Нормализуем окончания строк для Windows \r\n
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+
+	lines := strings.Split(content, "\n")
+	var result []string
+
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+
+		// Начало макроса
+		if strings.HasPrefix(trimmed, "#define") {
+			// Пропускаем строки продолжения (оканчивающиеся на \)
+			for i < len(lines)-1 && strings.HasSuffix(lines[i], "\\") {
+				i++
+			}
+			// Пропускаем финальную строку (не оканчивается на \)
+			continue
+		}
+
+		result = append(result, line)
+	}
+
+	return strings.Join(result, "\n")
+}
+
 func (r *Runner) checkForeignTables(parsed *sqlparser.ParseResult, file *indexedFile, prefix string) ([]Finding, error) {
 	tables := dedupeTableRefs(parsed.Tables, prefix)
 	findings := make([]Finding, 0)
@@ -145,7 +175,7 @@ func (r *Runner) checkIndexWrong(file *indexedFile) ([]Finding, error) {
 		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasStatementEnded(lower) || parenDepth < 0 {
+		if hasStatementEnded(lower) {
 			items, err := r.analyzeStatementForIndexWrong(stmtBuffer, stmtStartLine, file)
 			if err != nil {
 				return nil, err
@@ -231,9 +261,12 @@ func (r *Runner) analyzeStatementForIndexWrong(lines []string, startLine int, fi
 				bestNames = append(bestNames, candidate.Name)
 			}
 
-			if strings.EqualFold(candidate.Name, indexName) {
+			if strings.EqualFold(normalizeIdentifier(candidate.Name), indexName) {
 				chosenFound = true
-				chosenScore = score
+				// Шаг 1: chosenScore как максимум по всем кандидатам с тем же именем
+				if score > chosenScore {
+					chosenScore = score
+				}
 			}
 		}
 
@@ -242,6 +275,19 @@ func (r *Runner) analyzeStatementForIndexWrong(lines []string, startLine int, fi
 		}
 
 		bestNames = normalizeIndexNameList(bestNames)
+
+		// Шаг 2: проверяем, что среди bestNames есть индекс, отличный от выбранного
+		// (не просто другая версия/регистр того же индекса)
+		hasDifferentIndex := false
+		for _, name := range bestNames {
+			if !strings.EqualFold(normalizeIdentifier(name), indexName) {
+				hasDifferentIndex = true
+				break
+			}
+		}
+		if !hasDifferentIndex {
+			continue
+		}
 		findings = append(findings, Finding{
 			Rule:             RuleIndexWrong,
 			Severity:         SeverityDeployStopper,
@@ -555,7 +601,7 @@ func (r *Runner) checkUpdateOnlyVar(file *indexedFile) ([]Finding, error) {
 		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasStatementEnded(lower) || parenDepth < 0 {
+		if hasStatementEnded(lower) {
 			finding := analyzeStatementForUpdateOnlyVar(stmtBuffer, stmtStartLine, file)
 			if finding != nil {
 				findings = append(findings, *finding)
@@ -801,7 +847,7 @@ func (r *Runner) checkPTableSpid(file *indexedFile) ([]Finding, error) {
 		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasStatementEnded(lower) || parenDepth < 0 {
+		if hasStatementEnded(lower) {
 			items, err := r.analyzeStatementForPTableSpid(stmtBuffer, stmtStartLine, file)
 			if err != nil {
 				return nil, err
@@ -935,7 +981,9 @@ func (r *Runner) checkForceOrder2Tbl(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(string(content), "\n")
+	// Удаляем макросы #define перед анализом
+	contentStr := removeMacros(string(content))
+	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
 	stmtStartLine := 0
@@ -1006,7 +1054,7 @@ func (r *Runner) checkForceOrder2Tbl(file *indexedFile) ([]Finding, error) {
 		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasStatementEnded(lower) || parenDepth < 0 {
+		if hasStatementEnded(lower) {
 			finding := analyzeStatementForForceOrder2Tbl(stmtBuffer, stmtStartLine, file)
 			if finding != nil {
 				findings = append(findings, *finding)
@@ -1261,7 +1309,7 @@ func (r *Runner) checkUseDrop(file *indexedFile) ([]Finding, error) {
 		}
 
 		// Проверяем конец тела процедуры (по GO или началу нового CREATE)
-		if isProcBodyEnd(lower) || parenDepth < 0 {
+		if isProcBodyEnd(lower) {
 			inProcBody = false
 			parenDepth = 0
 		}
@@ -1686,7 +1734,9 @@ func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(string(content), "\n")
+	// Удаляем макросы #define перед анализом
+	contentStr := removeMacros(string(content))
+	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
 	stmtStartLine := 0
@@ -1757,7 +1807,7 @@ func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
 		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasStatementEnded(lower) || parenDepth < 0 {
+		if hasStatementEnded(lower) {
 			items, err := r.analyzeStatementForIndexExists(stmtBuffer, stmtStartLine, file)
 			if err != nil {
 				return nil, err
@@ -2194,7 +2244,9 @@ func (r *Runner) checkUseSelectAll(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(string(content), "\n")
+	// Удаляем макросы #define перед анализом
+	contentStr := removeMacros(string(content))
+	lines := strings.Split(contentStr, "\n")
 
 	for i, line := range lines {
 		lineNum := i + 1
@@ -2295,6 +2347,50 @@ func (r *Runner) checkDatatype(parsed *sqlparser.ParseResult, file *indexedFile)
 	updateSetFindings, err := r.checkDatatypeUpdateSet(parsed, file)
 	if err == nil {
 		findings = append(findings, updateSetFindings...)
+	}
+
+	return findings
+}
+
+func analyzeStatementForTableHintExists(lines []string, startLine int, file *indexedFile, stmtType string) []Finding {
+	findings := make([]Finding, 0)
+	if len(lines) == 0 || stmtType == "" {
+		return findings
+	}
+
+	fullText := strings.Join(lines, " ")
+	fullText = removeBlockComments(fullText)
+
+	tables := extractTablesFromFromClause(fullText)
+	if len(tables) == 0 {
+		return findings
+	}
+
+	insertTarget := ""
+	if stmtType == "insert" {
+		insertTarget = normalizeIdentifier(parseInsertTableName(fullText))
+	}
+
+	for _, table := range tables {
+		if shouldSkipTableCheck(table.TableName) {
+			continue
+		}
+
+		if insertTarget != "" && normalizeIdentifier(table.TableName) == insertTarget {
+			continue
+		}
+
+		if !isHintAllowed(table.Hint, allowedTableHints) {
+			findings = append(findings, Finding{
+				Rule:             RuleTableHintExists,
+				Severity:         SeverityDeployStopper,
+				Message:          fmt.Sprintf("Таблица %s не имеет допустимого хинта индекса", table.TableName),
+				File:             file.Path,
+				Line:             startLine,
+				Object:           table.TableName,
+				CurrentProductID: file.DsProductID,
+			})
+		}
 	}
 
 	return findings
@@ -2509,7 +2605,9 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(string(content), "\n")
+	// Удаляем макросы #define перед анализом
+	contentStr := removeMacros(string(content))
+	lines := strings.Split(contentStr, "\n")
 
 	// Состояние парсера
 	inFromClause := false
@@ -2735,7 +2833,7 @@ func (r *Runner) checkInsertRowLock(file *indexedFile) ([]Finding, error) {
 			parenDepth += countParens(line)
 
 			// Проверяем конец INSERT (точка с запятой, начало нового оператора, или конец запроса)
-			if strings.Contains(lower, ";") || parenDepth < 0 || isNewSQLStatement(line) {
+			if strings.Contains(lower, ";") || isNewSQLStatement(line) {
 				// Анализируем собранный INSERT
 				if finding := analyzeInsertForRowLock(insertBuffer, insertStartLine, file); finding != nil {
 					findings = append(findings, *finding)
@@ -2945,7 +3043,7 @@ func (r *Runner) checkUseEqColumn(file *indexedFile) ([]Finding, error) {
 		conditionBuffer = append(conditionBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasConditionEnded(lower) || parenDepth < 0 {
+		if hasConditionEnded(lower) {
 			items := analyzeConditionForEqColumn(conditionBuffer, conditionStartLine, file)
 			findings = append(findings, items...)
 			inCondition = false
@@ -2991,6 +3089,13 @@ func hasConditionEnded(lower string) bool {
 	return false
 }
 
+// containsBitwiseOperator проверяет наличие битовых операторов (&, |, ^) в выражении
+func containsBitwiseOperator(expr string) bool {
+	return strings.Contains(expr, "&") ||
+		strings.Contains(expr, "|") ||
+		strings.Contains(expr, "^")
+}
+
 func analyzeConditionForEqColumn(lines []string, startLine int, file *indexedFile) []Finding {
 	findings := make([]Finding, 0)
 	if len(lines) == 0 {
@@ -3000,11 +3105,25 @@ func analyzeConditionForEqColumn(lines []string, startLine int, file *indexedFil
 	fullText := strings.Join(lines, " ")
 	seen := make(map[string]struct{})
 
-	eqRe := regexp.MustCompile(`(?i)(\w+(?:\.\w+)?)\s*=\s*(\w+(?:\.\w+)?)`)
+	// Проверяем ВСЁ условие на битовые операторы ДО применения regex
+	// Если в условии есть &, |, ^ — пропускаем всё условие,
+	// потому что это скорее всего проверка битовых флагов
+	// Пример: column & mask = mask — это не сравнение столбца с самим собой
+	if containsBitwiseOperator(fullText) {
+		return findings
+	}
+
+	// Захватываем опциональный @ для переменных T-SQL
+	eqRe := regexp.MustCompile(`(?i)(@?\w+(?:\.\w+)?)\s*=\s*(@?\w+(?:\.\w+)?)`)
 	matches := eqRe.FindAllStringSubmatch(fullText, -1)
 
 	for _, m := range matches {
 		if len(m) < 3 {
+			continue
+		}
+		// Пропускаем присваивание в SELECT: @var = column или column = @var
+		// @var — переменная, не колонка, это не сравнение столбца с самим собой
+		if strings.HasPrefix(m[1], "@") || strings.HasPrefix(m[2], "@") {
 			continue
 		}
 		left := normalizeIdentifier(m[1])
@@ -3040,7 +3159,9 @@ func (r *Runner) checkTableFullScan(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(string(content), "\n")
+	// Удаляем макросы #define перед анализом
+	contentStr := removeMacros(string(content))
+	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
 	stmtStartLine := 0
@@ -3084,7 +3205,7 @@ func (r *Runner) checkTableFullScan(file *indexedFile) ([]Finding, error) {
 		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasStatementEnded(lower) || parenDepth < 0 {
+		if hasStatementEnded(lower) {
 			if finding := analyzeStatementForFullScan(stmtBuffer, stmtStartLine, file, stmtType); finding != nil {
 				findings = append(findings, *finding)
 			}
@@ -3135,13 +3256,10 @@ func findStatementStart(lower string) (string, int) {
 }
 
 func hasStatementEnded(lower string) bool {
-	enders := []string{";", "go", "begin", "end", "if", "while", "declare", "exec", "execute", "return"}
-	for _, ender := range enders {
-		if strings.Contains(lower, ender) {
-			return true
-		}
-	}
-	return false
+	// Используем regex с границами слова, чтобы избежать ложных срабатываний на подстроках
+	// Например, "dependantinfo" содержит "end", но это не ключевое слово
+	re := regexp.MustCompile(`(?i)([;]|\b(?:go|begin|end|if|while|declare|exec|execute|return)\b)`)
+	return re.MatchString(lower)
 }
 
 func analyzeStatementForFullScan(lines []string, startLine int, file *indexedFile, stmtType string) *Finding {
@@ -3171,6 +3289,13 @@ func analyzeStatementForFullScan(lines []string, startLine int, file *indexedFil
 
 	// Извлекаем все таблицы из FROM clause
 	tables := extractTablesFromFromClause(fullText)
+
+	// Для UPDATE: дополняем алиасы целевых таблиц из FROM-части
+	// Если целевая таблица без алиаса, но есть в FROM с алиасом — используем тот алиас
+	if stmtType == "update" {
+		tables = enrichUpdateTargetAliases(tables)
+	}
+
 	if len(tables) == 0 {
 		return nil
 	}
@@ -3204,8 +3329,51 @@ type tableFromClause struct {
 	IndexName string // Имя индекса из M_*_INDEX(...)
 }
 
+// enrichUpdateTargetAliases для UPDATE: если таблица без алиаса,
+// но есть другая запись с таким же именем и с алиасом — копируем алиас
+func enrichUpdateTargetAliases(tables []tableFromClause) []tableFromClause {
+	// Строим мапу имя таблицы -> алиас (из записей где алиас есть)
+	aliasMap := make(map[string]string)
+	for _, t := range tables {
+		if t.Alias != "" {
+			key := strings.ToLower(t.TableName)
+			if _, exists := aliasMap[key]; !exists {
+				aliasMap[key] = t.Alias
+			}
+		}
+	}
+
+	// Дополняем записи без алиаса
+	for i := range tables {
+		if tables[i].Alias == "" {
+			key := strings.ToLower(tables[i].TableName)
+			if alias, found := aliasMap[key]; found {
+				tables[i].Alias = alias
+			}
+		}
+	}
+
+	return tables
+}
+
+// removeComments удаляет SQL комментарии (-- ... и /* ... */)
+func removeComments(text string) string {
+	// Удаляем многострочные комментарии /* ... */
+	blockCommentRe := regexp.MustCompile(`(?s)/\*.*?\*/`)
+	text = blockCommentRe.ReplaceAllString(text, "")
+
+	// Удаляем однострочные комментарии -- ...
+	lineCommentRe := regexp.MustCompile(`(?m)--.*$`)
+	text = lineCommentRe.ReplaceAllString(text, "")
+
+	return text
+}
+
 func extractTablesFromFromClause(fullText string) []tableFromClause {
 	result := make([]tableFromClause, 0)
+
+	// Удаляем комментарии перед парсингом
+	fullText = removeComments(fullText)
 	lower := strings.ToLower(fullText)
 
 	// Находим FROM clause
@@ -3234,6 +3402,38 @@ func extractTablesFromFromClause(fullText string) []tableFromClause {
 	return parseTablesInFromClause(fromClause)
 }
 
+// splitByCommasRespectingParens разбивает строку по запятым, но только те что вне скобок
+// Запятые внутри функций (isnull(arg1, arg2)) не используются как разделители
+func splitByCommasRespectingParens(sql string) []string {
+	var parts []string
+	var current strings.Builder
+	depth := 0
+
+	for _, ch := range sql {
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				// Запятая на нулевом уровне - разделитель
+				parts = append(parts, current.String())
+				current.Reset()
+				continue
+			}
+		}
+		current.WriteRune(ch)
+	}
+
+	// Добавляем последнюю часть
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+
+	return parts
+}
+
 func parseTablesInFromClause(fromClause string) []tableFromClause {
 	result := make([]tableFromClause, 0)
 	lower := strings.ToLower(fromClause)
@@ -3254,8 +3454,9 @@ func parseTablesInFromClause(fromClause string) []tableFromClause {
 	normalized = strings.ReplaceAll(normalized, " cross join ", ",")
 	normalized = strings.ReplaceAll(normalized, " join ", ",")
 
-	// Разбиваем по запятым
-	parts := strings.Split(normalized, ",")
+	// Разбиваем по запятым с учетом вложенных скобок
+	// Это предотвращает ложное разделение по запятым внутри isnull(arg1, arg2)
+	parts := splitByCommasRespectingParens(normalized)
 
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
@@ -3308,7 +3509,8 @@ func parseTableWithAlias(part string) tableFromClause {
 		return result
 	}
 
-	result.TableName = tokens[0]
+	// Очищаем имя таблицы от скобок, которые могли попасть из-за неправильного разделения
+	result.TableName = strings.Trim(tokens[0], "()")
 
 	// Ищем алиас (после AS или просто следующий токен)
 	for i := 1; i < len(tokens); i++ {
@@ -3586,13 +3788,15 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(string(content), "\n")
+	// Удаляем макросы #define перед анализом
+	contentStr := removeMacros(string(content))
+	lines := strings.Split(contentStr, "\n")
 
-	inFrom := false
-	fromStartLine := 0
-	fromBuffer := make([]string, 0)
+	inStatement := false
+	stmtStartLine := 0
+	stmtBuffer := make([]string, 0)
 	parenDepth := 0
-	inBlockComment := false
+	stmtType := ""
 
 	for i, line := range lines {
 		lineNum := i + 1
@@ -3602,48 +3806,14 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 			continue
 		}
 
-		// Отслеживаем блочные комментарии /* */
-		if inBlockComment {
-			if idx := strings.Index(line, "*/"); idx >= 0 {
-				inBlockComment = false
-				// Продолжаем обработку остатка строки после */
-				line = line[idx+2:]
-			} else {
-				// Вся строка внутри комментария
-				continue
-			}
-		}
-
-		// Проверяем начало блочного комментария
-		for {
-			if idx := strings.Index(line, "/*"); idx >= 0 {
-				// Проверяем, не закрывается ли он на той же строке
-				endIdx := strings.Index(line[idx:], "*/")
-				if endIdx > 0 {
-					// Однострочный блочный комментарий /* ... */
-					line = line[:idx] + " " + line[idx+endIdx+2:]
-				} else {
-					// Начало многострочного комментария
-					inBlockComment = true
-					line = line[:idx]
-					break
-				}
-			} else {
-				break
-			}
-		}
-
-		if inBlockComment {
-			continue
-		}
-
 		lower := strings.ToLower(line)
 
-		if !inFrom {
-			fromIdx := findKeywordPosition(lower, "from")
-			if fromIdx >= 0 && !isInComment(line, fromIdx) {
+		if !inStatement {
+			var startIdx int
+			stmtType, startIdx = findStatementStartForTableHintExists(lower)
+			if startIdx >= 0 && !isInComment(line, startIdx) {
 				depthBefore := 0
-				for j := 0; j < fromIdx; j++ {
+				for j := 0; j < startIdx; j++ {
 					switch line[j] {
 					case '(':
 						depthBefore++
@@ -3652,29 +3822,30 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 					}
 				}
 				if depthBefore == 0 {
-					inFrom = true
-					fromStartLine = lineNum
-					fromBuffer = []string{line}
+					inStatement = true
+					stmtStartLine = lineNum
+					stmtBuffer = []string{line}
 					parenDepth = countParens(line)
 				}
 			}
 			continue
 		}
 
-		fromBuffer = append(fromBuffer, line)
+		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasFromEnded(lower) || parenDepth < 0 {
-			items := analyzeFromClauseForHints(fromBuffer, fromStartLine, file)
+		if hasStatementEnded(lower) {
+			items := analyzeStatementForTableHintExists(stmtBuffer, stmtStartLine, file, stmtType)
 			findings = append(findings, items...)
-			inFrom = false
-			fromBuffer = nil
+			inStatement = false
+			stmtBuffer = nil
 			parenDepth = 0
 
-			fromIdx := findKeywordPosition(lower, "from")
-			if fromIdx >= 0 && !isInComment(line, fromIdx) && !hasFromEnded(lower) {
+			var newStartIdx int
+			stmtType, newStartIdx = findStatementStartForTableHintExists(lower)
+			if newStartIdx >= 0 && !isInComment(line, newStartIdx) && !hasStatementEnded(lower) {
 				depthBefore := 0
-				for j := 0; j < fromIdx; j++ {
+				for j := 0; j < newStartIdx; j++ {
 					switch line[j] {
 					case '(':
 						depthBefore++
@@ -3683,67 +3854,36 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 					}
 				}
 				if depthBefore == 0 {
-					inFrom = true
-					fromStartLine = lineNum
-					fromBuffer = []string{line}
+					inStatement = true
+					stmtStartLine = lineNum
+					stmtBuffer = []string{line}
 					parenDepth = countParens(line)
 				}
 			}
 		}
 	}
 
-	if inFrom && len(fromBuffer) > 0 {
-		items := analyzeFromClauseForHints(fromBuffer, fromStartLine, file)
+	if inStatement && len(stmtBuffer) > 0 {
+		items := analyzeStatementForTableHintExists(stmtBuffer, stmtStartLine, file, stmtType)
 		findings = append(findings, items...)
 	}
 
 	return findings, nil
 }
 
-func hasFromEnded(lower string) bool {
-	enders := []string{" where ", " order by ", " group by ", " having ", " union ", " except ", " intersect ", ";"}
-	for _, ender := range enders {
-		if strings.Contains(lower, ender) {
-			return true
-		}
-	}
-	return false
-}
-
-func analyzeFromClauseForHints(lines []string, startLine int, file *indexedFile) []Finding {
-	findings := make([]Finding, 0)
-	if len(lines) == 0 {
-		return findings
-	}
-
-	fullText := strings.Join(lines, " ")
-
-	// Убираем блочные комментарии /* */
-	fullText = removeBlockComments(fullText)
-
-	// Извлекаем таблицы из FROM clause
-	tables := extractTablesFromFromClause(fullText)
-
-	for _, table := range tables {
-		// Пропускаем переменные (@param), временные таблицы (pTmp*), системные процедуры (pAPI_*)
-		if shouldSkipTableCheck(table.TableName) {
-			continue
-		}
-
-		if !hasAllowedHint(fullText, table) {
-			findings = append(findings, Finding{
-				Rule:             RuleTableHintExists,
-				Severity:         SeverityDeployStopper,
-				Message:          fmt.Sprintf("Таблица %s не имеет допустимого хинта индекса", table.TableName),
-				File:             file.Path,
-				Line:             startLine,
-				Object:           table.TableName,
-				CurrentProductID: file.DsProductID,
-			})
+func findStatementStartForTableHintExists(lower string) (string, int) {
+	types := []string{"select", "delete", "update", "merge", "insert"}
+	bestIdx := -1
+	bestType := ""
+	for _, stmtType := range types {
+		idx := findKeywordPosition(lower, stmtType)
+		if idx >= 0 && (bestIdx == -1 || idx < bestIdx) {
+			bestIdx = idx
+			bestType = stmtType
 		}
 	}
 
-	return findings
+	return bestType, bestIdx
 }
 
 func removeBlockComments(text string) string {
@@ -3787,49 +3927,6 @@ func shouldSkipTableCheck(tableName string) bool {
 	return false
 }
 
-func hasAllowedHint(fullText string, table tableFromClause) bool {
-	lower := strings.ToLower(fullText)
-
-	// Ищем позицию таблицы в тексте
-	searchTerms := []string{table.TableName}
-	if table.Alias != "" {
-		searchTerms = append(searchTerms, table.Alias)
-	}
-
-	for _, term := range searchTerms {
-		idx := strings.Index(lower, strings.ToLower(term))
-		if idx == -1 {
-			continue
-		}
-
-		// Проверяем, есть ли после таблицы/алиаса один из допустимых хинтов
-		pos := idx + len(term)
-		if pos >= len(fullText) {
-			continue
-		}
-
-		// Пропускаем пробелы
-		for pos < len(fullText) && (fullText[pos] == ' ' || fullText[pos] == '\t') {
-			pos++
-		}
-
-		if pos >= len(fullText) {
-			continue
-		}
-
-		// Проверяем паттерны хинтов
-		suffix := fullText[pos:]
-		for _, hint := range allowedTableHints {
-			hintPattern := strings.ToLower(hint) + "("
-			if strings.HasPrefix(strings.ToLower(suffix), hintPattern) {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
 var (
 	// readHints - для SELECT и вспомогательных таблиц в UPDATE/DELETE
 	readHints = []string{
@@ -3863,7 +3960,9 @@ func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(string(content), "\n")
+	// Удаляем макросы #define перед анализом
+	contentStr := removeMacros(string(content))
+	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
 	stmtStartLine := 0
@@ -3936,7 +4035,7 @@ func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasStatementEnded(lower) || parenDepth < 0 {
+		if hasStatementEnded(lower) {
 			items := analyzeStatementForHintType(stmtBuffer, stmtStartLine, file)
 			findings = append(findings, items...)
 			inStatement = false

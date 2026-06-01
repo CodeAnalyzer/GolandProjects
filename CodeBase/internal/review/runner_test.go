@@ -30,6 +30,80 @@ func TestIsSharedTTable(t *testing.T) {
 	}
 }
 
+func TestTableHintExists_InsertTargetAndSources(t *testing.T) {
+	cases := []struct {
+		name          string
+		content       string
+		expectFinding bool
+		findingLine   int
+		tableName     string
+	}{
+		{
+			name: "from clause must end before next insert statement",
+			content: `select ID
+from tSource M_NOLOCK_INDEX(XPKtSource)
+insert pConsErrMass M_P_WITH_ROWLOCK (SPID, ContractID)
+select @@spid, @ObjectID`,
+			expectFinding: false,
+		},
+		{
+			name: "insert target ignored but source without hint is checked",
+			content: `insert pConsErrMass M_P_WITH_ROWLOCK (SPID, ContractID)
+select @@spid, ContractID
+from tSource`,
+			expectFinding: true,
+			findingLine:   1,
+			tableName:     "tsource",
+		},
+		{
+			name: "insert target ignored and source with hint passes",
+			content: `insert pConsErrMass M_P_WITH_ROWLOCK (SPID, ContractID)
+select @@spid, ContractID
+from tSource M_NOLOCK_INDEX(XPKtSource)`,
+			expectFinding: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpFile, err := os.CreateTemp("", "test_tablehint_exists_*.sql")
+			if err != nil {
+				t.Fatalf("failed to create temp file: %v", err)
+			}
+			defer os.Remove(tmpFile.Name())
+
+			if _, err := tmpFile.WriteString(tc.content); err != nil {
+				t.Fatalf("failed to write to temp file: %v", err)
+			}
+			tmpFile.Close()
+
+			file := &indexedFile{Path: tmpFile.Name(), DsProductID: 1}
+			runner := &Runner{}
+
+			findings, err := runner.checkTableHintExists(file)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tc.expectFinding {
+				if len(findings) == 0 {
+					t.Fatalf("expected finding, got none")
+				}
+				if findings[0].Line != tc.findingLine {
+					t.Fatalf("finding line = %d, want %d", findings[0].Line, tc.findingLine)
+				}
+				if findings[0].Object != tc.tableName {
+					t.Fatalf("finding object = %q, want %q", findings[0].Object, tc.tableName)
+				}
+			} else {
+				if len(findings) > 0 {
+					t.Fatalf("expected no finding, got %v", findings)
+				}
+			}
+		})
+	}
+}
+
 func TestDedupeProcedureCalls_FiltersKeywordsAndDeduplicates(t *testing.T) {
 	calls := []*model.SQLProcedureCall{
 		{CalleeName: "DateCorrectByClnFrw", LineNumber: 97},
