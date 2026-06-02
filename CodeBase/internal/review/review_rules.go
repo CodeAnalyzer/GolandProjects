@@ -3458,6 +3458,29 @@ func analyzeStatementForFullScan(lines []string, startLine int, file *indexedFil
 	}
 
 	if len(tables) == 0 {
+		// UPDATE без FROM: проверяем target-таблицу напрямую
+		if stmtType == "update" {
+			targetName := extractUpdateTargetTable(fullText)
+			if targetName == "" || strings.HasPrefix(strings.ToLower(targetName), "#") {
+				return nil
+			}
+			// Если есть JOIN — соединение покрывает фильтрацию
+			if hasJoinCondition(lower) {
+				return nil
+			}
+			wherePart := extractWherePartForIndexWrong(lower)
+			if wherePart == "" {
+				return &Finding{
+					Rule:             RuleTableFullScan,
+					Severity:         SeverityDeployStopper,
+					Message:          fmt.Sprintf("Таблица %s не имеет условия фильтрации (полное сканирование)", strings.ToLower(targetName)),
+					File:             file.Path,
+					Line:             startLine,
+					Object:           strings.ToLower(targetName),
+					CurrentProductID: file.DsProductID,
+				}
+			}
+		}
 		return nil
 	}
 

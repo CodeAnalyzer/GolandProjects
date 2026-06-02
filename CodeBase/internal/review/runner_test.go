@@ -506,7 +506,7 @@ func TestAnalyzeStatementForFullScan_DetectsFullScan(t *testing.T) {
 			lines:     []string{"select * from tContract"},
 			stmtType:  "select",
 			wantFound: true,
-			wantObj:   "tContract",
+			wantObj:   "tcontract",
 		},
 		{
 			name:      "select with where no finding",
@@ -519,7 +519,7 @@ func TestAnalyzeStatementForFullScan_DetectsFullScan(t *testing.T) {
 			lines:     []string{"delete from tDeal"},
 			stmtType:  "delete",
 			wantFound: true,
-			wantObj:   "tDeal",
+			wantObj:   "tdeal",
 		},
 		{
 			name:      "delete with where no finding",
@@ -532,7 +532,7 @@ func TestAnalyzeStatementForFullScan_DetectsFullScan(t *testing.T) {
 			lines:     []string{"update tContract set status = 1"},
 			stmtType:  "update",
 			wantFound: true,
-			wantObj:   "tContract",
+			wantObj:   "tcontract",
 		},
 		{
 			name:      "update with join no finding",
@@ -551,7 +551,7 @@ func TestAnalyzeStatementForFullScan_DetectsFullScan(t *testing.T) {
 			lines:     []string{"update tContract", "set status = 1"},
 			stmtType:  "update",
 			wantFound: true,
-			wantObj:   "tContract",
+			wantObj:   "tcontract",
 		},
 		{
 			name:      "merge without on condition",
