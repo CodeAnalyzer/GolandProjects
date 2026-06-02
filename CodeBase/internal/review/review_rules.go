@@ -212,6 +212,7 @@ func (r *Runner) analyzeStatementForIndexWrong(lines []string, startLine int, fi
 	}
 
 	conditionColumns := extractConditionColumnsForIndexWrong(trimmedText, tables)
+	joinColumns := extractJoinColumnsForIndexWrong(trimmedText, tables)
 	seen := make(map[string]struct{})
 
 	for _, table := range tables {
@@ -238,6 +239,7 @@ func (r *Runner) analyzeStatementForIndexWrong(lines []string, startLine int, fi
 		if len(cols) == 0 {
 			continue
 		}
+		joinCols := joinColumns[tableConditionKey(table)]
 
 		candidates, err := r.lookupTableIndexCandidates(tableName)
 		if err != nil {
@@ -249,6 +251,7 @@ func (r *Runner) analyzeStatementForIndexWrong(lines []string, startLine int, fi
 
 		chosenFound := false
 		chosenScore := 0
+		chosenFields := make([]string, 0)
 		bestScore := 0
 		bestNames := make([]string, 0)
 
@@ -266,11 +269,16 @@ func (r *Runner) analyzeStatementForIndexWrong(lines []string, startLine int, fi
 				// Шаг 1: chosenScore как максимум по всем кандидатам с тем же именем
 				if score > chosenScore {
 					chosenScore = score
+					chosenFields = candidate.Fields
 				}
 			}
 		}
 
 		if !chosenFound || bestScore <= chosenScore {
+			continue
+		}
+
+		if shouldKeepChosenIndexForPKJoin(indexName, chosenFields, joinCols) {
 			continue
 		}
 
@@ -341,6 +349,86 @@ func normalizeIndexNameList(names []string) []string {
 		return strings.ToLower(result[i]) < strings.ToLower(result[j])
 	})
 	return result
+}
+
+func extractJoinColumnsForIndexWrong(fullText string, tables []tableFromClause) map[string]map[string]struct{} {
+	result := make(map[string]map[string]struct{})
+	for _, table := range tables {
+		result[tableConditionKey(table)] = make(map[string]struct{})
+	}
+
+	onParts := extractOnPartsForIndexWrong(fullText)
+	for _, onPart := range onParts {
+		collectJoinColumnsFromOnPart(onPart, tables, result)
+	}
+
+	return result
+}
+
+func collectJoinColumnsFromOnPart(onPart string, tables []tableFromClause, result map[string]map[string]struct{}) {
+	eqRe := regexp.MustCompile(`(?i)\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b\s*=\s*\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b`)
+	matches := eqRe.FindAllStringSubmatch(onPart, -1)
+	if len(matches) == 0 {
+		return
+	}
+
+	idents := make(map[string]string)
+	for _, table := range tables {
+		key := tableConditionKey(table)
+		if key == "" {
+			continue
+		}
+		idents[normalizeIdentifier(table.TableName)] = key
+		if alias := normalizeIdentifier(table.Alias); alias != "" {
+			idents[alias] = key
+		}
+	}
+
+	for _, m := range matches {
+		if len(m) < 5 {
+			continue
+		}
+
+		leftIdent := normalizeIdentifier(m[1])
+		leftCol := normalizeIdentifier(m[2])
+		rightIdent := normalizeIdentifier(m[3])
+		rightCol := normalizeIdentifier(m[4])
+
+		leftKey, leftExists := idents[leftIdent]
+		rightKey, rightExists := idents[rightIdent]
+		if !leftExists || !rightExists || leftKey == rightKey {
+			continue
+		}
+		if leftCol != "" {
+			result[leftKey][leftCol] = struct{}{}
+		}
+		if rightCol != "" {
+			result[rightKey][rightCol] = struct{}{}
+		}
+	}
+}
+
+func shouldKeepChosenIndexForPKJoin(indexName string, chosenFields []string, joinCols map[string]struct{}) bool {
+	if len(joinCols) == 0 {
+		return false
+	}
+	normalizedIndex := normalizeIdentifier(indexName)
+	if !strings.HasPrefix(normalizedIndex, "xpk") {
+		return false
+	}
+	if len(chosenFields) == 0 {
+		return true
+	}
+	for _, field := range chosenFields {
+		normalizedField := normalizeIdentifier(field)
+		if normalizedField == "" {
+			continue
+		}
+		if _, exists := joinCols[normalizedField]; exists {
+			return true
+		}
+	}
+	return false
 }
 
 func tableConditionKey(table tableFromClause) string {
@@ -2607,15 +2695,16 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 	}
 	// Удаляем макросы #define перед анализом
 	contentStr := removeMacros(string(content))
+	contentStr = maskBlockCommentsKeepLines(contentStr)
 	lines := strings.Split(contentStr, "\n")
 
 	// Состояние парсера
 	inFromClause := false
-	fromStartLine := 0
 	parenDepth := 0
 	hasJoin := false
 	hasComma := false
 	commaLine := 0
+	firstTable := ""
 
 	for i, line := range lines {
 		lineNum := i + 1
@@ -2644,10 +2733,10 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 				}
 				if depthBefore == 0 {
 					inFromClause = true
-					fromStartLine = lineNum
 					parenDepth = 0
 					hasJoin = false
 					hasComma = false
+					firstTable = extractFirstTableFromFromClause(line[fromIdx+4:])
 					// Считаем скобки в оставшейся части строки после FROM
 					for j := fromIdx + 4; j < len(line); j++ {
 						switch line[j] {
@@ -2666,22 +2755,13 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 		}
 
 		// Мы внутри FROM clause - анализируем строку
-		fromPart := lower
-		if i == fromStartLine-1 {
-			// Первая строка - берем только после FROM
-			fromIdx := strings.Index(lower, "from")
-			if fromIdx >= 0 {
-				fromPart = lower[fromIdx+4:]
-			}
-		}
-
-		// Проверяем наличие JOIN ключевых слов
-		if strings.Contains(fromPart, " join ") ||
-			strings.Contains(fromPart, "inner join") ||
-			strings.Contains(fromPart, "left join") ||
-			strings.Contains(fromPart, "right join") ||
-			strings.Contains(fromPart, "full join") ||
-			strings.Contains(fromPart, "cross join") {
+		// Проверяем наличие JOIN ключевых слов на полной строке
+		if strings.Contains(lower, " join ") ||
+			strings.Contains(lower, "inner join") ||
+			strings.Contains(lower, "left join") ||
+			strings.Contains(lower, "right join") ||
+			strings.Contains(lower, "full join") ||
+			strings.Contains(lower, "cross join") {
 			hasJoin = true
 		}
 
@@ -2710,6 +2790,7 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 					Message:          "Используйте ANSI-синтаксис для соединения таблиц (JOIN вместо запятой в FROM)",
 					File:             file.Path,
 					Line:             commaLine,
+					Object:           firstTable,
 					CurrentProductID: file.DsProductID,
 				})
 			}
@@ -2717,6 +2798,7 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 			hasJoin = false
 			hasComma = false
 			commaLine = 0
+			firstTable = ""
 		}
 	}
 
@@ -2728,11 +2810,54 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 			Message:          "Используйте ANSI-синтаксис для соединения таблиц (JOIN вместо запятой в FROM)",
 			File:             file.Path,
 			Line:             commaLine,
+			Object:           firstTable,
 			CurrentProductID: file.DsProductID,
 		})
 	}
 
 	return findings, nil
+}
+
+func maskBlockCommentsKeepLines(text string) string {
+	if text == "" {
+		return text
+	}
+
+	runes := []rune(text)
+	masked := make([]rune, len(runes))
+	inBlock := false
+
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+
+		if !inBlock && i+1 < len(runes) && runes[i] == '/' && runes[i+1] == '*' {
+			inBlock = true
+			masked[i] = ' '
+			masked[i+1] = ' '
+			i++
+			continue
+		}
+
+		if inBlock {
+			if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '/' {
+				inBlock = false
+				masked[i] = ' '
+				masked[i+1] = ' '
+				i++
+				continue
+			}
+			if ch == '\n' || ch == '\r' {
+				masked[i] = ch
+			} else {
+				masked[i] = ' '
+			}
+			continue
+		}
+
+		masked[i] = ch
+	}
+
+	return string(masked)
 }
 
 // findKeywordPosition ищет позицию ключевого слова (полное слово)
@@ -2770,6 +2895,42 @@ func hasFromClauseEnded(lowerLine string) bool {
 		return true
 	}
 	return false
+}
+
+// extractFirstTableFromFromClause извлекает имя первой таблицы из FROM clause
+// text - часть строки после ключевого слова FROM
+func extractFirstTableFromFromClause(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(trimmed)
+
+	// Пропускаем открывающую скобку подзапроса
+	if strings.HasPrefix(trimmed, "(") {
+		return ""
+	}
+
+	// Ищем конец имени таблицы (пробел, запятая, JOIN, WHERE, etc.)
+	endMarkers := []string{" ", "\t", ",", "\n", "\r", "inner", "left", "right", "full", "cross", "join", "where", "group", "having", "order", "union", "except", "intersect", ";"}
+	endIdx := len(trimmed)
+	for _, marker := range endMarkers {
+		if idx := strings.Index(lower, marker); idx >= 0 && idx < endIdx {
+			endIdx = idx
+		}
+	}
+
+	if endIdx > 0 {
+		table := strings.TrimSpace(trimmed[:endIdx])
+		// Убираем возможные хинты вида "table M_INDEX(...)" или "table WITH (...)"
+		if spaceIdx := strings.Index(table, " "); spaceIdx > 0 {
+			table = table[:spaceIdx]
+		}
+		return table
+	}
+
+	return trimmed
 }
 
 // isNewSQLStatement проверяет, начинается ли строка с нового SQL оператора (не INSERT)
@@ -3306,6 +3467,9 @@ func analyzeStatementForFullScan(lines []string, startLine int, file *indexedFil
 
 	// Проверяем каждую таблицу
 	for _, table := range tables {
+		if strings.HasPrefix(strings.ToLower(table.TableName), "#") {
+			continue
+		}
 		if !isTableFiltered(table, tables, whereResult, onRefs) {
 			return &Finding{
 				Rule:             RuleTableFullScan,
@@ -3374,32 +3538,111 @@ func extractTablesFromFromClause(fullText string) []tableFromClause {
 
 	// Удаляем комментарии перед парсингом
 	fullText = removeComments(fullText)
-	lower := strings.ToLower(fullText)
-
-	// Находим FROM clause
-	fromIdx := strings.Index(lower, " from ")
-	if fromIdx == -1 {
-		fromIdx = strings.Index(lower, "from ")
-	}
-	if fromIdx == -1 {
+	fromStart, fromEnd, found := findTopLevelFromClauseBounds(fullText)
+	if !found {
 		return result
 	}
 
-	// Извлекаем часть после FROM до WHERE, ORDER BY, GROUP BY, UNION и т.д.
-	fromPart := fullText[fromIdx:]
-	lowerFromPart := strings.ToLower(fromPart)
+	fromClause := fullText[fromStart:fromEnd]
+	return parseTablesInFromClause(fromClause)
+}
 
-	// Находим конец FROM clause
-	endMarkers := []string{" where ", " order by ", " group by ", " having ", " union ", " except ", " intersect "}
-	endIdx := len(fromPart)
-	for _, marker := range endMarkers {
-		if idx := strings.Index(lowerFromPart, marker); idx > 0 && idx < endIdx {
-			endIdx = idx
+func findTopLevelFromClauseBounds(text string) (int, int, bool) {
+	lower := strings.ToLower(text)
+	fromIdx := -1
+	depth := 0
+	inString := false
+
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '\'' {
+			if inString && i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+
+		if depth == 0 && keywordMatchAt(lower, i, "from") {
+			fromIdx = i
+			break
 		}
 	}
 
-	fromClause := fromPart[:endIdx]
-	return parseTablesInFromClause(fromClause)
+	if fromIdx < 0 {
+		return 0, 0, false
+	}
+
+	endIdx := len(text)
+	depth = 0
+	inString = false
+	endKeywords := []string{"where", "order by", "group by", "having", "union", "except", "intersect"}
+
+	for i := fromIdx + len("from"); i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '\'' {
+			if inString && i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+
+		if depth != 0 {
+			continue
+		}
+		for _, kw := range endKeywords {
+			if keywordMatchAt(lower, i, kw) {
+				endIdx = i
+				return fromIdx, endIdx, true
+			}
+		}
+	}
+
+	return fromIdx, endIdx, true
+}
+
+func keywordMatchAt(lower string, pos int, keyword string) bool {
+	if pos < 0 || pos+len(keyword) > len(lower) {
+		return false
+	}
+	if lower[pos:pos+len(keyword)] != keyword {
+		return false
+	}
+	if pos > 0 && isWordChar(lower[pos-1]) {
+		return false
+	}
+	after := pos + len(keyword)
+	if after < len(lower) && isWordChar(lower[after]) {
+		return false
+	}
+	return true
 }
 
 // splitByCommasRespectingParens разбивает строку по запятым, но только те что вне скобок
@@ -4110,7 +4353,7 @@ func analyzeStatementForHintType(lines []string, startLine int, file *indexedFil
 		}
 
 		var allowedHints []string
-		if strings.EqualFold(table.TableName, targetTable) || strings.EqualFold(table.Alias, targetTable) {
+		if sameTableReference(table.TableName, targetTable) || sameTableReference(table.Alias, targetTable) {
 			// Целевая таблица
 			switch stmtType {
 			case "delete":
@@ -4157,27 +4400,61 @@ func normalizeHintStatementText(text string) string {
 }
 
 func extractUpdateTargetTable(fullText string) string {
+	fullText = strings.TrimSpace(fullText)
 	lower := strings.ToLower(fullText)
 	if !strings.HasPrefix(lower, "update") {
 		return ""
 	}
 
-	// UPDATE table SET ...
-	lower = strings.TrimPrefix(lower, "update")
-	lower = strings.TrimLeft(lower, " \t")
-
-	// Берем первое слово до пробела или SET
-	endIdx := strings.Index(lower, " ")
-	setIdx := strings.Index(lower, "set")
-	if setIdx >= 0 && (endIdx == -1 || setIdx < endIdx) {
-		endIdx = setIdx
+	remainder := strings.TrimSpace(fullText[len("update"):])
+	if remainder == "" {
+		return ""
 	}
 
-	if endIdx > 0 {
-		return strings.TrimSpace(fullText[len("update") : len("update")+endIdx])
+	parts := strings.Fields(remainder)
+	if len(parts) == 0 {
+		return ""
 	}
 
-	return ""
+	if strings.EqualFold(parts[0], "top") {
+		if len(parts) < 2 {
+			return ""
+		}
+		i := 1
+		if strings.HasPrefix(parts[i], "(") {
+			for i < len(parts) && !strings.Contains(parts[i], ")") {
+				i++
+			}
+			if i+1 < len(parts) {
+				return strings.TrimSpace(parts[i+1])
+			}
+			return ""
+		}
+		if len(parts) >= 3 {
+			return strings.TrimSpace(parts[2])
+		}
+		return ""
+	}
+
+	return strings.TrimSpace(parts[0])
+}
+
+func sameTableReference(left, right string) bool {
+	l := normalizeIdentifier(left)
+	r := normalizeIdentifier(right)
+	if l == "" || r == "" {
+		return false
+	}
+	if l == r {
+		return true
+	}
+	if idx := strings.LastIndex(l, "."); idx >= 0 {
+		l = l[idx+1:]
+	}
+	if idx := strings.LastIndex(r, "."); idx >= 0 {
+		r = r[idx+1:]
+	}
+	return l != "" && l == r
 }
 
 func extractDeleteTargetTable(fullText string) string {

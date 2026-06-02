@@ -610,6 +610,30 @@ func TestAnalyzeStatementForHintType_DeleteWrongTargetHint_AfterSelectAssignment
 	}
 }
 
+func TestAnalyzeStatementForHintType_UpdateTargetFromSameTable_AllowsUpdlock(t *testing.T) {
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+
+	lines := []string{
+		"update pAPI_Acc_GetListLimit_Out",
+		"   set Limit       = @Rest,",
+		"       PlanLimit   = @RestPlan",
+		"  from pAPI_Acc_GetListLimit_Out p M_UPDLOCK_INDEX(XPKpAPI_Acc_GetListLimit_Out)",
+		" where p.SPID = @@SPID",
+	}
+
+	findings := analyzeStatementForHintType(lines, 415, file)
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings for UPDATE target table with M_UPDLOCK_INDEX, got %#v", findings)
+	}
+}
+
+func TestExtractUpdateTargetTable_WithExtraSpaces(t *testing.T) {
+	query := "update   pAPI_Acc_GetListLimit_Out   set Limit = @Rest"
+	if got := extractUpdateTargetTable(query); got != "pAPI_Acc_GetListLimit_Out" {
+		t.Fatalf("extractUpdateTargetTable() = %q, want %q", got, "pAPI_Acc_GetListLimit_Out")
+	}
+}
+
 func TestParseTableWithAlias_ExtractsHintAndIndexName(t *testing.T) {
 	table := parseTableWithAlias("ptmpobjectaccount oa M_NOLOCK_INDEX(XPKpTmpObjectAccount)")
 
@@ -653,6 +677,101 @@ func TestExtractConditionColumnsForIndexWrong_WithOrIntersection(t *testing.T) {
 	cols = extractConditionColumnsForIndexWrong("select * from tContract c where c.ContractID = 1 or c.ExternalID = 'x'", tables)
 	if len(cols[key]) != 0 {
 		t.Fatalf("expected empty intersection for different OR branches, got %#v", cols[key])
+	}
+}
+
+func TestExtractJoinColumnsForIndexWrong(t *testing.T) {
+	tables := []tableFromClause{
+		{TableName: "tConsAccountLink", Alias: "a"},
+		{TableName: "tConsRuleAccSync", Alias: "r"},
+	}
+
+	sql := `select *
+from tConsAccountLink a
+inner join tConsRuleAccSync r
+        on r.RuleID = a.RuleID
+       and r.PropVal in (1, 2)`
+
+	joinCols := extractJoinColumnsForIndexWrong(sql, tables)
+
+	if _, exists := joinCols["r"]["ruleid"]; !exists {
+		t.Fatalf("expected r.ruleid in join cols, got %#v", joinCols["r"])
+	}
+	if _, exists := joinCols["a"]["ruleid"]; !exists {
+		t.Fatalf("expected a.ruleid in join cols, got %#v", joinCols["a"])
+	}
+	if _, exists := joinCols["r"]["propval"]; exists {
+		t.Fatalf("did not expect r.propval in join cols, got %#v", joinCols["r"])
+	}
+}
+
+func TestExtractJoinColumnsForIndexWrong_WithSubqueryInOn(t *testing.T) {
+	tables := []tableFromClause{
+		{TableName: "tAccrual", Alias: "p"},
+		{TableName: "tContract", Alias: "c"},
+	}
+
+	sql := `select *
+from tAccrual p
+inner join tContract c M_NOLOCK_INDEX(XPKtContract)
+        on c.ContractID = p.ObjectID
+       and c.DateFrom = isNull((select Max(c1.DateFrom)
+                                  from tContract c1 M_NOLOCK_INDEX(XPKtContract)
+                                 where c1.ContractID = p.ObjectID), '19000101')`
+
+	joinCols := extractJoinColumnsForIndexWrong(sql, tables)
+
+	if _, exists := joinCols["c"]["contractid"]; !exists {
+		t.Fatalf("expected c.contractid in join cols, got %#v", joinCols["c"])
+	}
+	if _, exists := joinCols["p"]["objectid"]; !exists {
+		t.Fatalf("expected p.objectid in join cols, got %#v", joinCols["p"])
+	}
+}
+
+func TestExtractTablesFromFromClause_WithSubqueryInOn(t *testing.T) {
+	sql := `select *
+from tAccrual p
+inner join tContract c M_NOLOCK_INDEX(XPKtContract)
+        on c.ContractID = p.ObjectID
+       and c.DateFrom = isNull((select Max(c1.DateFrom)
+                                  from tContract c1 M_NOLOCK_INDEX(XPKtContract)
+                                 where c1.ContractID = p.ObjectID), '19000101')`
+
+	tables := extractTablesFromFromClause(sql)
+	if len(tables) < 2 {
+		t.Fatalf("expected at least 2 tables, got %#v", tables)
+	}
+
+	foundC := false
+	for _, table := range tables {
+		if normalizeIdentifier(table.TableName) == "tcontract" && normalizeIdentifier(table.Alias) == "c" {
+			foundC = true
+			break
+		}
+	}
+	if !foundC {
+		t.Fatalf("expected outer tContract alias c in parsed tables, got %#v", tables)
+	}
+}
+
+func TestShouldKeepChosenIndexForPKJoin(t *testing.T) {
+	joinCols := map[string]struct{}{"ruleid": {}}
+
+	if !shouldKeepChosenIndexForPKJoin("XPKtConsRuleAccSync", []string{"RuleID"}, joinCols) {
+		t.Fatalf("expected to keep XPK index for PK join")
+	}
+
+	if shouldKeepChosenIndexForPKJoin("XIE1tConsRuleAccSync", []string{"RuleID", "PropVal"}, joinCols) {
+		t.Fatalf("did not expect keep for non-XPK index")
+	}
+
+	if shouldKeepChosenIndexForPKJoin("XPKtConsRuleAccSync", []string{"ObjectID"}, joinCols) {
+		t.Fatalf("did not expect keep when XPK does not cover join prefix")
+	}
+
+	if !shouldKeepChosenIndexForPKJoin("XPKtContract", nil, joinCols) {
+		t.Fatalf("expected keep for XPK when join exists and fields metadata is empty")
 	}
 }
 
@@ -761,6 +880,28 @@ func TestAnalyzeStatementForPTableSpid_WithSpidCondition(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Fatalf("expected no findings when SPID condition present, got %d", len(findings))
+	}
+}
+
+func TestAnalyzeStatementForFullScan_HashTableNoFilter_NoFinding(t *testing.T) {
+	// #-таблица без фильтра — сессионная, finding не нужен
+	lines := []string{"select @StateOrder = max(p.StateOrder) from #ProtocolList p M_ISOLAT"}
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+
+	finding := analyzeStatementForFullScan(lines, 1, file, "select")
+	if finding != nil {
+		t.Fatalf("expected no finding for #-table without filter, got: %+v", finding)
+	}
+}
+
+func TestAnalyzeStatementForFullScan_HashTableWithFilter_NoFinding(t *testing.T) {
+	// #-таблица с фильтром — тоже не должна давать finding
+	lines := []string{"select p.ProtocolID from #ProtocolList p where p.StateOrder = @StateOrder M_ISOLAT"}
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+
+	finding := analyzeStatementForFullScan(lines, 1, file, "select")
+	if finding != nil {
+		t.Fatalf("expected no finding for #-table with filter, got: %+v", finding)
 	}
 }
 
@@ -1071,6 +1212,7 @@ func TestAnsiInJoin_Multiline(t *testing.T) {
 		content      string
 		expectFinding bool
 		findingLine   int
+		tableName     string
 	}{
 		{
 			name:         "single line old style",
@@ -1134,6 +1276,48 @@ WHERE 1=1`,
 			expectFinding: true,
 			findingLine:   2,
 		},
+		{
+			name: "INSERT SELECT with INNER JOIN and table hints - should not trigger",
+			content: `    insert pContractInfo M_WITH_ROWLOCK
+           (
+           SPID           ,
+           ObjectID       ,
+           Date
+           )
+    select @@Spid,
+           a.ContractID,
+           Max(a.OnDate)
+      from tConsAccountLink          a M_NOLOCK_INDEX(XIE4tConsAccountLink)
+     inner join tConsRuleAccSync     r M_NOLOCK_INDEX(XPKtConsRuleAccSync)
+             on r.RuleID             = a.RuleID
+            and r.PropVal           in (1, 2)
+     where a.ID = 1
+    group by a.ContractID`,
+			expectFinding: false,
+		},
+		{
+			name: "DELETE FROM with table hints - should detect and set object",
+			content: `delete pTmpObjectAccount
+    from pTmpObjectAccount      oa M_ROWLOCK_INDEX(XPKpTmpObjectAccount),
+         pTmpObject              o M_NOLOCK_INDEX(XPKpTmpObject)
+   where oa.SPID = @@spid`,
+			expectFinding: true,
+			findingLine:   2,
+			tableName:     "pTmpObjectAccount",
+		},
+		{
+			name: "block comment with from file should not affect object",
+			content: `/*
+Code had been moved from file Cons_Calc_Find_Account.sql
+*/
+delete pTmpObjectAccount
+  from pTmpObjectAccount oa,
+       pTmpObject o
+ where oa.ObjectID = o.ObjectID`,
+			expectFinding: true,
+			findingLine:   5,
+			tableName:     "pTmpObjectAccount",
+		},
 	}
 
 	for _, tc := range cases {
@@ -1164,6 +1348,13 @@ WHERE 1=1`,
 				}
 				if findings[0].Line != tc.findingLine {
 					t.Fatalf("finding line = %d, want %d", findings[0].Line, tc.findingLine)
+				}
+				// Проверяем что Object не пустой для старых стилей JOIN
+				if findings[0].Object == "" && tc.name != "subquery with comma inside" {
+					t.Fatalf("expected Object to be set, got empty")
+				}
+				if tc.tableName != "" && findings[0].Object != tc.tableName {
+					t.Fatalf("finding Object = %q, want %q", findings[0].Object, tc.tableName)
 				}
 			} else {
 				if len(findings) > 0 {

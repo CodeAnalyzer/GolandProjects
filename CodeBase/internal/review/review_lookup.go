@@ -54,15 +54,32 @@ func (r *Runner) lookupTableProductID(tableName string) (int64, error) {
 		FROM sql_tables t
 		JOIN files f ON f.id = t.file_id
 		WHERE LOWER(t.table_name) = LOWER($1)
-		  AND t.context = 'create'
+		  AND t.context IN ('create', 'select_into')
 		  AND f.ds_product_id IS NOT NULL
 		ORDER BY t.id DESC
 		LIMIT 1
 	`, strings.TrimSpace(tableName)).Scan(&productID)
-	if err == nil {
+	if err == nil && productID > 0 {
 		return productID, nil
 	}
 	if err != sql.ErrNoRows {
+		return 0, err
+	}
+
+	err = r.db.QueryRow(`
+		SELECT f.ds_product_id
+		FROM sql_column_definitions scd
+		JOIN files f ON f.id = scd.file_id
+		WHERE LOWER(scd.table_name) = LOWER($1)
+		  AND scd.definition_kind IN ('create', 'select_into')
+		  AND f.ds_product_id IS NOT NULL
+		ORDER BY scd.id DESC
+		LIMIT 1
+	`, strings.TrimSpace(tableName)).Scan(&productID)
+	if err == nil && productID > 0 {
+		return productID, nil
+	}
+	if err != nil && err != sql.ErrNoRows {
 		return 0, err
 	}
 
