@@ -130,7 +130,7 @@ func (r *Runner) checkIndexWrong(file *indexedFile) ([]Finding, error) {
 		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasStatementEnded(lower) {
+		if hasStatementEnded(lower, stmtBuffer) {
 			items, err := r.analyzeStatementForIndexWrong(stmtBuffer, stmtStartLine, file)
 			if err != nil {
 				return nil, err
@@ -342,7 +342,7 @@ func (r *Runner) checkUpdateOnlyVar(file *indexedFile) ([]Finding, error) {
 		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasStatementEnded(lower) {
+		if hasStatementEnded(lower, stmtBuffer) {
 			finding := analyzeStatementForUpdateOnlyVar(stmtBuffer, stmtStartLine, file)
 			if finding != nil {
 				findings = append(findings, *finding)
@@ -534,7 +534,7 @@ func (r *Runner) checkPTableSpid(file *indexedFile) ([]Finding, error) {
 		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasStatementEnded(lower) {
+		if hasStatementEnded(lower, stmtBuffer) {
 			items, err := r.analyzeStatementForPTableSpid(stmtBuffer, stmtStartLine, file)
 			if err != nil {
 				return nil, err
@@ -688,7 +688,7 @@ func (r *Runner) checkForceOrder2Tbl(file *indexedFile) ([]Finding, error) {
 		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasStatementEnded(lower) {
+		if hasStatementEnded(lower, stmtBuffer) {
 			finding := analyzeStatementForForceOrder2Tbl(stmtBuffer, stmtStartLine, file)
 			if finding != nil {
 				findings = append(findings, *finding)
@@ -1393,7 +1393,7 @@ func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
 		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasStatementEnded(lower) {
+		if hasStatementEnded(lower, stmtBuffer) {
 			items, err := r.analyzeStatementForIndexExists(stmtBuffer, stmtStartLine, file)
 			if err != nil {
 				return nil, err
@@ -2492,7 +2492,7 @@ func (r *Runner) checkTableFullScan(file *indexedFile) ([]Finding, error) {
 		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasStatementEnded(lower) {
+		if hasStatementEnded(lower, stmtBuffer) {
 			if finding := analyzeStatementForFullScan(stmtBuffer, stmtStartLine, file, stmtType); finding != nil {
 				findings = append(findings, *finding)
 			}
@@ -2502,7 +2502,7 @@ func (r *Runner) checkTableFullScan(file *indexedFile) ([]Finding, error) {
 
 			var newStartIdx int
 			stmtType, newStartIdx = findStatementStart(lower)
-			if newStartIdx >= 0 && !isInComment(line, newStartIdx) && !hasStatementEnded(lower) {
+			if newStartIdx >= 0 && !isInComment(line, newStartIdx) && !hasStatementEnded(lower, stmtBuffer) {
 				depthBefore := 0
 				for j := 0; j < newStartIdx; j++ {
 					switch line[j] {
@@ -2687,7 +2687,7 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
 
-		if hasStatementEnded(lower) {
+		if hasStatementEnded(lower, stmtBuffer) {
 			items := analyzeStatementForTableHintExists(stmtBuffer, stmtStartLine, file, stmtType)
 			findings = append(findings, items...)
 			inStatement = false
@@ -2696,7 +2696,7 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 
 			var newStartIdx int
 			stmtType, newStartIdx = findStatementStartForTableHintExists(lower)
-			if newStartIdx >= 0 && !isInComment(line, newStartIdx) && !hasStatementEnded(lower) {
+			if newStartIdx >= 0 && !isInComment(line, newStartIdx) && !hasStatementEnded(lower, stmtBuffer) {
 				depthBefore := 0
 				for j := 0; j < newStartIdx; j++ {
 					switch line[j] {
@@ -2774,6 +2774,7 @@ func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	// Удаляем макросы #define перед анализом
 	contentStr := removeMacros(string(content))
 	lines := strings.Split(contentStr, "\n")
@@ -2787,11 +2788,6 @@ func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 	for i, line := range lines {
 		lineNum := i + 1
 
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
-			continue
-		}
-
 		// Отслеживаем блочные комментарии /* */
 		if inBlockComment {
 			if idx := strings.Index(line, "*/"); idx >= 0 {
@@ -2800,6 +2796,11 @@ func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 			} else {
 				continue
 			}
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
 		}
 
 		// Проверяем начало блочного комментария
@@ -2846,16 +2847,30 @@ func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 			continue
 		}
 
+		if _, nextStartIdx := findStatementStartHint(lower); nextStartIdx >= 0 && !isInComment(line, nextStartIdx) {
+			depthBefore := 0
+			for j := 0; j < nextStartIdx; j++ {
+				switch line[j] {
+				case '(':
+					depthBefore++
+				case ')':
+					depthBefore--
+				}
+			}
+			// Для tableHintIsRight всегда разрываем при новом DML на нулевом уровне
+			if parenDepth == 0 && depthBefore == 0 {
+				items := analyzeStatementForHintType(stmtBuffer, stmtStartLine, file)
+				findings = append(findings, items...)
+
+				stmtStartLine = lineNum
+				stmtBuffer = []string{line}
+				parenDepth = countParens(line)
+				continue
+			}
+		}
+
 		stmtBuffer = append(stmtBuffer, line)
 		parenDepth += countParens(line)
-
-		if hasStatementEnded(lower) {
-			items := analyzeStatementForHintType(stmtBuffer, stmtStartLine, file)
-			findings = append(findings, items...)
-			inStatement = false
-			stmtBuffer = nil
-			parenDepth = 0
-		}
 	}
 
 	if inStatement && len(stmtBuffer) > 0 {
@@ -2874,73 +2889,140 @@ func analyzeStatementForHintType(lines []string, startLine int, file *indexedFil
 
 	fullText := strings.Join(lines, " ")
 	trimmedText := normalizeHintStatementText(strings.TrimSpace(fullText))
-	lowerFull := strings.ToLower(trimmedText)
 
-	// Определяем тип операции
-	var stmtType string
-	if strings.HasPrefix(lowerFull, "select") {
-		stmtType = "select"
-	} else if strings.HasPrefix(lowerFull, "update") {
-		stmtType = "update"
-	} else if strings.HasPrefix(lowerFull, "delete") {
-		stmtType = "delete"
-	} else {
-		return findings
-	}
+	// Разбиваем текст на отдельные операторы SELECT/UPDATE/DELETE на нулевом уровне
+	statements := splitStatementsForHintType(trimmedText)
 
-	// Извлекаем таблицы из FROM clause
-	tables := extractTablesFromFromClause(fullText)
+	for _, stmt := range statements {
+		lowerStmt := strings.ToLower(stmt)
 
-	// Определяем целевую таблицу
-	targetTable := ""
-	switch stmtType {
-	case "update":
-		targetTable = extractUpdateTargetTable(trimmedText)
-	case "delete":
-		targetTable = extractDeleteTargetTable(trimmedText)
-	}
-
-	// Проверяем все таблицы из FROM
-	for _, table := range tables {
-		// Пропускаем переменные и служебные
-		if shouldSkipTableCheck(table.TableName) {
+		// Определяем тип операции
+		var stmtType string
+		if strings.HasPrefix(lowerStmt, "select") {
+			stmtType = "select"
+		} else if strings.HasPrefix(lowerStmt, "update") {
+			stmtType = "update"
+		} else if strings.HasPrefix(lowerStmt, "delete") {
+			stmtType = "delete"
+		} else {
 			continue
 		}
 
-		// Используем хинт извлеченный при парсинге FROM clause
-		hint := table.Hint
-		if hint == "" {
-			continue // Нет хинта - это проверяется другим правилом tableHintExists
+		// Извлекаем таблицы из FROM clause
+		tables := extractTablesFromFromClause(stmt)
+
+		// Определяем целевую таблицу
+		targetTable := ""
+		switch stmtType {
+		case "update":
+			targetTable = extractUpdateTargetTable(stmt)
+		case "delete":
+			targetTable = extractDeleteTargetTable(stmt)
 		}
 
-		var allowedHints []string
-		if sameTableReference(table.TableName, targetTable) || sameTableReference(table.Alias, targetTable) {
-			// Целевая таблица
-			switch stmtType {
-			case "delete":
-				allowedHints = deleteHints
-			case "update":
-				allowedHints = updateHints
-			default:
+		// Проверяем все таблицы из FROM
+		for _, table := range tables {
+			// Пропускаем переменные и служебные
+			if shouldSkipTableCheck(table.TableName) {
+				continue
+			}
+
+			// Используем хинт извлеченный при парсинге FROM clause
+			hint := table.Hint
+			if hint == "" {
+				continue // Нет хинта - это проверяется другим правилом tableHintExists
+			}
+
+			var allowedHints []string
+			isTarget := sameTableReference(table.TableName, targetTable) || sameTableReference(table.Alias, targetTable)
+			if isTarget {
+				// Целевая таблица
+				switch stmtType {
+				case "delete":
+					allowedHints = deleteHints
+				case "update":
+					allowedHints = updateHints
+				default:
+					allowedHints = readHints
+				}
+			} else {
+				// Вспомогательная таблица
 				allowedHints = readHints
 			}
-		} else {
-			// Вспомогательная таблица
-			allowedHints = readHints
-		}
 
-		if !isHintAllowed(hint, allowedHints) {
-			findings = append(findings, Finding{
-				Rule:             RuleTableHintIsRight,
-				Severity:         SeverityDeployStopper,
-				Message:          fmt.Sprintf("Таблица %s имеет неправильный хинт %s для операции %s", table.TableName, hint, stmtType),
-				File:             file.Path,
-				Line:             startLine,
-				Object:           table.TableName,
-				CurrentProductID: file.DsProductID,
-			})
+			if !isHintAllowed(hint, allowedHints) {
+				findings = append(findings, Finding{
+					Rule:             RuleTableHintIsRight,
+					Severity:         SeverityDeployStopper,
+					Message:          fmt.Sprintf("Таблица %s имеет неправильный хинт %s для операции %s", table.TableName, hint, stmtType),
+					File:             file.Path,
+					Line:             startLine,
+					Object:           table.TableName,
+					CurrentProductID: file.DsProductID,
+				})
+			}
 		}
 	}
 
 	return findings
+}
+
+// splitStatementsForHintType разбивает текст на отдельные операторы SELECT/UPDATE/DELETE на нулевом уровне вложенности
+func splitStatementsForHintType(text string) []string {
+	lower := strings.ToLower(text)
+	statements := make([]string, 0)
+	depth := 0
+	inString := false
+	startIdx := 0
+
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '\'' {
+			if i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+
+		// Если на нулевом уровне и встречаем новое ключевое слово SELECT/UPDATE/DELETE
+		if depth == 0 && i > 0 {
+			if keywordMatchAt(lower, i, "select") || keywordMatchAt(lower, i, "update") || keywordMatchAt(lower, i, "delete") {
+				// Проверяем, что это не часть другого слова
+				if i > 0 && isCharWordBoundary(lower[i-1]) {
+					// Добавляем предыдущий оператор
+					if startIdx < i {
+						stmt := strings.TrimSpace(text[startIdx:i])
+						if stmt != "" {
+							statements = append(statements, stmt)
+						}
+					}
+					startIdx = i
+				}
+			}
+		}
+	}
+
+	// Добавляем последний оператор
+	if startIdx < len(text) {
+		stmt := strings.TrimSpace(text[startIdx:])
+		if stmt != "" {
+			statements = append(statements, stmt)
+		}
+	}
+
+	return statements
 }

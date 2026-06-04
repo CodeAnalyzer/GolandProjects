@@ -317,11 +317,48 @@ func isNewSQLStatement(line string) bool {
 }
 
 // hasStatementEnded проверяет, закончился ли SQL оператор
-func hasStatementEnded(lower string) bool {
+// stmtBuffer передаётся для контекста: если новый DML начинается, разрываем только если предыдущий уже "полный"
+func hasStatementEnded(lower string, stmtBuffer []string) bool {
 	// Используем regex с границами слова, чтобы избежать ложных срабатываний на подстроках
 	// Например, "dependantinfo" содержит "end", но это не ключевое слово
 	re := regexp.MustCompile(`(?i)([;]|\b(?:go|begin|end|if|while|declare|exec|execute|return)\b)`)
-	return re.MatchString(lower)
+	if re.MatchString(lower) {
+		return true
+	}
+
+	// Если начинается новый DML оператор (select/update/delete/insert), проверяем нужно ли разрывать предыдущий
+	dmlRe := regexp.MustCompile(`(?i)^\s*(?:select|update|delete|insert)\b`)
+	if !dmlRe.MatchString(lower) {
+		return false
+	}
+
+	// Если stmtBuffer пустой - нечего разрывать
+	if len(stmtBuffer) == 0 {
+		return false
+	}
+
+	// Собираем текущий буфер в одну строку для анализа
+	currentStmt := strings.Join(stmtBuffer, " ")
+	currentLower := strings.ToLower(currentStmt)
+
+	// INSERT может продолжаться SELECT - не разрываем
+	if strings.Contains(currentLower, "insert") && !strings.Contains(currentLower, "from") {
+		return false
+	}
+
+	// SELECT/UPDATE/DELETE с FROM/SET считаются полными - разрываем
+	if strings.Contains(currentLower, "select") && strings.Contains(currentLower, "from") {
+		return true
+	}
+	if strings.Contains(currentLower, "update") && strings.Contains(currentLower, "set") {
+		return true
+	}
+	if strings.Contains(currentLower, "delete") && strings.Contains(currentLower, "from") {
+		return true
+	}
+
+	// В остальных случаях разрываем при новом DML
+	return true
 }
 
 // findConditionStart находит начало условия (WHERE/ON/HAVING)

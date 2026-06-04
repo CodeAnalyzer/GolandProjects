@@ -65,69 +65,80 @@ func areEquivalentTypes(left, right string) bool {
 func typeGroup(dataType string) string {
 	v := normalizeDataType(dataType)
 	switch {
-	// INT types
+	// INT types - все int/smallint/tinyint/bigint типы эквивалентны
 	case strings.Contains(v, "int") ||
-		strings.HasPrefix(v, "dsbit") ||
 		strings.HasPrefix(v, "dsint_key") ||
+		strings.HasPrefix(v, "dsint_key_one") ||
 		strings.HasPrefix(v, "dssmallint") ||
 		strings.HasPrefix(v, "dstinyint") ||
-		strings.HasPrefix(v, "dsbigint"):
+		strings.HasPrefix(v, "dsbigint") ||
+		strings.HasPrefix(v, "dsbit0") ||
+		strings.HasPrefix(v, "dsbit1"):
 		return "int"
-	// NUMBER/FLOAT types
-	case strings.Contains(v, "decimal") ||
-		strings.Contains(v, "numeric") ||
-		strings.Contains(v, "money") ||
-		strings.Contains(v, "float") ||
+	// FLOAT types - все float/real/money/numeric/decimal типы эквивалентны
+	case strings.Contains(v, "float") ||
 		strings.Contains(v, "real") ||
-		strings.HasPrefix(v, "dsbigmoney") ||
+		strings.Contains(v, "money") ||
+		strings.Contains(v, "decimal") ||
+		strings.Contains(v, "numeric") ||
 		strings.HasPrefix(v, "dsfloat") ||
-		strings.HasPrefix(v, "dsmoney") ||
+		strings.HasPrefix(v, "dsbigmoney") ||
 		strings.HasPrefix(v, "dsnominal") ||
 		strings.HasPrefix(v, "dspercent") ||
+		strings.HasPrefix(v, "dsmoney") ||
 		strings.HasPrefix(v, "dsspid") ||
 		strings.HasPrefix(v, "dsidentifier") ||
-		strings.HasPrefix(v, "ftidentifier_null") ||
 		strings.HasPrefix(v, "dsidentifier19"):
-		return "number"
-	// STRING types
+		return "float"
+	// STRING types - все char/varchar типы эквивалентны
 	case strings.Contains(v, "char") ||
-		strings.Contains(v, "text") ||
 		strings.Contains(v, "varchar") ||
 		strings.HasPrefix(v, "dsbriefname") ||
 		strings.HasPrefix(v, "dsbriefvar") ||
 		strings.HasPrefix(v, "dscomment") ||
+		strings.HasPrefix(v, "dscomment300") ||
+		strings.HasPrefix(v, "dscommentc") ||
 		strings.HasPrefix(v, "dsday_str") ||
 		strings.HasPrefix(v, "dsdephash") ||
 		strings.HasPrefix(v, "dsfieldname") ||
 		strings.HasPrefix(v, "dsfieldnamevar") ||
+		strings.HasPrefix(v, "dsformclass") ||
+		strings.HasPrefix(v, "dsfullname") ||
 		strings.HasPrefix(v, "dshash") ||
 		strings.HasPrefix(v, "dsidentname") ||
 		strings.HasPrefix(v, "dsindexhash") ||
 		strings.HasPrefix(v, "dslabel") ||
 		strings.HasPrefix(v, "dsmemo") ||
+		strings.HasPrefix(v, "dsmemo1000") ||
 		strings.HasPrefix(v, "dsnmemo") ||
 		strings.HasPrefix(v, "dsnumber") ||
+		strings.HasPrefix(v, "dsnumber12") ||
+		strings.HasPrefix(v, "dsnumber20") ||
+		strings.HasPrefix(v, "dsnumber3") ||
+		strings.HasPrefix(v, "dsnumber5") ||
 		strings.HasPrefix(v, "dssymbol") ||
 		strings.HasPrefix(v, "dstext") ||
 		strings.HasPrefix(v, "dsusername") ||
 		strings.HasPrefix(v, "dsvarfullname") ||
+		strings.HasPrefix(v, "dsvarfullname160") ||
+		strings.HasPrefix(v, "dsvarfullname40") ||
 		strings.HasPrefix(v, "dsvarindex") ||
 		strings.HasPrefix(v, "dsvarchar_max") ||
 		strings.HasPrefix(v, "dsacc_swift") ||
 		strings.HasPrefix(v, "dsaccnumber") ||
+		strings.HasPrefix(v, "dsaccnumber35") ||
 		strings.HasPrefix(v, "dsaccnumvar") ||
 		strings.HasPrefix(v, "dsbic"):
 		return "string"
-	// DATETIME types
-	case strings.Contains(v, "date") ||
+	// DATETIME types - все datetime/smalldatetime/date типы эквивалентны
+	case strings.Contains(v, "datetime") ||
 		strings.Contains(v, "time") ||
+		strings.Contains(v, "date") ||
 		strings.HasPrefix(v, "dsdatetime") ||
 		strings.HasPrefix(v, "dsoperday") ||
+		strings.HasPrefix(v, "smalldatetime") ||
 		strings.HasPrefix(v, "day"):
 		return "datetime"
-	// BOOL types
-	case strings.Contains(v, "bit") || strings.Contains(v, "bool"):
-		return "bool"
 	// OBJECT/BINARY types
 	case strings.Contains(v, "image") ||
 		strings.Contains(v, "binary") ||

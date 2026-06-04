@@ -642,6 +642,96 @@ func TestAnalyzeStatementForHintType_UpdateTargetFromSameTable_AllowsUpdlock(t *
 	}
 }
 
+func TestAnalyzeStatementForHintType_UpdateWrongTargetHint_AfterSelectAssignment(t *testing.T) {
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+
+	lines := []string{
+		"select @RetVal = 0",
+		"update pTmpObjectAccount",
+		"   set ErrorCode = 0",
+		"  from pTmpObjectAccount oa M_NOLOCK_INDEX(XPKpTmpObjectAccount)",
+		" where oa.SPID = @@spid",
+	}
+
+	findings := analyzeStatementForHintType(lines, 57, file)
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1; findings=%#v", len(findings), findings)
+	}
+
+	f := findings[0]
+	if f.Rule != RuleTableHintIsRight {
+		t.Fatalf("finding.Rule = %q, want %q", f.Rule, RuleTableHintIsRight)
+	}
+	if f.Object != "ptmpobjectaccount" {
+		t.Fatalf("finding.Object = %q, want %q", f.Object, "ptmpobjectaccount")
+	}
+	if !strings.Contains(strings.ToLower(f.Message), "операции update") {
+		t.Fatalf("finding.Message = %q, want to contain %q", f.Message, "операции update")
+	}
+}
+
+func TestAnalyzeStatementForHintType_DeleteAndUpdateWithoutGO(t *testing.T) {
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+
+	lines := []string{
+		"delete pTmpObjectAccount",
+		"  from pTmpObject                o M_NOLOCK_INDEX(XPKpTmpObject)",
+		" inner join pTmpObjectAccount   oa M_NOLOCK_INDEX(XPKpTmpObjectAccount)",
+		"         on oa.SPID              = @@spid",
+		"        and oa.ObjectID          = o.ObjectID",
+		"        and oa.TemplateNumber    = @TemplateNumber",
+		"        and oa.ErrorCode         = 25007",
+		" inner join pAPI_GetInstrumentID i M_NOLOCK_INDEX(XPKpAPI_GetInstrumentID)",
+		"         on i.InstrumentID       = o.InstrumentID",
+		"        and i.SPID               = @@spid",
+		" where o.SPID = @@spid",
+		" M_FORCEORDER",
+		"update pTmpObjectAccount",
+		"   set ErrorCode = 0",
+		"  from pTmpObject                o M_NOLOCK_INDEX(XPKpTmpObject)",
+		" inner join pTmpObjectAccount   oa M_NOLOCK_INDEX(XPKpTmpObjectAccount)",
+		"         on oa.SPID              = @@spid",
+		"        and oa.ObjectID          = o.ObjectID",
+		"        and oa.TemplateNumber    = @TemplateNumber",
+		"        and oa.ErrorCode         = 25007",
+		" inner join pAPI_GetInstrumentID i M_NOLOCK_INDEX(XPKpAPI_GetInstrumentID)",
+		"         on i.InstrumentID       = o.InstrumentID",
+		"        and i.SPID               = @@spid",
+		" where o.SPID = @@spid",
+		" M_FORCEORDER",
+	}
+
+	findings := analyzeStatementForHintType(lines, 1, file)
+	// Ожидаем 2 findings: один для DELETE, один для UPDATE
+	if len(findings) != 2 {
+		t.Fatalf("findings count = %d, want 2; findings=%#v", len(findings), findings)
+	}
+
+	// Проверяем первый finding (DELETE)
+	f1 := findings[0]
+	if f1.Rule != RuleTableHintIsRight {
+		t.Fatalf("finding[0].Rule = %q, want %q", f1.Rule, RuleTableHintIsRight)
+	}
+	if f1.Object != "ptmpobjectaccount" {
+		t.Fatalf("finding[0].Object = %q, want %q", f1.Object, "ptmpobjectaccount")
+	}
+	if !strings.Contains(strings.ToLower(f1.Message), "операции delete") {
+		t.Fatalf("finding[0].Message = %q, want to contain %q", f1.Message, "операции delete")
+	}
+
+	// Проверяем второй finding (UPDATE)
+	f2 := findings[1]
+	if f2.Rule != RuleTableHintIsRight {
+		t.Fatalf("finding[1].Rule = %q, want %q", f2.Rule, RuleTableHintIsRight)
+	}
+	if f2.Object != "ptmpobjectaccount" {
+		t.Fatalf("finding[1].Object = %q, want %q", f2.Object, "ptmpobjectaccount")
+	}
+	if !strings.Contains(strings.ToLower(f2.Message), "операции update") {
+		t.Fatalf("finding[1].Message = %q, want to contain %q", f2.Message, "операции update")
+	}
+}
+
 func TestExtractUpdateTargetTable_WithExtraSpaces(t *testing.T) {
 	query := "update   pAPI_Acc_GetListLimit_Out   set Limit = @Rest"
 	if got := extractUpdateTargetTable(query); got != "pAPI_Acc_GetListLimit_Out" {
