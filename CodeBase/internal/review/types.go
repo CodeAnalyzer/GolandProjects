@@ -62,3 +62,61 @@ type Options struct {
 	Rules       []RuleID
 	MinSeverity int
 }
+
+type indexedFile struct {
+	ID          int64
+	Path        string
+	RelPath     string
+	DsProductID int64
+}
+
+type tableIndexCandidate struct {
+	Name   string
+	Fields []string
+}
+
+type tableFromClause struct {
+	TableName string
+	Alias     string
+	Hint      string // Извлеченный хинт индекса
+	IndexName string // Имя индекса из M_*_INDEX(...)
+}
+
+type whereAnalysisResult struct {
+	Aliases                  []string
+	HasUnqualifiedConditions bool
+}
+
+type columnRef struct {
+	Table  string
+	Column string
+}
+
+type tableRef struct {
+	Name string
+	Line int
+}
+
+type procedureRef struct {
+	Name string
+	Line int
+}
+
+type updateAssignment struct {
+	Target     string
+	Expression string
+}
+
+type updateSetStatement struct {
+	TargetTable string
+	TargetAlias string
+	Assignments []updateAssignment
+	FromClause  string
+}
+
+type insertSelectStatement struct {
+	TargetTable       string
+	TargetColumns     []string
+	SelectExpressions []string
+	FromClause        string
+}

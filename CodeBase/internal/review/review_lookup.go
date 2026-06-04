@@ -4,22 +4,11 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/lib/pq"
 )
-
-type indexedFile struct {
-	ID          int64
-	Path        string
-	RelPath     string
-	DsProductID int64
-}
-
-type tableIndexCandidate struct {
-	Name   string
-	Fields []string
-}
 
 func (r *Runner) getIndexedFile(path string) (*indexedFile, error) {
 	variants := []string{path, filepath.ToSlash(path), strings.ReplaceAll(path, "/", `\`)}
@@ -314,4 +303,680 @@ func (r *Runner) findAPITableNames(names []string) (map[string]struct{}, error) 
 		return nil, err
 	}
 	return result, nil
+}
+
+// removeComments удаляет SQL комментарии (-- ... и /* ... */)
+func removeComments(text string) string {
+	// Удаляем многострочные комментарии /* ... */
+	blockCommentRe := regexp.MustCompile(`(?s)/\*.*?\*/`)
+	text = blockCommentRe.ReplaceAllString(text, "")
+
+	// Удаляем однострочные комментарии -- ...
+	lineCommentRe := regexp.MustCompile(`(?m)--.*$`)
+	text = lineCommentRe.ReplaceAllString(text, "")
+
+	return text
+}
+
+func isWordChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+func keywordMatchAt(lower string, pos int, keyword string) bool {
+	if pos < 0 || pos+len(keyword) > len(lower) {
+		return false
+	}
+	if lower[pos:pos+len(keyword)] != keyword {
+		return false
+	}
+	if pos > 0 && isWordChar(lower[pos-1]) {
+		return false
+	}
+	after := pos + len(keyword)
+	if after < len(lower) && isWordChar(lower[after]) {
+		return false
+	}
+	return true
+}
+
+// splitByCommasRespectingParens разбивает строку по запятым, но только те что вне скобок
+// Запятые внутри функций (isnull(arg1, arg2)) не используются как разделители
+func splitByCommasRespectingParens(sql string) []string {
+	var parts []string
+	var current strings.Builder
+	depth := 0
+
+	for _, ch := range sql {
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				// Запятая на нулевом уровне - разделитель
+				parts = append(parts, current.String())
+				current.Reset()
+				continue
+			}
+		}
+		current.WriteRune(ch)
+	}
+
+	// Добавляем последнюю часть
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+
+	return parts
+}
+
+func findTopLevelFromClauseBounds(text string) (int, int, bool) {
+	lower := strings.ToLower(text)
+	fromIdx := -1
+	depth := 0
+	inString := false
+
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '\'' {
+			if inString && i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+
+		if depth == 0 && keywordMatchAt(lower, i, "from") {
+			fromIdx = i
+			break
+		}
+	}
+
+	if fromIdx < 0 {
+		return 0, 0, false
+	}
+
+	// Ищем конец FROM clause
+	endIdx := len(lower)
+	for i := fromIdx + 4; i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '\'' {
+			if i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+
+		if depth == 0 {
+			if keywordMatchAt(lower, i, "where") ||
+				keywordMatchAt(lower, i, "group by") ||
+				keywordMatchAt(lower, i, "order by") ||
+				keywordMatchAt(lower, i, "having") ||
+				keywordMatchAt(lower, i, "union") ||
+				keywordMatchAt(lower, i, "except") ||
+				keywordMatchAt(lower, i, "intersect") {
+				endIdx = i
+				break
+			}
+		}
+	}
+
+	return fromIdx, endIdx, true
+}
+
+func parseTablesInFromClause(fromClause string) []tableFromClause {
+	result := make([]tableFromClause, 0)
+	lower := strings.ToLower(fromClause)
+
+	// Убираем слово FROM
+	fromIdx := strings.Index(lower, "from")
+	if fromIdx >= 0 {
+		fromClause = fromClause[fromIdx+4:]
+		lower = strings.ToLower(fromClause)
+	}
+
+	// Разбиваем по запятым (comma-join) и JOIN
+	// Сначала заменяем JOIN-ы на разделители
+	normalized := strings.ReplaceAll(lower, " inner join ", ",")
+	normalized = strings.ReplaceAll(normalized, " left join ", ",")
+	normalized = strings.ReplaceAll(normalized, " right join ", ",")
+	normalized = strings.ReplaceAll(normalized, " full join ", ",")
+	normalized = strings.ReplaceAll(normalized, " cross join ", ",")
+	normalized = strings.ReplaceAll(normalized, " join ", ",")
+
+	// Разбиваем по запятым с учетом вложенных скобок
+	// Это предотвращает ложное разделение по запятым внутри isnull(arg1, arg2)
+	parts := splitByCommasRespectingParens(normalized)
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		table := parseTableWithAlias(part)
+		if table.TableName != "" {
+			result = append(result, table)
+		}
+	}
+
+	return result
+}
+
+func parseTableWithAlias(part string) tableFromClause {
+	result := tableFromClause{}
+
+	// Извлекаем подсказку индекса типа M_ROWLOCK_INDEX(XPK...)
+	idxHintExtractRe := regexp.MustCompile(`(?i)\s+(M_\w+_INDEX)\s*\(\s*([^\s,)]+)`)
+	matches := idxHintExtractRe.FindStringSubmatch(part)
+	if len(matches) > 1 {
+		result.Hint = matches[1]
+	}
+	if len(matches) > 2 {
+		result.IndexName = strings.Trim(matches[2], "[]\"'")
+	}
+
+	// Убираем подсказки индексов типа M_ROWLOCK_INDEX(...)
+	idxHintRemoveRe := regexp.MustCompile(`(?i)\s+M_\w+_INDEX\s*\([^)]+\)`)
+	part = idxHintRemoveRe.ReplaceAllString(part, "")
+
+	// Убираем подсказки NOLOCK
+	nolockRe := regexp.MustCompile(`(?i)\s+NOLOCK`)
+	part = nolockRe.ReplaceAllString(part, "")
+
+	// Убираем подсказки WITH (...)
+	withHintRe := regexp.MustCompile(`(?i)\s+WITH\s*\([^)]+\)`)
+	part = withHintRe.ReplaceAllString(part, "")
+
+	part = strings.TrimSpace(part)
+	if part == "" {
+		return result
+	}
+
+	// Разбиваем на токены: table alias или table AS alias
+	tokens := strings.Fields(part)
+	if len(tokens) == 0 {
+		return result
+	}
+
+	// Очищаем имя таблицы от скобок, которые могли попасть из-за неправильного разделения
+	result.TableName = strings.Trim(tokens[0], "()")
+
+	// Ищем алиас (после AS или просто следующий токен)
+	for i := 1; i < len(tokens); i++ {
+		token := strings.ToLower(tokens[i])
+		if token == "as" && i+1 < len(tokens) {
+			result.Alias = tokens[i+1]
+			break
+		}
+		if token != "" && !strings.HasPrefix(token, "(") {
+			// Проверяем, что это не подсказка индекса
+			if !strings.Contains(token, "(") {
+				result.Alias = tokens[i]
+				break
+			}
+		}
+	}
+
+	return result
+}
+
+func extractTablesFromFromClause(fullText string) []tableFromClause {
+	result := make([]tableFromClause, 0)
+
+	// Удаляем комментарии перед парсингом
+	fullText = removeComments(fullText)
+	fromStart, fromEnd, found := findTopLevelFromClauseBounds(fullText)
+	if !found {
+		return result
+	}
+
+	fromClause := fullText[fromStart:fromEnd]
+	return parseTablesInFromClause(fromClause)
+}
+
+func extractColumnRefsFromWhere(lower string) whereAnalysisResult {
+	result := whereAnalysisResult{
+		Aliases:                  []string{},
+		HasUnqualifiedConditions: false,
+	}
+
+	// Находим WHERE clause
+	whereIdx := strings.Index(lower, " where ")
+	if whereIdx == -1 {
+		return result
+	}
+
+	wherePart := lower[whereIdx+7:]
+
+	// Обрезаем до следующего ключевого слова
+	endMarkers := []string{" order by ", " group by ", " having ", " union ", " except ", " intersect "}
+	endIdx := len(wherePart)
+	for _, marker := range endMarkers {
+		if idx := strings.Index(wherePart, marker); idx > 0 && idx < endIdx {
+			endIdx = idx
+		}
+	}
+	wherePart = wherePart[:endIdx]
+
+	// Извлекаем alias.column ссылки
+	reQualified := regexp.MustCompile(`(?i)(\w+)\.(\w+)`)
+	matches := reQualified.FindAllStringSubmatch(wherePart, -1)
+	for _, m := range matches {
+		if len(m) >= 2 {
+			result.Aliases = append(result.Aliases, strings.ToLower(m[1]))
+		}
+	}
+
+	// Проверяем наличие неквалифицированных условий (column = value без alias)
+	// Удаляем все квалифицированные ссылки и проверяем оставшиеся условия
+	cleaned := reQualified.ReplaceAllString(wherePart, "")
+	reCondition := regexp.MustCompile(`(?i)\b(\w+)\s*(=|<>|!=|<|>|<=|>=|like|in|between)`)
+	if reCondition.MatchString(cleaned) {
+		result.HasUnqualifiedConditions = true
+	}
+
+	return result
+}
+
+func extractColumnRefsFromOn(lower string) []string {
+	result := make([]string, 0)
+
+	// Находим все ON условия
+	onRe := regexp.MustCompile(`(?i)\s+on\s+`)
+	parts := onRe.Split(lower, -1)
+
+	for _, part := range parts[1:] { // пропускаем первую часть (до первого ON)
+		// Обрезаем до JOIN или другого ключевого слова
+		endMarkers := []string{" join ", " where ", " order by ", " group by "}
+		endIdx := len(part)
+		for _, marker := range endMarkers {
+			if idx := strings.Index(part, marker); idx > 0 && idx < endIdx {
+				endIdx = idx
+			}
+		}
+		onPart := part[:endIdx]
+
+		// Извлекаем alias.column ссылки
+		re := regexp.MustCompile(`(?i)(\w+)\.(\w+)`)
+		matches := re.FindAllStringSubmatch(onPart, -1)
+		for _, m := range matches {
+			if len(m) >= 2 {
+				result = append(result, strings.ToLower(m[1]))
+			}
+		}
+	}
+
+	return result
+}
+
+func extractColumnRefsFromExpression(expression string) []columnRef {
+	re := regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b`)
+	matches := re.FindAllStringSubmatch(expression, -1)
+	result := make([]columnRef, 0, len(matches))
+	seen := make(map[string]struct{})
+	for _, m := range matches {
+		if len(m) < 3 {
+			continue
+		}
+		table := strings.TrimSpace(m[1])
+		column := strings.TrimSpace(m[2])
+		key := strings.ToLower(table + "." + column)
+		if table == "" || column == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, columnRef{Table: table, Column: column})
+	}
+	return result
+}
+
+func findKeywordPosition(text, keyword string) int {
+	lower := strings.ToLower(text)
+	keyword = strings.ToLower(keyword)
+	for i := 0; i <= len(lower)-len(keyword); i++ {
+		if lower[i:i+len(keyword)] == keyword {
+			// Проверяем границы слова
+			if i > 0 && isWordChar(lower[i-1]) {
+				continue
+			}
+			if i+len(keyword) < len(lower) && isWordChar(lower[i+len(keyword)]) {
+				continue
+			}
+			return i
+		}
+	}
+	return -1
+}
+
+func extractFirstTableFromFromClause(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(trimmed)
+
+	// Пропускаем открывающую скобку подзапроса
+	if strings.HasPrefix(trimmed, "(") {
+		return ""
+	}
+
+	// Ищем конец имени таблицы (пробел, запятая, JOIN, WHERE, etc.)
+	endMarkers := []string{" ", "\t", ",", "\n", "\r", "inner", "left", "right", "full", "cross", "join", "where", "group", "having", "order", "union", "except", "intersect", ";"}
+	endIdx := len(trimmed)
+	for _, marker := range endMarkers {
+		if idx := strings.Index(lower, marker); idx >= 0 && idx < endIdx {
+			endIdx = idx
+		}
+	}
+
+	if endIdx > 0 {
+		table := strings.TrimSpace(trimmed[:endIdx])
+		// Убираем возможные хинты вида "table M_INDEX(...)" или "table WITH (...)"
+		if spaceIdx := strings.Index(table, " "); spaceIdx > 0 {
+			table = table[:spaceIdx]
+		}
+		return table
+	}
+
+	return trimmed
+}
+
+func extractTableNameFromStatement(fullText, stmtType string) string {
+	switch stmtType {
+	case "select":
+		return extractTableAfterFrom(fullText)
+	case "delete":
+		return extractTableAfterDelete(fullText)
+	case "update":
+		return extractTableAfterUpdate(fullText)
+	case "merge":
+		return extractTableAfterMerge(fullText)
+	}
+
+	return ""
+}
+
+func extractTableAfterFrom(fullText string) string {
+	lower := strings.ToLower(fullText)
+	idx := strings.Index(lower, " from ")
+	if idx == -1 {
+		return ""
+	}
+	return extractNextIdentifier(fullText, idx+6)
+}
+
+func extractTableAfterDelete(fullText string) string {
+	lower := strings.ToLower(fullText)
+	idx := strings.Index(lower, "delete")
+	if idx == -1 {
+		return ""
+	}
+	pos := idx + 6
+
+	for pos < len(fullText) && (fullText[pos] == ' ' || fullText[pos] == '\t') {
+		pos++
+	}
+
+	if pos+4 <= len(lower) && lower[pos:pos+4] == "from" {
+		pos += 4
+		for pos < len(fullText) && (fullText[pos] == ' ' || fullText[pos] == '\t') {
+			pos++
+		}
+	}
+
+	return extractNextIdentifier(fullText, pos)
+}
+
+func extractTableAfterUpdate(fullText string) string {
+	lower := strings.ToLower(fullText)
+	idx := strings.Index(lower, "update")
+	if idx == -1 {
+		return ""
+	}
+	pos := idx + 6
+
+	for pos < len(fullText) && (fullText[pos] == ' ' || fullText[pos] == '\t') {
+		pos++
+	}
+
+	return extractNextIdentifier(fullText, pos)
+}
+
+func extractTableAfterMerge(fullText string) string {
+	lower := strings.ToLower(fullText)
+	idx := strings.Index(lower, "merge")
+	if idx == -1 {
+		return ""
+	}
+	pos := idx + 5
+
+	for pos < len(fullText) && (fullText[pos] == ' ' || fullText[pos] == '\t') {
+		pos++
+	}
+
+	if pos+4 <= len(lower) && lower[pos:pos+4] == "into" {
+		pos += 4
+		for pos < len(fullText) && (fullText[pos] == ' ' || fullText[pos] == '\t') {
+			pos++
+		}
+	}
+
+	return extractNextIdentifier(fullText, pos)
+}
+
+func extractNextIdentifier(fullText string, startPos int) string {
+	if startPos >= len(fullText) {
+		return ""
+	}
+
+	for startPos < len(fullText) && (fullText[startPos] == ' ' || fullText[startPos] == '\t' || fullText[startPos] == '\n' || fullText[startPos] == '\r') {
+		startPos++
+	}
+
+	if startPos >= len(fullText) {
+		return ""
+	}
+
+	endPos := startPos
+	for endPos < len(fullText) {
+		ch := fullText[endPos]
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '(' || ch == ')' || ch == ';' || ch == ',' {
+			break
+		}
+		endPos++
+	}
+
+	if startPos < endPos {
+		return strings.TrimSpace(fullText[startPos:endPos])
+	}
+
+	return ""
+}
+
+func extractDeleteTargetTable(fullText string) string {
+	lower := strings.ToLower(fullText)
+
+	// DELETE FROM table ...
+	if strings.HasPrefix(lower, "delete from") {
+		lower = strings.TrimPrefix(lower, "delete from")
+		lower = strings.TrimLeft(lower, " \t")
+		endIdx := strings.Index(lower, " ")
+		if endIdx < 0 {
+			endIdx = len(lower)
+		}
+		if endIdx > 0 {
+			startPos := len("delete from")
+			return strings.TrimSpace(fullText[startPos : startPos+endIdx])
+		}
+		return ""
+	}
+
+	// DELETE table FROM table, ...
+	if strings.HasPrefix(lower, "delete ") {
+		lower = strings.TrimPrefix(lower, "delete ")
+		lower = strings.TrimLeft(lower, " \t")
+		endIdx := strings.Index(lower, " ")
+		fromIdx := strings.Index(lower, "from")
+		if fromIdx >= 0 && (endIdx == -1 || fromIdx < endIdx) {
+			endIdx = fromIdx
+		}
+		if endIdx > 0 {
+			startPos := len("delete ")
+			return strings.TrimSpace(fullText[startPos : startPos+endIdx])
+		}
+	}
+
+	return ""
+}
+
+func extractUpdateTargetTable(fullText string) string {
+	fullText = strings.TrimSpace(fullText)
+	lower := strings.ToLower(fullText)
+	if !strings.HasPrefix(lower, "update") {
+		return ""
+	}
+
+	remainder := strings.TrimSpace(fullText[len("update"):])
+	if remainder == "" {
+		return ""
+	}
+
+	parts := strings.Fields(remainder)
+	if len(parts) == 0 {
+		return ""
+	}
+
+	if strings.EqualFold(parts[0], "top") {
+		if len(parts) < 2 {
+			return ""
+		}
+		i := 1
+		if strings.HasPrefix(parts[i], "(") {
+			for i < len(parts) && !strings.Contains(parts[i], ")") {
+				i++
+			}
+			if i+1 < len(parts) {
+				return strings.TrimSpace(parts[i+1])
+			}
+			return ""
+		}
+		if len(parts) >= 3 {
+			return strings.TrimSpace(parts[2])
+		}
+		return ""
+	}
+
+	return strings.TrimSpace(parts[0])
+}
+
+func parseInsertTableName(line string) string {
+	lower := strings.ToLower(line)
+
+	// Находим INSERT
+	insertIdx := strings.Index(lower, "insert")
+	if insertIdx == -1 {
+		return ""
+	}
+
+	// Пропускаем INSERT
+	pos := insertIdx + 6
+
+	// Пропускаем пробелы
+	for pos < len(line) && (line[pos] == ' ' || line[pos] == '\t') {
+		pos++
+	}
+
+	// Пропускаем INTO если есть
+	if pos+4 <= len(lower) && lower[pos:pos+4] == "into" {
+		pos += 4
+		// Пропускаем пробелы
+		for pos < len(line) && (line[pos] == ' ' || line[pos] == '\t') {
+			pos++
+		}
+	}
+
+	// Извлекаем имя таблицы
+	if pos >= len(line) {
+		return ""
+	}
+
+	start := pos
+	for pos < len(line) && (line[pos] != ' ' && line[pos] != '\t' && line[pos] != '(' && line[pos] != ';') {
+		pos++
+	}
+
+	if start < pos {
+		return strings.TrimSpace(line[start:pos])
+	}
+
+	return ""
+}
+
+func findStatementStart(lower string) (string, int) {
+	types := []string{"select", "delete", "update", "merge"}
+	for _, stmtType := range types {
+		idx := findKeywordPosition(lower, stmtType)
+		if idx >= 0 {
+			return stmtType, idx
+		}
+	}
+	return "", -1
+}
+
+func findStatementStartForTableHintExists(lower string) (string, int) {
+	types := []string{"select", "delete", "update", "merge", "insert"}
+	bestIdx := -1
+	bestType := ""
+	for _, stmtType := range types {
+		idx := findKeywordPosition(lower, stmtType)
+		if idx >= 0 && (bestIdx == -1 || idx < bestIdx) {
+			bestIdx = idx
+			bestType = stmtType
+		}
+	}
+
+	return bestType, bestIdx
+}
+
+func findStatementStartHint(lower string) (string, int) {
+	keywords := []string{"select", "update", "delete"}
+	for _, kw := range keywords {
+		if idx := findKeywordPosition(lower, kw); idx >= 0 {
+			return kw, idx
+		}
+	}
+	return "", -1
 }

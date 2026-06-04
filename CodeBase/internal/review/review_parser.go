@@ -5,25 +5,6 @@ import (
 	"strings"
 )
 
-type updateAssignment struct {
-	Target     string
-	Expression string
-}
-
-type updateSetStatement struct {
-	TargetTable string
-	TargetAlias string
-	Assignments []updateAssignment
-	FromClause  string
-}
-
-type insertSelectStatement struct {
-	TargetTable       string
-	TargetColumns     []string
-	SelectExpressions []string
-	FromClause        string
-}
-
 func parseUpdateSetStatement(queryText string) (updateSetStatement, bool) {
 	text := strings.TrimSpace(queryText)
 	if text == "" {
@@ -222,4 +203,257 @@ func normalizeAssignmentTargetColumn(target string, stmt updateSetStatement) str
 		return ""
 	}
 	return clean
+}
+
+// removeMacros удаляет определения макросов #define и их тело
+// Удаляет строку с #define, все продолжения (заканчивающиеся на \) и финальную строку
+func removeMacros(content string) string {
+	// Нормализуем окончания строк для Windows \r\n
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+
+	lines := strings.Split(content, "\n")
+	var result []string
+
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+
+		// Начало макроса
+		if strings.HasPrefix(trimmed, "#define") {
+			// Пропускаем строки продолжения (оканчивающиеся на \)
+			for i < len(lines)-1 && strings.HasSuffix(lines[i], "\\") {
+				i++
+			}
+			// Пропускаем финальную строку (не оканчивается на \)
+			continue
+		}
+
+		result = append(result, line)
+	}
+
+	return strings.Join(result, "\n")
+}
+
+// maskBlockCommentsKeepLines маскирует блочные комментарии /* */ с сохранением строк
+func maskBlockCommentsKeepLines(text string) string {
+	if text == "" {
+		return text
+	}
+
+	runes := []rune(text)
+	masked := make([]rune, len(runes))
+	inBlock := false
+
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+
+		if !inBlock && i+1 < len(runes) && runes[i] == '/' && runes[i+1] == '*' {
+			inBlock = true
+			masked[i] = ' '
+			masked[i+1] = ' '
+			i++
+			continue
+		}
+
+		if inBlock {
+			if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '/' {
+				inBlock = false
+				masked[i] = ' '
+				masked[i+1] = ' '
+				i++
+				continue
+			}
+			if ch == '\n' || ch == '\r' {
+				masked[i] = ch
+			} else {
+				masked[i] = ' '
+			}
+			continue
+		}
+
+		masked[i] = ch
+	}
+
+	return string(masked)
+}
+
+// isCharWordBoundary проверяет, является ли символ границей слова
+func isCharWordBoundary(ch byte) bool {
+	return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == ';' || ch == '(' || ch == ')' || ch == ',' || ch == '\x00'
+}
+
+// hasFromClauseEnded проверяет, закончился ли FROM clause
+func hasFromClauseEnded(lowerLine string) bool {
+	keywords := []string{"where", "group by", "having", "order by", "union", "except", "intersect"}
+	for _, kw := range keywords {
+		if strings.Contains(lowerLine, " "+kw+" ") ||
+			strings.HasPrefix(lowerLine, kw+" ") ||
+			strings.HasSuffix(lowerLine, " "+kw) ||
+			lowerLine == kw {
+			return true
+		}
+	}
+	// Проверяем точку с запятой (конец запроса)
+	if strings.Contains(lowerLine, ";") {
+		return true
+	}
+	return false
+}
+
+// isNewSQLStatement проверяет, начинается ли строка с нового SQL оператора (не INSERT)
+func isNewSQLStatement(line string) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(line))
+	// Ключевые слова начала операторов (кроме INSERT который мы уже обрабатываем)
+	keywords := []string{"if", "exec", "execute", "select", "update", "delete", "begin", "end", "return", "goto", "while", "declare", "fetch", "close", "open", "commit", "rollback"}
+	for _, kw := range keywords {
+		if strings.HasPrefix(trimmed, kw+" ") ||
+			strings.HasPrefix(trimmed, kw+"\t") ||
+			trimmed == kw {
+			return true
+		}
+	}
+	return false
+}
+
+// hasStatementEnded проверяет, закончился ли SQL оператор
+func hasStatementEnded(lower string) bool {
+	// Используем regex с границами слова, чтобы избежать ложных срабатываний на подстроках
+	// Например, "dependantinfo" содержит "end", но это не ключевое слово
+	re := regexp.MustCompile(`(?i)([;]|\b(?:go|begin|end|if|while|declare|exec|execute|return)\b)`)
+	return re.MatchString(lower)
+}
+
+// findConditionStart находит начало условия (WHERE/ON/HAVING)
+func findConditionStart(lower string) int {
+	kws := []string{"where", "on", "having"}
+	for _, kw := range kws {
+		idx := findKeywordPosition(lower, kw)
+		if idx >= 0 {
+			return idx
+		}
+	}
+	return -1
+}
+
+// hasConditionEnded проверяет, закончилось ли условие
+func hasConditionEnded(lower string) bool {
+	kws := []string{"group by", "order by", "union", "except", "intersect", ";"}
+	for _, kw := range kws {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasJoinCondition проверяет наличие ON условия
+func hasJoinCondition(lower string) bool {
+	return strings.Contains(lower, " on ")
+}
+
+// containsBitwiseOperator проверяет наличие битовых операторов (&, |, ^) в выражении
+func containsBitwiseOperator(expr string) bool {
+	return strings.Contains(expr, "&") ||
+		strings.Contains(expr, "|") ||
+		strings.Contains(expr, "^")
+}
+
+// isNumericLiteral проверяет, является ли строка числовым литералом
+func isNumericLiteral(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isInsideConvert проверяет, находится ли позиция внутри convert(...) или cast(...)
+func isInsideConvert(expr string, pos int) bool {
+	// Проверяем, находится ли позиция внутри convert(...) или cast(...)
+	lower := strings.ToLower(expr[:pos])
+
+	// Ищем последний convert( или cast( перед позицией
+	lastConvert := strings.LastIndex(lower, "convert(")
+	lastCast := strings.LastIndex(lower, "cast(")
+
+	var funcNameLen int
+	var lastFunc int
+
+	if lastCast > lastConvert {
+		lastFunc = lastCast
+		funcNameLen = 5 // len("cast(")
+	} else if lastConvert > lastCast {
+		lastFunc = lastConvert
+		funcNameLen = 8 // len("convert(")
+	} else {
+		return false
+	}
+
+	// Считаем скобки: если открывающих больше закрывающих — мы внутри
+	// Начинаем с 1, т.к. convert( или cast( уже содержат открывающую скобку
+	parenDepth := 1
+	for i := lastFunc + funcNameLen; i < pos; i++ {
+		if i >= len(expr) {
+			break
+		}
+		switch expr[i] {
+		case '(':
+			parenDepth++
+		case ')':
+			parenDepth--
+		}
+	}
+
+	return parenDepth > 0
+}
+
+// isOperandChar проверяет, является ли символ операндом
+func isOperandChar(ch byte) bool {
+	// Операнд может начинаться с цифры, буквы или @
+	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || ch == '@'
+}
+
+// isInsertInSubquery проверяет, находится ли INSERT внутри подзапроса/CTE
+func isInsertInSubquery(line string) bool {
+	// Если перед INSERT есть открывающая скобка - это подзапрос
+	lower := strings.ToLower(line)
+	insertIdx := strings.Index(lower, "insert")
+	if insertIdx == -1 {
+		return false
+	}
+
+	// Считаем скобки до INSERT
+	parenDepth := 0
+	for i := 0; i < insertIdx; i++ {
+		switch line[i] {
+		case '(':
+			parenDepth++
+		case ')':
+			parenDepth--
+		}
+	}
+
+	return parenDepth > 0
+}
+
+// hasRowLock проверяет наличие M_WITH_ROWLOCK или WITH (ROWLOCK)
+func hasRowLock(line string) bool {
+	lower := strings.ToLower(line)
+
+	// Проверяем M_WITH_ROWLOCK
+	if strings.Contains(lower, "m_with_rowlock") {
+		return true
+	}
+
+	// Проверяем WITH (ROWLOCK)
+	if strings.Contains(lower, "with") && strings.Contains(lower, "rowlock") {
+		return true
+	}
+
+	return false
 }

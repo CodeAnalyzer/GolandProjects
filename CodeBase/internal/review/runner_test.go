@@ -473,6 +473,21 @@ func TestAnalyzeConditionForEqColumn_DetectsSelfComparison(t *testing.T) {
 			wantCount: 1,
 			wantObj:   "t1.id",
 		},
+		{
+			name:      "where 1=1 should not trigger",
+			lines:     []string{"where 1=1"},
+			wantCount: 0,
+		},
+		{
+			name:      "where 1 = 1 with spaces should not trigger",
+			lines:     []string{"where 1 = 1"},
+			wantCount: 0,
+		},
+		{
+			name:      "where 0=0 should not trigger",
+			lines:     []string{"where 0=0"},
+			wantCount: 0,
+		},
 	}
 
 	for _, tc := range cases {
@@ -1144,6 +1159,55 @@ func TestIsPotentialPrecisionLoss_DateTimeToOperDay(t *testing.T) {
 	}
 }
 
+func TestHasExplicitConversion_DetectsConvertAndCast(t *testing.T) {
+	cases := []struct {
+		expr      string
+		target    string
+		wantFound bool
+	}{
+		// convert() cases - точное совпадение
+		{"convert(smalldatetime, col)", "smalldatetime", true},
+		{"convert(smalldatetime, cc.CreditDateFrom)", "smalldatetime", true},
+		{"convert(varchar(10), col)", "varchar", true},
+		{"CONVERT(DATE, col)", "date", true},
+		{"convert(int, col)", "smalldatetime", false}, // другой targetType
+		{"col", "smalldatetime", false},               // нет convert
+
+		// convert() cases - эквивалентные типы (для datetime)
+		{"convert(smalldatetime, col)", "dsoperday", true}, // smalldatetime эквивалентен DSOPERDAY
+		{"convert(smalldatetime, col)", "date", true},      // smalldatetime эквивалентен date
+		{"convert(date, col)", "dsoperday", true},          // date эквивалентен DSOPERDAY
+		{"convert(datetime, col)", "dsdatetime", true},     // datetime эквивалентен DSDATETIME
+
+		// cast() cases - точное совпадение
+		{"cast(col as smalldatetime)", "smalldatetime", true},
+		{"CAST(cc.CreditDateFrom AS smalldatetime)", "smalldatetime", true},
+		{"cast(col as varchar(10))", "varchar", true},
+		{"cast(col as date)", "date", true},
+		{"cast(col as int)", "smalldatetime", false}, // другой targetType
+
+		// cast() cases - эквивалентные типы (для datetime)
+		{"cast(col as smalldatetime)", "dsoperday", true}, // smalldatetime эквивалентен DSOPERDAY
+		{"cast(col as smalldatetime)", "date", true},      // smalldatetime эквивалентен date
+		{"cast(col as date)", "dsoperday", true},          // date эквивалентен DSOPERDAY
+
+		// case-insensitive
+		{"Convert(SmallDateTime, col)", "smalldatetime", true},
+		{"CAST(col AS SMALLDATETIME)", "smalldatetime", true},
+
+		// empty cases
+		{"", "smalldatetime", false},
+		{"convert(smalldatetime, col)", "", false},
+	}
+
+	for _, tc := range cases {
+		got := hasExplicitConversion(tc.expr, tc.target)
+		if got != tc.wantFound {
+			t.Fatalf("hasExplicitConversion(%q, %q) = %v, want %v", tc.expr, tc.target, got, tc.wantFound)
+		}
+	}
+}
+
 func TestParseUpdateSetStatement_WithFromAndCase(t *testing.T) {
 	query := `update pCons_AutoFullPrepDate d
 set d.Date = case when cc.Flag2 > 0 then cc.CreditDateFrom else cr.DateFrom end,
@@ -1208,15 +1272,15 @@ func TestEnabledRuleSet_InsertRowLock(t *testing.T) {
 
 func TestAnsiInJoin_Multiline(t *testing.T) {
 	cases := []struct {
-		name         string
-		content      string
+		name          string
+		content       string
 		expectFinding bool
 		findingLine   int
 		tableName     string
 	}{
 		{
-			name:         "single line old style",
-			content:      "SELECT * FROM t1, t2 WHERE t1.id = t2.id",
+			name:          "single line old style",
+			content:       "SELECT * FROM t1, t2 WHERE t1.id = t2.id",
 			expectFinding: true,
 			findingLine:   1,
 		},
@@ -1258,8 +1322,8 @@ WHERE id = 1`,
 			expectFinding: false,
 		},
 		{
-			name: "subquery with comma inside",
-			content: `SELECT * FROM (SELECT 1, 2) AS t`,
+			name:          "subquery with comma inside",
+			content:       `SELECT * FROM (SELECT 1, 2) AS t`,
 			expectFinding: false,
 		},
 		{
@@ -1367,56 +1431,56 @@ delete pTmpObjectAccount
 
 func TestInsertRowLock(t *testing.T) {
 	cases := []struct {
-		name         string
-		content      string
+		name          string
+		content       string
 		expectFinding bool
 		findingLine   int
 		tableName     string
 	}{
 		{
-			name:         "insert without rowlock - with INTO",
-			content:      "INSERT INTO tTable VALUES (1, 2)",
+			name:          "insert without rowlock - with INTO",
+			content:       "INSERT INTO tTable VALUES (1, 2)",
 			expectFinding: true,
 			findingLine:   1,
 			tableName:     "tTable",
 		},
 		{
-			name:         "insert without rowlock - without INTO",
-			content:      "INSERT tTable VALUES (1, 2)",
+			name:          "insert without rowlock - without INTO",
+			content:       "INSERT tTable VALUES (1, 2)",
 			expectFinding: true,
 			findingLine:   1,
 			tableName:     "tTable",
 		},
 		{
-			name:         "insert with M_WITH_ROWLOCK",
-			content:      "INSERT INTO tTable M_WITH_ROWLOCK VALUES (1, 2)",
+			name:          "insert with M_WITH_ROWLOCK",
+			content:       "INSERT INTO tTable M_WITH_ROWLOCK VALUES (1, 2)",
 			expectFinding: false,
 		},
 		{
-			name:         "insert with WITH (ROWLOCK)",
-			content:      "INSERT INTO tTable WITH (ROWLOCK) VALUES (1, 2)",
+			name:          "insert with WITH (ROWLOCK)",
+			content:       "INSERT INTO tTable WITH (ROWLOCK) VALUES (1, 2)",
 			expectFinding: false,
 		},
 		{
-			name:         "insert in subquery - should be ignored",
-			content:      "SELECT * FROM (INSERT INTO tTable VALUES (1)) AS x",
+			name:          "insert in subquery - should be ignored",
+			content:       "SELECT * FROM (INSERT INTO tTable VALUES (1)) AS x",
 			expectFinding: false,
 		},
 		{
-			name:         "insert with select - no rowlock",
-			content:      "INSERT INTO tTable SELECT * FROM tSource",
+			name:          "insert with select - no rowlock",
+			content:       "INSERT INTO tTable SELECT * FROM tSource",
 			expectFinding: true,
 			findingLine:   1,
 			tableName:     "tTable",
 		},
 		{
-			name:         "insert with select and M_WITH_ROWLOCK",
-			content:      "INSERT INTO tTable M_WITH_ROWLOCK SELECT * FROM tSource",
+			name:          "insert with select and M_WITH_ROWLOCK",
+			content:       "INSERT INTO tTable M_WITH_ROWLOCK SELECT * FROM tSource",
 			expectFinding: false,
 		},
 		{
-			name:         "commented insert",
-			content:      "-- INSERT INTO tTable VALUES (1)",
+			name:          "commented insert",
+			content:       "-- INSERT INTO tTable VALUES (1)",
 			expectFinding: false,
 		},
 		{

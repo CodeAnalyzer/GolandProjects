@@ -5,62 +5,17 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/codebase/internal/model"
 	sqlparser "github.com/codebase/internal/parser/sql"
 )
 
-type procedureRef struct {
-	Name string
-	Line int
-}
-
-var nonProcedureCallKeywords = map[string]struct{}{
-	"on": {},
-}
-
-type columnRef struct {
-	Table  string
-	Column string
-}
-
 // selectAllRe находит SELECT * (с любыми пробелами между SELECT и *)
 var selectAllRe = regexp.MustCompile(`(?i)\bselect\s+\*`)
 
 // truncateTblRe находит TRUNCATE TABLE и имя таблицы (включая схему dbo.table)
 var truncateTblRe = regexp.MustCompile(`(?i)\btruncate\s+table\s+(\S+)`)
-
-// removeMacros удаляет определения макросов #define и их тело
-// Удаляет строку с #define, все продолжения (заканчивающиеся на \) и финальную строку
-func removeMacros(content string) string {
-	// Нормализуем окончания строк для Windows \r\n
-	content = strings.ReplaceAll(content, "\r\n", "\n")
-	content = strings.ReplaceAll(content, "\r", "\n")
-
-	lines := strings.Split(content, "\n")
-	var result []string
-
-	for i := 0; i < len(lines); i++ {
-		line := lines[i]
-		trimmed := strings.TrimSpace(line)
-
-		// Начало макроса
-		if strings.HasPrefix(trimmed, "#define") {
-			// Пропускаем строки продолжения (оканчивающиеся на \)
-			for i < len(lines)-1 && strings.HasSuffix(lines[i], "\\") {
-				i++
-			}
-			// Пропускаем финальную строку (не оканчивается на \)
-			continue
-		}
-
-		result = append(result, line)
-	}
-
-	return strings.Join(result, "\n")
-}
 
 func (r *Runner) checkForeignTables(parsed *sqlparser.ParseResult, file *indexedFile, prefix string) ([]Finding, error) {
 	tables := dedupeTableRefs(parsed.Tables, prefix)
@@ -310,308 +265,6 @@ func (r *Runner) analyzeStatementForIndexWrong(lines []string, startLine int, fi
 	return findings, nil
 }
 
-func calculateIndexPrefixMatch(indexFields []string, columns map[string]struct{}) int {
-	if len(indexFields) == 0 || len(columns) == 0 {
-		return 0
-	}
-
-	matched := 0
-	for _, field := range indexFields {
-		normalized := normalizeIdentifier(field)
-		if normalized == "" {
-			break
-		}
-		if _, exists := columns[normalized]; !exists {
-			break
-		}
-		matched++
-	}
-
-	return matched
-}
-
-func normalizeIndexNameList(names []string) []string {
-	set := make(map[string]struct{})
-	result := make([]string, 0, len(names))
-	for _, name := range names {
-		normalized := strings.TrimSpace(name)
-		if normalized == "" {
-			continue
-		}
-		key := strings.ToLower(normalized)
-		if _, exists := set[key]; exists {
-			continue
-		}
-		set[key] = struct{}{}
-		result = append(result, normalized)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		return strings.ToLower(result[i]) < strings.ToLower(result[j])
-	})
-	return result
-}
-
-func extractJoinColumnsForIndexWrong(fullText string, tables []tableFromClause) map[string]map[string]struct{} {
-	result := make(map[string]map[string]struct{})
-	for _, table := range tables {
-		result[tableConditionKey(table)] = make(map[string]struct{})
-	}
-
-	onParts := extractOnPartsForIndexWrong(fullText)
-	for _, onPart := range onParts {
-		collectJoinColumnsFromOnPart(onPart, tables, result)
-	}
-
-	return result
-}
-
-func collectJoinColumnsFromOnPart(onPart string, tables []tableFromClause, result map[string]map[string]struct{}) {
-	eqRe := regexp.MustCompile(`(?i)\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b\s*=\s*\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b`)
-	matches := eqRe.FindAllStringSubmatch(onPart, -1)
-	if len(matches) == 0 {
-		return
-	}
-
-	idents := make(map[string]string)
-	for _, table := range tables {
-		key := tableConditionKey(table)
-		if key == "" {
-			continue
-		}
-		idents[normalizeIdentifier(table.TableName)] = key
-		if alias := normalizeIdentifier(table.Alias); alias != "" {
-			idents[alias] = key
-		}
-	}
-
-	for _, m := range matches {
-		if len(m) < 5 {
-			continue
-		}
-
-		leftIdent := normalizeIdentifier(m[1])
-		leftCol := normalizeIdentifier(m[2])
-		rightIdent := normalizeIdentifier(m[3])
-		rightCol := normalizeIdentifier(m[4])
-
-		leftKey, leftExists := idents[leftIdent]
-		rightKey, rightExists := idents[rightIdent]
-		if !leftExists || !rightExists || leftKey == rightKey {
-			continue
-		}
-		if leftCol != "" {
-			result[leftKey][leftCol] = struct{}{}
-		}
-		if rightCol != "" {
-			result[rightKey][rightCol] = struct{}{}
-		}
-	}
-}
-
-func shouldKeepChosenIndexForPKJoin(indexName string, chosenFields []string, joinCols map[string]struct{}) bool {
-	if len(joinCols) == 0 {
-		return false
-	}
-	normalizedIndex := normalizeIdentifier(indexName)
-	if !strings.HasPrefix(normalizedIndex, "xpk") {
-		return false
-	}
-	if len(chosenFields) == 0 {
-		return true
-	}
-	for _, field := range chosenFields {
-		normalizedField := normalizeIdentifier(field)
-		if normalizedField == "" {
-			continue
-		}
-		if _, exists := joinCols[normalizedField]; exists {
-			return true
-		}
-	}
-	return false
-}
-
-func tableConditionKey(table tableFromClause) string {
-	if alias := normalizeIdentifier(table.Alias); alias != "" {
-		return alias
-	}
-	return normalizeIdentifier(table.TableName)
-}
-
-func extractConditionColumnsForIndexWrong(fullText string, tables []tableFromClause) map[string]map[string]struct{} {
-	result := make(map[string]map[string]struct{})
-	for _, table := range tables {
-		result[tableConditionKey(table)] = make(map[string]struct{})
-	}
-
-	wherePart := extractWherePartForIndexWrong(fullText)
-	if strings.TrimSpace(wherePart) != "" {
-		mergeTableColumns(result, collectColumnsFromConditionExpression(wherePart, tables))
-	}
-
-	onParts := extractOnPartsForIndexWrong(fullText)
-	for _, onPart := range onParts {
-		mergeTableColumns(result, collectColumnsFromConditionExpression(onPart, tables))
-	}
-
-	return result
-}
-
-func extractWherePartForIndexWrong(fullText string) string {
-	lower := strings.ToLower(fullText)
-	whereIdx := strings.Index(lower, " where ")
-	if whereIdx == -1 {
-		return ""
-	}
-
-	part := fullText[whereIdx+7:]
-	lowerPart := strings.ToLower(part)
-	endMarkers := []string{" order by ", " group by ", " having ", " union ", " except ", " intersect "}
-	endIdx := len(part)
-	for _, marker := range endMarkers {
-		if idx := strings.Index(lowerPart, marker); idx > 0 && idx < endIdx {
-			endIdx = idx
-		}
-	}
-
-	return part[:endIdx]
-}
-
-func extractOnPartsForIndexWrong(fullText string) []string {
-	result := make([]string, 0)
-	onRe := regexp.MustCompile(`(?i)\s+on\s+`)
-	parts := onRe.Split(fullText, -1)
-	if len(parts) <= 1 {
-		return result
-	}
-
-	for _, part := range parts[1:] {
-		lowerPart := strings.ToLower(part)
-		endMarkers := []string{" join ", " where ", " order by ", " group by ", " having "}
-		endIdx := len(part)
-		for _, marker := range endMarkers {
-			if idx := strings.Index(lowerPart, marker); idx > 0 && idx < endIdx {
-				endIdx = idx
-			}
-		}
-		result = append(result, part[:endIdx])
-	}
-
-	return result
-}
-
-func collectColumnsFromConditionExpression(expr string, tables []tableFromClause) map[string]map[string]struct{} {
-	orRe := regexp.MustCompile(`(?i)\s+or\s+`)
-	branches := orRe.Split(expr, -1)
-	if len(branches) == 0 {
-		return map[string]map[string]struct{}{}
-	}
-
-	if len(branches) == 1 {
-		return collectColumnsFromConditionBranch(branches[0], tables)
-	}
-
-	intersection := collectColumnsFromConditionBranch(branches[0], tables)
-	for _, branch := range branches[1:] {
-		branchCols := collectColumnsFromConditionBranch(branch, tables)
-		for tableKey, cols := range intersection {
-			intersection[tableKey] = intersectColumns(cols, branchCols[tableKey])
-		}
-	}
-
-	return intersection
-}
-
-func collectColumnsFromConditionBranch(branch string, tables []tableFromClause) map[string]map[string]struct{} {
-	result := make(map[string]map[string]struct{})
-
-	for _, table := range tables {
-		tableKey := tableConditionKey(table)
-		if _, exists := result[tableKey]; !exists {
-			result[tableKey] = make(map[string]struct{})
-		}
-
-		identifiers := []string{normalizeIdentifier(table.TableName), normalizeIdentifier(table.Alias)}
-		for _, identifier := range identifiers {
-			if identifier == "" {
-				continue
-			}
-			re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(identifier) + `\.([a-zA-Z_][a-zA-Z0-9_]*)\b`)
-			for _, match := range re.FindAllStringSubmatch(branch, -1) {
-				if len(match) < 2 {
-					continue
-				}
-				col := normalizeIdentifier(match[1])
-				if col != "" {
-					result[tableKey][col] = struct{}{}
-				}
-			}
-		}
-	}
-
-	if len(tables) == 1 {
-		tableKey := tableConditionKey(tables[0])
-		for col := range extractUnqualifiedConditionColumns(branch) {
-			result[tableKey][col] = struct{}{}
-		}
-	}
-
-	return result
-}
-
-func extractUnqualifiedConditionColumns(expr string) map[string]struct{} {
-	result := make(map[string]struct{})
-	re := regexp.MustCompile(`(?i)\b([a-zA-Z_][a-zA-Z0-9_]*)\b\s*(=|<>|!=|>=|<=|>|<|\bin\b|\bbetween\b|\blike\b|\bis\b)`)
-	matches := re.FindAllStringSubmatch(expr, -1)
-
-	keywords := map[string]struct{}{
-		"and": {}, "or": {}, "not": {}, "in": {}, "between": {}, "like": {}, "is": {}, "null": {},
-		"select": {}, "from": {}, "where": {}, "join": {}, "on": {}, "case": {}, "when": {}, "then": {}, "else": {}, "end": {},
-	}
-
-	for _, match := range matches {
-		if len(match) < 2 {
-			continue
-		}
-		col := normalizeIdentifier(match[1])
-		if col == "" {
-			continue
-		}
-		if _, isKeyword := keywords[col]; isKeyword {
-			continue
-		}
-		result[col] = struct{}{}
-	}
-
-	return result
-}
-
-func mergeTableColumns(base map[string]map[string]struct{}, add map[string]map[string]struct{}) {
-	for tableKey, cols := range add {
-		target, exists := base[tableKey]
-		if !exists {
-			target = make(map[string]struct{})
-			base[tableKey] = target
-		}
-		for col := range cols {
-			target[col] = struct{}{}
-		}
-	}
-}
-
-func intersectColumns(left map[string]struct{}, right map[string]struct{}) map[string]struct{} {
-	result := make(map[string]struct{})
-	if len(left) == 0 || len(right) == 0 {
-		return result
-	}
-	for item := range left {
-		if _, exists := right[item]; exists {
-			result[item] = struct{}{}
-		}
-	}
-	return result
-}
-
 func (r *Runner) checkUpdateOnlyVar(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
@@ -803,60 +456,6 @@ func analyzeStatementForUpdateOnlyVar(lines []string, startLine int, file *index
 	return nil
 }
 
-func splitTopLevelSetAssignments(setPart string) []string {
-	result := make([]string, 0)
-	if strings.TrimSpace(setPart) == "" {
-		return result
-	}
-
-	depth := 0
-	start := 0
-	inCase := false
-
-	for i := 0; i < len(setPart); i++ {
-		ch := setPart[i]
-
-		// Отслеживаем вложенность скобок
-		switch ch {
-		case '(':
-			depth++
-		case ')':
-			if depth > 0 {
-				depth--
-			}
-		}
-
-		// Отслеживаем CASE ... END
-		if ch == ' ' || ch == '\t' || i == 0 {
-			nextWord := ""
-			for j := i; j < len(setPart); j++ {
-				if setPart[j] == ' ' || setPart[j] == '\t' || setPart[j] == '(' {
-					break
-				}
-				nextWord += string(setPart[j])
-			}
-			nextLower := strings.ToLower(strings.TrimSpace(nextWord))
-			if nextLower == "case" {
-				inCase = true
-			} else if nextLower == "end" && inCase {
-				inCase = false
-			}
-		}
-
-		// Запятая на верхнем уровне - разделитель присваиваний
-		if ch == ',' && depth == 0 && !inCase {
-			result = append(result, setPart[start:i])
-			start = i + 1
-		}
-	}
-
-	if start < len(setPart) {
-		result = append(result, setPart[start:])
-	}
-
-	return result
-}
-
 func (r *Runner) checkPTableSpid(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
@@ -1007,59 +606,6 @@ func (r *Runner) analyzeStatementForPTableSpid(lines []string, startLine int, fi
 	}
 
 	return findings, nil
-}
-
-func extractSpidConditions(fullText string) map[string]struct{} {
-	result := make(map[string]struct{})
-
-	// Извлекаем таблицы для получения их ключей
-	tables := extractTablesFromFromClause(fullText)
-
-	// Ищем SPID в WHERE и ON условиях
-	wherePart := extractWherePartForIndexWrong(fullText)
-	onParts := extractOnPartsForIndexWrong(fullText)
-	allParts := append([]string{wherePart}, onParts...)
-
-	spidRe := regexp.MustCompile(`(?i)\b(spid)\b`)
-
-	for _, part := range allParts {
-		partLower := strings.ToLower(part)
-
-		// Ищем все вхождения SPID
-		for _, match := range spidRe.FindAllStringIndex(partLower, -1) {
-			// Определяем контекст - проверяем, относится ли к какой-либо таблице
-			contextStart := 0
-			if match[0] > 20 {
-				contextStart = match[0] - 20
-			}
-			context := part[contextStart:match[0]]
-			contextLower := strings.ToLower(context)
-
-			// Ищем ближайший алиас/имя таблицы перед SPID
-			for _, table := range tables {
-				tableKey := tableConditionKey(table)
-				identifiers := []string{normalizeIdentifier(table.TableName), normalizeIdentifier(table.Alias)}
-
-				for _, identifier := range identifiers {
-					if identifier == "" {
-						continue
-					}
-					pattern := `(?i)\b` + regexp.QuoteMeta(identifier) + `\s*\.\s*$`
-					if matched, _ := regexp.MatchString(pattern, contextLower); matched {
-						result[tableKey] = struct{}{}
-						break
-					}
-				}
-			}
-
-			// Если это единственная таблица и SPID без префикса - тоже считаем условием
-			if len(tables) == 1 && !strings.Contains(contextLower, ".") {
-				result[tableConditionKey(tables[0])] = struct{}{}
-			}
-		}
-	}
-
-	return result
 }
 
 func (r *Runner) checkForceOrder2Tbl(file *indexedFile) ([]Finding, error) {
@@ -1314,10 +860,6 @@ func hasSaveTran(lower string) bool {
 		return true
 	}
 	return false
-}
-
-func isCharWordBoundary(ch byte) bool {
-	return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == ';' || ch == '(' || ch == ')' || ch == ',' || ch == '\x00'
 }
 
 func (r *Runner) checkUseDrop(file *indexedFile) ([]Finding, error) {
@@ -1649,50 +1191,6 @@ func hasMathOperator(expr string) bool {
 		}
 	}
 	return false
-}
-
-func isInsideConvert(expr string, pos int) bool {
-	// Проверяем, находится ли позиция внутри convert(...) или cast(...)
-	lower := strings.ToLower(expr[:pos])
-
-	// Ищем последний convert( или cast( перед позицией
-	lastConvert := strings.LastIndex(lower, "convert(")
-	lastCast := strings.LastIndex(lower, "cast(")
-
-	var funcNameLen int
-	var lastFunc int
-
-	if lastCast > lastConvert {
-		lastFunc = lastCast
-		funcNameLen = 5 // len("cast(")
-	} else if lastConvert > lastCast {
-		lastFunc = lastConvert
-		funcNameLen = 8 // len("convert(")
-	} else {
-		return false
-	}
-
-	// Считаем скобки: если открывающих больше закрывающих — мы внутри
-	// Начинаем с 1, т.к. convert( или cast( уже содержат открывающую скобку
-	parenDepth := 1
-	for i := lastFunc + funcNameLen; i < pos; i++ {
-		if i >= len(expr) {
-			break
-		}
-		switch expr[i] {
-		case '(':
-			parenDepth++
-		case ')':
-			parenDepth--
-		}
-	}
-
-	return parenDepth > 0
-}
-
-func isOperandChar(ch byte) bool {
-	// Операнд может начинаться с цифры, буквы или @
-	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || ch == '@'
 }
 
 func (r *Runner) checkExistsWithAndInIf(file *indexedFile) ([]Finding, error) {
@@ -2041,55 +1539,6 @@ func (r *Runner) checkForeignProcedures(parsed *sqlparser.ParseResult, file *ind
 	return findings, nil
 }
 
-func dedupeTableRefs(tables []*model.SQLTable, prefix string) []tableRef {
-	result := make([]tableRef, 0)
-	seen := make(map[string]struct{})
-	prefix = strings.ToLower(strings.TrimSpace(prefix))
-	for _, table := range tables {
-		if table == nil {
-			continue
-		}
-		name := normalizeIdentifier(table.TableName)
-		if name == "" {
-			continue
-		}
-		if prefix != "" && !strings.HasPrefix(name, prefix) {
-			continue
-		}
-		key := fmt.Sprintf("%s:%d", name, table.LineNumber)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		result = append(result, tableRef{Name: table.TableName, Line: table.LineNumber})
-	}
-	return result
-}
-
-func dedupeProcedureCalls(calls []*model.SQLProcedureCall) []procedureRef {
-	result := make([]procedureRef, 0)
-	seen := make(map[string]struct{})
-	for _, call := range calls {
-		if call == nil {
-			continue
-		}
-		name := normalizeIdentifier(call.CalleeName)
-		if name == "" {
-			continue
-		}
-		if _, isKeyword := nonProcedureCallKeywords[name]; isKeyword {
-			continue
-		}
-		key := fmt.Sprintf("%s:%d", name, call.LineNumber)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		result = append(result, procedureRef{Name: call.CalleeName, Line: call.LineNumber})
-	}
-	return result
-}
-
 func (r *Runner) checkExecNotExistsProcedures(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	calls := dedupeProcedureCalls(parsed.Calls)
 	findings := make([]Finding, 0)
@@ -2230,98 +1679,6 @@ func (r *Runner) checkProcElseCase(file *indexedFile) ([]Finding, error) {
 	}
 
 	return findings, nil
-}
-
-// findCaseInLine ищет позицию CASE в строке (не как часть слова)
-func findCaseInLine(line string) int {
-	lower := strings.ToLower(line)
-	for i := 0; i < len(lower)-3; i++ {
-		if lower[i:i+4] == "case" {
-			// Проверяем, что это не часть слова
-			if i > 0 && isWordChar(lower[i-1]) {
-				continue
-			}
-			// Проверяем, что после идет пробел, скобка или конец строки
-			if i+4 < len(lower) && isWordChar(lower[i+4]) {
-				continue
-			}
-			return i
-		}
-	}
-	return -1
-}
-
-// isWordChar проверяет, является ли символ буквой/цифрой/подчеркиванием
-func isWordChar(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
-}
-
-// isInComment проверяет, находится ли позиция внутри SQL комментария
-func isInComment(line string, pos int) bool {
-	lower := strings.ToLower(line)
-	for i := 0; i < pos && i < len(lower); i++ {
-		if i+1 < len(lower) && lower[i:i+2] == "--" {
-			return true
-		}
-	}
-	return false
-}
-
-// findCaseEndAndElse ищет парный END для CASE и проверяет наличие ELSE
-// Возвращает: номер строки с END, найден ли ELSE
-func findCaseEndAndElse(lines []string, startLine, casePos int) (int, bool) {
-	caseDepth := 1 // Вложенность CASE (начинаем с 1 для текущего CASE)
-	hasElse := false
-	inComment := false
-
-	for lineIdx := startLine; lineIdx < len(lines) && lineIdx < startLine+100; lineIdx++ {
-		line := lines[lineIdx]
-		lower := strings.ToLower(line)
-
-		// Ограничиваем поиск для первой строки
-		startPos := 0
-		if lineIdx == startLine {
-			startPos = casePos + 4 // начинаем после "case"
-		}
-
-		for i := startPos; i < len(lower); i++ {
-			// Обрабатываем комментарии
-			if i+1 < len(lower) && lower[i:i+2] == "--" {
-				inComment = true
-			}
-			if inComment {
-				continue
-			}
-
-			// Ищем ключевые слова
-			if i+4 <= len(lower) && lower[i:i+4] == "case" {
-				// Проверяем, что это полное слово "case"
-				if (i == 0 || !isWordChar(lower[i-1])) && (i+4 == len(lower) || !isWordChar(lower[i+4])) {
-					caseDepth++
-				}
-			} else if i+4 <= len(lower) && lower[i:i+4] == "else" {
-				// Проверяем, что это полное слово "else"
-				if (i == 0 || !isWordChar(lower[i-1])) && (i+4 == len(lower) || !isWordChar(lower[i+4])) {
-					// ELSE на текущем уровне вложенности
-					if caseDepth == 1 {
-						hasElse = true
-					}
-				}
-			} else if i+3 <= len(lower) && lower[i:i+3] == "end" {
-				// Проверяем, что это полное слово "end"
-				if (i == 0 || !isWordChar(lower[i-1])) && (i+3 == len(lower) || !isWordChar(lower[i+3])) {
-					caseDepth--
-					if caseDepth == 0 {
-						// Нашли парный END
-						return lineIdx, hasElse
-					}
-				}
-			}
-		}
-	}
-
-	// END не найден
-	return -1, false
 }
 
 func (r *Runner) checkUseSelectAll(file *indexedFile) ([]Finding, error) {
@@ -2516,6 +1873,11 @@ func (r *Runner) checkDatatypeUpdateSet(parsed *sqlparser.ParseResult, file *ind
 				return nil, err
 			}
 
+			// Пропускаем, если выражение уже содержит явное преобразование в targetType
+			if hasExplicitConversion(assignment.Expression, targetType) {
+				continue
+			}
+
 			sourceTypes := r.resolveExpressionTypes(assignment.Expression, aliasMap)
 			for _, sourceType := range sourceTypes {
 				if !isPotentialPrecisionLoss(sourceType, targetType) {
@@ -2575,6 +1937,11 @@ func (r *Runner) checkDatatypeInsertSelect(parsed *sqlparser.ParseResult, file *
 				return nil, err
 			}
 
+			// Пропускаем, если выражение уже содержит явное преобразование в targetType
+			if hasExplicitConversion(expression, targetType) {
+				continue
+			}
+
 			sourceTypes := r.resolveExpressionTypes(expression, aliasMap)
 			for _, sourceType := range sourceTypes {
 				if !isPotentialPrecisionLoss(sourceType, targetType) {
@@ -2630,28 +1997,39 @@ func (r *Runner) resolveExpressionTypes(expression string, aliasMap map[string]s
 	return result
 }
 
-func extractColumnRefsFromExpression(expression string) []columnRef {
-	re := regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b`)
-	matches := re.FindAllStringSubmatch(expression, -1)
-	result := make([]columnRef, 0, len(matches))
-	seen := make(map[string]struct{})
-	for _, m := range matches {
-		if len(m) < 3 {
-			continue
-		}
-		table := strings.TrimSpace(m[1])
-		column := strings.TrimSpace(m[2])
-		key := strings.ToLower(table + "." + column)
-		if table == "" || column == "" {
-			continue
-		}
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		result = append(result, columnRef{Table: table, Column: column})
+// hasExplicitConversion проверяет, содержит ли выражение явное преобразование в targetType
+// через convert() или cast(). Проверяет эквивалентность типов, а не точное совпадение.
+func hasExplicitConversion(expression string, targetType string) bool {
+	if expression == "" || targetType == "" {
+		return false
 	}
-	return result
+	exprLower := strings.ToLower(expression)
+
+	// Извлекаем тип из convert(type, ...)
+	convertRe := regexp.MustCompile(`(?i)\bconvert\s*\(\s*([a-z_][a-z0-9_]*(?:\s*\([^)]*\))?)\s*[\,)]`)
+	convertMatches := convertRe.FindAllStringSubmatch(exprLower, -1)
+	for _, m := range convertMatches {
+		if len(m) > 1 {
+			convertedType := normalizeDataType(m[1])
+			if areEquivalentTypes(convertedType, targetType) {
+				return true
+			}
+		}
+	}
+
+	// Извлекаем тип из cast(... as type)
+	castRe := regexp.MustCompile(`(?i)\bcast\s*\([^)]+\s+as\s+([a-z_][a-z0-9_]*(?:\s*\([^)]*\))?)\s*\)`)
+	castMatches := castRe.FindAllStringSubmatch(exprLower, -1)
+	for _, m := range castMatches {
+		if len(m) > 1 {
+			castedType := normalizeDataType(m[1])
+			if areEquivalentTypes(castedType, targetType) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func isPotentialPrecisionLoss(sourceType string, targetType string) bool {
@@ -2818,136 +2196,6 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func maskBlockCommentsKeepLines(text string) string {
-	if text == "" {
-		return text
-	}
-
-	runes := []rune(text)
-	masked := make([]rune, len(runes))
-	inBlock := false
-
-	for i := 0; i < len(runes); i++ {
-		ch := runes[i]
-
-		if !inBlock && i+1 < len(runes) && runes[i] == '/' && runes[i+1] == '*' {
-			inBlock = true
-			masked[i] = ' '
-			masked[i+1] = ' '
-			i++
-			continue
-		}
-
-		if inBlock {
-			if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '/' {
-				inBlock = false
-				masked[i] = ' '
-				masked[i+1] = ' '
-				i++
-				continue
-			}
-			if ch == '\n' || ch == '\r' {
-				masked[i] = ch
-			} else {
-				masked[i] = ' '
-			}
-			continue
-		}
-
-		masked[i] = ch
-	}
-
-	return string(masked)
-}
-
-// findKeywordPosition ищет позицию ключевого слова (полное слово)
-func findKeywordPosition(text, keyword string) int {
-	lower := strings.ToLower(text)
-	keyword = strings.ToLower(keyword)
-	for i := 0; i <= len(lower)-len(keyword); i++ {
-		if lower[i:i+len(keyword)] == keyword {
-			// Проверяем границы слова
-			if i > 0 && isWordChar(lower[i-1]) {
-				continue
-			}
-			if i+len(keyword) < len(lower) && isWordChar(lower[i+len(keyword)]) {
-				continue
-			}
-			return i
-		}
-	}
-	return -1
-}
-
-// hasFromClauseEnded проверяет, закончился ли FROM clause
-func hasFromClauseEnded(lowerLine string) bool {
-	keywords := []string{"where", "group by", "having", "order by", "union", "except", "intersect"}
-	for _, kw := range keywords {
-		if strings.Contains(lowerLine, " "+kw+" ") ||
-			strings.HasPrefix(lowerLine, kw+" ") ||
-			strings.HasSuffix(lowerLine, " "+kw) ||
-			lowerLine == kw {
-			return true
-		}
-	}
-	// Проверяем точку с запятой (конец запроса)
-	if strings.Contains(lowerLine, ";") {
-		return true
-	}
-	return false
-}
-
-// extractFirstTableFromFromClause извлекает имя первой таблицы из FROM clause
-// text - часть строки после ключевого слова FROM
-func extractFirstTableFromFromClause(text string) string {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return ""
-	}
-
-	lower := strings.ToLower(trimmed)
-
-	// Пропускаем открывающую скобку подзапроса
-	if strings.HasPrefix(trimmed, "(") {
-		return ""
-	}
-
-	// Ищем конец имени таблицы (пробел, запятая, JOIN, WHERE, etc.)
-	endMarkers := []string{" ", "\t", ",", "\n", "\r", "inner", "left", "right", "full", "cross", "join", "where", "group", "having", "order", "union", "except", "intersect", ";"}
-	endIdx := len(trimmed)
-	for _, marker := range endMarkers {
-		if idx := strings.Index(lower, marker); idx >= 0 && idx < endIdx {
-			endIdx = idx
-		}
-	}
-
-	if endIdx > 0 {
-		table := strings.TrimSpace(trimmed[:endIdx])
-		// Убираем возможные хинты вида "table M_INDEX(...)" или "table WITH (...)"
-		if spaceIdx := strings.Index(table, " "); spaceIdx > 0 {
-			table = table[:spaceIdx]
-		}
-		return table
-	}
-
-	return trimmed
-}
-
-// isNewSQLStatement проверяет, начинается ли строка с нового SQL оператора (не INSERT)
-func isNewSQLStatement(line string) bool {
-	trimmed := strings.TrimSpace(strings.ToLower(line))
-	// Ключевые слова начала операторов (кроме INSERT который мы уже обрабатываем)
-	keywords := []string{"if", "exec", "execute", "select", "update", "delete", "begin", "end", "return", "goto", "while", "declare", "fetch", "close", "open", "commit", "rollback"}
-	for _, kw := range keywords {
-		if strings.HasPrefix(trimmed, kw+" ") ||
-			strings.HasPrefix(trimmed, kw+"\t") ||
-			trimmed == kw {
-			return true
-		}
-	}
-	return false
-}
-
 func (r *Runner) checkInsertRowLock(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
@@ -3021,20 +2269,6 @@ func (r *Runner) checkInsertRowLock(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-// countParens считает баланс скобок в строке (открывающие - закрывающие)
-func countParens(line string) int {
-	depth := 0
-	for _, ch := range line {
-		switch ch {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		}
-	}
-	return depth
-}
-
 // analyzeInsertForRowLock анализирует многострочный INSERT на наличие ROWLOCK
 func analyzeInsertForRowLock(lines []string, startLine int, file *indexedFile) *Finding {
 	if len(lines) == 0 {
@@ -3069,90 +2303,6 @@ func analyzeInsertForRowLock(lines []string, startLine int, file *indexedFile) *
 		Object:           tableName,
 		CurrentProductID: file.DsProductID,
 	}
-}
-
-// isInsertInSubquery проверяет, находится ли INSERT внутри подзапроса/CTE
-func isInsertInSubquery(line string) bool {
-	// Если перед INSERT есть открывающая скобка - это подзапрос
-	lower := strings.ToLower(line)
-	insertIdx := strings.Index(lower, "insert")
-	if insertIdx == -1 {
-		return false
-	}
-
-	// Считаем скобки до INSERT
-	parenDepth := 0
-	for i := 0; i < insertIdx; i++ {
-		switch line[i] {
-		case '(':
-			parenDepth++
-		case ')':
-			parenDepth--
-		}
-	}
-
-	return parenDepth > 0
-}
-
-// hasRowLock проверяет наличие M_WITH_ROWLOCK или WITH (ROWLOCK)
-func hasRowLock(line string) bool {
-	lower := strings.ToLower(line)
-
-	// Проверяем M_WITH_ROWLOCK
-	if strings.Contains(lower, "m_with_rowlock") {
-		return true
-	}
-
-	// Проверяем WITH (ROWLOCK)
-	if strings.Contains(lower, "with") && strings.Contains(lower, "rowlock") {
-		return true
-	}
-
-	return false
-}
-
-// parseInsertTableName извлекает имя таблицы из INSERT оператора
-func parseInsertTableName(line string) string {
-	lower := strings.ToLower(line)
-
-	// Находим INSERT
-	insertIdx := strings.Index(lower, "insert")
-	if insertIdx == -1 {
-		return ""
-	}
-
-	// Пропускаем INSERT
-	pos := insertIdx + 6
-
-	// Пропускаем пробелы
-	for pos < len(line) && (line[pos] == ' ' || line[pos] == '\t') {
-		pos++
-	}
-
-	// Пропускаем INTO если есть
-	if pos+4 <= len(lower) && lower[pos:pos+4] == "into" {
-		pos += 4
-		// Пропускаем пробелы
-		for pos < len(line) && (line[pos] == ' ' || line[pos] == '\t') {
-			pos++
-		}
-	}
-
-	// Извлекаем имя таблицы
-	if pos >= len(line) {
-		return ""
-	}
-
-	start := pos
-	for pos < len(line) && (line[pos] != ' ' && line[pos] != '\t' && line[pos] != '(' && line[pos] != ';') {
-		pos++
-	}
-
-	if start < pos {
-		return strings.TrimSpace(line[start:pos])
-	}
-
-	return ""
 }
 
 func (r *Runner) checkUseEqColumn(file *indexedFile) ([]Finding, error) {
@@ -3229,34 +2379,6 @@ func (r *Runner) checkUseEqColumn(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func findConditionStart(lower string) int {
-	kws := []string{"where", "on", "having"}
-	for _, kw := range kws {
-		idx := findKeywordPosition(lower, kw)
-		if idx >= 0 {
-			return idx
-		}
-	}
-	return -1
-}
-
-func hasConditionEnded(lower string) bool {
-	kws := []string{"group by", "order by", "union", "except", "intersect", ";"}
-	for _, kw := range kws {
-		if strings.Contains(lower, kw) {
-			return true
-		}
-	}
-	return false
-}
-
-// containsBitwiseOperator проверяет наличие битовых операторов (&, |, ^) в выражении
-func containsBitwiseOperator(expr string) bool {
-	return strings.Contains(expr, "&") ||
-		strings.Contains(expr, "|") ||
-		strings.Contains(expr, "^")
-}
-
 func analyzeConditionForEqColumn(lines []string, startLine int, file *indexedFile) []Finding {
 	findings := make([]Finding, 0)
 	if len(lines) == 0 {
@@ -3290,6 +2412,10 @@ func analyzeConditionForEqColumn(lines []string, startLine int, file *indexedFil
 		left := normalizeIdentifier(m[1])
 		right := normalizeIdentifier(m[2])
 		if left == "" || right == "" {
+			continue
+		}
+		// Пропускаем числовые литералы (например, where 1=1)
+		if isNumericLiteral(left) || isNumericLiteral(right) {
 			continue
 		}
 		if left == right {
@@ -3405,24 +2531,6 @@ func (r *Runner) checkTableFullScan(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func findStatementStart(lower string) (string, int) {
-	types := []string{"select", "delete", "update", "merge"}
-	for _, stmtType := range types {
-		idx := findKeywordPosition(lower, stmtType)
-		if idx >= 0 {
-			return stmtType, idx
-		}
-	}
-	return "", -1
-}
-
-func hasStatementEnded(lower string) bool {
-	// Используем regex с границами слова, чтобы избежать ложных срабатываний на подстроках
-	// Например, "dependantinfo" содержит "end", но это не ключевое слово
-	re := regexp.MustCompile(`(?i)([;]|\b(?:go|begin|end|if|while|declare|exec|execute|return)\b)`)
-	return re.MatchString(lower)
-}
-
 func analyzeStatementForFullScan(lines []string, startLine int, file *indexedFile, stmtType string) *Finding {
 	if len(lines) == 0 || stmtType == "" {
 		return nil
@@ -3507,527 +2615,6 @@ func analyzeStatementForFullScan(lines []string, startLine int, file *indexedFil
 	}
 
 	return nil
-}
-
-type tableFromClause struct {
-	TableName string
-	Alias     string
-	Hint      string // Извлеченный хинт индекса
-	IndexName string // Имя индекса из M_*_INDEX(...)
-}
-
-// enrichUpdateTargetAliases для UPDATE: если таблица без алиаса,
-// но есть другая запись с таким же именем и с алиасом — копируем алиас
-func enrichUpdateTargetAliases(tables []tableFromClause) []tableFromClause {
-	// Строим мапу имя таблицы -> алиас (из записей где алиас есть)
-	aliasMap := make(map[string]string)
-	for _, t := range tables {
-		if t.Alias != "" {
-			key := strings.ToLower(t.TableName)
-			if _, exists := aliasMap[key]; !exists {
-				aliasMap[key] = t.Alias
-			}
-		}
-	}
-
-	// Дополняем записи без алиаса
-	for i := range tables {
-		if tables[i].Alias == "" {
-			key := strings.ToLower(tables[i].TableName)
-			if alias, found := aliasMap[key]; found {
-				tables[i].Alias = alias
-			}
-		}
-	}
-
-	return tables
-}
-
-// removeComments удаляет SQL комментарии (-- ... и /* ... */)
-func removeComments(text string) string {
-	// Удаляем многострочные комментарии /* ... */
-	blockCommentRe := regexp.MustCompile(`(?s)/\*.*?\*/`)
-	text = blockCommentRe.ReplaceAllString(text, "")
-
-	// Удаляем однострочные комментарии -- ...
-	lineCommentRe := regexp.MustCompile(`(?m)--.*$`)
-	text = lineCommentRe.ReplaceAllString(text, "")
-
-	return text
-}
-
-func extractTablesFromFromClause(fullText string) []tableFromClause {
-	result := make([]tableFromClause, 0)
-
-	// Удаляем комментарии перед парсингом
-	fullText = removeComments(fullText)
-	fromStart, fromEnd, found := findTopLevelFromClauseBounds(fullText)
-	if !found {
-		return result
-	}
-
-	fromClause := fullText[fromStart:fromEnd]
-	return parseTablesInFromClause(fromClause)
-}
-
-func findTopLevelFromClauseBounds(text string) (int, int, bool) {
-	lower := strings.ToLower(text)
-	fromIdx := -1
-	depth := 0
-	inString := false
-
-	for i := 0; i < len(lower); i++ {
-		ch := lower[i]
-		if ch == '\'' {
-			if inString && i+1 < len(lower) && lower[i+1] == '\'' {
-				i++
-				continue
-			}
-			inString = !inString
-			continue
-		}
-		if inString {
-			continue
-		}
-
-		switch ch {
-		case '(':
-			depth++
-		case ')':
-			if depth > 0 {
-				depth--
-			}
-		}
-
-		if depth == 0 && keywordMatchAt(lower, i, "from") {
-			fromIdx = i
-			break
-		}
-	}
-
-	if fromIdx < 0 {
-		return 0, 0, false
-	}
-
-	endIdx := len(text)
-	depth = 0
-	inString = false
-	endKeywords := []string{"where", "order by", "group by", "having", "union", "except", "intersect"}
-
-	for i := fromIdx + len("from"); i < len(lower); i++ {
-		ch := lower[i]
-		if ch == '\'' {
-			if inString && i+1 < len(lower) && lower[i+1] == '\'' {
-				i++
-				continue
-			}
-			inString = !inString
-			continue
-		}
-		if inString {
-			continue
-		}
-
-		switch ch {
-		case '(':
-			depth++
-		case ')':
-			if depth > 0 {
-				depth--
-			}
-		}
-
-		if depth != 0 {
-			continue
-		}
-		for _, kw := range endKeywords {
-			if keywordMatchAt(lower, i, kw) {
-				endIdx = i
-				return fromIdx, endIdx, true
-			}
-		}
-	}
-
-	return fromIdx, endIdx, true
-}
-
-func keywordMatchAt(lower string, pos int, keyword string) bool {
-	if pos < 0 || pos+len(keyword) > len(lower) {
-		return false
-	}
-	if lower[pos:pos+len(keyword)] != keyword {
-		return false
-	}
-	if pos > 0 && isWordChar(lower[pos-1]) {
-		return false
-	}
-	after := pos + len(keyword)
-	if after < len(lower) && isWordChar(lower[after]) {
-		return false
-	}
-	return true
-}
-
-// splitByCommasRespectingParens разбивает строку по запятым, но только те что вне скобок
-// Запятые внутри функций (isnull(arg1, arg2)) не используются как разделители
-func splitByCommasRespectingParens(sql string) []string {
-	var parts []string
-	var current strings.Builder
-	depth := 0
-
-	for _, ch := range sql {
-		switch ch {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		case ',':
-			if depth == 0 {
-				// Запятая на нулевом уровне - разделитель
-				parts = append(parts, current.String())
-				current.Reset()
-				continue
-			}
-		}
-		current.WriteRune(ch)
-	}
-
-	// Добавляем последнюю часть
-	if current.Len() > 0 {
-		parts = append(parts, current.String())
-	}
-
-	return parts
-}
-
-func parseTablesInFromClause(fromClause string) []tableFromClause {
-	result := make([]tableFromClause, 0)
-	lower := strings.ToLower(fromClause)
-
-	// Убираем слово FROM
-	fromIdx := strings.Index(lower, "from")
-	if fromIdx >= 0 {
-		fromClause = fromClause[fromIdx+4:]
-		lower = strings.ToLower(fromClause)
-	}
-
-	// Разбиваем по запятым (comma-join) и JOIN
-	// Сначала заменяем JOIN-ы на разделители
-	normalized := strings.ReplaceAll(lower, " inner join ", ",")
-	normalized = strings.ReplaceAll(normalized, " left join ", ",")
-	normalized = strings.ReplaceAll(normalized, " right join ", ",")
-	normalized = strings.ReplaceAll(normalized, " full join ", ",")
-	normalized = strings.ReplaceAll(normalized, " cross join ", ",")
-	normalized = strings.ReplaceAll(normalized, " join ", ",")
-
-	// Разбиваем по запятым с учетом вложенных скобок
-	// Это предотвращает ложное разделение по запятым внутри isnull(arg1, arg2)
-	parts := splitByCommasRespectingParens(normalized)
-
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-
-		table := parseTableWithAlias(part)
-		if table.TableName != "" {
-			result = append(result, table)
-		}
-	}
-
-	return result
-}
-
-func parseTableWithAlias(part string) tableFromClause {
-	result := tableFromClause{}
-
-	// Извлекаем подсказку индекса типа M_ROWLOCK_INDEX(XPK...)
-	idxHintExtractRe := regexp.MustCompile(`(?i)\s+(M_\w+_INDEX)\s*\(\s*([^\s,)]+)`)
-	matches := idxHintExtractRe.FindStringSubmatch(part)
-	if len(matches) > 1 {
-		result.Hint = matches[1]
-	}
-	if len(matches) > 2 {
-		result.IndexName = strings.Trim(matches[2], "[]\"'")
-	}
-
-	// Убираем подсказки индексов типа M_ROWLOCK_INDEX(...)
-	idxHintRemoveRe := regexp.MustCompile(`(?i)\s+M_\w+_INDEX\s*\([^)]+\)`)
-	part = idxHintRemoveRe.ReplaceAllString(part, "")
-
-	// Убираем подсказки NOLOCK
-	nolockRe := regexp.MustCompile(`(?i)\s+NOLOCK`)
-	part = nolockRe.ReplaceAllString(part, "")
-
-	// Убираем подсказки WITH (...)
-	withHintRe := regexp.MustCompile(`(?i)\s+WITH\s*\([^)]+\)`)
-	part = withHintRe.ReplaceAllString(part, "")
-
-	part = strings.TrimSpace(part)
-	if part == "" {
-		return result
-	}
-
-	// Разбиваем на токены: table alias или table AS alias
-	tokens := strings.Fields(part)
-	if len(tokens) == 0 {
-		return result
-	}
-
-	// Очищаем имя таблицы от скобок, которые могли попасть из-за неправильного разделения
-	result.TableName = strings.Trim(tokens[0], "()")
-
-	// Ищем алиас (после AS или просто следующий токен)
-	for i := 1; i < len(tokens); i++ {
-		token := strings.ToLower(tokens[i])
-		if token == "as" && i+1 < len(tokens) {
-			result.Alias = tokens[i+1]
-			break
-		}
-		if token != "" && !strings.HasPrefix(token, "(") {
-			// Проверяем, что это не подсказка индекса
-			if !strings.Contains(token, "(") {
-				result.Alias = tokens[i]
-				break
-			}
-		}
-	}
-
-	return result
-}
-
-type whereAnalysisResult struct {
-	Aliases                  []string
-	HasUnqualifiedConditions bool
-}
-
-func extractColumnRefsFromWhere(lower string) whereAnalysisResult {
-	result := whereAnalysisResult{
-		Aliases:                  []string{},
-		HasUnqualifiedConditions: false,
-	}
-
-	// Находим WHERE clause
-	whereIdx := strings.Index(lower, " where ")
-	if whereIdx == -1 {
-		return result
-	}
-
-	wherePart := lower[whereIdx+7:]
-
-	// Обрезаем до следующего ключевого слова
-	endMarkers := []string{" order by ", " group by ", " having ", " union ", " except ", " intersect "}
-	endIdx := len(wherePart)
-	for _, marker := range endMarkers {
-		if idx := strings.Index(wherePart, marker); idx > 0 && idx < endIdx {
-			endIdx = idx
-		}
-	}
-	wherePart = wherePart[:endIdx]
-
-	// Извлекаем alias.column ссылки
-	reQualified := regexp.MustCompile(`(?i)(\w+)\.(\w+)`)
-	matches := reQualified.FindAllStringSubmatch(wherePart, -1)
-	for _, m := range matches {
-		if len(m) >= 2 {
-			result.Aliases = append(result.Aliases, strings.ToLower(m[1]))
-		}
-	}
-
-	// Проверяем наличие неквалифицированных условий (column = value без alias)
-	// Удаляем все квалифицированные ссылки и проверяем оставшиеся условия
-	cleaned := reQualified.ReplaceAllString(wherePart, "")
-	reCondition := regexp.MustCompile(`(?i)\b(\w+)\s*(=|<>|!=|<|>|<=|>=|like|in|between)`)
-	if reCondition.MatchString(cleaned) {
-		result.HasUnqualifiedConditions = true
-	}
-
-	return result
-}
-
-func extractColumnRefsFromOn(lower string) []string {
-	result := make([]string, 0)
-
-	// Находим все ON условия
-	onRe := regexp.MustCompile(`(?i)\s+on\s+`)
-	parts := onRe.Split(lower, -1)
-
-	for _, part := range parts[1:] { // пропускаем первую часть (до первого ON)
-		// Обрезаем до JOIN или другого ключевого слова
-		endMarkers := []string{" join ", " where ", " order by ", " group by "}
-		endIdx := len(part)
-		for _, marker := range endMarkers {
-			if idx := strings.Index(part, marker); idx > 0 && idx < endIdx {
-				endIdx = idx
-			}
-		}
-		onPart := part[:endIdx]
-
-		// Извлекаем alias.column ссылки
-		re := regexp.MustCompile(`(?i)(\w+)\.(\w+)`)
-		matches := re.FindAllStringSubmatch(onPart, -1)
-		for _, m := range matches {
-			if len(m) >= 2 {
-				result = append(result, strings.ToLower(m[1]))
-			}
-		}
-	}
-
-	return result
-}
-
-func isTableFiltered(table tableFromClause, tables []tableFromClause, whereResult whereAnalysisResult, onRefs []string) bool {
-	// Если одна таблица в запросе и есть неквалифицированные условия - считаем отфильтрованной
-	if len(tables) == 1 && whereResult.HasUnqualifiedConditions {
-		return true
-	}
-
-	// Проверяем по алиасу
-	alias := strings.ToLower(table.Alias)
-	if alias != "" {
-		for _, ref := range whereResult.Aliases {
-			if ref == alias {
-				return true
-			}
-		}
-		for _, ref := range onRefs {
-			if ref == alias {
-				return true
-			}
-		}
-	}
-
-	// Проверяем по имени таблицы (если нет алиаса)
-	tableName := strings.ToLower(table.TableName)
-	for _, ref := range whereResult.Aliases {
-		if ref == tableName {
-			return true
-		}
-	}
-	for _, ref := range onRefs {
-		if ref == tableName {
-			return true
-		}
-	}
-
-	return false
-}
-
-func hasJoinCondition(lower string) bool {
-	return strings.Contains(lower, " on ")
-}
-
-func extractTableNameFromStatement(fullText, stmtType string) string {
-	switch stmtType {
-	case "select":
-		return extractTableAfterFrom(fullText)
-	case "delete":
-		return extractTableAfterDelete(fullText)
-	case "update":
-		return extractTableAfterUpdate(fullText)
-	case "merge":
-		return extractTableAfterMerge(fullText)
-	}
-
-	return ""
-}
-
-func extractTableAfterFrom(fullText string) string {
-	lower := strings.ToLower(fullText)
-	idx := strings.Index(lower, " from ")
-	if idx == -1 {
-		return ""
-	}
-	return extractNextIdentifier(fullText, idx+6)
-}
-
-func extractTableAfterDelete(fullText string) string {
-	lower := strings.ToLower(fullText)
-	idx := strings.Index(lower, "delete")
-	if idx == -1 {
-		return ""
-	}
-	pos := idx + 6
-
-	for pos < len(fullText) && (fullText[pos] == ' ' || fullText[pos] == '\t') {
-		pos++
-	}
-
-	if pos+4 <= len(lower) && lower[pos:pos+4] == "from" {
-		pos += 4
-		for pos < len(fullText) && (fullText[pos] == ' ' || fullText[pos] == '\t') {
-			pos++
-		}
-	}
-
-	return extractNextIdentifier(fullText, pos)
-}
-
-func extractTableAfterUpdate(fullText string) string {
-	lower := strings.ToLower(fullText)
-	idx := strings.Index(lower, "update")
-	if idx == -1 {
-		return ""
-	}
-	pos := idx + 6
-
-	for pos < len(fullText) && (fullText[pos] == ' ' || fullText[pos] == '\t') {
-		pos++
-	}
-
-	return extractNextIdentifier(fullText, pos)
-}
-
-func extractTableAfterMerge(fullText string) string {
-	lower := strings.ToLower(fullText)
-	idx := strings.Index(lower, "merge")
-	if idx == -1 {
-		return ""
-	}
-	pos := idx + 5
-
-	for pos < len(fullText) && (fullText[pos] == ' ' || fullText[pos] == '\t') {
-		pos++
-	}
-
-	if pos+4 <= len(lower) && lower[pos:pos+4] == "into" {
-		pos += 4
-		for pos < len(fullText) && (fullText[pos] == ' ' || fullText[pos] == '\t') {
-			pos++
-		}
-	}
-
-	return extractNextIdentifier(fullText, pos)
-}
-
-func extractNextIdentifier(fullText string, startPos int) string {
-	if startPos >= len(fullText) {
-		return ""
-	}
-
-	for startPos < len(fullText) && (fullText[startPos] == ' ' || fullText[startPos] == '\t' || fullText[startPos] == '\n' || fullText[startPos] == '\r') {
-		startPos++
-	}
-
-	if startPos >= len(fullText) {
-		return ""
-	}
-
-	endPos := startPos
-	for endPos < len(fullText) {
-		ch := fullText[endPos]
-		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '(' || ch == ')' || ch == ';' || ch == ',' {
-			break
-		}
-		endPos++
-	}
-
-	if startPos < endPos {
-		return strings.TrimSpace(fullText[startPos:endPos])
-	}
-
-	return ""
 }
 
 var allowedTableHints = []string{
@@ -4137,21 +2724,6 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func findStatementStartForTableHintExists(lower string) (string, int) {
-	types := []string{"select", "delete", "update", "merge", "insert"}
-	bestIdx := -1
-	bestType := ""
-	for _, stmtType := range types {
-		idx := findKeywordPosition(lower, stmtType)
-		if idx >= 0 && (bestIdx == -1 || idx < bestIdx) {
-			bestIdx = idx
-			bestType = stmtType
-		}
-	}
-
-	return bestType, bestIdx
-}
-
 func removeBlockComments(text string) string {
 	result := text
 	for {
@@ -4167,30 +2739,6 @@ func removeBlockComments(text string) string {
 		result = result[:startIdx] + " " + result[endIdx:]
 	}
 	return result
-}
-
-func shouldSkipTableCheck(tableName string) bool {
-	lower := strings.ToLower(tableName)
-
-	// Пропускаем переменные (@param)
-	if strings.HasPrefix(tableName, "@") {
-		return true
-	}
-
-	// Пропускаем только временная #-таблица
-	if strings.HasPrefix(tableName, "#") {
-		return true
-	}
-
-	// Пропускаем слова которые явно не таблицы
-	invalidNames := []string{"file", "select", "insert", "update", "delete", "from", "where", "join"}
-	for _, invalid := range invalidNames {
-		if lower == invalid {
-			return true
-		}
-	}
-
-	return false
 }
 
 var (
@@ -4318,16 +2866,6 @@ func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func findStatementStartHint(lower string) (string, int) {
-	keywords := []string{"select", "update", "delete"}
-	for _, kw := range keywords {
-		if idx := findKeywordPosition(lower, kw); idx >= 0 {
-			return kw, idx
-		}
-	}
-	return "", -1
-}
-
 func analyzeStatementForHintType(lines []string, startLine int, file *indexedFile) []Finding {
 	findings := make([]Finding, 0)
 	if len(lines) == 0 {
@@ -4405,123 +2943,4 @@ func analyzeStatementForHintType(lines []string, startLine int, file *indexedFil
 	}
 
 	return findings
-}
-
-func normalizeHintStatementText(text string) string {
-	lower := strings.ToLower(text)
-
-	if strings.HasPrefix(lower, "select") {
-		if idx := findKeywordPosition(lower, "delete"); idx > 0 {
-			return strings.TrimSpace(text[idx:])
-		}
-		if idx := findKeywordPosition(lower, "update"); idx > 0 {
-			return strings.TrimSpace(text[idx:])
-		}
-	}
-
-	return text
-}
-
-func extractUpdateTargetTable(fullText string) string {
-	fullText = strings.TrimSpace(fullText)
-	lower := strings.ToLower(fullText)
-	if !strings.HasPrefix(lower, "update") {
-		return ""
-	}
-
-	remainder := strings.TrimSpace(fullText[len("update"):])
-	if remainder == "" {
-		return ""
-	}
-
-	parts := strings.Fields(remainder)
-	if len(parts) == 0 {
-		return ""
-	}
-
-	if strings.EqualFold(parts[0], "top") {
-		if len(parts) < 2 {
-			return ""
-		}
-		i := 1
-		if strings.HasPrefix(parts[i], "(") {
-			for i < len(parts) && !strings.Contains(parts[i], ")") {
-				i++
-			}
-			if i+1 < len(parts) {
-				return strings.TrimSpace(parts[i+1])
-			}
-			return ""
-		}
-		if len(parts) >= 3 {
-			return strings.TrimSpace(parts[2])
-		}
-		return ""
-	}
-
-	return strings.TrimSpace(parts[0])
-}
-
-func sameTableReference(left, right string) bool {
-	l := normalizeIdentifier(left)
-	r := normalizeIdentifier(right)
-	if l == "" || r == "" {
-		return false
-	}
-	if l == r {
-		return true
-	}
-	if idx := strings.LastIndex(l, "."); idx >= 0 {
-		l = l[idx+1:]
-	}
-	if idx := strings.LastIndex(r, "."); idx >= 0 {
-		r = r[idx+1:]
-	}
-	return l != "" && l == r
-}
-
-func extractDeleteTargetTable(fullText string) string {
-	lower := strings.ToLower(fullText)
-
-	// DELETE FROM table ...
-	if strings.HasPrefix(lower, "delete from") {
-		lower = strings.TrimPrefix(lower, "delete from")
-		lower = strings.TrimLeft(lower, " \t")
-		endIdx := strings.Index(lower, " ")
-		if endIdx < 0 {
-			endIdx = len(lower)
-		}
-		if endIdx > 0 {
-			startPos := len("delete from")
-			return strings.TrimSpace(fullText[startPos : startPos+endIdx])
-		}
-		return ""
-	}
-
-	// DELETE table FROM table, ...
-	if strings.HasPrefix(lower, "delete ") {
-		lower = strings.TrimPrefix(lower, "delete ")
-		lower = strings.TrimLeft(lower, " \t")
-		endIdx := strings.Index(lower, " ")
-		fromIdx := strings.Index(lower, "from")
-		if fromIdx >= 0 && (endIdx == -1 || fromIdx < endIdx) {
-			endIdx = fromIdx
-		}
-		if endIdx > 0 {
-			startPos := len("delete ")
-			return strings.TrimSpace(fullText[startPos : startPos+endIdx])
-		}
-	}
-
-	return ""
-}
-
-func isHintAllowed(hint string, allowed []string) bool {
-	lowerHint := strings.ToLower(hint)
-	for _, allowedHint := range allowed {
-		if strings.ToLower(allowedHint) == lowerHint {
-			return true
-		}
-	}
-	return false
 }

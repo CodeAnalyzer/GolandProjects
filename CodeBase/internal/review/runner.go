@@ -15,7 +15,6 @@ type Runner struct {
 	parser *sqlparser.Parser
 }
 
-
 func NewRunner(db *store.DB) *Runner {
 	return &Runner{db: db, parser: sqlparser.NewParser()}
 }
@@ -247,9 +246,3 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 	}
 	return result, nil
 }
-
-
-
-
-
-
