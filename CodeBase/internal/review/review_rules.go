@@ -1947,6 +1947,16 @@ func analyzeStatementForTableHintExists(lines []string, startLine int, file *ind
 		insertTarget = normalizeIdentifier(parseInsertTableName(fullText))
 	}
 
+	// Получаем текст строки для вывода в сообщении об ошибке
+	lineText := ""
+	content, err := os.ReadFile(file.Path)
+	if err == nil {
+		fileLines := strings.Split(string(content), "\n")
+		if startLine > 0 && startLine <= len(fileLines) {
+			lineText = strings.TrimSpace(fileLines[startLine-1])
+		}
+	}
+
 	for _, table := range tables {
 		if shouldSkipTableCheck(table.TableName) {
 			continue
@@ -1957,10 +1967,14 @@ func analyzeStatementForTableHintExists(lines []string, startLine int, file *ind
 		}
 
 		if !isHintAllowed(table.Hint, allowedTableHints) {
+			message := fmt.Sprintf("Таблица %s не имеет допустимого хинта индекса", table.TableName)
+			if lineText != "" {
+				message += fmt.Sprintf(" (строка: %s)", lineText)
+			}
 			findings = append(findings, Finding{
 				Rule:             RuleTableHintExists,
 				Severity:         SeverityDeployStopper,
-				Message:          fmt.Sprintf("Таблица %s не имеет допустимого хинта индекса", table.TableName),
+				Message:          message,
 				File:             file.Path,
 				Line:             startLine,
 				Object:           table.TableName,
@@ -2202,6 +2216,9 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Сохраняем оригинальные строки для корректного определения номера строки
+	originalLines := strings.Split(string(content), "\n")
+
 	// Удаляем макросы #define перед анализом
 	contentStr := removeMacros(string(content))
 	contentStr = maskBlockCommentsKeepLines(contentStr)
@@ -2284,7 +2301,12 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 			case ',':
 				if parenDepth == 0 && !isInComment(line, j) {
 					hasComma = true
-					commaLine = lineNum
+					// Находим реальный номер строки в оригинальном файле
+					// Ищем строку с таким же содержимым (без учета пробелов)
+					commaLine = findOriginalLineNumber(originalLines, line)
+					if commaLine == 0 {
+						commaLine = lineNum // fallback к текущему номеру
+					}
 				}
 			}
 		}

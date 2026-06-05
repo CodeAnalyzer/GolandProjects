@@ -821,14 +821,40 @@ func normalizeHintStatementText(text string) string {
 
 	if strings.HasPrefix(lower, "select") {
 		if idx := findKeywordPosition(lower, "delete"); idx > 0 {
-			return strings.TrimSpace(text[idx:])
+			return strings.TrimSpace(lower[idx:])
 		}
 		if idx := findKeywordPosition(lower, "update"); idx > 0 {
-			return strings.TrimSpace(text[idx:])
+			return strings.TrimSpace(lower[idx:])
 		}
 	}
 
-	return text
+	return lower
+}
+
+func findOriginalLineNumber(originalLines []string, processedLine string) int {
+	processedTrimmed := strings.TrimSpace(processedLine)
+	if processedTrimmed == "" {
+		return 0
+	}
+
+	// Ищем строку с таким же содержимым (с учетом пробелов)
+	for i, origLine := range originalLines {
+		origTrimmed := strings.TrimSpace(origLine)
+		if origTrimmed == processedTrimmed {
+			return i + 1
+		}
+	}
+
+	// Если точное совпадение не найдено, пробуем с учетом различий в пробелах
+	processedNormalized := strings.Join(strings.Fields(processedLine), " ")
+	for i, origLine := range originalLines {
+		origNormalized := strings.Join(strings.Fields(origLine), " ")
+		if origNormalized == processedNormalized {
+			return i + 1
+		}
+	}
+
+	return 0
 }
 
 func sameTableReference(left, right string) bool {

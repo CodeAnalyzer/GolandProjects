@@ -560,6 +560,12 @@ func extractTablesFromFromClause(fullText string) []tableFromClause {
 	}
 
 	fromClause := fullText[fromStart:fromEnd]
+	// Проверяем, что fromClause действительно начинается с FROM
+	lower := strings.ToLower(fromClause)
+	if !strings.HasPrefix(lower, "from") {
+		return result
+	}
+
 	return parseTablesInFromClause(fromClause)
 }
 
