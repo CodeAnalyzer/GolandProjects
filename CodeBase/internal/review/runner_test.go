@@ -642,6 +642,26 @@ func TestAnalyzeStatementForHintType_UpdateTargetFromSameTable_AllowsUpdlock(t *
 	}
 }
 
+func TestAnalyzeStatementForHintType_DeleteSameTableWithDifferentAliases(t *testing.T) {
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+
+	lines := []string{
+		"delete pConsLIMITPSKRule",
+		"  from pConsLIMITPSKRule pConsLIMITPSKRule M_ROWLOCK_INDEX(XPKpConsLIMITPSKRule)",
+		" inner join pConsLIMITPSKRule p2 M_NOLOCK_INDEX(XPKpConsLIMITPSKRule)",
+		"         on p2.SPID       = pConsLIMITPSKRule.spid",
+		"        and p2.ContractID = pConsLIMITPSKRule.ContractID",
+		" where pConsLIMITPSKRule.spid          = @@spid",
+		"   and pConsLIMITPSKRule.EffRateValue  > p2.EffRateValue",
+		" M_FORCEORDER",
+	}
+
+	findings := analyzeStatementForHintType(lines, 382, file)
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings for DELETE with same table using different aliases, got %#v", findings)
+	}
+}
+
 func TestAnalyzeStatementForHintType_UpdateWrongTargetHint_AfterSelectAssignment(t *testing.T) {
 	file := &indexedFile{Path: "test.sql", DsProductID: 1}
 
@@ -1676,6 +1696,182 @@ end`,
 				if len(findings) > 0 {
 					t.Fatalf("expected no finding, got %v", findings)
 				}
+			}
+		})
+	}
+}
+
+func TestHasDefaultAssignmentInBody(t *testing.T) {
+	runner := &Runner{}
+
+	cases := []struct {
+		name          string
+		procBody      string
+		paramName     string
+		expectFound   bool
+	}{
+		{
+			name: "assignment before usage - select isnull",
+			procBody: `select @ParentProtocolID = isnull(@ParentProtocolID, 0)
+if @ParentProtocolID <> 0
+  select 1`,
+			paramName:   "@ParentProtocolID",
+			expectFound: true,
+		},
+		{
+			name: "assignment before usage - set",
+			procBody: `set @ParentProtocolID = 0
+if @ParentProtocolID <> 0
+  select 1`,
+			paramName:   "@ParentProtocolID",
+			expectFound: true,
+		},
+		{
+			name: "assignment after usage - should fail",
+			procBody: `if @ParentProtocolID <> 0
+  select 1
+select @ParentProtocolID = isnull(@ParentProtocolID, 0)`,
+			paramName:   "@ParentProtocolID",
+			expectFound: false,
+		},
+		{
+			name: "no assignment - should fail",
+			procBody: `if @ParentProtocolID <> 0
+  select 1`,
+			paramName:   "@ParentProtocolID",
+			expectFound: false,
+		},
+		{
+			name: "assignment but no usage - should pass",
+			procBody: `select @ParentProtocolID = isnull(@ParentProtocolID, 0)`,
+			paramName:   "@ParentProtocolID",
+			expectFound: true,
+		},
+		{
+			name: "param name without @",
+			procBody: `select @ParentProtocolID = isnull(@ParentProtocolID, 0)
+if @ParentProtocolID <> 0
+  select 1`,
+			paramName:   "ParentProtocolID",
+			expectFound: true,
+		},
+		{
+			name: "assignment in comment - should fail",
+			procBody: `-- select @ParentProtocolID = isnull(@ParentProtocolID, 0)
+if @ParentProtocolID <> 0
+  select 1`,
+			paramName:   "@ParentProtocolID",
+			expectFound: false,
+		},
+		{
+			name: "real procedure body from ConsChngOMCVTermUndo",
+			procBody: `  __BEGIN_PROCEDURE__(ConsChngOMCVTermUndo)
+  M_BUSINESSLOG_BEGIN
+  M_BUSINESSLOG_BLOCK_BEGIN('ConsChngOMCVTermUndo')
+
+  declare @DealProtocolID DSIDENTIFIER
+
+  select @ParentProtocolID = isnull(@ParentProtocolID, 0)
+
+  if @InstrumentID = 0
+    select @InstrumentID = InstrumentID
+      from tContract M_NOLOCK_INDEX(XPKtContract)
+     where ContractID = @ContractID`,
+			paramName:   "@ParentProtocolID",
+			expectFound: true,
+		},
+		{
+			name: "multi-line select assignment",
+			procBody: `select @RetVal = 0,
+       @CalcMode  = isnull(@CalcMode,0),
+       @InsurMode = isnull(@InsurMode,0)
+if @ContractID is not null
+  select 1`,
+			paramName:   "@CalcMode",
+			expectFound: true,
+		},
+		{
+			name: "multi-line select assignment - second param",
+			procBody: `select @RetVal = 0,
+       @CalcMode  = isnull(@CalcMode,0),
+       @InsurMode = isnull(@InsurMode,0)
+if @ContractID is not null
+  select 1`,
+			paramName:   "@InsurMode",
+			expectFound: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runner.hasDefaultAssignmentInBody(tc.procBody, tc.paramName)
+			if result != tc.expectFound {
+				t.Fatalf("hasDefaultAssignmentInBody(%q, %q) = %v, want %v", tc.procBody, tc.paramName, result, tc.expectFound)
+			}
+		})
+	}
+}
+
+func TestExtractProcedureBody(t *testing.T) {
+	runner := &Runner{}
+
+	lines := []string{
+		"line 1",
+		"line 2",
+		"line 3",
+		"line 4",
+		"line 5",
+	}
+
+	cases := []struct {
+		name      string
+		lineStart int
+		lineEnd   int
+		expect    string
+	}{
+		{
+			name:      "normal range",
+			lineStart: 2,
+			lineEnd:   4,
+			expect:    "line 2\nline 3\nline 4",
+		},
+		{
+			name:      "single line",
+			lineStart: 3,
+			lineEnd:   3,
+			expect:    "line 3",
+		},
+		{
+			name:      "full range",
+			lineStart: 1,
+			lineEnd:   5,
+			expect:    "line 1\nline 2\nline 3\nline 4\nline 5",
+		},
+		{
+			name:      "invalid range - start > end",
+			lineStart: 4,
+			lineEnd:   2,
+			expect:    "",
+		},
+		{
+			name:      "invalid range - start < 1",
+			lineStart: 0,
+			lineEnd:   3,
+			expect:    "",
+		},
+		{
+			name:      "invalid range - end > len",
+			lineStart: 2,
+			lineEnd:   10,
+			expect:    "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runner.extractProcedureBody(lines, tc.lineStart, tc.lineEnd)
+			if result != tc.expect {
+				t.Fatalf("extractProcedureBody(lines, %d, %d) = %q, want %q", tc.lineStart, tc.lineEnd, result, tc.expect)
 			}
 		})
 	}

@@ -1591,16 +1591,28 @@ func (r *Runner) checkProcDuplicate(parsed *sqlparser.ParseResult, file *indexed
 
 func (r *Runner) checkProcParamDefValue(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
+
+	// Читаем содержимое файла один раз для извлечения тел процедур
+	content, err := os.ReadFile(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(content), "\n")
+
 	for _, proc := range parsed.Procedures {
 		if proc == nil || len(proc.Params) == 0 {
 			continue
 		}
-		// Для каждого параметра с default=null или без default проверяем защиту в теле
+
+		// Извлекаем тело процедуры по границам строк
+		procBody := r.extractProcedureBody(lines, proc.LineStart, proc.LineEnd)
+
+		// Для каждого параметра с default=null проверяем защиту в теле
 		for _, param := range proc.Params {
 			if !r.needsDefaultAssignment(param) {
 				continue
 			}
-			if !r.hasDefaultAssignmentInBody(proc, param.Name) {
+			if !r.hasDefaultAssignmentInBody(procBody, param.Name) {
 				findings = append(findings, Finding{
 					Rule:             RuleProcParamDefValue,
 					Severity:         SeverityDeployStopper,
@@ -1623,11 +1635,130 @@ func (r *Runner) needsDefaultAssignment(param model.SQLParam) bool {
 	return param.DefaultValue == "null"
 }
 
+// extractProcedureBody извлекает тело процедуры из строк файла по границам
+func (r *Runner) extractProcedureBody(lines []string, lineStart, lineEnd int) string {
+	// Проверяем валидность границ
+	if lineStart < 1 || lineEnd > len(lines) || lineStart > lineEnd {
+		return ""
+	}
+	// Корректируем верхнюю границу если она выходит за пределы
+	if lineEnd > len(lines) {
+		lineEnd = len(lines)
+	}
+	// Преобразуем в 0-based индексы
+	startIdx := lineStart - 1
+	endIdx := lineEnd
+	return strings.Join(lines[startIdx:endIdx], "\n")
+}
+
 // hasDefaultAssignmentInBody проверяет, есть ли в теле процедуры присвоение default для параметра
-func (r *Runner) hasDefaultAssignmentInBody(_ *model.SQLProcedure, _ string) bool {
-	// Для Варианта 1 простой реализации - всегда возвращаем false
-	// TODO: в будущем реализовать анализ тела процедуры (потребуются proc и paramName)
-	return false
+// до первого использования параметра
+func (r *Runner) hasDefaultAssignmentInBody(procBody string, paramName string) bool {
+	if procBody == "" || paramName == "" {
+		return false
+	}
+
+	// Нормализуем имя параметра (убираем @ если есть)
+	searchParam := paramName
+	if strings.HasPrefix(paramName, "@") {
+		searchParam = paramName[1:]
+	}
+	paramPattern := "@" + searchParam
+
+	// Удаляем блок-комментарии /* ... */ перед анализом
+	cleanedBody := removeBlockComments(procBody)
+
+	// Разбиваем тело на строки для анализа позиций
+	lines := strings.Split(cleanedBody, "\n")
+
+	// Пропускаем строки до ключевого слова "as" (заголовок процедуры с параметрами)
+	bodyStartIdx := 0
+	for i, line := range lines {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		if strings.HasPrefix(lower, "as") || strings.HasPrefix(lower, "as ") {
+			bodyStartIdx = i + 1
+			break
+		}
+	}
+
+	// Ищем первую позицию присваивания и первую позицию использования
+	firstAssignmentPos := -1
+	firstUsagePos := -1
+
+	// Отслеживаем, находимся ли внутри select-оператора
+	inSelect := false
+
+	for i := bodyStartIdx; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+
+		// Пропускаем комментарии
+		if strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+
+		// Определяем начало нового оператора
+		if strings.HasPrefix(lower, "select ") || strings.HasPrefix(lower, "select(") {
+			inSelect = true
+		} else if strings.HasPrefix(lower, "set ") || strings.HasPrefix(lower, "insert ") ||
+			strings.HasPrefix(lower, "update ") || strings.HasPrefix(lower, "delete ") ||
+			strings.HasPrefix(lower, "if ") || strings.HasPrefix(lower, "while ") ||
+			strings.HasPrefix(lower, "begin") || strings.HasPrefix(lower, "end") ||
+			strings.HasPrefix(lower, "create ") || strings.HasPrefix(lower, "alter ") ||
+			strings.HasPrefix(lower, "drop ") || strings.HasPrefix(lower, "declare ") {
+			inSelect = false
+		}
+
+		// Если строка заканчивается запятой, это продолжение текущего оператора - не сбрасываем inSelect
+		if !strings.HasSuffix(trimmed, ",") {
+			// Сбрасываем inSelect только если строка НЕ заканчивается запятой
+			if strings.HasPrefix(lower, "set ") || strings.HasPrefix(lower, "insert ") ||
+				strings.HasPrefix(lower, "update ") || strings.HasPrefix(lower, "delete ") ||
+				strings.HasPrefix(lower, "if ") || strings.HasPrefix(lower, "while ") ||
+				strings.HasPrefix(lower, "begin") || strings.HasPrefix(lower, "end") ||
+				strings.HasPrefix(lower, "create ") || strings.HasPrefix(lower, "alter ") ||
+				strings.HasPrefix(lower, "drop ") || strings.HasPrefix(lower, "declare ") {
+				inSelect = false
+			}
+		}
+
+		// Ищем присваивание: @param = (внутри select или set)
+		isAssignment := false
+		// Проверяем @param= с любым количеством пробелов вокруг = (удаляем пробелы для проверки)
+		trimmedNoSpaces := strings.ReplaceAll(lower, " ", "")
+		if inSelect && strings.Contains(trimmedNoSpaces, strings.ToLower(paramPattern)+"=") {
+			// Внутри select-оператора любое @param = считается присваиванием
+			isAssignment = true
+		} else if strings.HasPrefix(lower, "set "+strings.ToLower(paramPattern)+" =") {
+			isAssignment = true
+		}
+
+		if isAssignment {
+			if firstAssignmentPos == -1 {
+				firstAssignmentPos = i
+			}
+			continue
+		}
+
+		// Ищем использование параметра (кроме присваивания)
+		if strings.Contains(lower, strings.ToLower(paramPattern)) {
+			// Проверяем, что это не присваивание (уже проверено выше)
+			if !isAssignment {
+				if firstUsagePos == -1 {
+					firstUsagePos = i
+				}
+			}
+		}
+	}
+
+	// Если присваивание найдено и происходит до первого использования - OK
+	if firstAssignmentPos != -1 && firstUsagePos != -1 {
+		return firstAssignmentPos < firstUsagePos
+	}
+
+	// Если присваивание есть, а использования нет (или наоборот) - считаем OK если есть присваивание
+	return firstAssignmentPos != -1
 }
 
 func (r *Runner) checkProcElseCase(file *indexedFile) ([]Finding, error) {
@@ -2920,6 +3051,15 @@ func analyzeStatementForHintType(lines []string, startLine int, file *indexedFil
 			targetTable = extractDeleteTargetTable(stmt)
 		}
 
+		// Подсчитываем, сколько раз каждая таблица встречается в FROM
+		tableCounts := make(map[string]int)
+		for _, t := range tables {
+			normalized := normalizeIdentifier(t.TableName)
+			if normalized != "" {
+				tableCounts[normalized]++
+			}
+		}
+
 		// Проверяем все таблицы из FROM
 		for _, table := range tables {
 			// Пропускаем переменные и служебные
@@ -2934,7 +3074,26 @@ func analyzeStatementForHintType(lines []string, startLine int, file *indexedFil
 			}
 
 			var allowedHints []string
-			isTarget := sameTableReference(table.TableName, targetTable) || sameTableReference(table.Alias, targetTable)
+			normalizedTableName := normalizeIdentifier(table.TableName)
+			normalizedTarget := normalizeIdentifier(targetTable)
+			normalizedAlias := normalizeIdentifier(table.Alias)
+
+			// Проверяем, является ли таблица целевой
+			isTarget := false
+			if sameTableReference(table.TableName, targetTable) || sameTableReference(table.Alias, targetTable) {
+				// Если таблица с тем же именем встречается несколько раз,
+				// целевой считается только экземпляр с совпадающим алиасом
+				if tableCounts[normalizedTableName] > 1 {
+					// Целевая таблица - та, у которой алиас совпадает с именем целевой таблицы
+					// (или первый экземпляр без явного алиаса, когда алиас совпадает с именем таблицы)
+					if normalizedAlias == normalizedTarget || (normalizedAlias == "" && normalizedTableName == normalizedTarget) {
+						isTarget = true
+					}
+				} else {
+					isTarget = true
+				}
+			}
+
 			if isTarget {
 				// Целевая таблица
 				switch stmtType {
