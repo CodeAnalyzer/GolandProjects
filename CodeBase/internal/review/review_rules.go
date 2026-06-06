@@ -730,8 +730,8 @@ func analyzeStatementForForceOrder2Tbl(lines []string, startLine int, file *inde
 		return nil
 	}
 
-	// Проверяем наличие макроса M_FORCEORDER*
-	lower := strings.ToLower(trimmedText)
+	// Проверяем наличие макроса M_FORCEORDER* во всем тексте оператора (включая UNION)
+	lower := strings.ToLower(fullText)
 	hasForceOrderMacro := false
 
 	for _, macro := range forceOrderMacros {
@@ -2728,6 +2728,15 @@ func analyzeStatementForFullScan(lines []string, startLine int, file *indexedFil
 			// Если есть JOIN — соединение покрывает фильтрацию
 			if hasJoinCondition(lower) {
 				return nil
+			}
+			// Если в SET есть подзапрос (SELECT) — подзапрос сам фильтрует данные
+			setIdx := strings.Index(lower, " set ")
+			if setIdx > 0 {
+				setPart := lower[setIdx+5:]
+				// Проверяем есть ли SELECT в SET (подзапрос)
+				if strings.Contains(setPart, "select") {
+					return nil
+				}
 			}
 			wherePart := extractWherePartForIndexWrong(lower)
 			if wherePart == "" {

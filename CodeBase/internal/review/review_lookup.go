@@ -554,6 +554,35 @@ func extractTablesFromFromClause(fullText string) []tableFromClause {
 
 	// Удаляем комментарии перед парсингом
 	fullText = removeComments(fullText)
+	lower := strings.ToLower(fullText)
+
+	// Для UPDATE ... FROM синтаксиса: ищем FROM после SET
+	if strings.HasPrefix(lower, "update") {
+		setIdx := strings.Index(lower, " set ")
+		if setIdx > 0 {
+			// Ищем FROM после SET
+			fromIdx := strings.Index(lower[setIdx:], " from ")
+			if fromIdx >= 0 {
+				fromIdx += setIdx
+				fromStart := fromIdx
+				// Ищем конец FROM clause (до WHERE, GROUP BY, ORDER BY и т.д.)
+				fromEnd := len(lower)
+				for i := fromStart + 5; i < len(lower); i++ {
+					if keywordMatchAt(lower, i, "where") ||
+						keywordMatchAt(lower, i, "group by") ||
+						keywordMatchAt(lower, i, "order by") ||
+						keywordMatchAt(lower, i, "having") {
+						fromEnd = i
+						break
+					}
+				}
+				fromClause := fullText[fromStart:fromEnd]
+				return parseTablesInFromClause(fromClause)
+			}
+		}
+	}
+
+	// Для обычных SELECT/DELETE: ищем FROM на верхнем уровне
 	fromStart, fromEnd, found := findTopLevelFromClauseBounds(fullText)
 	if !found {
 		return result
@@ -561,8 +590,7 @@ func extractTablesFromFromClause(fullText string) []tableFromClause {
 
 	fromClause := fullText[fromStart:fromEnd]
 	// Проверяем, что fromClause действительно начинается с FROM
-	lower := strings.ToLower(fromClause)
-	if !strings.HasPrefix(lower, "from") {
+	if !strings.HasPrefix(strings.ToLower(fromClause), "from") {
 		return result
 	}
 

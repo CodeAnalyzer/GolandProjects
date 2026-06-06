@@ -1073,6 +1073,44 @@ func TestAnalyzeStatementForForceOrder2Tbl_WithNospool(t *testing.T) {
 	}
 }
 
+func TestAnalyzeStatementForForceOrder2Tbl_UnionWithMacroAfterUnion(t *testing.T) {
+	// UNION-запрос с макросом после UNION - не должен выдавать finding
+	// Теперь проверяется через checkForceOrder2Tbl, который объединяет UNION-операторы
+	lines := []string{
+		"select * from t1, t2 where t1.id = t2.id",
+		"union",
+		"select * from t3, t4 where t3.id = t4.id",
+		"M_FORCEORDER",
+	}
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+
+	// Проверяем через analyzeStatementForForceOrder2Tbl напрямую (для fullText проверки)
+	finding := analyzeStatementForForceOrder2Tbl(lines, 1, file)
+	if finding != nil {
+		t.Fatalf("expected no finding when M_FORCEORDER present after UNION, got: %+v", finding)
+	}
+}
+
+func TestAnalyzeStatementForForceOrder2Tbl_UnionWithoutMacro(t *testing.T) {
+	// UNION-запрос без макроса - должен выдавать finding
+	// Теперь проверяется через checkForceOrder2Tbl, который объединяет UNION-операторы
+	lines := []string{
+		"select * from t1, t2 where t1.id = t2.id",
+		"union",
+		"select * from t3, t4 where t3.id = t4.id",
+	}
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+
+	// Проверяем через analyzeStatementForForceOrder2Tbl напрямую (для fullText проверки)
+	finding := analyzeStatementForForceOrder2Tbl(lines, 1, file)
+	if finding == nil {
+		t.Fatalf("expected finding for UNION with 2 tables without M_FORCEORDER")
+	}
+	if finding.Rule != RuleForceOrder2Tbl {
+		t.Fatalf("expected RuleForceOrder2Tbl, got %s", finding.Rule)
+	}
+}
+
 func TestHasSaveTran_Detects(t *testing.T) {
 	if !hasSaveTran("save tran @savepoint") {
 		t.Fatalf("should detect 'save tran'")
