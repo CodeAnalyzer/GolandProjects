@@ -1,10 +1,14 @@
 package review
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	sqlparser "github.com/codebase/internal/parser/sql"
 	"github.com/codebase/internal/store"
@@ -13,6 +17,18 @@ import (
 type Runner struct {
 	db     *store.DB
 	parser *sqlparser.Parser
+	exec   *reviewExecContext
+}
+
+type reviewExecContext struct {
+	filePath string
+	content  []byte
+	lines    []string
+}
+
+type ruleTask struct {
+	rule RuleID
+	run  func(ctx context.Context) ([]Finding, error)
 }
 
 func NewRunner(db *store.DB) *Runner {
@@ -44,180 +60,25 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 		return nil, err
 	}
 
-	ruleSet := enabledRuleSet(opts.Rules)
-	findings := make([]Finding, 0)
+	content, err := os.ReadFile(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	r.exec = &reviewExecContext{
+		filePath: normalizePath(file.Path),
+		content:  content,
+		lines:    strings.Split(string(content), "\n"),
+	}
+	defer func() {
+		r.exec = nil
+	}()
 
-	if ruleSet[RuleForeignTablesUsing] {
-		items, err := r.checkForeignTables(parsed, file, "t")
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleForeignPTablesUsing] {
-		items, err := r.checkForeignPTables(parsed, file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleForeignProcedureUsing] {
-		items, err := r.checkForeignProcedures(parsed, file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleExecNotExistsProc] {
-		items, err := r.checkExecNotExistsProcedures(parsed, file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleProcDuplicate] {
-		items, err := r.checkProcDuplicate(parsed, file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleProcParamDefValue] {
-		items, err := r.checkProcParamDefValue(parsed, file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleProcElseCase] {
-		items, err := r.checkProcElseCase(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleUseSelectAll] {
-		items, err := r.checkUseSelectAll(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleTruncTbl] {
-		items, err := r.checkTruncTbl(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleAnsiInJoin] {
-		items, err := r.checkAnsiInJoin(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleDatatype] {
-		items := r.checkDatatype(parsed, file)
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleInsertRowLock] {
-		items, err := r.checkInsertRowLock(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleUseEqColumn] {
-		items, err := r.checkUseEqColumn(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleTableFullScan] {
-		items, err := r.checkTableFullScan(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleTableHintExists] {
-		items, err := r.checkTableHintExists(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleTableHintIsRight] {
-		items, err := r.checkTableHintIsRight(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleIndexExistsInDB] {
-		items, err := r.checkIndexExistsInDB(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleIndexWrong] {
-		items, err := r.checkIndexWrong(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleUpdateOnlyVar] {
-		items, err := r.checkUpdateOnlyVar(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RulePTableSpid] {
-		items, err := r.checkPTableSpid(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleForceOrder2Tbl] {
-		items, err := r.checkForceOrder2Tbl(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleSaveTran] {
-		items, err := r.checkSaveTran(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleUseDrop] {
-		items, err := r.checkUseDrop(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleMathOperations] {
-		items, err := r.checkMathOperations(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
-	}
-	if ruleSet[RuleExistsWithAndInIf] {
-		items, err := r.checkExistsWithAndInIf(file)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, items...)
+	ruleSet := enabledRuleSet(opts.Rules)
+	tasks := r.buildRuleTasks(ruleSet, parsed, file)
+	maxWorkers := r.maxRuleWorkers(len(tasks))
+	findings, err := runRuleTasks(tasks, maxWorkers)
+	if err != nil {
+		return nil, err
 	}
 
 	minSeverity := opts.MinSeverity
@@ -246,3 +107,249 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 	}
 	return result, nil
 }
+
+func (r *Runner) buildRuleTasks(ruleSet map[RuleID]bool, parsed *sqlparser.ParseResult, file *indexedFile) []ruleTask {
+	tasks := make([]ruleTask, 0, len(ruleSet))
+	if ruleSet[RuleForeignTablesUsing] {
+		tasks = append(tasks, ruleTask{rule: RuleForeignTablesUsing, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkForeignTables(parsed, file, "t")
+		}})
+	}
+	if ruleSet[RuleForeignPTablesUsing] {
+		tasks = append(tasks, ruleTask{rule: RuleForeignPTablesUsing, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkForeignPTables(parsed, file)
+		}})
+	}
+	if ruleSet[RuleForeignProcedureUsing] {
+		tasks = append(tasks, ruleTask{rule: RuleForeignProcedureUsing, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkForeignProcedures(parsed, file)
+		}})
+	}
+	if ruleSet[RuleExecNotExistsProc] {
+		tasks = append(tasks, ruleTask{rule: RuleExecNotExistsProc, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkExecNotExistsProcedures(parsed, file)
+		}})
+	}
+	if ruleSet[RuleProcDuplicate] {
+		tasks = append(tasks, ruleTask{rule: RuleProcDuplicate, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkProcDuplicate(parsed, file)
+		}})
+	}
+	if ruleSet[RuleProcParamDefValue] {
+		tasks = append(tasks, ruleTask{rule: RuleProcParamDefValue, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkProcParamDefValue(parsed, file)
+		}})
+	}
+	if ruleSet[RuleProcElseCase] {
+		tasks = append(tasks, ruleTask{rule: RuleProcElseCase, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkProcElseCase(file)
+		}})
+	}
+	if ruleSet[RuleUseSelectAll] {
+		tasks = append(tasks, ruleTask{rule: RuleUseSelectAll, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkUseSelectAll(file)
+		}})
+	}
+	if ruleSet[RuleTruncTbl] {
+		tasks = append(tasks, ruleTask{rule: RuleTruncTbl, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkTruncTbl(file)
+		}})
+	}
+	if ruleSet[RuleAnsiInJoin] {
+		tasks = append(tasks, ruleTask{rule: RuleAnsiInJoin, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkAnsiInJoin(file)
+		}})
+	}
+	if ruleSet[RuleDatatype] {
+		tasks = append(tasks, ruleTask{rule: RuleDatatype, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkDatatype(parsed, file)
+		}})
+	}
+	if ruleSet[RuleInsertRowLock] {
+		tasks = append(tasks, ruleTask{rule: RuleInsertRowLock, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkInsertRowLock(file)
+		}})
+	}
+	if ruleSet[RuleUseEqColumn] {
+		tasks = append(tasks, ruleTask{rule: RuleUseEqColumn, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkUseEqColumn(file)
+		}})
+	}
+	if ruleSet[RuleTableFullScan] {
+		tasks = append(tasks, ruleTask{rule: RuleTableFullScan, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkTableFullScan(file)
+		}})
+	}
+	if ruleSet[RuleTableHintExists] {
+		tasks = append(tasks, ruleTask{rule: RuleTableHintExists, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkTableHintExists(file)
+		}})
+	}
+	if ruleSet[RuleTableHintIsRight] {
+		tasks = append(tasks, ruleTask{rule: RuleTableHintIsRight, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkTableHintIsRight(file)
+		}})
+	}
+	if ruleSet[RuleIndexExistsInDB] {
+		tasks = append(tasks, ruleTask{rule: RuleIndexExistsInDB, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkIndexExistsInDB(file)
+		}})
+	}
+	if ruleSet[RuleIndexWrong] {
+		tasks = append(tasks, ruleTask{rule: RuleIndexWrong, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkIndexWrong(file)
+		}})
+	}
+	if ruleSet[RuleUpdateOnlyVar] {
+		tasks = append(tasks, ruleTask{rule: RuleUpdateOnlyVar, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkUpdateOnlyVar(file)
+		}})
+	}
+	if ruleSet[RulePTableSpid] {
+		tasks = append(tasks, ruleTask{rule: RulePTableSpid, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkPTableSpid(file)
+		}})
+	}
+	if ruleSet[RuleForceOrder2Tbl] {
+		tasks = append(tasks, ruleTask{rule: RuleForceOrder2Tbl, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkForceOrder2Tbl(file)
+		}})
+	}
+	if ruleSet[RuleSaveTran] {
+		tasks = append(tasks, ruleTask{rule: RuleSaveTran, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkSaveTran(file)
+		}})
+	}
+	if ruleSet[RuleUseDrop] {
+		tasks = append(tasks, ruleTask{rule: RuleUseDrop, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkUseDrop(file)
+		}})
+	}
+	if ruleSet[RuleMathOperations] {
+		tasks = append(tasks, ruleTask{rule: RuleMathOperations, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkMathOperations(file)
+		}})
+	}
+	if ruleSet[RuleExistsWithAndInIf] {
+		tasks = append(tasks, ruleTask{rule: RuleExistsWithAndInIf, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkExistsWithAndInIf(file)
+		}})
+	}
+	return tasks
+}
+
+func (r *Runner) maxRuleWorkers(enabledRules int) int {
+	if enabledRules <= 0 {
+		return 1
+	}
+	limit := runtime.NumCPU()
+	if limit <= 0 {
+		limit = 1
+	}
+	if r.db != nil {
+		dbLimit := r.db.Stats().MaxOpenConnections
+		if dbLimit > 0 && dbLimit < limit {
+			limit = dbLimit
+		}
+	}
+	if enabledRules < limit {
+		limit = enabledRules
+	}
+	if limit < 1 {
+		return 1
+	}
+	return limit
+}
+
+func runRuleTasks(tasks []ruleTask, maxWorkers int) ([]Finding, error) {
+	if len(tasks) == 0 {
+		return nil, nil
+	}
+	if maxWorkers < 1 {
+		maxWorkers = 1
+	}
+
+	type taskResult struct {
+		findings []Finding
+		err      error
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tasksCh := make(chan ruleTask)
+	resultsCh := make(chan taskResult, len(tasks))
+
+	workerCount := maxWorkers
+	if workerCount > len(tasks) {
+		workerCount = len(tasks)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case task, ok := <-tasksCh:
+					if !ok {
+						return
+					}
+					items, err := task.run(ctx)
+					resultsCh <- taskResult{findings: items, err: err}
+					if err != nil {
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	go func() {
+		defer close(tasksCh)
+		for _, task := range tasks {
+			select {
+			case <-ctx.Done():
+				return
+			case tasksCh <- task:
+			}
+		}
+	}()
+
+	go func() {
+		wg.Wait()
+		close(resultsCh)
+	}()
+
+	findings := make([]Finding, 0)
+	var firstErr error
+	for result := range resultsCh {
+		if result.err != nil {
+			if firstErr == nil {
+				firstErr = result.err
+			}
+			continue
+		}
+		findings = append(findings, result.findings...)
+	}
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
+	return findings, nil
+}
+
+func (r *Runner) fileContent(path string) ([]byte, error) {
+	if r.exec != nil {
+		if normalizePath(path) == r.exec.filePath {
+			return r.exec.content, nil
+		}
+	}
+	return os.ReadFile(path)
+}
+

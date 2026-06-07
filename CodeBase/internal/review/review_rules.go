@@ -3,7 +3,6 @@ package review
 import (
 	"database/sql"
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 
@@ -55,7 +54,7 @@ func (r *Runner) checkForeignTables(parsed *sqlparser.ParseResult, file *indexed
 func (r *Runner) checkIndexWrong(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +267,7 @@ func (r *Runner) analyzeStatementForIndexWrong(lines []string, startLine int, fi
 func (r *Runner) checkUpdateOnlyVar(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -459,7 +458,7 @@ func analyzeStatementForUpdateOnlyVar(lines []string, startLine int, file *index
 func (r *Runner) checkPTableSpid(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -611,7 +610,7 @@ func (r *Runner) analyzeStatementForPTableSpid(lines []string, startLine int, fi
 func (r *Runner) checkForceOrder2Tbl(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -766,7 +765,7 @@ func analyzeStatementForForceOrder2Tbl(lines []string, startLine int, file *inde
 func (r *Runner) checkSaveTran(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -865,7 +864,7 @@ func hasSaveTran(lower string) bool {
 func (r *Runner) checkUseDrop(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1016,7 +1015,7 @@ func isProcBodyEnd(lower string) bool {
 func (r *Runner) checkMathOperations(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1196,7 +1195,7 @@ func hasMathOperator(expr string) bool {
 func (r *Runner) checkExistsWithAndInIf(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1316,7 +1315,7 @@ func hasTableQuery(condition string) bool {
 func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1593,7 +1592,7 @@ func (r *Runner) checkProcParamDefValue(parsed *sqlparser.ParseResult, file *ind
 	findings := make([]Finding, 0)
 
 	// Читаем содержимое файла один раз для извлечения тел процедур
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1765,7 +1764,7 @@ func (r *Runner) checkProcElseCase(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
 	// Читаем содержимое файла
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1816,7 +1815,7 @@ func (r *Runner) checkUseSelectAll(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
 	// Читаем содержимое файла
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1853,7 +1852,7 @@ func (r *Runner) checkTruncTbl(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
 	// Читаем содержимое файла
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1887,7 +1886,7 @@ func (r *Runner) checkTruncTbl(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkDatatype(parsed *sqlparser.ParseResult, file *indexedFile) []Finding {
+func (r *Runner) checkDatatype(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	seen := map[string]string{}
 	for _, definition := range parsed.ColumnDefinitions {
@@ -1916,19 +1915,21 @@ func (r *Runner) checkDatatype(parsed *sqlparser.ParseResult, file *indexedFile)
 	}
 
 	insertSelectFindings, err := r.checkDatatypeInsertSelect(parsed, file)
-	if err == nil {
-		findings = append(findings, insertSelectFindings...)
+	if err != nil {
+		return nil, err
 	}
+	findings = append(findings, insertSelectFindings...)
 
 	updateSetFindings, err := r.checkDatatypeUpdateSet(parsed, file)
-	if err == nil {
-		findings = append(findings, updateSetFindings...)
+	if err != nil {
+		return nil, err
 	}
+	findings = append(findings, updateSetFindings...)
 
-	return findings
+	return findings, nil
 }
 
-func analyzeStatementForTableHintExists(lines []string, startLine int, file *indexedFile, stmtType string) []Finding {
+func analyzeStatementForTableHintExists(lines []string, allLines []string, startLine int, file *indexedFile, stmtType string) []Finding {
 	findings := make([]Finding, 0)
 	if len(lines) == 0 || stmtType == "" {
 		return findings
@@ -1949,12 +1950,8 @@ func analyzeStatementForTableHintExists(lines []string, startLine int, file *ind
 
 	// Получаем текст строки для вывода в сообщении об ошибке
 	lineText := ""
-	content, err := os.ReadFile(file.Path)
-	if err == nil {
-		fileLines := strings.Split(string(content), "\n")
-		if startLine > 0 && startLine <= len(fileLines) {
-			lineText = strings.TrimSpace(fileLines[startLine-1])
-		}
+	if startLine > 0 && startLine <= len(allLines) {
+		lineText = strings.TrimSpace(allLines[startLine-1])
 	}
 
 	for _, table := range tables {
@@ -2212,7 +2209,7 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
 	// Читаем содержимое файла
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -2353,7 +2350,7 @@ func (r *Runner) checkInsertRowLock(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
 	// Читаем содержимое файла
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -2461,7 +2458,7 @@ func analyzeInsertForRowLock(lines []string, startLine int, file *indexedFile) *
 func (r *Runner) checkUseEqColumn(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -2595,7 +2592,7 @@ func analyzeConditionForEqColumn(lines []string, startLine int, file *indexedFil
 func (r *Runner) checkTableFullScan(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -2799,7 +2796,7 @@ var allowedTableHints = []string{
 func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -2850,7 +2847,7 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 		parenDepth += countParens(line)
 
 		if hasStatementEnded(lower, stmtBuffer) {
-			items := analyzeStatementForTableHintExists(stmtBuffer, stmtStartLine, file, stmtType)
+			items := analyzeStatementForTableHintExists(stmtBuffer, lines, stmtStartLine, file, stmtType)
 			findings = append(findings, items...)
 			inStatement = false
 			stmtBuffer = nil
@@ -2879,7 +2876,7 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 	}
 
 	if inStatement && len(stmtBuffer) > 0 {
-		items := analyzeStatementForTableHintExists(stmtBuffer, stmtStartLine, file, stmtType)
+		items := analyzeStatementForTableHintExists(stmtBuffer, lines, stmtStartLine, file, stmtType)
 		findings = append(findings, items...)
 	}
 
@@ -2932,7 +2929,7 @@ var (
 func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := os.ReadFile(file.Path)
+	content, err := r.fileContent(file.Path)
 	if err != nil {
 		return nil, err
 	}

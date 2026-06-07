@@ -1,10 +1,13 @@
 package review
 
 import (
+	"context"
+	"errors"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codebase/internal/model"
 )
@@ -27,6 +30,48 @@ func TestIsSharedTTable(t *testing.T) {
 				t.Fatalf("isSharedTTable(%q) = %v, want %v", tc.tableName, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRunRuleTasks_SuccessAggregatesFindings(t *testing.T) {
+	tasks := []ruleTask{
+		{rule: RuleUseDrop, run: func(ctx context.Context) ([]Finding, error) {
+			return []Finding{{Rule: RuleUseDrop, Line: 10}}, nil
+		}},
+		{rule: RuleMathOperations, run: func(ctx context.Context) ([]Finding, error) {
+			return []Finding{{Rule: RuleMathOperations, Line: 20}}, nil
+		}},
+	}
+
+	findings, err := runRuleTasks(tasks, 2)
+	if err != nil {
+		t.Fatalf("runRuleTasks(...) unexpected error: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("findings count = %d, want 2", len(findings))
+	}
+}
+
+func TestRunRuleTasks_FirstErrorCancels(t *testing.T) {
+	wantErr := errors.New("boom")
+
+	tasks := []ruleTask{
+		{rule: RuleUseDrop, run: func(ctx context.Context) ([]Finding, error) {
+			select {
+			case <-ctx.Done():
+				return nil, nil
+			case <-time.After(2 * time.Second):
+				return nil, errors.New("context was not cancelled in time")
+			}
+		}},
+		{rule: RuleMathOperations, run: func(ctx context.Context) ([]Finding, error) {
+			return nil, wantErr
+		}},
+	}
+
+	_, err := runRuleTasks(tasks, 2)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runRuleTasks(...) error = %v, want %v", err, wantErr)
 	}
 }
 
