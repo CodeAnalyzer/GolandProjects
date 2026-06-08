@@ -925,6 +925,36 @@ inner join tContract c M_NOLOCK_INDEX(XPKtContract)
 	}
 }
 
+func TestExtractTablesFromFromClause_NoPanicOnInvalidUTF8_SelectBranch(t *testing.T) {
+	sql := "select * from tContract\xff"
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("extractTablesFromFromClause panicked on invalid utf-8 in select branch: %v", r)
+		}
+	}()
+
+	tables := extractTablesFromFromClause(sql)
+	if len(tables) == 0 {
+		t.Fatalf("expected parsed tables, got %#v", tables)
+	}
+}
+
+func TestExtractTablesFromFromClause_NoPanicOnInvalidUTF8_UpdateBranch(t *testing.T) {
+	sql := "update tContract set A=1 from tContract c\xff"
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("extractTablesFromFromClause panicked on invalid utf-8 in update branch: %v", r)
+		}
+	}()
+
+	tables := extractTablesFromFromClause(sql)
+	if len(tables) == 0 {
+		t.Fatalf("expected parsed tables, got %#v", tables)
+	}
+}
+
 func TestShouldKeepChosenIndexForPKJoin(t *testing.T) {
 	joinCols := map[string]struct{}{"ruleid": {}}
 
@@ -1349,6 +1379,58 @@ func TestIsPotentialPrecisionLoss_DateTimeToOperDay(t *testing.T) {
 	}
 	if isPotentialPrecisionLoss("DSOPERDAY", "DSOPERDAY") {
 		t.Fatalf("did not expect precision loss for equal types")
+	}
+}
+
+func TestIsPotentialPrecisionLoss_NumericDecimal(t *testing.T) {
+	if !isPotentialPrecisionLoss("numeric(15,0)", "numeric(10,0)") {
+		t.Fatalf("expected precision loss for numeric(15,0) -> numeric(10,0)")
+	}
+	if !isPotentialPrecisionLoss("decimal(15,4)", "decimal(15,2)") {
+		t.Fatalf("expected precision loss for decimal(15,4) -> decimal(15,2)")
+	}
+	if isPotentialPrecisionLoss("numeric(10,0)", "numeric(15,0)") {
+		t.Fatalf("did not expect precision loss for numeric(10,0) -> numeric(15,0)")
+	}
+}
+
+func TestIsPotentialPrecisionLoss_NumericToDSIntKey(t *testing.T) {
+	if !isPotentialPrecisionLoss("numeric(15,0)", "DSINT_KEY") {
+		t.Fatalf("expected precision loss for numeric(15,0) -> DSINT_KEY")
+	}
+	if isPotentialPrecisionLoss("numeric(10,0)", "DSIDENTIFIER") {
+		t.Fatalf("did not expect precision loss for numeric(10,0) -> DSIDENTIFIER")
+	}
+}
+
+func TestParseSelectAssignStatement_Basic(t *testing.T) {
+	query := "select @OpenAccBP = t.ID from tConsConfigParamSync t where t.SysName = 'CONSUMER_OPENACC_BANKPARTNER'"
+	stmt, ok := parseSelectAssignStatement(query)
+	if !ok {
+		t.Fatalf("expected parseSelectAssignStatement to parse query")
+	}
+	if len(stmt.Assignments) != 1 {
+		t.Fatalf("assignments len = %d, want 1", len(stmt.Assignments))
+	}
+	if stmt.Assignments[0].TargetVariable != "@OpenAccBP" {
+		t.Fatalf("target = %q, want %q", stmt.Assignments[0].TargetVariable, "@OpenAccBP")
+	}
+	if stmt.Assignments[0].Expression != "t.ID" {
+		t.Fatalf("expression = %q, want %q", stmt.Assignments[0].Expression, "t.ID")
+	}
+	if !strings.HasPrefix(strings.ToLower(stmt.FromClause), "from") {
+		t.Fatalf("fromClause must start with FROM, got %q", stmt.FromClause)
+	}
+}
+
+func TestParseSelectAssignStatement_MultipleAssignments(t *testing.T) {
+	query := "select @a = t.ColA, @b = isnull(t.ColB, 0) from tTable t"
+	stmt, ok := parseSelectAssignStatement(query)
+	if !ok {
+		t.Fatalf("expected parseSelectAssignStatement to parse query")
+	}
+	if len(stmt.Assignments) != 2 {
+		t.Fatalf("assignments len = %d, want 2", len(stmt.Assignments))
 	}
 }
 

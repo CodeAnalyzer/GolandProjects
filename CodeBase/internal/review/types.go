@@ -120,3 +120,13 @@ type insertSelectStatement struct {
 	SelectExpressions []string
 	FromClause        string
 }
+
+type selectAssignment struct {
+	TargetVariable string
+	Expression     string
+}
+
+type selectAssignStatement struct {
+	Assignments []selectAssignment
+	FromClause  string
+}

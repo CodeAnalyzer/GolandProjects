@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/codebase/internal/model"
@@ -49,6 +50,103 @@ func (r *Runner) checkForeignTables(parsed *sqlparser.ParseResult, file *indexed
 		})
 	}
 	return findings, nil
+}
+
+func (r *Runner) checkDatatypeSelectAssign(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	seen := make(map[string]struct{})
+
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	variableTypes := collectVariableTypes(parsed, string(content))
+
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+		stmt, ok := parseSelectAssignStatement(fragment.QueryText)
+		if !ok {
+			continue
+		}
+
+		aliasMap := parseAliasMap(stmt.FromClause)
+		for _, assignment := range stmt.Assignments {
+			targetVariable := normalizeVariableName(assignment.TargetVariable)
+			targetType, exists := variableTypes[targetVariable]
+			if !exists || targetType == "" {
+				continue
+			}
+
+			if hasExplicitConversion(assignment.Expression, targetType) {
+				continue
+			}
+
+			sourceTypes := r.resolveExpressionTypes(assignment.Expression, aliasMap)
+			for _, sourceType := range sourceTypes {
+				if !isPotentialPrecisionLoss(sourceType, targetType) {
+					continue
+				}
+				key := fmt.Sprintf("%d|%s|%s", fragment.LineNumber, targetVariable, normalizeDataType(sourceType))
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+				findings = append(findings, Finding{
+					Rule:             RuleDatatype,
+					Severity:         SeverityFineCode,
+					Message:          fmt.Sprintf("Потеря точности типов данных: %s -> %s", sourceType, targetType),
+					File:             file.Path,
+					Line:             fragment.LineNumber,
+					Object:           assignment.TargetVariable,
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	return findings, nil
+}
+
+func collectVariableTypes(parsed *sqlparser.ParseResult, content string) map[string]string {
+	result := make(map[string]string)
+
+	for _, proc := range parsed.Procedures {
+		if proc == nil {
+			continue
+		}
+		for _, p := range proc.Params {
+			name := normalizeVariableName(p.Name)
+			typeName := strings.TrimSpace(p.Type)
+			if name == "" || typeName == "" {
+				continue
+			}
+			result[name] = typeName
+		}
+	}
+
+	declRe := regexp.MustCompile(`(?i)@([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)`)
+	for _, m := range declRe.FindAllStringSubmatch(content, -1) {
+		if len(m) < 3 {
+			continue
+		}
+		name := normalizeVariableName(m[1])
+		typeName := strings.TrimSpace(m[2])
+		if name == "" || typeName == "" {
+			continue
+		}
+		result[name] = typeName
+	}
+
+	return result
+}
+
+func normalizeVariableName(value string) string {
+	v := strings.TrimSpace(value)
+	v = strings.Trim(v, "[]\"")
+	v = strings.TrimPrefix(v, "@")
+	return strings.ToLower(v)
 }
 
 func (r *Runner) checkIndexWrong(file *indexedFile) ([]Finding, error) {
@@ -1926,6 +2024,12 @@ func (r *Runner) checkDatatype(parsed *sqlparser.ParseResult, file *indexedFile)
 	}
 	findings = append(findings, updateSetFindings...)
 
+	selectAssignFindings, err := r.checkDatatypeSelectAssign(parsed, file)
+	if err != nil {
+		return nil, err
+	}
+	findings = append(findings, selectAssignFindings...)
+
 	return findings, nil
 }
 
@@ -2183,12 +2287,44 @@ func isPotentialPrecisionLoss(sourceType string, targetType string) bool {
 	if source == target {
 		return false
 	}
+	if sourceP, sourceS, okSource := numericPrecisionScale(source); okSource {
+		if targetP, targetS, okTarget := numericPrecisionScale(target); okTarget {
+			return sourceP > targetP || sourceS > targetS
+		}
+	}
 	sourceRank := datetimePrecisionRank(source)
 	targetRank := datetimePrecisionRank(target)
 	if sourceRank > 0 && targetRank > 0 {
 		return sourceRank > targetRank
 	}
 	return false
+}
+
+func numericPrecisionScale(dataType string) (int, int, bool) {
+	v := normalizeDataType(dataType)
+	numericRe := regexp.MustCompile(`(?i)\b(?:numeric|decimal)\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)`)
+	if m := numericRe.FindStringSubmatch(v); len(m) == 3 {
+		precision, errP := strconv.Atoi(m[1])
+		scale, errS := strconv.Atoi(m[2])
+		if errP == nil && errS == nil {
+			return precision, scale, true
+		}
+	}
+
+	switch {
+	case strings.HasPrefix(v, "dsint_key_one"), strings.HasPrefix(v, "dsint_key"), v == "int", v == "integer", strings.Contains(v, " int"):
+		return 10, 0, true
+	case strings.HasPrefix(v, "dssmallint"), strings.Contains(v, "smallint"):
+		return 5, 0, true
+	case strings.HasPrefix(v, "dstinyint"), strings.Contains(v, "tinyint"):
+		return 3, 0, true
+	case strings.HasPrefix(v, "dsbigint"), strings.Contains(v, "bigint"), strings.HasPrefix(v, "dsidentifier19"):
+		return 19, 0, true
+	case strings.HasPrefix(v, "dsidentifier"):
+		return 15, 0, true
+	default:
+		return 0, 0, false
+	}
 }
 
 func datetimePrecisionRank(dataType string) int {

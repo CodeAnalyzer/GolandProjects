@@ -339,6 +339,35 @@ func keywordMatchAt(lower string, pos int, keyword string) bool {
 	return true
 }
 
+func toLowerASCIIPreservingLen(text string) string {
+	b := []byte(text)
+	for i := 0; i < len(b); i++ {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
+func safeSliceByBounds(text string, start, end int) (string, bool) {
+	if start < 0 {
+		start = 0
+	}
+	if start > len(text) {
+		start = len(text)
+	}
+	if end < start {
+		end = start
+	}
+	if end > len(text) {
+		end = len(text)
+	}
+	if start >= end {
+		return "", false
+	}
+	return text[start:end], true
+}
+
 // splitByCommasRespectingParens разбивает строку по запятым, но только те что вне скобок
 // Запятые внутри функций (isnull(arg1, arg2)) не используются как разделители
 func splitByCommasRespectingParens(sql string) []string {
@@ -372,7 +401,7 @@ func splitByCommasRespectingParens(sql string) []string {
 }
 
 func findTopLevelFromClauseBounds(text string) (int, int, bool) {
-	lower := strings.ToLower(text)
+	lower := toLowerASCIIPreservingLen(text)
 	fromIdx := -1
 	depth := 0
 	inString := false
@@ -554,7 +583,7 @@ func extractTablesFromFromClause(fullText string) []tableFromClause {
 
 	// Удаляем комментарии перед парсингом
 	fullText = removeComments(fullText)
-	lower := strings.ToLower(fullText)
+	lower := toLowerASCIIPreservingLen(fullText)
 
 	// Для UPDATE ... FROM синтаксиса: ищем FROM после SET
 	if strings.HasPrefix(lower, "update") {
@@ -576,7 +605,10 @@ func extractTablesFromFromClause(fullText string) []tableFromClause {
 						break
 					}
 				}
-				fromClause := fullText[fromStart:fromEnd]
+				fromClause, ok := safeSliceByBounds(fullText, fromStart, fromEnd)
+				if !ok {
+					return result
+				}
 				return parseTablesInFromClause(fromClause)
 			}
 		}
@@ -588,7 +620,10 @@ func extractTablesFromFromClause(fullText string) []tableFromClause {
 		return result
 	}
 
-	fromClause := fullText[fromStart:fromEnd]
+	fromClause, ok := safeSliceByBounds(fullText, fromStart, fromEnd)
+	if !ok {
+		return result
+	}
 	// Проверяем, что fromClause действительно начинается с FROM
 	if !strings.HasPrefix(strings.ToLower(fromClause), "from") {
 		return result

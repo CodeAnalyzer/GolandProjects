@@ -116,6 +116,50 @@ func parseInsertSelectStatement(queryText string) (insertSelectStatement, bool) 
 	}, true
 }
 
+func parseSelectAssignStatement(queryText string) (selectAssignStatement, bool) {
+	text := strings.TrimSpace(queryText)
+	if text == "" {
+		return selectAssignStatement{}, false
+	}
+	lower := strings.ToLower(text)
+	if !strings.HasPrefix(lower, "select") {
+		return selectAssignStatement{}, false
+	}
+
+	fromPos := findTopLevelKeywordPosition(lower, "from")
+	if fromPos < 0 {
+		return selectAssignStatement{}, false
+	}
+
+	selectPart := strings.TrimSpace(text[len("select"):fromPos])
+	fromClause := strings.TrimSpace(text[fromPos:])
+	if selectPart == "" || fromClause == "" {
+		return selectAssignStatement{}, false
+	}
+
+	parts := splitTopLevelCSV(selectPart)
+	assignments := make([]selectAssignment, 0, len(parts))
+	assignRe := regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	for _, part := range parts {
+		m := assignRe.FindStringSubmatch(strings.TrimSpace(part))
+		if len(m) != 3 {
+			continue
+		}
+		targetVariable := strings.TrimSpace(m[1])
+		expression := strings.TrimSpace(m[2])
+		if targetVariable == "" || expression == "" {
+			continue
+		}
+		assignments = append(assignments, selectAssignment{TargetVariable: targetVariable, Expression: expression})
+	}
+
+	if len(assignments) == 0 {
+		return selectAssignStatement{}, false
+	}
+
+	return selectAssignStatement{Assignments: assignments, FromClause: fromClause}, true
+}
+
 func splitTopLevelCSV(value string) []string {
 	items := make([]string, 0)
 	b := strings.Builder{}
