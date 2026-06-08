@@ -831,23 +831,47 @@ func normalizeHintStatementText(text string) string {
 	return lower
 }
 
-func findOriginalLineNumber(originalLines []string, processedLine string) int {
+func findOriginalLineNumber(originalLines []string, processedLine string, currentLine int) int {
 	processedTrimmed := strings.TrimSpace(processedLine)
 	if processedTrimmed == "" {
 		return 0
 	}
 
-	// Ищем строку с таким же содержимым (с учетом пробелов)
-	for i, origLine := range originalLines {
+	startIndex := currentLine - 1
+	if startIndex < 0 {
+		startIndex = 0
+	}
+	if startIndex >= len(originalLines) {
+		startIndex = len(originalLines) - 1
+	}
+
+	// Ищем строку с таким же содержимым начиная с текущей позиции.
+	for i := startIndex; i < len(originalLines); i++ {
+		origLine := originalLines[i]
+		origTrimmed := strings.TrimSpace(origLine)
+		if origTrimmed == processedTrimmed {
+			return i + 1
+		}
+	}
+	for i := 0; i < startIndex; i++ {
+		origLine := originalLines[i]
 		origTrimmed := strings.TrimSpace(origLine)
 		if origTrimmed == processedTrimmed {
 			return i + 1
 		}
 	}
 
-	// Если точное совпадение не найдено, пробуем с учетом различий в пробелах
+	// Если точное совпадение не найдено, пробуем с учетом различий в пробелах.
 	processedNormalized := strings.Join(strings.Fields(processedLine), " ")
-	for i, origLine := range originalLines {
+	for i := startIndex; i < len(originalLines); i++ {
+		origLine := originalLines[i]
+		origNormalized := strings.Join(strings.Fields(origLine), " ")
+		if origNormalized == processedNormalized {
+			return i + 1
+		}
+	}
+	for i := 0; i < startIndex; i++ {
+		origLine := originalLines[i]
 		origNormalized := strings.Join(strings.Fields(origLine), " ")
 		if origNormalized == processedNormalized {
 			return i + 1

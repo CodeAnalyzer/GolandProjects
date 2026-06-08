@@ -366,8 +366,23 @@ func hasStatementEnded(lower string, stmtBuffer []string) bool {
 	// Используем regex с границами слова, чтобы избежать ложных срабатываний на подстроках
 	// Например, "dependantinfo" содержит "end", но это не ключевое слово
 	// UNION не разрывает оператор - он часть составного оператора
-	re := regexp.MustCompile(`(?i)([;]|\b(?:go|begin|end|if|while|declare|exec|execute|return)\b)`)
+	re := regexp.MustCompile(`(?i)([;]|\b(?:go|begin|if|while|declare|exec|execute|return)\b)`)
 	if re.MatchString(lower) {
+		return true
+	}
+
+	trimmed := strings.TrimSpace(lower)
+	endRe := regexp.MustCompile(`(?i)^end(?:\s|;|$)`)
+	if endRe.MatchString(trimmed) {
+		currentStmt := strings.ToLower(strings.Join(stmtBuffer, " "))
+		if strings.Contains(currentStmt, "update") && strings.Contains(currentStmt, " set ") {
+			hasCase := strings.Contains(currentStmt, " case") || strings.Contains(currentStmt, " case ")
+			hasFrom := strings.Contains(currentStmt, " from ")
+			hasWhere := strings.Contains(currentStmt, " where ")
+			if hasCase && !hasFrom && !hasWhere {
+				return false
+			}
+		}
 		return true
 	}
 

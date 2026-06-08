@@ -2435,8 +2435,9 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 				if parenDepth == 0 && !isInComment(line, j) {
 					hasComma = true
 					// Находим реальный номер строки в оригинальном файле
-					// Ищем строку с таким же содержимым (без учета пробелов)
-					commaLine = findOriginalLineNumber(originalLines, line)
+					// Ищем строку с таким же содержимым, начиная с текущей позиции,
+					// чтобы одинаковые строки в разных местах файла не мапились в первое вхождение
+					commaLine = findOriginalLineNumber(originalLines, line, lineNum)
 					if commaLine == 0 {
 						commaLine = lineNum // fallback к текущему номеру
 					}

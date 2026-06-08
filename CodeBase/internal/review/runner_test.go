@@ -75,6 +75,30 @@ func TestRunRuleTasks_FirstErrorCancels(t *testing.T) {
 	}
 }
 
+func TestHasStatementEnded_EndInsideUpdateCase_DoesNotEnd(t *testing.T) {
+	stmtBuffer := []string{
+		"update pConsAccListID",
+		"   set Rest = case",
+		"                when @AccCount = 1 and @Qty > @QtyPrepayment then Rest - @QtyPrepayment",
+		"                when @AccCount = 1 and @Qty <= @QtyPrepayment then 0",
+		"                when @AccCount > 1 then 0",
+		"                else 0",
+		"              end",
+	}
+
+	if hasStatementEnded("              end", stmtBuffer) {
+		t.Fatalf("hasStatementEnded should not end UPDATE on CASE END")
+	}
+}
+
+func TestHasStatementEnded_StandaloneEnd_EndsStatement(t *testing.T) {
+	stmtBuffer := []string{"begin", "select 1"}
+
+	if !hasStatementEnded("end", stmtBuffer) {
+		t.Fatalf("hasStatementEnded should end statement on standalone END")
+	}
+}
+
 func TestTableHintExists_InsertTargetAndSources(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -612,6 +636,23 @@ func TestAnalyzeStatementForFullScan_DetectsFullScan(t *testing.T) {
 			stmtType:  "update",
 			wantFound: true,
 			wantObj:   "tcontract",
+		},
+		{
+			name: "update with case end and where no finding",
+			lines: []string{
+				"update pConsAccListID",
+				"   set Rest = case",
+				"                when @AccCount = 1 and @Qty > @QtyPrepayment then Rest - @QtyPrepayment",
+				"                when @AccCount = 1 and @Qty <= @QtyPrepayment then 0",
+				"                when @AccCount > 1 then 0",
+				"                else 0",
+				"              end",
+				"  from pConsAccListID M_UPDLOCK_INDEX(XPKpConsAccListID)",
+				" where SPID      = @@SPID",
+				"   and AccountID = @CurrAccountID",
+			},
+			stmtType:  "update",
+			wantFound: false,
 		},
 		{
 			name:      "merge without on condition",
@@ -1701,6 +1742,53 @@ delete pTmpObjectAccount
 				}
 			}
 		})
+	}
+}
+
+func TestAnsiInJoin_RepeatedIdenticalFromLines_UsesCurrentOccurrenceLine(t *testing.T) {
+	content := `select @ResourceCorrID = r.ResourceID
+  from tContract          c    M_NOLOCK_INDEX(XPKtContract),
+       tTypeAccLink       ta   M_NOLOCK_INDEX(XIE0tInstrAccLink),
+       tAccountLink       al   M_NOLOCK_INDEX(XIE3tAccountLink),
+       tLinkedAccType     lat  M_NOLOCK_INDEX(XPKtLinkedAccType),
+       tResource          r    M_NOLOCK_INDEX(XPKtResource)
+ where 1 = 1
+
+select @CorrAccountID = r.ResourceID
+  from tContract          c    M_NOLOCK_INDEX(XPKtContract),
+       tTypeAccLink       ta   M_NOLOCK_INDEX(XIE0tInstrAccLink),
+       tAccountLink       al   M_NOLOCK_INDEX(XIE3tAccountLink),
+       tLinkedAccType     lat  M_NOLOCK_INDEX(XPKtLinkedAccType),
+       tResource          r    M_NOLOCK_INDEX(XPKtResource)
+ where 1 = 1`
+
+	tmpFile, err := os.CreateTemp("", "test_ansi_repeated_lines_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	file := &indexedFile{Path: tmpFile.Name(), DsProductID: 1}
+	runner := &Runner{}
+
+	findings, err := runner.checkAnsiInJoin(file)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("findings count = %d, want 2", len(findings))
+	}
+
+	if findings[0].Line != 5 {
+		t.Fatalf("first finding line = %d, want 5", findings[0].Line)
+	}
+	if findings[1].Line != 13 {
+		t.Fatalf("second finding line = %d, want 13", findings[1].Line)
 	}
 }
 
