@@ -1,7 +1,11 @@
 package dsxml
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
+
+	"golang.org/x/text/encoding/charmap"
 )
 
 func TestParseContent_ObjectXMLWithParamsTablesAndContexts(t *testing.T) {
@@ -255,5 +259,65 @@ func TestDSXMLHelpers(t *testing.T) {
 	rootName, err := xmlRootName(`<?xml version="1.0"?><Object><Name>Test</Name></Object>`)
 	if err != nil || rootName != "object" {
 		t.Fatalf("xmlRootName = %q, err=%v", rootName, err)
+	}
+}
+
+func TestParseFile_CP1251WithoutDeclaration(t *testing.T) {
+	// Create a temporary XML file in CP1251 encoding without XML declaration
+	// This simulates real Diasoft files that don't have encoding declaration
+	tempDir := t.TempDir()
+	xmlPath := filepath.Join(tempDir, "API_Test_CP1251.xml")
+
+	// Create XML content with Russian text encoded in WIN1251 (no declaration)
+	// <Object><ObjectName>Тест</ObjectName><ShortDescription>Проверка</ShortDescription></Object>
+	xmlContent := `<Object>
+  <ObjectTypeID>1</ObjectTypeID>
+  <ObjectName>TestContract</ObjectName>
+  <ShortDescription>Проверка кодировки</ShortDescription>
+  <InputParams>
+    <Param>
+      <ParamName>Param1</ParamName>
+      <RusName>Параметр</RusName>
+    </Param>
+  </InputParams>
+</Object>`
+
+	// Encode to WIN1251
+	encodedBytes, err := charmap.Windows1251.NewEncoder().Bytes([]byte(xmlContent))
+	if err != nil {
+		t.Fatalf("failed to encode to WIN1251: %v", err)
+	}
+
+	if err := os.WriteFile(xmlPath, encodedBytes, 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	// Parse the file - should auto-detect CP1251
+	parser := NewParser()
+	result, err := parser.ParseFile(xmlPath)
+	if err != nil {
+		t.Fatalf("ParseFile returned error: %v", err)
+	}
+
+	if len(result.Contracts) != 1 {
+		t.Fatalf("contracts count = %d, want 1", len(result.Contracts))
+	}
+
+	contract := result.Contracts[0]
+	if contract.ContractName != "TestContract" {
+		t.Fatalf("contract name = %q, want %q", contract.ContractName, "TestContract")
+	}
+
+	// Verify Russian text was decoded correctly
+	if contract.ShortDescription != "Проверка кодировки" {
+		t.Fatalf("short description = %q, want %q", contract.ShortDescription, "Проверка кодировки")
+	}
+
+	if len(result.Params) != 1 {
+		t.Fatalf("params count = %d, want 1", len(result.Params))
+	}
+
+	if result.Params[0].RusName != "Параметр" {
+		t.Fatalf("param rus name = %q, want %q", result.Params[0].RusName, "Параметр")
 	}
 }

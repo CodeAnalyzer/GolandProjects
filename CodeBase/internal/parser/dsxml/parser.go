@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -169,9 +170,14 @@ func xmlRootName(content string) (string, error) {
 }
 
 func (p *Parser) ParseFile(path string) (*ParseResult, error) {
-	content, err := cbencoding.ReadFile(path, cbencoding.UTF8)
+	rawBytes, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
+	}
+	encoding := cbencoding.DetectXMLEncoding(rawBytes)
+	content, err := cbencoding.DecodeBytes(rawBytes, encoding)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode XML file from %s: %w", encoding, err)
 	}
 	return p.ParseContent(path, content)
 }

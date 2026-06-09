@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"regexp"
+	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/transform"
@@ -128,4 +131,60 @@ func ConvertToUTF8(input string, fromEncoding Encoding) (string, error) {
 	}
 
 	return result, nil
+}
+
+// xmlEncodingRegexp ищет encoding в XML declaration: <?xml version="1.0" encoding="windows-1251"?>
+var xmlEncodingRegexp = regexp.MustCompile(`<?xml[^>]*encoding=["']([^"']+)["'][^>]*?>`)
+
+// DetectXMLEncoding определяет кодировку XML по declaration или содержимому
+// 1. Ищет encoding в XML declaration
+// 2. Если declaration нет или encoding не указан:
+//    - Проверяет валидность UTF-8
+//    - Если невалидно -> предполагает WIN1251 (Diasoft heuristic)
+func DetectXMLEncoding(data []byte) Encoding {
+	// Ищем XML declaration в начале файла (первые 200 байт достаточно)
+	prefix := data
+	if len(prefix) > 200 {
+		prefix = prefix[:200]
+	}
+
+	match := xmlEncodingRegexp.FindSubmatch(prefix)
+	if len(match) > 1 {
+		enc := strings.ToLower(strings.TrimSpace(string(match[1])))
+		switch enc {
+		case "windows-1251", "cp1251", "windows1251":
+			return WIN1251
+		case "utf-8", "utf8":
+			return UTF8
+		case "cp866", "ibm866":
+			return CP866
+		}
+	}
+
+	// Нет declaration или encoding не указан - проверяем валидность UTF-8
+	if utf8.Valid(data) {
+		return UTF8
+	}
+
+	// Невалидный UTF-8 - для Diasoft файлов предполагаем WIN1251
+	return WIN1251
+}
+
+// DecodeBytes декодирует байты из указанной кодировки в UTF-8 строку
+func DecodeBytes(data []byte, encoding Encoding) (string, error) {
+	if encoding == UTF8 {
+		return string(data), nil
+	}
+
+	decoder := GetDecoder(encoding)
+	if decoder == nil {
+		return string(data), nil
+	}
+
+	result, err := io.ReadAll(transform.NewReader(bytes.NewReader(data), decoder))
+	if err != nil {
+		return "", err
+	}
+
+	return string(result), nil
 }
