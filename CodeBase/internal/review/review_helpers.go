@@ -405,8 +405,7 @@ func extractOnPartsForIndexWrong(fullText string) []string {
 }
 
 func collectColumnsFromConditionExpression(expr string, tables []tableFromClause) map[string]map[string]struct{} {
-	orRe := regexp.MustCompile(`(?i)\s+or\s+`)
-	branches := orRe.Split(expr, -1)
+	branches := splitByOrRespectingParens(expr)
 	if len(branches) == 0 {
 		return map[string]map[string]struct{}{}
 	}

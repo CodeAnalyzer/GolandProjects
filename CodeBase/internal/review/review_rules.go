@@ -560,7 +560,10 @@ func (r *Runner) checkPTableSpid(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(string(content), "\n")
+
+	// Удаляем макросы #define перед анализом
+	contentStr := removeMacros(string(content))
+	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
 	stmtStartLine := 0

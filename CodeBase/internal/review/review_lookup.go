@@ -400,6 +400,50 @@ func splitByCommasRespectingParens(sql string) []string {
 	return parts
 }
 
+// splitByOrRespectingParens разбивает строку по OR, но только те что вне скобок
+// OR внутри скобок (al.DateLast = '19000101' or al.DateLast > @Date) не используются как разделители верхнего уровня
+func splitByOrRespectingParens(sql string) []string {
+	var parts []string
+	var current strings.Builder
+	depth := 0
+	lower := strings.ToLower(sql)
+
+	for i := 0; i < len(sql); i++ {
+		ch := sql[i]
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+
+		// Проверяем OR на нулевом уровне
+		if depth == 0 && i+2 < len(sql) {
+			if lower[i] == ' ' && lower[i+1] == 'o' && lower[i+2] == 'r' {
+				// Проверяем, что это полное слово OR (перед пробел, после пробел или конец)
+				isOrWord := false
+				if i+3 >= len(sql) || lower[i+3] == ' ' {
+					isOrWord = true
+				}
+				if isOrWord {
+					parts = append(parts, current.String())
+					current.Reset()
+					i += 2 // Пропускаем 'or'
+					continue
+				}
+			}
+		}
+		current.WriteByte(ch)
+	}
+
+	// Добавляем последнюю часть
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+
+	return parts
+}
+
 func findTopLevelFromClauseBounds(text string) (int, int, bool) {
 	lower := toLowerASCIIPreservingLen(text)
 	fromIdx := -1
