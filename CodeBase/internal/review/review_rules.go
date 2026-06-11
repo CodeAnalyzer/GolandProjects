@@ -52,6 +52,90 @@ func (r *Runner) checkForeignTables(parsed *sqlparser.ParseResult, file *indexed
 	return findings, nil
 }
 
+func (r *Runner) checkDatatypeFetchInto(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	seen := make(map[string]struct{})
+
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	contentStr := string(content)
+	variableTypes := collectVariableTypes(parsed, contentStr)
+	cursorDeclarations := parseCursorDeclarations(contentStr)
+	if len(cursorDeclarations) == 0 {
+		return findings, nil
+	}
+
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+
+		stmt, ok := parseFetchIntoStatement(fragment.QueryText)
+		if !ok {
+			continue
+		}
+
+		cursorDecl, exists := cursorDeclarations[normalizeIdentifier(stmt.CursorName)]
+		if !exists {
+			continue
+		}
+
+		aliasMap := parseAliasMap(cursorDecl.FromClause)
+		defaultTable := parseFirstFromTable(cursorDecl.FromClause)
+
+		count := len(stmt.Variables)
+		if len(cursorDecl.SelectExpressions) < count {
+			count = len(cursorDecl.SelectExpressions)
+		}
+
+		for i := 0; i < count; i++ {
+			targetVariable := strings.TrimSpace(stmt.Variables[i])
+			if targetVariable == "" {
+				continue
+			}
+			targetType := variableTypes[normalizeVariableName(targetVariable)]
+			if targetType == "" {
+				continue
+			}
+
+			sourceExpr := strings.TrimSpace(cursorDecl.SelectExpressions[i])
+			if sourceExpr == "" {
+				continue
+			}
+
+			if hasExplicitConversion(sourceExpr, targetType) {
+				continue
+			}
+
+			sourceTypes := r.resolveCursorSourceTypes(sourceExpr, aliasMap, defaultTable)
+			for _, sourceType := range sourceTypes {
+				if !isPotentialPrecisionLoss(sourceType, targetType) {
+					continue
+				}
+				key := fmt.Sprintf("%d|%s|%s", fragment.LineNumber, normalizeVariableName(targetVariable), normalizeDataType(sourceType))
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+				findings = append(findings, Finding{
+					Rule:             RuleDatatype,
+					Severity:         SeverityFineCode,
+					Message:          fmt.Sprintf("Потеря точности типов данных: %s -> %s", sourceType, targetType),
+					File:             file.Path,
+					Line:             fragment.LineNumber,
+					Object:           targetVariable,
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	return findings, nil
+}
+
 func (r *Runner) checkDatatypeSelectAssign(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	seen := make(map[string]struct{})
@@ -126,7 +210,7 @@ func collectVariableTypes(parsed *sqlparser.ParseResult, content string) map[str
 		}
 	}
 
-	declRe := regexp.MustCompile(`(?i)@([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)`)
+	declRe := regexp.MustCompile(`(?i)@([A-Za-z_][A-Za-z0-9_]*)[ \t]+([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)`)
 	for _, m := range declRe.FindAllStringSubmatch(content, -1) {
 		if len(m) < 3 {
 			continue
@@ -2033,6 +2117,12 @@ func (r *Runner) checkDatatype(parsed *sqlparser.ParseResult, file *indexedFile)
 	}
 	findings = append(findings, selectAssignFindings...)
 
+	fetchIntoFindings, err := r.checkDatatypeFetchInto(parsed, file)
+	if err != nil {
+		return nil, err
+	}
+	findings = append(findings, fetchIntoFindings...)
+
 	return findings, nil
 }
 
@@ -2244,6 +2334,53 @@ func (r *Runner) resolveExpressionTypes(expression string, aliasMap map[string]s
 		result = append(result, typeName)
 	}
 	return result
+}
+
+func (r *Runner) resolveCursorSourceTypes(expression string, aliasMap map[string]string, defaultTable string) []string {
+	types := r.resolveExpressionTypes(expression, aliasMap)
+	if len(types) > 0 {
+		return types
+	}
+
+	columnName := extractBareColumnName(expression)
+	if columnName == "" || strings.TrimSpace(defaultTable) == "" {
+		return nil
+	}
+
+	typeName, err := r.db.FindLatestSQLColumnDefinitionType(defaultTable, columnName)
+	if err != nil {
+		return nil
+	}
+
+	return []string{typeName}
+}
+
+func parseFirstFromTable(fromClause string) string {
+	if strings.TrimSpace(fromClause) == "" {
+		return ""
+	}
+
+	re := regexp.MustCompile(`(?is)\bfrom\s+([a-z_#][a-z0-9_#]*)`)
+	m := re.FindStringSubmatch(fromClause)
+	if len(m) != 2 {
+		return ""
+	}
+
+	return strings.TrimSpace(m[1])
+}
+
+func extractBareColumnName(expression string) string {
+	if strings.TrimSpace(expression) == "" {
+		return ""
+	}
+
+	re := regexp.MustCompile(`(?is)^\s*\[?([a-z_][a-z0-9_]*)\]?\s*$`)
+	m := re.FindStringSubmatch(expression)
+	if len(m) != 2 {
+		return ""
+	}
+
+	return strings.TrimSpace(m[1])
 }
 
 // hasExplicitConversion проверяет, содержит ли выражение явное преобразование в targetType

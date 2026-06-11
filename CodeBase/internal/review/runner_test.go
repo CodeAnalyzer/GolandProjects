@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/codebase/internal/model"
+	sqlparser "github.com/codebase/internal/parser/sql"
 )
 
 func TestIsSharedTTable(t *testing.T) {
@@ -1472,6 +1473,116 @@ func TestParseSelectAssignStatement_MultipleAssignments(t *testing.T) {
 	}
 	if len(stmt.Assignments) != 2 {
 		t.Fatalf("assignments len = %d, want 2", len(stmt.Assignments))
+	}
+}
+
+func TestParseFetchIntoStatement_BasicAndMacro(t *testing.T) {
+	cases := []struct {
+		name       string
+		query      string
+		cursorName string
+		varCount   int
+	}{
+		{
+			name:       "basic fetch",
+			query:      "fetch ActionPeriod_cur into @ActionPeriodID, @UpdateFlag, @DeleteFlag",
+			cursorName: "ActionPeriod_cur",
+			varCount:   3,
+		},
+		{
+			name:       "macro fetch",
+			query:      "__FETCH_NEXT__ ActionPeriod_cur into @ActionPeriodID, @UpdateFlag, @DeleteFlag",
+			cursorName: "ActionPeriod_cur",
+			varCount:   3,
+		},
+		{
+			name:       "fetch next from",
+			query:      "fetch next from ActionPeriod_cur into @ActionPeriodID, @UpdateFlag",
+			cursorName: "ActionPeriod_cur",
+			varCount:   2,
+		},
+		{
+			name: "open then fetch with tail",
+			query: `open ActionPeriod_cur
+fetch ActionPeriod_cur into @ActionPeriodID,
+                            @UpdateFlag,
+                            @DeleteFlag
+while __FETCH_STATUS__ = 0`,
+			cursorName: "ActionPeriod_cur",
+			varCount:   3,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stmt, ok := parseFetchIntoStatement(tc.query)
+			if !ok {
+				t.Fatalf("expected parseFetchIntoStatement to parse query: %s", tc.query)
+			}
+			if stmt.CursorName != tc.cursorName {
+				t.Fatalf("cursorName = %q, want %q", stmt.CursorName, tc.cursorName)
+			}
+			if len(stmt.Variables) != tc.varCount {
+				t.Fatalf("variables len = %d, want %d", len(stmt.Variables), tc.varCount)
+			}
+		})
+	}
+}
+
+func TestParseCursorDeclarations_ExplicitAndMacro(t *testing.T) {
+	content := `declare ActionPeriod_cur insensitive cursor for
+select t.ActionPeriodID,
+       t.UpdateFlag,
+       t.DeleteFlag
+  from pIns_ActionPeriod t
+ where t.SPID = @@SPID
+
+__DECLARE_CURSOR__(ActionPeriod_cur2)
+select p.ActionID,
+       p.InsertFlag
+  from pIns_ActionPeriod p
+
+open ActionPeriod_cur`
+
+	decls := parseCursorDeclarations(content)
+	if len(decls) != 2 {
+		t.Fatalf("cursor declarations count = %d, want 2", len(decls))
+	}
+
+	first, ok := decls["actionperiod_cur"]
+	if !ok {
+		t.Fatalf("expected explicit cursor declaration for actionperiod_cur")
+	}
+	if len(first.SelectExpressions) != 3 {
+		t.Fatalf("explicit cursor select expressions = %d, want 3", len(first.SelectExpressions))
+	}
+	if !strings.HasPrefix(strings.ToLower(first.FromClause), "from") {
+		t.Fatalf("explicit cursor fromClause must start with FROM, got %q", first.FromClause)
+	}
+
+	second, ok := decls["actionperiod_cur2"]
+	if !ok {
+		t.Fatalf("expected macro cursor declaration for actionperiod_cur2")
+	}
+	if len(second.SelectExpressions) != 2 {
+		t.Fatalf("macro cursor select expressions = %d, want 2", len(second.SelectExpressions))
+	}
+}
+
+func TestCollectVariableTypes_DoesNotCaptureKeywordAcrossNewline(t *testing.T) {
+	content := `declare @DeleteFlag DSTINYINT,
+        @Counter DSINT_KEY
+
+fetch ActionPeriod_cur into @DeleteFlag
+
+while __FETCH_STATUS__ = 0
+begin
+    select 1
+end`
+
+	types := collectVariableTypes(&sqlparser.ParseResult{}, content)
+	if got := strings.ToUpper(types["deleteflag"]); got != "DSTINYINT" {
+		t.Fatalf("deleteflag type = %q, want DSTINYINT", got)
 	}
 }
 

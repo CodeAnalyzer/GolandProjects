@@ -160,6 +160,182 @@ func parseSelectAssignStatement(queryText string) (selectAssignStatement, bool) 
 	return selectAssignStatement{Assignments: assignments, FromClause: fromClause}, true
 }
 
+func parseFetchIntoStatement(queryText string) (fetchIntoStatement, bool) {
+	text := strings.TrimSpace(queryText)
+	if text == "" {
+		return fetchIntoStatement{}, false
+	}
+
+	prefixRe := regexp.MustCompile(`(?is)(?:__fetch_next__|fetch)(?:\s+next)?(?:\s+from)?\s+([a-z_#][a-z0-9_#]*)\s+into\s+`)
+	loc := prefixRe.FindStringSubmatchIndex(text)
+	if len(loc) < 4 {
+		return fetchIntoStatement{}, false
+	}
+
+	cursorName := strings.TrimSpace(text[loc[2]:loc[3]])
+	if cursorName == "" {
+		return fetchIntoStatement{}, false
+	}
+
+	variablesPart := text[loc[1]:]
+	if boundary := findFetchIntoTailBoundary(variablesPart); boundary >= 0 {
+		variablesPart = variablesPart[:boundary]
+	}
+	variablesPart = strings.TrimSpace(variablesPart)
+	if variablesPart == "" {
+		return fetchIntoStatement{}, false
+	}
+
+	parts := splitTopLevelCSV(variablesPart)
+	variables := make([]string, 0, len(parts))
+	varRe := regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*$`)
+	for _, part := range parts {
+		match := varRe.FindStringSubmatch(strings.TrimSpace(part))
+		if len(match) != 2 {
+			continue
+		}
+		variables = append(variables, strings.TrimSpace(match[1]))
+	}
+
+	if len(variables) == 0 {
+		return fetchIntoStatement{}, false
+	}
+
+	return fetchIntoStatement{CursorName: cursorName, Variables: variables}, true
+}
+
+func findFetchIntoTailBoundary(value string) int {
+	if strings.TrimSpace(value) == "" {
+		return -1
+	}
+
+	boundaryRe := regexp.MustCompile(`(?im)\n\s*(?:while|open|close|deallocate|__deallocate_cursor__|fetch|__fetch_next__|if|begin|end|return|go)\b`)
+	loc := boundaryRe.FindStringIndex(value)
+	if len(loc) != 2 {
+		return -1
+	}
+	return loc[0]
+}
+
+func parseCursorDeclarations(content string) map[string]cursorDeclaration {
+	result := make(map[string]cursorDeclaration)
+	if strings.TrimSpace(content) == "" {
+		return result
+	}
+
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	lines := strings.Split(content, "\n")
+
+	explicitDeclRe := regexp.MustCompile(`(?is)^declare\s+([a-z_#][a-z0-9_#]*)\s+(?:insensitive\s+)?cursor\s+for\s*(.*)$`)
+	macroDeclRe := regexp.MustCompile(`(?is)^__declare_cursor__\s*\(\s*([a-z_#][a-z0-9_#]*)\s*\)\s*(.*)$`)
+
+	for i := 0; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+
+		var (
+			cursorName string
+			remainder  string
+			matched    bool
+		)
+
+		if m := explicitDeclRe.FindStringSubmatch(trimmed); len(m) == 3 {
+			cursorName = strings.TrimSpace(m[1])
+			remainder = strings.TrimSpace(m[2])
+			matched = true
+		} else if m := macroDeclRe.FindStringSubmatch(trimmed); len(m) == 3 {
+			cursorName = strings.TrimSpace(m[1])
+			remainder = strings.TrimSpace(m[2])
+			matched = true
+		}
+
+		if !matched || cursorName == "" {
+			continue
+		}
+
+		statementLines := make([]string, 0)
+		if remainder != "" {
+			statementLines = append(statementLines, remainder)
+		}
+
+		j := i + 1
+		for ; j < len(lines); j++ {
+			nextLine := strings.TrimSpace(lines[j])
+			if isCursorDeclarationBoundary(nextLine) {
+				break
+			}
+			statementLines = append(statementLines, lines[j])
+		}
+		i = j - 1
+
+		queryText := strings.TrimSpace(strings.Join(statementLines, " "))
+		if queryText == "" {
+			continue
+		}
+
+		selectStmt, ok := parseSelectSourceStatement(queryText)
+		if !ok {
+			continue
+		}
+
+		result[normalizeIdentifier(cursorName)] = cursorDeclaration{
+			CursorName:        cursorName,
+			SelectExpressions: selectStmt.SelectExpressions,
+			FromClause:        selectStmt.FromClause,
+		}
+	}
+
+	return result
+}
+
+func parseSelectSourceStatement(queryText string) (insertSelectStatement, bool) {
+	text := strings.TrimSpace(queryText)
+	if text == "" {
+		return insertSelectStatement{}, false
+	}
+	lower := strings.ToLower(text)
+	if !strings.HasPrefix(lower, "select") {
+		return insertSelectStatement{}, false
+	}
+
+	fromPos := findTopLevelKeywordPosition(lower, "from")
+	if fromPos < 0 {
+		return insertSelectStatement{}, false
+	}
+
+	selectPart := strings.TrimSpace(text[len("select"):fromPos])
+	fromClause := strings.TrimSpace(text[fromPos:])
+	if selectPart == "" || fromClause == "" {
+		return insertSelectStatement{}, false
+	}
+
+	items := splitTopLevelCSV(selectPart)
+	if len(items) == 0 {
+		return insertSelectStatement{}, false
+	}
+
+	return insertSelectStatement{SelectExpressions: items, FromClause: fromClause}, true
+}
+
+func isCursorDeclarationBoundary(line string) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(line))
+	if trimmed == "" {
+		return false
+	}
+
+	keywords := []string{"open", "fetch", "__fetch_next__", "close", "deallocate", "declare", "__declare_cursor__", "if", "while", "return", "begin", "end", "go"}
+	for _, kw := range keywords {
+		if strings.HasPrefix(trimmed, kw+" ") || strings.HasPrefix(trimmed, kw+"\t") || strings.HasPrefix(trimmed, kw+"(") || trimmed == kw {
+			return true
+		}
+	}
+
+	return false
+}
+
 func splitTopLevelCSV(value string) []string {
 	items := make([]string, 0)
 	b := strings.Builder{}

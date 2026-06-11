@@ -130,3 +130,14 @@ type selectAssignStatement struct {
 	Assignments []selectAssignment
 	FromClause  string
 }
+
+type fetchIntoStatement struct {
+	CursorName string
+	Variables  []string
+}
+
+type cursorDeclaration struct {
+	CursorName        string
+	SelectExpressions []string
+	FromClause        string
+}
