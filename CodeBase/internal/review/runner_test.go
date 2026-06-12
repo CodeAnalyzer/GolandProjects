@@ -2768,6 +2768,10 @@ func TestCheckNullComparison_NoFalsePositive(t *testing.T) {
 		{name: "block comment eq null", content: "/* WHERE x = NULL */"},
 		{name: "string literal null", content: "WHERE x = 'NULL'"},
 		{name: "in with values", content: "WHERE x IN (1, 2, 3)"},
+		{name: "proc param default null", content: "@Date           DSOPERDAY = null,"},
+		{name: "proc param default null no comma", content: "@CalcFlowMaxPrcMode  DSTINYINT    = null"},
+		{name: "proc param default null indented", content: "                 @PaymentMode    DSINT_KEY = null,"},
+		{name: "declare var default null", content: "@MyVar DSINT_KEY = null"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

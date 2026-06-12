@@ -27,19 +27,24 @@ func (r *Runner) checkForeignTables(parsed *sqlparser.ParseResult, file *indexed
 		if strings.EqualFold(prefix, "t") && isSharedTTable(table.Name) {
 			continue
 		}
-		targetProductID, err := r.lookupTableProductID(table.Name)
+		targetProductIDs, err := r.lookupTableProductIDs(table.Name)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				continue
-			}
 			return nil, err
 		}
-		if targetProductID == 0 || targetProductID == file.DsProductID {
+		if len(targetProductIDs) == 0 {
+			continue
+		}
+		if _, ok := targetProductIDs[file.DsProductID]; ok {
 			continue
 		}
 		rule := RuleForeignTablesUsing
 		if strings.EqualFold(prefix, "p") {
 			rule = RuleForeignPTablesUsing
+		}
+		var targetProductID int64
+		for id := range targetProductIDs {
+			targetProductID = id
+			break
 		}
 		findings = append(findings, Finding{
 			Rule:             rule,
@@ -1674,15 +1679,20 @@ func (r *Runner) checkForeignPTables(parsed *sqlparser.ParseResult, file *indexe
 	}
 	findings := make([]Finding, 0)
 	for _, table := range filtered {
-		targetProductID, err := r.lookupTableProductID(table.Name)
+		targetProductIDs, err := r.lookupTableProductIDs(table.Name)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				continue
-			}
 			return nil, err
 		}
-		if targetProductID == 0 || targetProductID == file.DsProductID {
+		if len(targetProductIDs) == 0 {
 			continue
+		}
+		if _, ok := targetProductIDs[file.DsProductID]; ok {
+			continue
+		}
+		var targetProductID int64
+		for id := range targetProductIDs {
+			targetProductID = id
+			break
 		}
 		findings = append(findings, Finding{
 			Rule:             RuleForeignPTablesUsing,
@@ -3437,6 +3447,10 @@ func analyzeStatementForHintType(lines []string, startLine int, file *indexedFil
 // nullComparisonBinaryRe ищет сравнения вида: expr =/<>/<=/>=/</>  NULL (не IS NULL / IS NOT NULL)
 var nullComparisonBinaryRe = regexp.MustCompile(`(?i)(?:^|[^a-zA-Z_])((?:=|<>|!=|<=|>=|<|>)\s*null\b|\bnull\s*(?:=|<>|!=|<=|>=|<|>))`)
 
+// nullParamDefaultRe соответствует строкам объявления параметра или переменной с дефолтом = null:
+// @Name   DSTYPE = null,   или   @Name DSTYPE = null
+var nullParamDefaultRe = regexp.MustCompile(`(?i)@\w+\s+\w+\s*=\s*null\s*,?\s*$`)
+
 // nullComparisonInRe ищет IN (..., NULL, ...) или IN (NULL)
 var nullComparisonInRe = regexp.MustCompile(`(?i)\bin\s*\([^)]*\bnull\b[^)]*\)`)
 
@@ -3459,6 +3473,11 @@ func (r *Runner) checkNullComparison(file *indexedFile) ([]Finding, error) {
 		inBlockComment = stillInBlock
 
 		if strings.TrimSpace(stripped) == "" {
+			continue
+		}
+
+		// Пропускаем объявления параметров/переменных с дефолтом = null: @Name DSTYPE = null
+		if nullParamDefaultRe.MatchString(stripped) {
 			continue
 		}
 

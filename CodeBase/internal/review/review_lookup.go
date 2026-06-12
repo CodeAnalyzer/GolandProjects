@@ -36,56 +36,70 @@ func (r *Runner) getIndexedFile(path string) (*indexedFile, error) {
 	return nil, sql.ErrNoRows
 }
 
-func (r *Runner) lookupTableProductID(tableName string) (int64, error) {
-	var productID int64
-	err := r.db.QueryRow(`
-		SELECT f.ds_product_id
+func (r *Runner) lookupTableProductIDs(tableName string) (map[int64]struct{}, error) {
+	result := make(map[int64]struct{})
+	name := strings.TrimSpace(tableName)
+
+	scanRows := func(query string) error {
+		rows, err := r.db.Query(query, name)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			if id > 0 {
+				result[id] = struct{}{}
+			}
+		}
+		return rows.Err()
+	}
+
+	if err := scanRows(`
+		SELECT DISTINCT f.ds_product_id
 		FROM sql_tables t
 		JOIN files f ON f.id = t.file_id
 		WHERE LOWER(t.table_name) = LOWER($1)
 		  AND t.context IN ('create', 'select_into')
 		  AND f.ds_product_id IS NOT NULL
-		ORDER BY t.id DESC
-		LIMIT 1
-	`, strings.TrimSpace(tableName)).Scan(&productID)
-	if err == nil && productID > 0 {
-		return productID, nil
-	}
-	if err != sql.ErrNoRows {
-		return 0, err
+	`); err != nil {
+		return nil, err
 	}
 
-	err = r.db.QueryRow(`
-		SELECT f.ds_product_id
+	if len(result) > 0 {
+		return result, nil
+	}
+
+	if err := scanRows(`
+		SELECT DISTINCT f.ds_product_id
 		FROM sql_column_definitions scd
 		JOIN files f ON f.id = scd.file_id
 		WHERE LOWER(scd.table_name) = LOWER($1)
 		  AND scd.definition_kind IN ('create', 'select_into')
 		  AND f.ds_product_id IS NOT NULL
-		ORDER BY scd.id DESC
-		LIMIT 1
-	`, strings.TrimSpace(tableName)).Scan(&productID)
-	if err == nil && productID > 0 {
-		return productID, nil
-	}
-	if err != nil && err != sql.ErrNoRows {
-		return 0, err
+	`); err != nil {
+		return nil, err
 	}
 
-	err = r.db.QueryRow(`
-		SELECT f.ds_product_id
+	if len(result) > 0 {
+		return result, nil
+	}
+
+	if err := scanRows(`
+		SELECT DISTINCT f.ds_product_id
 		FROM sql_tables t
 		JOIN files f ON f.id = t.file_id
 		WHERE LOWER(t.table_name) = LOWER($1)
 		  AND t.context = 'dfm_embedded'
 		  AND f.ds_product_id IS NOT NULL
-		ORDER BY t.id DESC
-		LIMIT 1
-	`, strings.TrimSpace(tableName)).Scan(&productID)
-	if err != nil {
-		return 0, err
+	`); err != nil {
+		return nil, err
 	}
-	return productID, nil
+
+	return result, nil
 }
 
 func (r *Runner) lookupProcedureProductID(procName string) (int64, error) {
