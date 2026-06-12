@@ -183,6 +183,7 @@ func enabledRuleSet(rules []RuleID) map[RuleID]bool {
 		RuleShouldBeCP866:         true,
 		RuleTooManyJoins:          true,
 		RuleMaxProcParam:          true,
+		RuleModifyOutProc:         true,
 	}
 	if len(rules) == 0 {
 		return result

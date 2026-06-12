@@ -255,6 +255,11 @@ func (r *Runner) buildRuleTasks(ruleSet map[RuleID]bool, parsed *sqlparser.Parse
 			return r.checkMaxProcParam(parsed, file)
 		}})
 	}
+	if ruleSet[RuleModifyOutProc] {
+		tasks = append(tasks, ruleTask{rule: RuleModifyOutProc, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkModifyOutProc(parsed, file)
+		}})
+	}
 	return tasks
 }
 

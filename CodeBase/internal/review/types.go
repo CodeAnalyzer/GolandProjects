@@ -32,6 +32,7 @@ const (
 	RuleShouldBeCP866         RuleID = "shouldBeCP866"
 	RuleTooManyJoins          RuleID = "tooManyJoins"
 	RuleMaxProcParam          RuleID = "maxProcParam"
+	RuleModifyOutProc         RuleID = "modifyOutProc"
 )
 
 const (

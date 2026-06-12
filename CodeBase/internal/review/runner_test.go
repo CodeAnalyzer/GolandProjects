@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -2240,6 +2241,167 @@ func TestExtractProcedureBody(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestIsDataOrPatchPath(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{`D:\GITHUB\FA\fa-contracts\Consumer\DATA\init.sql`, true},
+		{`D:\GITHUB\FA\fa-contracts\Consumer\Patch\fix.sql`, true},
+		{`D:\GITHUB\FA\fa-contracts\Consumer\data\init.sql`, true},
+		{`D:\GITHUB\FA\fa-contracts\Consumer\patch\fix.sql`, true},
+		{`D:\GITHUB\FA\fa-contracts\Consumer\SERVER\Consumer\api_Foo.sql`, false},
+		{`D:\GITHUB\FA\fa-contracts\Consumer\Scripts\Consumer\api_Foo.sql`, false},
+	}
+	for _, tc := range cases {
+		got := isDataOrPatchPath(tc.path)
+		if got != tc.want {
+			t.Errorf("isDataOrPatchPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestCheckModifyOutProc(t *testing.T) {
+	makeProc := func(lineStart, lineEnd int) *model.SQLProcedure {
+		return &model.SQLProcedure{ProcName: "TestProc", LineStart: lineStart, LineEnd: lineEnd}
+	}
+
+	writeTemp := func(t *testing.T, content string) string {
+		t.Helper()
+		f, err := os.CreateTemp("", "modifyoutproc*.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString(content); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+		return f.Name()
+	}
+
+	run := func(t *testing.T, content string, procs []*model.SQLProcedure) []Finding {
+		t.Helper()
+		path := writeTemp(t, content)
+		defer os.Remove(path)
+		r := &Runner{}
+		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n")}
+		parsed := &sqlparser.ParseResult{Procedures: procs}
+		findings, err := r.checkModifyOutProc(parsed, &indexedFile{Path: path, DsProductID: 1})
+		r.exec = nil
+		if err != nil {
+			t.Fatal(err)
+		}
+		return findings
+	}
+
+	t.Run("insert outside proc finding", func(t *testing.T) {
+		content := "INSERT INTO tFoo (id) VALUES (1)\n"
+		findings := run(t, content, nil)
+		if len(findings) != 1 {
+			t.Errorf("expected 1 finding, got %d", len(findings))
+		}
+	})
+
+	t.Run("update outside proc finding", func(t *testing.T) {
+		content := "UPDATE tFoo SET x = 1 WHERE id = 2\n"
+		findings := run(t, content, nil)
+		if len(findings) != 1 {
+			t.Errorf("expected 1 finding, got %d", len(findings))
+		}
+	})
+
+	t.Run("delete outside proc finding", func(t *testing.T) {
+		content := "DELETE tFoo WHERE id = 1\n"
+		findings := run(t, content, nil)
+		if len(findings) != 1 {
+			t.Errorf("expected 1 finding, got %d", len(findings))
+		}
+	})
+
+	t.Run("insert inside proc no finding", func(t *testing.T) {
+		content := "create proc TestProc\nas\nINSERT INTO tFoo (id) VALUES (1)\ngo\n"
+		findings := run(t, content, []*model.SQLProcedure{makeProc(1, 4)})
+		if len(findings) != 0 {
+			t.Errorf("expected 0 findings, got %d", len(findings))
+		}
+	})
+
+	t.Run("insert into hash table no finding", func(t *testing.T) {
+		content := "INSERT INTO #tmp (id) VALUES (1)\n"
+		findings := run(t, content, nil)
+		if len(findings) != 0 {
+			t.Errorf("expected 0 findings for #tmp, got %d", len(findings))
+		}
+	})
+
+	t.Run("update statistics no finding", func(t *testing.T) {
+		content := "UPDATE STATISTICS tFoo\n"
+		findings := run(t, content, nil)
+		if len(findings) != 0 {
+			t.Errorf("expected 0 findings for UPDATE STATISTICS, got %d", len(findings))
+		}
+	})
+
+	t.Run("truncate p-table finding", func(t *testing.T) {
+		content := "TRUNCATE TABLE pFooData\n"
+		findings := run(t, content, nil)
+		if len(findings) != 1 {
+			t.Errorf("expected 1 finding for TRUNCATE pFooData, got %d", len(findings))
+		}
+	})
+
+	t.Run("truncate hash table no finding", func(t *testing.T) {
+		content := "TRUNCATE TABLE #tmp\n"
+		findings := run(t, content, nil)
+		if len(findings) != 0 {
+			t.Errorf("expected 0 findings for TRUNCATE #tmp, got %d", len(findings))
+		}
+	})
+
+	t.Run("define macro insert no finding", func(t *testing.T) {
+		content := "#define MY_MACRO \\\n  INSERT INTO tFoo (id) VALUES (1)\n"
+		findings := run(t, content, nil)
+		if len(findings) != 0 {
+			t.Errorf("expected 0 findings (INSERT in #define), got %d", len(findings))
+		}
+	})
+
+	t.Run("comment insert no finding", func(t *testing.T) {
+		content := "-- INSERT INTO tFoo (id) VALUES (1)\n"
+		findings := run(t, content, nil)
+		if len(findings) != 0 {
+			t.Errorf("expected 0 findings (INSERT in comment), got %d", len(findings))
+		}
+	})
+
+	t.Run("data path skip", func(t *testing.T) {
+		f, err := os.CreateTemp("", "data_*.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		content := "INSERT INTO tFoo (id) VALUES (1)\n"
+		f.WriteString(content)
+		f.Close()
+		dataPath := filepath.Join(filepath.Dir(f.Name()), "DATA", "test.sql")
+		os.MkdirAll(filepath.Dir(dataPath), 0755)
+		os.WriteFile(dataPath, []byte(content), 0644)
+		defer os.Remove(f.Name())
+		defer os.Remove(dataPath)
+
+		r := &Runner{}
+		r.exec = &reviewExecContext{filePath: normalizePath(dataPath), content: []byte(content), lines: strings.Split(content, "\n")}
+		parsed := &sqlparser.ParseResult{}
+		findings, err := r.checkModifyOutProc(parsed, &indexedFile{Path: dataPath, DsProductID: 1})
+		r.exec = nil
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(findings) != 0 {
+			t.Errorf("expected 0 findings for DATA path, got %d", len(findings))
+		}
+	})
 }
 
 func TestCheckMaxProcParam(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -3647,6 +3648,116 @@ func (r *Runner) checkMaxProcParam(parsed *sqlparser.ParseResult, file *indexedF
 			CurrentProductID: file.DsProductID,
 		})
 	}
+	return findings, nil
+}
+
+// isDataOrPatchPath возвращает true, если путь содержит каталог data или patch (case-insensitive).
+func isDataOrPatchPath(path string) bool {
+	lower := strings.ToLower(filepath.ToSlash(path))
+	for _, seg := range strings.Split(lower, "/") {
+		if seg == "data" || seg == "patch" {
+			return true
+		}
+	}
+	return false
+}
+
+// isTempTable возвращает true, если имя таблицы является временной (#-таблицей).
+func isTempTable(name string) bool {
+	return strings.HasPrefix(name, "#")
+}
+
+// modifyOutProcInsertRe, modifyOutProcUpdateRe, modifyOutProcDeleteRe, modifyOutProcTruncateRe —
+// регулярки для детектирования DML-операторов и цели.
+var (
+	modifyOutProcInsertRe   = regexp.MustCompile(`(?i)^\s*insert\s+(?:into\s+)?([A-Za-z_#][A-Za-z0-9_#]*)`)
+	modifyOutProcUpdateRe   = regexp.MustCompile(`(?i)^\s*update\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
+	modifyOutProcDeleteRe   = regexp.MustCompile(`(?i)^\s*delete\s+(?:from\s+)?([A-Za-z_#][A-Za-z0-9_#]*)`)
+	modifyOutProcTruncateRe = regexp.MustCompile(`(?i)^\s*truncate\s+table\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
+)
+
+func (r *Runner) checkModifyOutProc(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	if isDataOrPatchPath(file.Path) {
+		return nil, nil
+	}
+
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Убираем #define-макросы и маскируем блочные комментарии
+	text := removeMacros(string(content))
+	text = maskBlockCommentsKeepLines(text)
+
+	// Строим set номеров строк, защищённых телом процедуры (1-based)
+	inProc := make(map[int]bool)
+	for _, proc := range parsed.Procedures {
+		if proc == nil {
+			continue
+		}
+		for ln := proc.LineStart; ln <= proc.LineEnd; ln++ {
+			inProc[ln] = true
+		}
+	}
+
+	lines := strings.Split(text, "\n")
+	findings := make([]Finding, 0)
+
+	for i, line := range lines {
+		lineNo := i + 1
+		if inProc[lineNo] {
+			continue
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Однострочный комментарий
+		if strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+
+		var tableName string
+		var keyword string
+
+		if m := modifyOutProcInsertRe.FindStringSubmatch(trimmed); m != nil {
+			tableName = m[1]
+			keyword = "INSERT"
+		} else if m := modifyOutProcUpdateRe.FindStringSubmatch(trimmed); m != nil {
+			// UPDATE STATISTICS — пропускаем
+			if strings.HasPrefix(strings.ToLower(m[1]), "statistics") {
+				continue
+			}
+			tableName = m[1]
+			keyword = "UPDATE"
+		} else if m := modifyOutProcDeleteRe.FindStringSubmatch(trimmed); m != nil {
+			tableName = m[1]
+			keyword = "DELETE"
+		} else if m := modifyOutProcTruncateRe.FindStringSubmatch(trimmed); m != nil {
+			tableName = m[1]
+			keyword = "TRUNCATE"
+		} else {
+			continue
+		}
+
+		// Пропускаем операции над #-таблицами
+		if isTempTable(tableName) {
+			continue
+		}
+
+		findings = append(findings, Finding{
+			Rule:             RuleModifyOutProc,
+			Severity:         SeverityPostgreReq,
+			Message:          fmt.Sprintf("Оператор %s над таблицей %s вне тела процедуры", keyword, tableName),
+			File:             file.Path,
+			Line:             lineNo,
+			Object:           tableName,
+			CurrentProductID: file.DsProductID,
+		})
+	}
+
 	return findings, nil
 }
 
