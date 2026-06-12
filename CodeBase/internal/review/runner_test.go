@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -2236,6 +2237,401 @@ func TestExtractProcedureBody(t *testing.T) {
 			result := runner.extractProcedureBody(lines, tc.lineStart, tc.lineEnd)
 			if result != tc.expect {
 				t.Fatalf("extractProcedureBody(lines, %d, %d) = %q, want %q", tc.lineStart, tc.lineEnd, result, tc.expect)
+			}
+		})
+	}
+}
+
+func TestCheckMaxProcParam(t *testing.T) {
+	makeParams := func(n int) []model.SQLParam {
+		params := make([]model.SQLParam, n)
+		for i := range params {
+			params[i] = model.SQLParam{Name: fmt.Sprintf("@p%d", i+1), Type: "int"}
+		}
+		return params
+	}
+
+	cases := []struct {
+		name      string
+		params    []model.SQLParam
+		wantCount int
+	}{
+		{name: "0 params", params: makeParams(0), wantCount: 0},
+		{name: "90 params exactly", params: makeParams(90), wantCount: 0},
+		{name: "91 params", params: makeParams(91), wantCount: 1},
+		{name: "100 params", params: makeParams(100), wantCount: 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Runner{}
+			parsed := &sqlparser.ParseResult{
+				Procedures: []*model.SQLProcedure{
+					{ProcName: "TestProc", LineStart: 10, Params: tc.params},
+				},
+			}
+			findings, err := r.checkMaxProcParam(parsed, &indexedFile{Path: "test.sql", DsProductID: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(findings) != tc.wantCount {
+				t.Errorf("checkMaxProcParam findings = %d, want %d", len(findings), tc.wantCount)
+			}
+			if tc.wantCount > 0 && len(findings) > 0 {
+				if findings[0].Severity != SeverityPostgreReq {
+					t.Errorf("severity = %d, want %d", findings[0].Severity, SeverityPostgreReq)
+				}
+				if findings[0].Object != "TestProc" {
+					t.Errorf("object = %q, want TestProc", findings[0].Object)
+				}
+				if findings[0].Line != 10 {
+					t.Errorf("line = %d, want 10", findings[0].Line)
+				}
+			}
+		})
+	}
+
+	t.Run("two procs one exceeds", func(t *testing.T) {
+		r := &Runner{}
+		parsed := &sqlparser.ParseResult{
+			Procedures: []*model.SQLProcedure{
+				{ProcName: "ProcOK", LineStart: 1, Params: makeParams(50)},
+				{ProcName: "ProcBig", LineStart: 100, Params: makeParams(95)},
+			},
+		}
+		findings, err := r.checkMaxProcParam(parsed, &indexedFile{Path: "test.sql", DsProductID: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(findings) != 1 {
+			t.Errorf("expected 1 finding, got %d", len(findings))
+		}
+		if len(findings) > 0 && findings[0].Object != "ProcBig" {
+			t.Errorf("expected ProcBig, got %q", findings[0].Object)
+		}
+	})
+}
+
+func TestCountTopLevelJoins(t *testing.T) {
+	cases := []struct {
+		name  string
+		stmt  string
+		want  int
+	}{
+		{name: "no joins", stmt: "SELECT * FROM t WHERE x = 1", want: 0},
+		{name: "one join", stmt: "SELECT * FROM t INNER JOIN s ON t.id = s.id", want: 1},
+		{name: "12 joins", stmt: func() string {
+			s := "SELECT * FROM t0"
+			for i := 1; i <= 12; i++ {
+				s += fmt.Sprintf(" JOIN t%d ON t0.id = t%d.id", i, i)
+			}
+			return s
+		}(), want: 12},
+		{name: "13 joins", stmt: func() string {
+			s := "SELECT * FROM t0"
+			for i := 1; i <= 13; i++ {
+				s += fmt.Sprintf(" JOIN t%d ON t0.id = t%d.id", i, i)
+			}
+			return s
+		}(), want: 13},
+		{name: "join in subquery not counted", stmt: "SELECT * FROM t WHERE id IN (SELECT id FROM a JOIN b ON a.id = b.id)", want: 0},
+		{name: "top-level and subquery mixed", stmt: "SELECT * FROM t JOIN s ON t.id = s.id WHERE t.id IN (SELECT id FROM a JOIN b ON a.id = b.id)", want: 1},
+		{name: "join in string literal not counted", stmt: "SELECT 'LEFT JOIN foo' FROM t INNER JOIN s ON t.id = s.id", want: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := countTopLevelJoins(tc.stmt)
+			if got != tc.want {
+				t.Errorf("countTopLevelJoins() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheckTooManyJoins(t *testing.T) {
+	buildStmt := func(joinCount int) string {
+		s := "SELECT * FROM t0"
+		for i := 1; i <= joinCount; i++ {
+			s += fmt.Sprintf(" JOIN t%d ON t0.id = t%d.id", i, i)
+		}
+		return s
+	}
+
+	writeTemp := func(t *testing.T, content string) string {
+		t.Helper()
+		f, err := os.CreateTemp("", "joins*.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString(content); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+		return f.Name()
+	}
+
+	t.Run("12 joins no finding", func(t *testing.T) {
+		content := buildStmt(12)
+		path := writeTemp(t, content)
+		defer os.Remove(path)
+		r := &Runner{}
+		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n")}
+		findings, err := r.checkTooManyJoins(&indexedFile{Path: path, DsProductID: 1})
+		r.exec = nil
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(findings) != 0 {
+			t.Errorf("expected 0 findings, got %d", len(findings))
+		}
+	})
+
+	t.Run("13 joins finding", func(t *testing.T) {
+		content := buildStmt(13)
+		path := writeTemp(t, content)
+		defer os.Remove(path)
+		r := &Runner{}
+		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n")}
+		findings, err := r.checkTooManyJoins(&indexedFile{Path: path, DsProductID: 1})
+		r.exec = nil
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(findings) != 1 {
+			t.Errorf("expected 1 finding, got %d", len(findings))
+		}
+		if len(findings) > 0 && findings[0].Severity != SeverityPostgreReq {
+			t.Errorf("severity = %d, want %d", findings[0].Severity, SeverityPostgreReq)
+		}
+	})
+
+	t.Run("join in subquery not counted", func(t *testing.T) {
+		content := "SELECT * FROM t WHERE id IN (SELECT id FROM a JOIN b ON a.id = b.id JOIN c ON c.id = b.id JOIN d ON d.id = c.id JOIN e ON e.id = d.id JOIN f ON f.id = e.id JOIN g ON g.id = f.id JOIN h ON h.id = g.id JOIN i ON i.id = h.id JOIN j ON j.id = i.id JOIN k ON k.id = j.id JOIN l ON l.id = k.id JOIN m ON m.id = l.id)"
+		path := writeTemp(t, content)
+		defer os.Remove(path)
+		r := &Runner{}
+		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n")}
+		findings, err := r.checkTooManyJoins(&indexedFile{Path: path, DsProductID: 1})
+		r.exec = nil
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(findings) != 0 {
+			t.Errorf("expected 0 findings (all JOINs in subquery), got %d", len(findings))
+		}
+	})
+}
+
+func TestDetectFileEncoding(t *testing.T) {
+	cases := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{name: "pure ASCII", data: []byte("SELECT * FROM t WHERE x = 1"), want: "ASCII"},
+		{name: "empty", data: []byte{}, want: "ASCII"},
+		{name: "UTF-8 with cyrillic", data: []byte("-- комментарий\nSELECT 1"), want: "UTF-8"},
+		{name: "UTF-8 BOM", data: append([]byte{0xEF, 0xBB, 0xBF}, []byte("SELECT 1")...), want: "UTF-8"},
+		// CP866: А-Я = 0x80–0x9F. Байты 0x80,0x81 — буквы "А","Б" в CP866
+		{name: "CP866 cyrillic", data: []byte{0x53, 0x45, 0x4C, 0x80, 0x81, 0x82}, want: "CP866"},
+		// CP1251: А-Я = 0xC0–0xDF. Байты 0xC0,0xC1 — буквы "А","Б" в CP1251
+		{name: "CP1251 cyrillic", data: []byte{0x53, 0x45, 0x4C, 0xC0, 0xC1, 0xC2, 0xC3}, want: "CP1251"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := detectFileEncoding(tc.data)
+			if got != tc.want {
+				t.Errorf("detectFileEncoding() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheckShouldBeCP866(t *testing.T) {
+	runner := &Runner{}
+
+	writeTemp := func(t *testing.T, data []byte) string {
+		t.Helper()
+		f, err := os.CreateTemp("", "cp866*.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Write(data); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+		return f.Name()
+	}
+
+	t.Run("CP866 no finding", func(t *testing.T) {
+		// 0x80–0x9F — маркеры CP866
+		path := writeTemp(t, []byte{0x53, 0x45, 0x4C, 0x80, 0x81, 0x82})
+		defer os.Remove(path)
+		findings, err := runner.checkShouldBeCP866(&indexedFile{Path: path, DsProductID: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(findings) != 0 {
+			t.Errorf("expected no findings, got %+v", findings)
+		}
+	})
+
+	t.Run("ASCII no finding", func(t *testing.T) {
+		path := writeTemp(t, []byte("SELECT 1"))
+		defer os.Remove(path)
+		findings, err := runner.checkShouldBeCP866(&indexedFile{Path: path, DsProductID: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(findings) != 0 {
+			t.Errorf("expected no findings, got %+v", findings)
+		}
+	})
+
+	t.Run("UTF-8 finding", func(t *testing.T) {
+		path := writeTemp(t, []byte("-- комментарий"))
+		defer os.Remove(path)
+		findings, err := runner.checkShouldBeCP866(&indexedFile{Path: path, DsProductID: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(findings) != 1 {
+			t.Errorf("expected 1 finding, got %d", len(findings))
+		}
+		if len(findings) > 0 && findings[0].Severity != SeverityPostgreReq {
+			t.Errorf("severity = %d, want %d", findings[0].Severity, SeverityPostgreReq)
+		}
+	})
+
+	t.Run("CP1251 finding", func(t *testing.T) {
+		// 0xC0–0xDF доминируют — CP1251
+		path := writeTemp(t, []byte{0x53, 0x45, 0x4C, 0xC0, 0xC1, 0xC2, 0xC3, 0xC4})
+		defer os.Remove(path)
+		findings, err := runner.checkShouldBeCP866(&indexedFile{Path: path, DsProductID: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(findings) != 1 {
+			t.Errorf("expected 1 finding, got %d", len(findings))
+		}
+	})
+}
+
+func TestStripLineComments(t *testing.T) {
+	cases := []struct {
+		name        string
+		line        string
+		inBlock     bool
+		wantOut     string
+		wantInBlock bool
+	}{
+		{name: "no comment", line: "WHERE x = 1", inBlock: false, wantOut: "WHERE x = 1", wantInBlock: false},
+		{name: "line comment", line: "WHERE x = 1 -- check null", inBlock: false, wantOut: "WHERE x = 1 ", wantInBlock: false},
+		{name: "block comment start", line: "WHERE /* comment", inBlock: false, wantOut: "WHERE ", wantInBlock: true},
+		{name: "block comment end", line: "still comment */ AND x = 1", inBlock: true, wantOut: " AND x = 1", wantInBlock: false},
+		{name: "full block comment inline", line: "WHERE /* skip this */ x = 1", inBlock: false, wantOut: "WHERE  x = 1", wantInBlock: false},
+		{name: "inside block", line: "this is all comment", inBlock: true, wantOut: "", wantInBlock: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotOut, gotBlock := stripLineComments(tc.line, tc.inBlock)
+			if gotOut != tc.wantOut {
+				t.Errorf("stripLineComments(%q, %v) output = %q, want %q", tc.line, tc.inBlock, gotOut, tc.wantOut)
+			}
+			if gotBlock != tc.wantInBlock {
+				t.Errorf("stripLineComments(%q, %v) inBlock = %v, want %v", tc.line, tc.inBlock, gotBlock, tc.wantInBlock)
+			}
+		})
+	}
+}
+
+func TestCheckNullComparison_Detects(t *testing.T) {
+	runner := &Runner{}
+	cases := []struct {
+		name    string
+		content string
+		wantN   int
+	}{
+		{name: "eq null", content: "WHERE x = NULL", wantN: 1},
+		{name: "neq null", content: "WHERE x <> NULL", wantN: 1},
+		{name: "ne null", content: "WHERE x != NULL", wantN: 1},
+		{name: "lt null", content: "WHERE x < NULL", wantN: 1},
+		{name: "gt null", content: "WHERE x > NULL", wantN: 1},
+		{name: "lte null", content: "WHERE x <= NULL", wantN: 1},
+		{name: "gte null", content: "WHERE x >= NULL", wantN: 1},
+		{name: "null eq left", content: "WHERE NULL = x", wantN: 1},
+		{name: "in null only", content: "WHERE x IN (NULL)", wantN: 1},
+		{name: "in null mixed", content: "WHERE x IN (1, NULL, 2)", wantN: 1},
+		{name: "multiple lines", content: "WHERE a = NULL\nAND b IN (NULL)", wantN: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := os.CreateTemp("", "nullcmp*.sql")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.Remove(f.Name())
+			if _, err := f.WriteString(tc.content); err != nil {
+				t.Fatal(err)
+			}
+			f.Close()
+
+			file := &indexedFile{Path: f.Name(), DsProductID: 1}
+			runner.exec = &reviewExecContext{
+				filePath: normalizePath(f.Name()),
+				content:  []byte(tc.content),
+				lines:    strings.Split(tc.content, "\n"),
+			}
+			findings, err := runner.checkNullComparison(file)
+			runner.exec = nil
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(findings) != tc.wantN {
+				t.Errorf("checkNullComparison findings = %d, want %d (findings: %+v)", len(findings), tc.wantN, findings)
+			}
+		})
+	}
+}
+
+func TestCheckNullComparison_NoFalsePositive(t *testing.T) {
+	runner := &Runner{}
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{name: "is null", content: "WHERE x IS NULL"},
+		{name: "is not null", content: "WHERE x IS NOT NULL"},
+		{name: "comment eq null", content: "-- WHERE x = NULL"},
+		{name: "block comment eq null", content: "/* WHERE x = NULL */"},
+		{name: "string literal null", content: "WHERE x = 'NULL'"},
+		{name: "in with values", content: "WHERE x IN (1, 2, 3)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := os.CreateTemp("", "nullcmp*.sql")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.Remove(f.Name())
+			if _, err := f.WriteString(tc.content); err != nil {
+				t.Fatal(err)
+			}
+			f.Close()
+
+			file := &indexedFile{Path: f.Name(), DsProductID: 1}
+			runner.exec = &reviewExecContext{
+				filePath: normalizePath(f.Name()),
+				content:  []byte(tc.content),
+				lines:    strings.Split(tc.content, "\n"),
+			}
+			findings, err := runner.checkNullComparison(file)
+			runner.exec = nil
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(findings) != 0 {
+				t.Errorf("checkNullComparison false positive: got %d findings, want 0 (findings: %+v)", len(findings), findings)
 			}
 		})
 	}

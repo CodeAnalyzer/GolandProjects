@@ -179,6 +179,10 @@ func enabledRuleSet(rules []RuleID) map[RuleID]bool {
 		RuleUseDrop:               true,
 		RuleMathOperations:        true,
 		RuleExistsWithAndInIf:     true,
+		RuleNullComparison:        true,
+		RuleShouldBeCP866:         true,
+		RuleTooManyJoins:          true,
+		RuleMaxProcParam:          true,
 	}
 	if len(rules) == 0 {
 		return result

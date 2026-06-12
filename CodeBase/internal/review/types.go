@@ -28,11 +28,19 @@ const (
 	RuleUseDrop               RuleID = "useDrop"
 	RuleMathOperations        RuleID = "mathOperations"
 	RuleExistsWithAndInIf     RuleID = "existsWithAndInIf"
+	RuleNullComparison        RuleID = "nullComparison"
+	RuleShouldBeCP866         RuleID = "shouldBeCP866"
+	RuleTooManyJoins          RuleID = "tooManyJoins"
+	RuleMaxProcParam          RuleID = "maxProcParam"
 )
 
 const (
 	SeverityDeployStopper = 1
+	SeverityPostgreReq    = 2
 	SeverityFineCode      = 3
+
+	MaxJoinsAllowed      = 12
+	MaxProcParamsAllowed = 90
 )
 
 type Finding struct {

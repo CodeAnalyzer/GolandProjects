@@ -3,9 +3,11 @@ package review
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/codebase/internal/model"
 	sqlparser "github.com/codebase/internal/parser/sql"
@@ -3429,6 +3431,327 @@ func analyzeStatementForHintType(lines []string, startLine int, file *indexedFil
 	}
 
 	return findings
+}
+
+// nullComparisonBinaryRe ищет сравнения вида: expr =/<>/<=/>=/</>  NULL (не IS NULL / IS NOT NULL)
+var nullComparisonBinaryRe = regexp.MustCompile(`(?i)(?:^|[^a-zA-Z_])((?:=|<>|!=|<=|>=|<|>)\s*null\b|\bnull\s*(?:=|<>|!=|<=|>=|<|>))`)
+
+// nullComparisonInRe ищет IN (..., NULL, ...) или IN (NULL)
+var nullComparisonInRe = regexp.MustCompile(`(?i)\bin\s*\([^)]*\bnull\b[^)]*\)`)
+
+func (r *Runner) checkNullComparison(file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(string(content), "\n")
+	inBlockComment := false
+
+	for lineIdx, rawLine := range lines {
+		lineNo := lineIdx + 1
+
+		// Обрабатываем блочные комментарии /* ... */
+		stripped, stillInBlock := stripLineComments(rawLine, inBlockComment)
+		inBlockComment = stillInBlock
+
+		if strings.TrimSpace(stripped) == "" {
+			continue
+		}
+
+		// Проверяем бинарные операторы: = NULL, <> NULL, < NULL и т.д.
+		if nullComparisonBinaryRe.MatchString(stripped) {
+			findings = append(findings, Finding{
+				Rule:             RuleNullComparison,
+				Severity:         SeverityPostgreReq,
+				Message:          "Сравнение с NULL через оператор недопустимо, используйте IS NULL или IS NOT NULL",
+				File:             file.Path,
+				Line:             lineNo,
+				Object:           strings.TrimSpace(rawLine),
+				CurrentProductID: file.DsProductID,
+			})
+			continue
+		}
+
+		// Проверяем IN (NULL) / IN (..., NULL, ...)
+		if nullComparisonInRe.MatchString(stripped) {
+			findings = append(findings, Finding{
+				Rule:             RuleNullComparison,
+				Severity:         SeverityPostgreReq,
+				Message:          "Сравнение с NULL через IN недопустимо, используйте IS NULL или IS NOT NULL",
+				File:             file.Path,
+				Line:             lineNo,
+				Object:           strings.TrimSpace(rawLine),
+				CurrentProductID: file.DsProductID,
+			})
+		}
+	}
+
+	return findings, nil
+}
+
+// stripLineComments удаляет из строки однострочные комментарии (--)
+// и обрабатывает блочные комментарии (/* */), возвращая очищенный текст
+// и флаг того, что после этой строки мы всё ещё внутри блочного комментария.
+func stripLineComments(line string, inBlock bool) (string, bool) {
+	var b strings.Builder
+	i := 0
+	for i < len(line) {
+		if inBlock {
+			if i+1 < len(line) && line[i] == '*' && line[i+1] == '/' {
+				inBlock = false
+				i += 2
+				continue
+			}
+			i++
+			continue
+		}
+		// однострочный комментарий
+		if i+1 < len(line) && line[i] == '-' && line[i+1] == '-' {
+			break
+		}
+		// начало блочного комментария
+		if i+1 < len(line) && line[i] == '/' && line[i+1] == '*' {
+			inBlock = true
+			i += 2
+			continue
+		}
+		b.WriteByte(line[i])
+		i++
+	}
+	return b.String(), inBlock
+}
+
+func (r *Runner) checkShouldBeCP866(file *indexedFile) ([]Finding, error) {
+	data, err := os.ReadFile(file.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	enc := detectFileEncoding(data)
+	if enc == "CP866" || enc == "ASCII" {
+		return nil, nil
+	}
+
+	msg := fmt.Sprintf("Файл имеет кодировку %s, требуется CP866", enc)
+	return []Finding{{
+		Rule:             RuleShouldBeCP866,
+		Severity:         SeverityPostgreReq,
+		Message:          msg,
+		File:             file.Path,
+		Object:           file.Path,
+		CurrentProductID: file.DsProductID,
+	}}, nil
+}
+
+// detectFileEncoding определяет кодировку файла: "ASCII", "CP866", "UTF-8", "CP1251" или "UNKNOWN".
+// Алгоритм:
+//  1. Нет байт > 0x7F → ASCII (совместим с CP866)
+//  2. Валидный UTF-8 → UTF-8
+//  3. Эвристика по маркерным диапазонам:
+//     cp866Score  = кол-во байт 0x80–0x9F (А-Я в CP866, редкие спецсимволы в CP1251)
+//     cp1251Score = кол-во байт 0xC0–0xDF (А-Я в CP1251, псевдографика в CP866 — редка в тексте)
+//     Побеждает бо́льший счёт.
+func detectFileEncoding(data []byte) string {
+	hasHigh := false
+	for _, b := range data {
+		if b > 0x7F {
+			hasHigh = true
+			break
+		}
+	}
+	if !hasHigh {
+		return "ASCII"
+	}
+
+	if utf8.Valid(data) {
+		return "UTF-8"
+	}
+
+	var cp866Score, cp1251Score int
+	for _, b := range data {
+		switch {
+		case b >= 0x80 && b <= 0x9F:
+			cp866Score++
+		case b >= 0xC0 && b <= 0xDF:
+			cp1251Score++
+		}
+	}
+
+	if cp1251Score > cp866Score {
+		return "CP1251"
+	}
+	return "CP866"
+}
+
+func (r *Runner) checkTooManyJoins(file *indexedFile) ([]Finding, error) {
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	text := string(content)
+	statements := splitStatementsWithOffsets(text)
+	findings := make([]Finding, 0)
+
+	for _, entry := range statements {
+		count := countTopLevelJoins(entry.stmt)
+		if count <= MaxJoinsAllowed {
+			continue
+		}
+		// Точный номер строки по сохранённому offset
+		lineNo := strings.Count(text[:entry.offset], "\n") + 1
+		// Object — первая непустая строка оператора
+		firstLine := entry.stmt
+		if nl := strings.IndexByte(entry.stmt, '\n'); nl >= 0 {
+			firstLine = strings.TrimSpace(entry.stmt[:nl])
+		}
+		firstLine = strings.TrimSpace(firstLine)
+		findings = append(findings, Finding{
+			Rule:             RuleTooManyJoins,
+			Severity:         SeverityPostgreReq,
+			Message:          fmt.Sprintf("Количество JOIN в запросе (%d) превышает допустимое (%d)", count, MaxJoinsAllowed),
+			File:             file.Path,
+			Line:             lineNo,
+			Object:           firstLine,
+			CurrentProductID: file.DsProductID,
+		})
+	}
+
+	return findings, nil
+}
+
+type stmtWithOffset struct {
+	stmt   string
+	offset int
+}
+
+func (r *Runner) checkMaxProcParam(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	for _, proc := range parsed.Procedures {
+		if proc == nil || proc.ProcName == "" {
+			continue
+		}
+		if len(proc.Params) <= MaxProcParamsAllowed {
+			continue
+		}
+		findings = append(findings, Finding{
+			Rule:             RuleMaxProcParam,
+			Severity:         SeverityPostgreReq,
+			Message:          fmt.Sprintf("Количество параметров процедуры (%d) превышает допустимое (%d)", len(proc.Params), MaxProcParamsAllowed),
+			File:             file.Path,
+			Line:             proc.LineStart,
+			Object:           proc.ProcName,
+			CurrentProductID: file.DsProductID,
+		})
+	}
+	return findings, nil
+}
+
+// toLowerASCII понижает регистр только ASCII-букв (0x41–0x5A), не затрагивая байты > 0x7F.
+// Это важно для корректной работы с файлами в кодировке CP866.
+func toLowerASCII(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 32
+		}
+	}
+	return string(b)
+}
+
+// splitStatementsWithOffsets аналогична splitStatementsForHintType, но дополнительно
+// сохраняет байтовый offset начала каждого оператора в исходном тексте.
+func splitStatementsWithOffsets(text string) []stmtWithOffset {
+	lower := toLowerASCII(text)
+	result := make([]stmtWithOffset, 0)
+	depth := 0
+	inString := false
+	startIdx := 0
+
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '\'' {
+			if i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+		if depth == 0 && i > 0 {
+			if keywordMatchAt(lower, i, "select") || keywordMatchAt(lower, i, "update") || keywordMatchAt(lower, i, "delete") {
+				if i > 0 && isCharWordBoundary(lower[i-1]) {
+					if startIdx < i {
+						stmt := strings.TrimSpace(text[startIdx:i])
+						if stmt != "" {
+							result = append(result, stmtWithOffset{stmt: stmt, offset: startIdx})
+						}
+					}
+					startIdx = i
+				}
+			}
+		}
+	}
+	if startIdx < len(text) {
+		stmt := strings.TrimSpace(text[startIdx:])
+		if stmt != "" {
+			result = append(result, stmtWithOffset{stmt: stmt, offset: startIdx})
+		}
+	}
+	return result
+}
+
+// countTopLevelJoins считает количество JOIN-ов на верхнем уровне вложенности (вне подзапросов).
+func countTopLevelJoins(stmt string) int {
+	lower := strings.ToLower(stmt)
+	count := 0
+	depth := 0
+	inString := false
+
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+
+		if ch == '\'' {
+			if i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+
+		if depth == 0 && keywordMatchAt(lower, i, "join") {
+			count++
+		}
+	}
+
+	return count
 }
 
 // splitStatementsForHintType разбивает текст на отдельные операторы SELECT/UPDATE/DELETE на нулевом уровне вложенности

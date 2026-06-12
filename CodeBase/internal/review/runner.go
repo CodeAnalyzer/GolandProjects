@@ -235,6 +235,26 @@ func (r *Runner) buildRuleTasks(ruleSet map[RuleID]bool, parsed *sqlparser.Parse
 			return r.checkExistsWithAndInIf(file)
 		}})
 	}
+	if ruleSet[RuleNullComparison] {
+		tasks = append(tasks, ruleTask{rule: RuleNullComparison, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkNullComparison(file)
+		}})
+	}
+	if ruleSet[RuleShouldBeCP866] {
+		tasks = append(tasks, ruleTask{rule: RuleShouldBeCP866, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkShouldBeCP866(file)
+		}})
+	}
+	if ruleSet[RuleTooManyJoins] {
+		tasks = append(tasks, ruleTask{rule: RuleTooManyJoins, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkTooManyJoins(file)
+		}})
+	}
+	if ruleSet[RuleMaxProcParam] {
+		tasks = append(tasks, ruleTask{rule: RuleMaxProcParam, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkMaxProcParam(parsed, file)
+		}})
+	}
 	return tasks
 }
 
