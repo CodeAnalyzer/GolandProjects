@@ -44,6 +44,7 @@ const (
 	RulePostgreLabelGotoLevel RuleID = "postgreLabelGotoLevel"
 	RuleDateIntoString        RuleID = "dateIntoString"
 	RuleEmptyStringDate       RuleID = "emptyStringDate"
+	RuleVarUseAfterCursor     RuleID = "varUseAfterCursor"
 )
 
 const (
@@ -235,6 +236,11 @@ type cursorDeclaration struct {
 	CursorName        string
 	SelectExpressions []string
 	FromClause        string
+}
+
+type deallocateStatement struct {
+	CursorName string
+	Line       int
 }
 
 type stmtWithOffset struct {

@@ -2843,3 +2843,145 @@ select @IntVar = getdate()
 		})
 	}
 }
+
+func TestCheckVarUseAfterCursor_UseAfterDeallocate_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare cur1 cursor for select ID from tContract
+  open cur1
+  fetch next from cur1 into @a
+  deallocate cur1
+  select @a
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n")}
+	findings, err := r.checkVarUseAfterCursor(&indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1", len(findings))
+	}
+	if findings[0].Rule != RuleVarUseAfterCursor {
+		t.Fatalf("rule = %s, want %s", findings[0].Rule, RuleVarUseAfterCursor)
+	}
+	if findings[0].Object != "@a" {
+		t.Fatalf("object = %q, want @a", findings[0].Object)
+	}
+}
+
+func TestCheckVarUseAfterCursor_UseBeforeDeallocate_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare cur1 cursor for select ID from tContract
+  open cur1
+  fetch next from cur1 into @a
+  select @a
+  deallocate cur1
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n")}
+	findings, err := r.checkVarUseAfterCursor(&indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0", len(findings))
+	}
+}
+
+func TestCheckVarUseAfterCursor_MacroDeallocateAndFetch_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @b varchar(10)
+  __DECLARE_CURSOR__(cur2)
+    select Name from tContract
+  open cur2
+  __FETCH_NEXT__ cur2 into @b
+  __DEALLOCATE_CURSOR__ cur2
+  print @b
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n")}
+	findings, err := r.checkVarUseAfterCursor(&indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1", len(findings))
+	}
+	if findings[0].Object != "@b" {
+		t.Fatalf("object = %q, want @b", findings[0].Object)
+	}
+}
+
+func TestCheckVarUseAfterCursor_MultipleCursors_NoCrossFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare @b int
+  declare cur1 cursor for select ID from t1
+  declare cur2 cursor for select ID from t2
+  open cur1
+  open cur2
+  fetch next from cur1 into @a
+  fetch next from cur2 into @b
+  deallocate cur1
+  deallocate cur2
+  select @b
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n")}
+	findings, err := r.checkVarUseAfterCursor(&indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1", len(findings))
+	}
+	if findings[0].Object != "@b" {
+		t.Fatalf("object = %q, want @b", findings[0].Object)
+	}
+}
+
+func TestCheckVarUseAfterCursor_MultilineFetchInto_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare @b int
+  declare cur1 cursor for select ID from tContract
+  open cur1
+  fetch next from cur1 into @a,
+                            @b
+  deallocate cur1
+  select @a, @b
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n")}
+	findings, err := r.checkVarUseAfterCursor(&indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("findings count = %d, want 2", len(findings))
+	}
+	objSet := map[string]bool{}
+	for _, f := range findings {
+		objSet[f.Object] = true
+	}
+	if !objSet["@a"] || !objSet["@b"] {
+		t.Fatalf("expected findings for @a and @b, got %v", objSet)
+	}
+}

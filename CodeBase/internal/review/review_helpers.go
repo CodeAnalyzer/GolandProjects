@@ -194,6 +194,7 @@ func enabledRuleSet(rules []RuleID) map[RuleID]bool {
 		RulePostgreLabelGotoLevel: true,
 		RuleDateIntoString:        true,
 		RuleEmptyStringDate:       true,
+		RuleVarUseAfterCursor:     true,
 	}
 	if len(rules) == 0 {
 		return result

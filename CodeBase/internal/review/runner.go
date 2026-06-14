@@ -305,6 +305,11 @@ func (r *Runner) buildRuleTasks(ruleSet map[RuleID]bool, parsed *sqlparser.Parse
 			return r.checkEmptyStringDate(parsed, file)
 		}})
 	}
+	if ruleSet[RuleVarUseAfterCursor] {
+		tasks = append(tasks, ruleTask{rule: RuleVarUseAfterCursor, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkVarUseAfterCursor(file)
+		}})
+	}
 	return tasks
 }
 

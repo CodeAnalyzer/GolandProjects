@@ -4346,6 +4346,96 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 	return findings, nil
 }
 
+func (r *Runner) checkVarUseAfterCursor(file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	macroResult := replaceMacros(string(content))
+	text := macroResult.Content
+	lines := strings.Split(text, "\n")
+
+	cursorVars := parseAllFetchIntoStatements(text)
+	if len(cursorVars) == 0 {
+		return findings, nil
+	}
+
+	deallocs := parseDeallocateStatements(text)
+
+	// Для каждого DEALLOCATE ищем использование переменных после него
+	for _, da := range deallocs {
+		cursorName := normalizeIdentifier(da.CursorName)
+		vars, exists := cursorVars[cursorName]
+		if !exists || len(vars) == 0 {
+			continue
+		}
+
+		// Сканируем строки после DEALLOCATE
+		for i := da.Line; i < len(lines); i++ {
+			line := lines[i]
+			lower := strings.ToLower(line)
+
+			// Пропускаем строки с declare/fetch/open/close/deallocate/для этого курсора
+			if strings.Contains(lower, "declare") && strings.Contains(lower, cursorName) {
+				continue
+			}
+			if strings.Contains(lower, "open") && strings.Contains(lower, cursorName) {
+				continue
+			}
+			if strings.Contains(lower, "close") && strings.Contains(lower, cursorName) {
+				continue
+			}
+			if strings.Contains(lower, "fetch") && strings.Contains(lower, cursorName) {
+				continue
+			}
+			if strings.Contains(lower, "__fetch_next__") && strings.Contains(lower, cursorName) {
+				continue
+			}
+			if strings.Contains(lower, "deallocate") && strings.Contains(lower, cursorName) {
+				continue
+			}
+			if strings.Contains(lower, "__deallocate_cursor__") && strings.Contains(lower, cursorName) {
+				continue
+			}
+
+			// Ищем использование любой переменной из курсора
+			for _, v := range vars {
+				varLower := strings.ToLower(v)
+				// Проверяем что переменная используется как слово (не declare/fetch etc)
+				if !strings.Contains(lower, varLower) {
+					continue
+				}
+				// Проверяем что это не declare с инициализацией той же переменной
+				if strings.Contains(lower, "declare") && strings.Contains(lower, varLower) {
+					continue
+				}
+				// Проверяем что это не set/fetch с той же переменной (переопределение)
+				if strings.HasPrefix(lower, "set") && strings.Contains(lower, varLower) {
+					continue
+				}
+				// Проверяем что это не select @var = ... (переопределение)
+				if strings.Contains(lower, "select") && strings.Contains(lower, varLower+"=") {
+					continue
+				}
+
+				findings = append(findings, Finding{
+					Rule:             RuleVarUseAfterCursor,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Использование переменной %s из курсора %s после его деалокации", v, da.CursorName),
+					File:             file.Path,
+					Line:             mapProcessedLineNumber(macroResult.SourceMap, i+1),
+					Object:           v,
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	return findings, nil
+}
+
 func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	content, err := r.fileContent(file.Path)

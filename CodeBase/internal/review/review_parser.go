@@ -292,6 +292,93 @@ func parseCursorDeclarations(content string) map[string]cursorDeclaration {
 	return result
 }
 
+func parseDeallocateStatements(content string) []deallocateStatement {
+	result := make([]deallocateStatement, 0)
+	if strings.TrimSpace(content) == "" {
+		return result
+	}
+
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	lines := strings.Split(content, "\n")
+
+	re := regexp.MustCompile(`(?is)^(?:__deallocate_cursor__|deallocate(?:\s+cursor)?)\s+([a-z_#][a-z0-9_#]*)`)
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if m := re.FindStringSubmatch(trimmed); len(m) == 2 {
+			result = append(result, deallocateStatement{CursorName: strings.TrimSpace(m[1]), Line: i + 1})
+		}
+	}
+	return result
+}
+
+func parseAllFetchIntoStatements(content string) map[string][]string {
+	result := make(map[string][]string)
+	if strings.TrimSpace(content) == "" {
+		return result
+	}
+
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	lines := strings.Split(content, "\n")
+
+	prefixRe := regexp.MustCompile(`(?is)^\s*(?:__fetch_next__|fetch(?:\s+next)?(?:\s+from)?)\s+([a-z_#][a-z0-9_#]*)\s+into\s+(.*)$`)
+	for i := 0; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+
+		m := prefixRe.FindStringSubmatch(trimmed)
+		if len(m) != 3 {
+			continue
+		}
+
+		cursorName := normalizeIdentifier(strings.TrimSpace(m[1]))
+		varsPart := strings.TrimSpace(m[2])
+
+		// Собираем продолжение переменных на следующих строках
+		j := i + 1
+		for ; j < len(lines); j++ {
+			nextLine := strings.TrimSpace(lines[j])
+			if nextLine == "" {
+				continue
+			}
+			if isCursorDeclarationBoundary(nextLine) {
+				break
+			}
+			if varsPart != "" {
+				varsPart += " " + nextLine
+			} else {
+				varsPart = nextLine
+			}
+		}
+		i = j - 1
+
+		if varsPart == "" {
+			continue
+		}
+
+		if boundary := findFetchIntoTailBoundary(varsPart); boundary >= 0 {
+			varsPart = varsPart[:boundary]
+		}
+		varsPart = strings.TrimSpace(varsPart)
+
+		parts := splitTopLevelCSV(varsPart)
+		varRe := regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)$`)
+		for _, part := range parts {
+			match := varRe.FindStringSubmatch(strings.TrimSpace(part))
+			if len(match) == 2 {
+				result[cursorName] = append(result[cursorName], strings.TrimSpace(match[1]))
+			}
+		}
+	}
+	return result
+}
+
 func parseSelectSourceStatement(queryText string) (insertSelectStatement, bool) {
 	text := strings.TrimSpace(queryText)
 	if text == "" {
@@ -327,7 +414,7 @@ func isCursorDeclarationBoundary(line string) bool {
 		return false
 	}
 
-	keywords := []string{"open", "fetch", "__fetch_next__", "close", "deallocate", "declare", "__declare_cursor__", "if", "while", "return", "begin", "end", "go"}
+	keywords := []string{"open", "fetch", "__fetch_next__", "close", "deallocate", "__deallocate_cursor__", "declare", "__declare_cursor__", "if", "while", "return", "begin", "end", "go"}
 	for _, kw := range keywords {
 		if strings.HasPrefix(trimmed, kw+" ") || strings.HasPrefix(trimmed, kw+"\t") || strings.HasPrefix(trimmed, kw+"(") || trimmed == kw {
 			return true
