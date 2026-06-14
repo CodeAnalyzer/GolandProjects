@@ -1,5 +1,7 @@
 package review
 
+import "regexp"
+
 type RuleID string
 
 const (
@@ -51,6 +53,81 @@ const (
 
 	MaxJoinsAllowed      = 12
 	MaxProcParamsAllowed = 90
+)
+
+var (
+	// readHints - для SELECT и вспомогательных таблиц в UPDATE/DELETE
+	readHints = []string{
+		"M_INDEX",
+		"M_NOLOCK_INDEX",
+		"M_READPAST_INDEX",
+		"M_HOLDLOCK_INDEX",
+		"M_P_READPAST_INDEX",
+		"M_P_HOLDLOCK_INDEX",
+	}
+	// deleteHints - для целевой таблицы в DELETE
+	deleteHints = []string{
+		"M_ROWLOCK_INDEX",
+		"M_ROWLOCK_READPAST_INDEX",
+		"M_P_ROWLOCK_INDEX",
+		"M_P_ROWLOCK_READPAST_INDEX",
+	}
+	// updateHints - для целевой таблицы в UPDATE
+	updateHints = []string{
+		"M_UPDLOCK_INDEX",
+		"M_UPDLOCK_READPAST_INDEX",
+		"M_P_UPDLOCK_INDEX",
+		"M_P_UPDLOCK_READPAST_INDEX",
+	}
+
+	forceOrderMacros = []string{
+		"M_FORCEORDER",
+		"M_FORCEORDER_NOSPOOL",
+		"M_FORCEORDER_FAST",
+		"M_FORCEORDER_WO_LOOPJOIN",
+	}
+
+	allowedTableHints = []string{
+		"M_INDEX",
+		"M_NOLOCK_INDEX",
+		"M_ROWLOCK_INDEX",
+		"M_ROWLOCK_READPAST_INDEX",
+		"M_READPAST_INDEX",
+		"M_UPDLOCK_INDEX",
+		"M_UPDLOCK_READPAST_INDEX",
+		"M_HOLDLOCK_INDEX",
+		"M_P_ROWLOCK_INDEX",
+		"M_P_ROWLOCK_READPAST_INDEX",
+		"M_P_READPAST_INDEX",
+		"M_P_UPDLOCK_INDEX",
+		"M_P_UPDLOCK_READPAST_INDEX",
+		"M_P_HOLDLOCK_INDEX",
+	}
+)
+
+// selectAllRe находит SELECT * (с любыми пробелами между SELECT и *)
+var selectAllRe = regexp.MustCompile(`(?i)\bselect\s+\*`)
+
+// truncateTblRe находит TRUNCATE TABLE и имя таблицы (включая схему dbo.table)
+var truncateTblRe = regexp.MustCompile(`(?i)\btruncate\s+table\s+(\S+)`)
+
+// nullComparisonBinaryRe ищет сравнения вида: expr =/<>/<=/>=/</>  NULL (не IS NULL / IS NOT NULL)
+var nullComparisonBinaryRe = regexp.MustCompile(`(?i)(?:^|[^a-zA-Z_])((?:=|<>|!=|<=|>=|<|>)\s*null\b|\bnull\s*(?:=|<>|!=|<=|>=|<|>))`)
+
+// nullParamDefaultRe соответствует строкам объявления параметра или переменной с дефолтом = null:
+// @Name   DSTYPE = null,   или   @Name DSTYPE = null
+var nullParamDefaultRe = regexp.MustCompile(`(?i)@\w+\s+\w+\s*=\s*null\s*,?\s*$`)
+
+// nullComparisonInRe ищет IN (..., NULL, ...) или IN (NULL)
+var nullComparisonInRe = regexp.MustCompile(`(?i)\bin\s*\([^)]*\bnull\b[^)]*\)`)
+
+// modifyOutProcInsertRe, modifyOutProcUpdateRe, modifyOutProcDeleteRe, modifyOutProcTruncateRe —
+// регулярки для детектирования DML-операторов и цели.
+var (
+	modifyOutProcInsertRe   = regexp.MustCompile(`(?i)^\s*insert\s+(?:into\s+)?([A-Za-z_#][A-Za-z0-9_#]*)`)
+	modifyOutProcUpdateRe   = regexp.MustCompile(`(?i)^\s*update\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
+	modifyOutProcDeleteRe   = regexp.MustCompile(`(?i)^\s*delete\s+(?:from\s+)?([A-Za-z_#][A-Za-z0-9_#]*)`)
+	modifyOutProcTruncateRe = regexp.MustCompile(`(?i)^\s*truncate\s+table\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
 )
 
 type Finding struct {
@@ -158,4 +235,9 @@ type cursorDeclaration struct {
 	CursorName        string
 	SelectExpressions []string
 	FromClause        string
+}
+
+type stmtWithOffset struct {
+	stmt   string
+	offset int
 }
