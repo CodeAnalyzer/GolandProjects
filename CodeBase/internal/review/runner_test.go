@@ -477,6 +477,30 @@ func TestEnabledRuleSet_TableHintIsRight(t *testing.T) {
 	}
 }
 
+func TestEnabledRuleSet_EmptyReturn(t *testing.T) {
+	rules := []RuleID{RuleEmptyReturn}
+	set := enabledRuleSet(rules)
+
+	if !set[RuleEmptyReturn] {
+		t.Fatalf("RuleEmptyReturn should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestEnabledRuleSet_RawTransactionControl(t *testing.T) {
+	rules := []RuleID{RuleRawTransactionControl}
+	set := enabledRuleSet(rules)
+
+	if !set[RuleRawTransactionControl] {
+		t.Fatalf("RuleRawTransactionControl should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
 func TestParseInsertSelectStatement_WithCaseExpression(t *testing.T) {
 	query := `insert pCons_AutoFullPrepDate (
 		SPID,
@@ -2071,10 +2095,10 @@ func TestHasDefaultAssignmentInBody(t *testing.T) {
 	runner := &Runner{}
 
 	cases := []struct {
-		name          string
-		procBody      string
-		paramName     string
-		expectFound   bool
+		name        string
+		procBody    string
+		paramName   string
+		expectFound bool
 	}{
 		{
 			name: "assignment before usage - select isnull",
@@ -2108,8 +2132,8 @@ select @ParentProtocolID = isnull(@ParentProtocolID, 0)`,
 			expectFound: false,
 		},
 		{
-			name: "assignment but no usage - should pass",
-			procBody: `select @ParentProtocolID = isnull(@ParentProtocolID, 0)`,
+			name:        "assignment but no usage - should pass",
+			procBody:    `select @ParentProtocolID = isnull(@ParentProtocolID, 0)`,
 			paramName:   "@ParentProtocolID",
 			expectFound: true,
 		},
@@ -2382,11 +2406,17 @@ func TestCheckModifyOutProc(t *testing.T) {
 			t.Fatal(err)
 		}
 		content := "INSERT INTO tFoo (id) VALUES (1)\n"
-		f.WriteString(content)
+		if _, err = f.WriteString(content); err != nil {
+			t.Fatal(err)
+		}
 		f.Close()
 		dataPath := filepath.Join(filepath.Dir(f.Name()), "DATA", "test.sql")
-		os.MkdirAll(filepath.Dir(dataPath), 0755)
-		os.WriteFile(dataPath, []byte(content), 0644)
+		if err = os.MkdirAll(filepath.Dir(dataPath), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.WriteFile(dataPath, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
 		defer os.Remove(f.Name())
 		defer os.Remove(dataPath)
 
@@ -2476,9 +2506,9 @@ func TestCheckMaxProcParam(t *testing.T) {
 
 func TestCountTopLevelJoins(t *testing.T) {
 	cases := []struct {
-		name  string
-		stmt  string
-		want  int
+		name string
+		stmt string
+		want int
 	}{
 		{name: "no joins", stmt: "SELECT * FROM t WHERE x = 1", want: 0},
 		{name: "one join", stmt: "SELECT * FROM t INNER JOIN s ON t.id = s.id", want: 1},
@@ -2798,6 +2828,564 @@ func TestCheckNullComparison_NoFalsePositive(t *testing.T) {
 			}
 			if len(findings) != 0 {
 				t.Errorf("checkNullComparison false positive: got %d findings, want 0 (findings: %+v)", len(findings), findings)
+			}
+		})
+	}
+}
+
+func TestCheckEmptyReturn(t *testing.T) {
+	runner := &Runner{}
+	cases := []struct {
+		name     string
+		content  string
+		wantN    int
+		wantLine int
+	}{
+		{name: "standalone return", content: "RETURN", wantN: 1, wantLine: 1},
+		{name: "return with semicolon", content: "RETURN;", wantN: 1, wantLine: 1},
+		{name: "indented return", content: "    RETURN  ;", wantN: 1, wantLine: 1},
+		{name: "return with value", content: "RETURN @code", wantN: 0},
+		{name: "return number", content: "RETURN 0", wantN: 0},
+		{name: "return expression", content: "RETURN (SELECT 1)", wantN: 0},
+		{name: "return in comment", content: "-- RETURN", wantN: 0},
+		{name: "return in block comment", content: "/* RETURN */", wantN: 0},
+		{name: "return in string", content: "SELECT 'RETURN'", wantN: 0},
+		{name: "return after other word", content: "SELECT c.return_date FROM t", wantN: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := os.CreateTemp("", "emptyret*.sql")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.Remove(f.Name())
+			if _, err := f.WriteString(tc.content); err != nil {
+				t.Fatal(err)
+			}
+			f.Close()
+
+			file := &indexedFile{Path: f.Name(), DsProductID: 1}
+			runner.exec = &reviewExecContext{
+				filePath: normalizePath(f.Name()),
+				content:  []byte(tc.content),
+				lines:    strings.Split(tc.content, "\n"),
+			}
+			findings, err := runner.checkEmptyReturn(file)
+			runner.exec = nil
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(findings) != tc.wantN {
+				t.Errorf("checkEmptyReturn findings = %d, want %d (findings: %+v)", len(findings), tc.wantN, findings)
+			}
+			if tc.wantN > 0 && len(findings) > 0 && findings[0].Line != tc.wantLine {
+				t.Errorf("checkEmptyReturn line = %d, want %d", findings[0].Line, tc.wantLine)
+			}
+		})
+	}
+}
+
+func TestCheckRawTransactionControl(t *testing.T) {
+	runner := &Runner{}
+	cases := []struct {
+		name     string
+		content  string
+		wantN    int
+		wantLine int
+	}{
+		{name: "begin tran", content: "BEGIN TRAN", wantN: 1, wantLine: 1},
+		{name: "begin transaction", content: "BEGIN TRANSACTION", wantN: 1, wantLine: 1},
+		{name: "commit", content: "COMMIT", wantN: 1, wantLine: 1},
+		{name: "rollback", content: "ROLLBACK", wantN: 1, wantLine: 1},
+		{name: "save tran", content: "SAVE TRAN", wantN: 1, wantLine: 1},
+		{name: "save transaction", content: "SAVE TRANSACTION", wantN: 1, wantLine: 1},
+		{name: "end tran", content: "END TRAN", wantN: 1, wantLine: 1},
+		{name: "lowercase begin tran", content: "begin tran", wantN: 1, wantLine: 1},
+		{name: "begin tran with semicolon", content: "BEGIN TRAN;", wantN: 1, wantLine: 1},
+		{name: "indented rollback", content: "    ROLLBACK  ;", wantN: 1, wantLine: 1},
+		{name: "BEGIN_TRAN macro", content: "BEGIN_TRAN('name')", wantN: 0},
+		{name: "GOEND macro", content: "GOEND(@RetVal)", wantN: 0},
+		{name: "COMMIT_TRAN macro", content: "COMMIT_TRAN('name')", wantN: 0},
+		{name: "__BEGIN_TRAN__ macro", content: "__BEGIN_TRAN__(T1)", wantN: 0},
+		{name: "__ERR_TRAN__ macro", content: "__ERR_TRAN__(T1)", wantN: 0},
+		{name: "__COMMIT_TRAN__ macro", content: "__COMMIT_TRAN__", wantN: 0},
+		{name: "__END_TRAN__ macro", content: "__END_TRAN__(T1)", wantN: 0},
+		{name: "comment begin tran", content: "-- BEGIN TRAN", wantN: 0},
+		{name: "block comment rollback", content: "/* ROLLBACK */", wantN: 0},
+		{name: "string literal commit", content: "SELECT 'COMMIT'", wantN: 0},
+		{name: "word containing begin", content: "SELECT begin_date FROM t", wantN: 0},
+		{name: "word containing commit", content: "SELECT commitment FROM t", wantN: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := os.CreateTemp("", "rawtx*.sql")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.Remove(f.Name())
+			if _, err := f.WriteString(tc.content); err != nil {
+				t.Fatal(err)
+			}
+			f.Close()
+
+			file := &indexedFile{Path: f.Name(), DsProductID: 1}
+			runner.exec = &reviewExecContext{
+				filePath: normalizePath(f.Name()),
+				content:  []byte(tc.content),
+				lines:    strings.Split(tc.content, "\n"),
+			}
+			findings, err := runner.checkRawTransactionControl(file)
+			runner.exec = nil
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(findings) != tc.wantN {
+				t.Errorf("checkRawTransactionControl findings = %d, want %d (findings: %+v)", len(findings), tc.wantN, findings)
+			}
+			if tc.wantN > 0 && len(findings) > 0 && findings[0].Line != tc.wantLine {
+				t.Errorf("checkRawTransactionControl line = %d, want %d", findings[0].Line, tc.wantLine)
+			}
+		})
+	}
+}
+
+func TestEnabledRuleSet_DeferredUpdate(t *testing.T) {
+	rules := []RuleID{RuleDeferredUpdate}
+	set := enabledRuleSet(rules)
+
+	if !set[RuleDeferredUpdate] {
+		t.Fatalf("RuleDeferredUpdate should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestExtractSetColumns(t *testing.T) {
+	cases := []struct {
+		name string
+		stmt string
+		want []string
+	}{
+		{name: "simple", stmt: "UPDATE t SET a = 1, b = 2 WHERE id = 3", want: []string{"a", "b"}},
+		{name: "alias column", stmt: "UPDATE t SET t.a = 1, t.b = 2 FROM t WHERE id = 3", want: []string{"a", "b"}},
+		{name: "with isnull", stmt: "UPDATE t SET a = isnull(@a, a), b = @b + 1 WHERE id = 3", want: []string{"a", "b"}},
+		{name: "variable only", stmt: "UPDATE t SET @a = 1, @b = 2 WHERE id = 3", want: nil},
+		{name: "mixed var and col", stmt: "UPDATE t SET @a = 1, b = 2 WHERE id = 3", want: []string{"b"}},
+		{name: "case in set", stmt: "UPDATE t SET a = case when x=1 then y else z end, b = 2 WHERE id = 3", want: []string{"a", "b"}},
+		{name: "no from where", stmt: "UPDATE t SET a = 1, b = 2", want: []string{"a", "b"}},
+		{name: "semicolon end", stmt: "UPDATE t SET a = 1, b = 2;", want: []string{"a", "b"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractSetColumns(tc.stmt)
+			if len(got) != len(tc.want) {
+				t.Fatalf("extractSetColumns got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("extractSetColumns[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestEnabledRuleSet_InSubQuery(t *testing.T) {
+	rules := []RuleID{RuleInSubQuery}
+	set := enabledRuleSet(rules)
+	if !set[RuleInSubQuery] {
+		t.Fatalf("RuleInSubQuery should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestFindInSubqueryPositions(t *testing.T) {
+	cases := []struct {
+		name string
+		stmt string
+		want int
+	}{
+		{name: "in subquery", stmt: "select * from t where id in (select x from s)", want: 1},
+		{name: "not in subquery", stmt: "select * from t where id not in (select x from s)", want: 1},
+		{name: "constant list", stmt: "select * from t where id in (1, 2, 3)", want: 0},
+		{name: "variable", stmt: "select * from t where id in (@ids)", want: 0},
+		{name: "exists ok", stmt: "select * from t where exists(select 1 from s where x = t.id)", want: 0},
+		{name: "mixed in and subquery", stmt: "select * from t where id in (select x from s) and flag in (1,2)", want: 1},
+		{name: "nested in subquery", stmt: "select * from t where id in (select x from s where y in (1,2))", want: 1},
+		{name: "update with in subquery", stmt: "update t set a = 1 where id in (select x from s)", want: 1},
+		{name: "delete with not in subquery", stmt: "delete from t where id not in (select x from s)", want: 1},
+		{name: "string literal containing in", stmt: "select * from t where name = 'in (select * from u)'", want: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := findInSubqueryPositions(tc.stmt)
+			if len(got) != tc.want {
+				t.Fatalf("findInSubqueryPositions findings = %d, want %d (stmt: %s)", len(got), tc.want, tc.stmt)
+			}
+		})
+	}
+}
+
+func TestEnabledRuleSet_VarcharSize(t *testing.T) {
+	rules := []RuleID{RuleVarcharSize}
+	set := enabledRuleSet(rules)
+	if !set[RuleVarcharSize] {
+		t.Fatalf("RuleVarcharSize should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestParseVarDeclaration(t *testing.T) {
+	cases := []struct {
+		item         string
+		wantName     string
+		wantType     string
+		wantFullType string
+	}{
+		{item: "@x VARCHAR", wantName: "@x", wantType: "VARCHAR", wantFullType: "VARCHAR"},
+		{item: "@x AS VARCHAR", wantName: "@x", wantType: "VARCHAR", wantFullType: "VARCHAR"},
+		{item: "@name NVARCHAR(100)", wantName: "@name", wantType: "NVARCHAR", wantFullType: "NVARCHAR(100)"},
+		{item: "@id INT", wantName: "@id", wantType: "INT", wantFullType: "INT"},
+		{item: "@flag AS CHAR(1)", wantName: "@flag", wantType: "CHAR", wantFullType: "CHAR(1)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.item, func(t *testing.T) {
+			name, typ, full := parseVarDeclaration(tc.item)
+			if name != tc.wantName || typ != tc.wantType || full != tc.wantFullType {
+				t.Fatalf("parseVarDeclaration(%q) = (%q, %q, %q), want (%q, %q, %q)", tc.item, name, typ, full, tc.wantName, tc.wantType, tc.wantFullType)
+			}
+		})
+	}
+}
+
+func TestIsVarCharLikeType(t *testing.T) {
+	for _, tc := range []struct {
+		t    string
+		want bool
+	}{
+		{"varchar", true}, {"VARCHAR", true}, {"nvarchar", true}, {"char", true}, {"nchar", true},
+		{"int", false}, {"datetime", false}, {"text", false}, {"ntext", false},
+	} {
+		if got := isVarCharLikeType(tc.t); got != tc.want {
+			t.Fatalf("isVarCharLikeType(%q) = %v, want %v", tc.t, got, tc.want)
+		}
+	}
+}
+
+func TestHasSizeInType(t *testing.T) {
+	for _, tc := range []struct {
+		expr string
+		want bool
+	}{
+		{"VARCHAR(100)", true}, {"VARCHAR (100)", true}, {"VARCHAR", false}, {"NVARCHAR", false},
+		{"CHAR(1)", true}, {"NCHAR", false}, {"VARCHAR(MAX)", true},
+	} {
+		if got := hasSizeInType(tc.expr); got != tc.want {
+			t.Fatalf("hasSizeInType(%q) = %v, want %v", tc.expr, got, tc.want)
+		}
+	}
+}
+
+func TestEnabledRuleSet_ColumnInsert(t *testing.T) {
+	rules := []RuleID{RuleColumnInsert}
+	set := enabledRuleSet(rules)
+	if !set[RuleColumnInsert] {
+		t.Fatalf("RuleColumnInsert should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestFindInsertWithoutColumns(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want int
+	}{
+		{name: "insert values no columns", text: "insert into t values (1, 2)", want: 1},
+		{name: "insert select no columns", text: "insert into t select * from s", want: 1},
+		{name: "insert exec no columns", text: "insert into t exec proc", want: 1},
+		{name: "insert default values", text: "insert into t default values", want: 1},
+		{name: "insert with columns", text: "insert into t (a, b) values (1, 2)", want: 0},
+		{name: "insert select with columns", text: "insert into t (a, b) select c, d from s", want: 0},
+		{name: "insert with macro", text: "insert into t M_WITH_ROWLOCK (a, b) values (1, 2)", want: 0},
+		{name: "insert macro no columns", text: "insert into t M_WITH_ROWLOCK values (1, 2)", want: 1},
+		{name: "insert macro with args no columns", text: "insert into t M_ROWLOCK_INDEX(X) values (1)", want: 1},
+		{name: "string literal insert", text: "select 'insert into t values (1)'", want: 0},
+		{name: "insert with schema", text: "insert into dbo.t values (1)", want: 1},
+		{name: "insert with bracketed name", text: "insert into [dbo].[t] (a) values (1)", want: 0},
+		{name: "insert no into with columns", text: "insert t (a) values (1)", want: 0},
+		{name: "insert no into no columns", text: "insert t values (1)", want: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := findInsertWithoutColumns(tc.text)
+			if len(got) != tc.want {
+				t.Fatalf("findInsertWithoutColumns findings = %d, want %d (text: %s)", len(got), tc.want, tc.text)
+			}
+		})
+	}
+}
+
+func TestEnabledRuleSet_PostgreLabelGotoLevel(t *testing.T) {
+	rules := []RuleID{RulePostgreLabelGotoLevel}
+	set := enabledRuleSet(rules)
+	if !set[RulePostgreLabelGotoLevel] {
+		t.Fatalf("RulePostgreLabelGotoLevel should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestCheckPostgreLabelGotoLevel(t *testing.T) {
+	runner := &Runner{}
+	cases := []struct {
+		name     string
+		content  string
+		wantN    int
+		wantMsg  string
+		wantLine int
+	}{
+		{
+			name:    "label below goto - ok",
+			content: "goto Label1\nLabel1:\nselect 1",
+			wantN:   0,
+		},
+		{
+			name:     "label above goto - finding",
+			content:  "Label1:\nselect 1\ngoto Label1",
+			wantN:    1,
+			wantMsg:  "Метка 'Label1' для GOTO расположена выше оператора перехода.",
+			wantLine: 3,
+		},
+		{
+			name:    "goto in comment ignored",
+			content: "-- goto Label1\nLabel1:\nselect 1",
+			wantN:   0,
+		},
+		{
+			name:    "label in string ignored",
+			content: "goto Label1\nselect 'Label1:'\nLabel1:\nselect 1",
+			wantN:   0,
+		},
+		{
+			name:     "same line label and goto",
+			content:  "Label1: goto Label1",
+			wantN:    1,
+			wantLine: 1,
+		},
+		{
+			name:    "label above in block comment ignored",
+			content: "/* Label1: */\ngoto Label1\nLabel1:\nselect 1",
+			wantN:   0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := os.CreateTemp("", "goto_*.sql")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.Remove(f.Name())
+			if _, err = f.WriteString(tc.content); err != nil {
+				t.Fatal(err)
+			}
+			f.Close()
+
+			findings, err := runner.checkPostgreLabelGotoLevel(&indexedFile{Path: f.Name(), DsProductID: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(findings) != tc.wantN {
+				t.Fatalf("expected %d findings, got %d", tc.wantN, len(findings))
+			}
+			if tc.wantN > 0 && len(findings) > 0 {
+				if !strings.Contains(findings[0].Message, tc.wantMsg) {
+					t.Fatalf("expected message containing %q, got %q", tc.wantMsg, findings[0].Message)
+				}
+				if tc.wantLine > 0 && findings[0].Line != tc.wantLine {
+					t.Fatalf("expected line %d, got %d", tc.wantLine, findings[0].Line)
+				}
+			}
+		})
+	}
+}
+
+func TestIsDateExpression(t *testing.T) {
+	varTypes := map[string]string{
+		"datevar": "datetime",
+		"strvar":  "varchar(20)",
+	}
+	cases := []struct {
+		expr string
+		want bool
+	}{
+		{"getdate()", true},
+		{"sysdatetime()", true},
+		{"current_timestamp", true},
+		{"@datevar", true},
+		{"@strvar", false},
+		{"convert(varchar(20), getdate())", true},
+		{"substring(@datevar, 1, 10)", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.expr, func(t *testing.T) {
+			got := isDateExpression(tc.expr, varTypes)
+			if got != tc.want {
+				t.Fatalf("isDateExpression(%q) = %v, want %v", tc.expr, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheckDateIntoString(t *testing.T) {
+	cases := []struct {
+		name       string
+		content    string
+		procs      []*model.SQLProcedure
+		fragments  []*model.QueryFragment
+		wantCount  int
+		wantLine   int
+		wantObject string
+	}{
+		{
+			name: "SELECT date into string var",
+			content: `
+create proc TestProc
+	@DateParam datetime
+as
+declare @StrVar varchar(20)
+
+select @StrVar = getdate()
+`,
+			procs: []*model.SQLProcedure{
+				{ProcName: "TestProc", LineStart: 2, Params: []model.SQLParam{{Name: "@DateParam", Type: "datetime"}}},
+			},
+			fragments: []*model.QueryFragment{
+				{QueryText: "select @StrVar = getdate()", LineNumber: 7},
+			},
+			wantCount:  1,
+			wantLine:   7,
+			wantObject: "@StrVar",
+		},
+		{
+			name: "SET date into string var",
+			content: `
+create proc TestProc
+as
+declare @StrVar varchar(20)
+
+set @StrVar = getdate()
+`,
+			procs: []*model.SQLProcedure{
+				{ProcName: "TestProc", LineStart: 2},
+			},
+			wantCount:  1,
+			wantLine:   6,
+			wantObject: "@strvar",
+		},
+		{
+			name: "DECLARE string with date init",
+			content: `
+create proc TestProc
+as
+declare @StrVar varchar(20) = getdate()
+`,
+			procs: []*model.SQLProcedure{
+				{ProcName: "TestProc", LineStart: 2},
+			},
+			wantCount:  1,
+			wantLine:   4,
+			wantObject: "@strvar",
+		},
+		{
+			name: "SELECT date param into string var",
+			content: `
+create proc TestProc
+	@DateParam datetime
+as
+declare @StrVar varchar(20)
+
+select @StrVar = @DateParam
+`,
+			procs: []*model.SQLProcedure{
+				{ProcName: "TestProc", LineStart: 2, Params: []model.SQLParam{{Name: "@DateParam", Type: "datetime"}}},
+			},
+			fragments: []*model.QueryFragment{
+				{QueryText: "select @StrVar = @DateParam", LineNumber: 7},
+			},
+			wantCount:  1,
+			wantLine:   7,
+			wantObject: "@StrVar",
+		},
+		{
+			name: "explicit convert should skip",
+			content: `
+create proc TestProc
+as
+declare @StrVar varchar(20)
+
+select @StrVar = convert(varchar(20), getdate())
+`,
+			procs: []*model.SQLProcedure{
+				{ProcName: "TestProc", LineStart: 2},
+			},
+			fragments: []*model.QueryFragment{
+				{QueryText: "select @StrVar = convert(varchar(20), getdate())", LineNumber: 6},
+			},
+			wantCount: 0,
+		},
+		{
+			name: "int var should skip",
+			content: `
+create proc TestProc
+as
+declare @IntVar int
+
+select @IntVar = getdate()
+`,
+			procs: []*model.SQLProcedure{
+				{ProcName: "TestProc", LineStart: 2},
+			},
+			fragments: []*model.QueryFragment{
+				{QueryText: "select @IntVar = getdate()", LineNumber: 6},
+			},
+			wantCount: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Runner{}
+			path := normalizePath("test.sql")
+			r.exec = &reviewExecContext{filePath: path, content: []byte(tc.content), lines: strings.Split(tc.content, "\n")}
+			parsed := &sqlparser.ParseResult{
+				Procedures: tc.procs,
+				Fragments:  tc.fragments,
+			}
+			findings, err := r.checkDateIntoString(parsed, &indexedFile{Path: path, DsProductID: 1})
+			r.exec = nil
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(findings) != tc.wantCount {
+				t.Fatalf("findings count = %d, want %d", len(findings), tc.wantCount)
+			}
+			if tc.wantCount > 0 && len(findings) > 0 {
+				if findings[0].Line != tc.wantLine {
+					t.Fatalf("findings[0].Line = %d, want %d", findings[0].Line, tc.wantLine)
+				}
+				if findings[0].Object != tc.wantObject {
+					t.Fatalf("findings[0].Object = %q, want %q", findings[0].Object, tc.wantObject)
+				}
 			}
 		})
 	}

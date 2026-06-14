@@ -3780,6 +3780,173 @@ func (r *Runner) checkModifyOutProc(parsed *sqlparser.ParseResult, file *indexed
 	return findings, nil
 }
 
+func (r *Runner) checkEmptyReturn(file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(content), "\n")
+	inBlockComment := false
+
+	for lineIdx, rawLine := range lines {
+		lineNo := lineIdx + 1
+		stripped, stillInBlock := stripLineComments(rawLine, inBlockComment)
+		inBlockComment = stillInBlock
+
+		if hasEmptyReturn(stripped) {
+			findings = append(findings, Finding{
+				Rule:             RuleEmptyReturn,
+				Severity:         SeverityPostgreReq,
+				Message:          "Использование RETURN без явного указания возвращаемого значения не допускается",
+				File:             file.Path,
+				Line:             lineNo,
+				Object:           strings.TrimSpace(rawLine),
+				CurrentProductID: file.DsProductID,
+			})
+		}
+	}
+	return findings, nil
+}
+
+func hasEmptyReturn(line string) bool {
+	i := 0
+	for i < len(line) {
+		// Пропускаем строковые литералы
+		if line[i] == '\'' {
+			i++
+			for i < len(line) {
+				if line[i] == '\'' {
+					if i+1 < len(line) && line[i+1] == '\'' {
+						i += 2
+						continue
+					}
+					i++
+					break
+				}
+				i++
+			}
+			continue
+		}
+
+		// Ищем слово RETURN
+		if i+6 <= len(line) && strings.EqualFold(line[i:i+6], "return") {
+			beforeOK := i == 0 || !isWordChar(line[i-1])
+			afterPos := i + 6
+			afterOK := afterPos >= len(line) || !isWordChar(line[afterPos])
+			if beforeOK && afterOK {
+				remainder := strings.TrimSpace(line[afterPos:])
+				if remainder == "" || remainder == ";" {
+					return true
+				}
+			}
+		}
+		i++
+	}
+	return false
+}
+
+func (r *Runner) checkRawTransactionControl(file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(content), "\n")
+	inBlockComment := false
+
+	for lineIdx, rawLine := range lines {
+		lineNo := lineIdx + 1
+		stripped, stillInBlock := stripLineComments(rawLine, inBlockComment)
+		inBlockComment = stillInBlock
+
+		if hasRawTransactionControl(stripped) {
+			findings = append(findings, Finding{
+				Rule:             RuleRawTransactionControl,
+				Severity:         SeverityPostgreReq,
+				Message:          "Управление транзакциями разрешается только с использованием макросов: BEGIN_TRAN, GOEND, COMMIT_TRAN, __BEGIN_TRAN__, __ERR_TRAN__, __COMMIT_TRAN__, __END_TRAN__",
+				File:             file.Path,
+				Line:             lineNo,
+				Object:           strings.TrimSpace(rawLine),
+				CurrentProductID: file.DsProductID,
+			})
+		}
+	}
+	return findings, nil
+}
+
+func hasRawTransactionControl(line string) bool {
+	i := 0
+	for i < len(line) {
+		// Пропускаем строковые литералы
+		if line[i] == '\'' {
+			i++
+			for i < len(line) {
+				if line[i] == '\'' {
+					if i+1 < len(line) && line[i+1] == '\'' {
+						i += 2
+						continue
+					}
+					i++
+					break
+				}
+				i++
+			}
+			continue
+		}
+
+		// Ищем ключевые слова
+		words := []string{"begin", "commit", "rollback", "save", "end"}
+		for _, word := range words {
+			wlen := len(word)
+			if i+wlen <= len(line) && strings.EqualFold(line[i:i+wlen], word) {
+				beforeOK := i == 0 || !isWordChar(line[i-1])
+				afterPos := i + wlen
+				afterOK := afterPos >= len(line) || !isWordChar(line[afterPos])
+				if beforeOK && afterOK {
+					lower := strings.ToLower(line)
+					switch strings.ToLower(word) {
+					case "begin":
+						if matchNextWord(lower, afterPos, "tran") || matchNextWord(lower, afterPos, "transaction") {
+							return true
+						}
+					case "save":
+						if matchNextWord(lower, afterPos, "tran") || matchNextWord(lower, afterPos, "transaction") {
+							return true
+						}
+					case "end":
+						if matchNextWord(lower, afterPos, "tran") {
+							return true
+						}
+					case "commit", "rollback":
+						return true
+					}
+				}
+			}
+		}
+		i++
+	}
+	return false
+}
+
+func matchNextWord(lower string, start int, word string) bool {
+	i := start
+	for i < len(lower) && (lower[i] == ' ' || lower[i] == '\t') {
+		i++
+	}
+	if i+len(word) > len(lower) {
+		return false
+	}
+	if lower[i:i+len(word)] != word {
+		return false
+	}
+	after := i + len(word)
+	if after < len(lower) && isWordChar(lower[after]) {
+		return false
+	}
+	return true
+}
+
 // toLowerASCII понижает регистр только ASCII-букв (0x41–0x5A), не затрагивая байты > 0x7F.
 // Это важно для корректной работы с файлами в кодировке CP866.
 func toLowerASCII(s string) string {
@@ -3942,4 +4109,1297 @@ func splitStatementsForHintType(text string) []string {
 	}
 
 	return statements
+}
+
+func (r *Runner) checkDeferredUpdate(file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	text := string(content)
+
+	statements := splitStatementsWithOffsets(text)
+	for _, s := range statements {
+		lower := strings.ToLower(s.stmt)
+		if !strings.HasPrefix(lower, "update") {
+			continue
+		}
+
+		lineNo := 1
+		for i := 0; i < s.offset && i < len(text); i++ {
+			if text[i] == '\n' {
+				lineNo++
+			}
+		}
+
+		targetTable := extractUpdateTargetTable(s.stmt)
+		if targetTable == "" || strings.HasPrefix(strings.ToLower(targetTable), "#") {
+			continue
+		}
+
+		setColumns := extractSetColumns(s.stmt)
+		if len(setColumns) == 0 {
+			continue
+		}
+
+		tables := extractTablesFromFromClause(s.stmt)
+
+		var indexName string
+		for _, t := range tables {
+			if sameTableReference(t.TableName, targetTable) || sameTableReference(t.Alias, targetTable) {
+				if t.IndexName != "" {
+					indexName = t.IndexName
+					break
+				}
+			}
+		}
+
+		if indexName == "" {
+			continue
+		}
+
+		indexColumns, err := r.lookupIndexFieldsByName(indexName)
+		if err != nil {
+			return nil, err
+		}
+		if len(indexColumns) == 0 {
+			continue
+		}
+
+		for _, col := range setColumns {
+			for _, idxCol := range indexColumns {
+				if strings.EqualFold(col, idxCol) {
+					findings = append(findings, Finding{
+						Rule:             RuleDeferredUpdate,
+						Severity:         SeverityDeployStopper,
+						Message:          fmt.Sprintf("Колонка %s входит в индекс %s, используемый в хинте этого UPDATE. Изменение значений индексированных полей вызывает эффект deferred update.", col, indexName),
+						File:             file.Path,
+						Line:             lineNo,
+						Object:           targetTable,
+						CurrentProductID: file.DsProductID,
+					})
+				}
+			}
+		}
+	}
+
+	return findings, nil
+}
+
+func (r *Runner) checkInSubQuery(file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	text := string(content)
+
+	statements := splitStatementsWithOffsets(text)
+	for _, s := range statements {
+		lineNo := 1
+		for i := 0; i < s.offset && i < len(text); i++ {
+			if text[i] == '\n' {
+				lineNo++
+			}
+		}
+
+		positions := findInSubqueryPositions(s.stmt)
+		for range positions {
+			findings = append(findings, Finding{
+				Rule:             RuleInSubQuery,
+				Severity:         SeverityDeployStopper,
+				Message:          "Использование IN/NOT IN с подзапросом запрещено. Используйте EXISTS для проверки наличия значения.",
+				File:             file.Path,
+				Line:             lineNo,
+				Object:           "",
+				CurrentProductID: file.DsProductID,
+			})
+		}
+	}
+
+	return findings, nil
+}
+
+func findInSubqueryPositions(stmt string) []int {
+	positions := make([]int, 0)
+	lower := strings.ToLower(stmt)
+	depth := 0
+	inString := false
+
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '\'' {
+			if i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+
+		if depth == 0 {
+			if keywordMatchAt(lower, i, "not in") {
+				j := i + len("not in")
+				for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+					j++
+				}
+				if j < len(lower) && lower[j] == '(' {
+					if hasSelectInsideParens(lower, j) {
+						positions = append(positions, i)
+					}
+					i = j
+					continue
+				}
+			}
+			if keywordMatchAt(lower, i, "in") {
+				j := i + len("in")
+				for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+					j++
+				}
+				if j < len(lower) && lower[j] == '(' {
+					if hasSelectInsideParens(lower, j) {
+						positions = append(positions, i)
+					}
+					i = j
+					continue
+				}
+			}
+		}
+	}
+	return positions
+}
+
+func hasSelectInsideParens(lower string, openPos int) bool {
+	if openPos >= len(lower) || lower[openPos] != '(' {
+		return false
+	}
+	depth := 1
+	inString := false
+	for i := openPos + 1; i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '\'' {
+			if i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return false
+			}
+		}
+		if depth == 1 && keywordMatchAt(lower, i, "select") {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runner) checkVarcharSize(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+
+	// Проверяем параметры процедур через parsed
+	for _, proc := range parsed.Procedures {
+		if proc == nil {
+			continue
+		}
+		for _, param := range proc.Params {
+			if isVarCharLikeType(param.Type) && !hasSizeInType(param.Type) {
+				findings = append(findings, Finding{
+					Rule:             RuleVarcharSize,
+					Severity:         SeverityDeployStopper,
+					Message:          fmt.Sprintf("Переменная %s объявлена как %s без указания размера.", param.Name, strings.ToUpper(param.Type)),
+					File:             file.Path,
+					Line:             proc.LineStart,
+					Object:           proc.ProcName,
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	// Проверяем DECLARE в теле файла
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(content), "\n")
+	inBlockComment := false
+
+	for i, line := range lines {
+		lineNum := i + 1
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+
+		if inBlockComment {
+			if idx := strings.Index(line, "*/"); idx >= 0 {
+				inBlockComment = false
+				line = line[idx+2:]
+			} else {
+				continue
+			}
+		}
+
+		for {
+			if idx := strings.Index(line, "/*"); idx >= 0 {
+				endIdx := strings.Index(line[idx:], "*/")
+				if endIdx > 0 {
+					line = line[:idx] + " " + line[idx+endIdx+2:]
+				} else {
+					inBlockComment = true
+					line = line[:idx]
+					break
+				}
+			} else {
+				break
+			}
+		}
+
+		if inBlockComment {
+			continue
+		}
+
+		lower := strings.ToLower(line)
+
+		// DECLARE @var type, @var2 type
+		if idx := findKeywordPosition(lower, "declare"); idx >= 0 && !isInComment(line, idx) {
+			declPart := line[idx+len("declare"):]
+			// Обрезаем до ; или до ключевых слов на нулевом уровне
+			endIdx := len(declPart)
+			lowerDecl := strings.ToLower(declPart)
+			for _, kw := range []string{"select", "update", "delete", "insert", "begin", "if", "while", "return", "print", "exec", "execute", ";"} {
+				if kwIdx := findKeywordPosition(lowerDecl, kw); kwIdx >= 0 {
+					if kwIdx < endIdx {
+						endIdx = kwIdx
+					}
+				}
+			}
+			declPart = declPart[:endIdx]
+			items := splitTopLevelCSV(declPart)
+			for _, item := range items {
+				if varName, varType, fullType := parseVarDeclaration(item); varName != "" {
+					if isVarCharLikeType(varType) && !hasSizeInType(fullType) {
+						findings = append(findings, Finding{
+							Rule:             RuleVarcharSize,
+							Severity:         SeverityDeployStopper,
+							Message:          fmt.Sprintf("Переменная %s объявлена как %s без указания размера.", varName, strings.ToUpper(varType)),
+							File:             file.Path,
+							Line:             lineNum,
+							Object:           varName,
+							CurrentProductID: file.DsProductID,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	return findings, nil
+}
+
+func parseVarDeclaration(item string) (string, string, string) {
+	item = strings.TrimSpace(item)
+	if item == "" {
+		return "", "", ""
+	}
+	// @name [AS] type[(size)]
+	if !strings.HasPrefix(item, "@") {
+		return "", "", ""
+	}
+	// Находим конец имени переменной
+	nameEnd := 1
+	for nameEnd < len(item) && (isWordChar(item[nameEnd]) || item[nameEnd] == '_') {
+		nameEnd++
+	}
+	varName := item[:nameEnd]
+	rest := strings.TrimSpace(item[nameEnd:])
+
+	// Пропускаем AS если есть
+	if strings.HasPrefix(strings.ToLower(rest), "as ") {
+		rest = strings.TrimSpace(rest[3:])
+	}
+
+	// Извлекаем тип (слово до whitespace, (, или конца)
+	if rest == "" {
+		return varName, "", ""
+	}
+	typeEnd := 0
+	for typeEnd < len(rest) && (isWordChar(rest[typeEnd]) || rest[typeEnd] == '_') {
+		typeEnd++
+	}
+	varType := rest[:typeEnd]
+	return varName, varType, rest
+}
+
+func isVarCharLikeType(t string) bool {
+	lower := strings.ToLower(t)
+	return lower == "varchar" || lower == "nvarchar" || lower == "char" || lower == "nchar"
+}
+
+func hasSizeInType(typeExpr string) bool {
+	// Проверяем наличие ( сразу после типа с учётом whitespace
+	lower := strings.ToLower(typeExpr)
+	for i := 0; i < len(lower); i++ {
+		if lower[i] == ' ' || lower[i] == '\t' {
+			continue
+		}
+		if isWordChar(lower[i]) || lower[i] == '_' {
+			// часть имени типа
+			continue
+		}
+		if lower[i] == '(' {
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+func (r *Runner) checkColumnInsert(file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	text := string(content)
+
+	positions := findInsertWithoutColumns(text)
+	for _, pos := range positions {
+		lineNo := 1
+		for i := 0; i < pos && i < len(text); i++ {
+			if text[i] == '\n' {
+				lineNo++
+			}
+		}
+		findings = append(findings, Finding{
+			Rule:             RuleColumnInsert,
+			Severity:         SeverityDeployStopper,
+			Message:          "В операторе INSERT отсутствует явное перечисление столбцов. Укажите столбцы: INSERT INTO table (col1, col2) VALUES ...",
+			File:             file.Path,
+			Line:             lineNo,
+			Object:           "",
+			CurrentProductID: file.DsProductID,
+		})
+	}
+
+	return findings, nil
+}
+
+func findInsertWithoutColumns(text string) []int {
+	positions := make([]int, 0)
+	lower := strings.ToLower(text)
+	depth := 0
+	inString := false
+
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '\'' {
+			if i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+		if depth != 0 {
+			continue
+		}
+
+		if keywordMatchAt(lower, i, "insert") {
+			j := i + len("insert")
+			// пропускаем whitespace
+			for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+				j++
+			}
+			// опционально пропускаем INTO
+			if keywordMatchAt(lower, j, "into") {
+				j += len("into")
+				for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+					j++
+				}
+			}
+			// пропускаем имя таблицы (слово, точка, квадратные скобки, #)
+			for j < len(lower) && (isWordChar(lower[j]) || lower[j] == '.' || lower[j] == '[' || lower[j] == ']' || lower[j] == '#') {
+				j++
+			}
+			// пропускаем whitespace
+			for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+				j++
+			}
+			// пропускаем макросы M_* (возможно со скобками)
+			for {
+				macroStart := j
+				if j < len(lower) && lower[j] == 'm' && j+1 < len(lower) && lower[j+1] == '_' {
+					for j < len(lower) && (isWordChar(lower[j]) || lower[j] == '_') {
+						j++
+					}
+					if j < len(lower) && lower[j] == '(' {
+						j++
+						macroDepth := 1
+						macroString := false
+						for j < len(lower) && macroDepth > 0 {
+							c := lower[j]
+							if c == '\'' {
+								if j+1 < len(lower) && lower[j+1] == '\'' {
+									j += 2
+									continue
+								}
+								macroString = !macroString
+								j++
+								continue
+							}
+							if macroString {
+								j++
+								continue
+							}
+							switch c {
+							case '(':
+								macroDepth++
+							case ')':
+								macroDepth--
+							}
+							j++
+						}
+					}
+					for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+						j++
+					}
+					if macroStart == j {
+						break
+					}
+				} else {
+					break
+				}
+			}
+
+			if j < len(lower) && lower[j] == '(' {
+				i = j
+				continue
+			}
+			if keywordMatchAt(lower, j, "values") || keywordMatchAt(lower, j, "select") ||
+				keywordMatchAt(lower, j, "exec") || keywordMatchAt(lower, j, "execute") ||
+				keywordMatchAt(lower, j, "default") {
+				positions = append(positions, i)
+				i = j
+				continue
+			}
+			// Не распознали следующий токен — тоже finding
+			positions = append(positions, i)
+			i = j
+		}
+	}
+	return positions
+}
+
+func (r *Runner) checkPostgreLabelGotoLevel(file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(content), "\n")
+
+	type gotoRef struct {
+		name string
+		line int
+	}
+
+	gotos := make([]gotoRef, 0)
+	labels := make(map[string][]int)
+	inBlockComment := false
+
+	for i, line := range lines {
+		lineNum := i + 1
+
+		if idx := strings.Index(line, "--"); idx >= 0 {
+			line = line[:idx]
+		}
+
+		if inBlockComment {
+			if idx := strings.Index(line, "*/"); idx >= 0 {
+				inBlockComment = false
+				line = line[idx+2:]
+			} else {
+				continue
+			}
+		}
+
+		for {
+			if idx := strings.Index(line, "/*"); idx >= 0 {
+				endIdx := strings.Index(line[idx:], "*/")
+				if endIdx > 0 {
+					line = line[:idx] + " " + line[idx+endIdx+2:]
+				} else {
+					inBlockComment = true
+					line = line[:idx]
+					break
+				}
+			} else {
+				break
+			}
+		}
+
+		if inBlockComment {
+			continue
+		}
+
+		cleaned := strings.Builder{}
+		inString := false
+		for j := 0; j < len(line); j++ {
+			ch := line[j]
+			if ch == '\'' {
+				if j+1 < len(line) && line[j+1] == '\'' {
+					cleaned.WriteString("  ")
+					j++
+					continue
+				}
+				inString = !inString
+				cleaned.WriteByte(' ')
+				continue
+			}
+			if inString {
+				cleaned.WriteByte(' ')
+				continue
+			}
+			cleaned.WriteByte(ch)
+		}
+		cleanLine := cleaned.String()
+		lower := strings.ToLower(cleanLine)
+
+		for j := 0; j < len(lower); j++ {
+			if keywordMatchAt(lower, j, "goto") {
+				k := j + len("goto")
+				for k < len(lower) && (lower[k] == ' ' || lower[k] == '\t') {
+					k++
+				}
+				nameStart := k
+				for k < len(lower) && isWordChar(lower[k]) {
+					k++
+				}
+				if nameStart < k {
+					labelName := cleanLine[nameStart:k]
+					gotos = append(gotos, gotoRef{name: labelName, line: lineNum})
+				}
+			}
+		}
+
+		for j := 0; j < len(lower); j++ {
+			if isWordChar(lower[j]) {
+				nameStart := j
+				for j < len(lower) && isWordChar(lower[j]) {
+					j++
+				}
+				if j < len(lower) && lower[j] == ':' {
+					labelName := cleanLine[nameStart:j]
+					labels[labelName] = append(labels[labelName], lineNum)
+				}
+			}
+		}
+	}
+
+	for _, g := range gotos {
+		positions, ok := labels[g.name]
+		if !ok {
+			continue
+		}
+		for _, labelLine := range positions {
+			if labelLine <= g.line {
+				findings = append(findings, Finding{
+					Rule:             RulePostgreLabelGotoLevel,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Метка '%s' для GOTO расположена выше оператора перехода.", g.name),
+					File:             file.Path,
+					Line:             g.line,
+					Object:           fmt.Sprintf("goto %s", g.name),
+					CurrentProductID: file.DsProductID,
+				})
+				break
+			}
+		}
+	}
+
+	return findings, nil
+}
+
+func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	text := string(content)
+	variableTypes := collectVariableTypes(parsed, text)
+
+	// 1. SELECT @var = expr
+	assignRe := regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+		var assignments []selectAssignment
+		stmt, ok := parseSelectAssignStatement(fragment.QueryText)
+		if ok {
+			assignments = stmt.Assignments
+		} else {
+			// fallback: SELECT @var = expr без FROM
+			text := strings.TrimSpace(fragment.QueryText)
+			lower := strings.ToLower(text)
+			if !strings.HasPrefix(lower, "select") {
+				continue
+			}
+			selectPart := strings.TrimSpace(text[len("select"):])
+			parts := splitTopLevelCSV(selectPart)
+			for _, part := range parts {
+				m := assignRe.FindStringSubmatch(strings.TrimSpace(part))
+				if len(m) != 3 {
+					continue
+				}
+				assignments = append(assignments, selectAssignment{
+					TargetVariable: strings.TrimSpace(m[1]),
+					Expression:     strings.TrimSpace(m[2]),
+				})
+			}
+		}
+		for _, a := range assignments {
+			targetVar := normalizeVariableName(a.TargetVariable)
+			targetType, exists := variableTypes[targetVar]
+			if !exists || typeGroup(targetType) != "string" {
+				continue
+			}
+			if hasExplicitConversion(a.Expression, targetType) {
+				continue
+			}
+			if isDateExpression(a.Expression, variableTypes) {
+				findings = append(findings, Finding{
+					Rule:             RuleDateIntoString,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Вставка значения типа datetime в строковую переменную: %s -> %s", a.Expression, targetType),
+					File:             file.Path,
+					Line:             fragment.LineNumber,
+					Object:           a.TargetVariable,
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	// 2. SET @var = expr
+	setRe := regexp.MustCompile(`(?is)^\s*set\s+(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		m := setRe.FindStringSubmatch(line)
+		if len(m) != 3 {
+			continue
+		}
+		targetVar := normalizeVariableName(m[1])
+		targetType, exists := variableTypes[targetVar]
+		if !exists || typeGroup(targetType) != "string" {
+			continue
+		}
+		expr := strings.TrimSpace(m[2])
+		if hasExplicitConversion(expr, targetType) {
+			continue
+		}
+		if isDateExpression(expr, variableTypes) {
+			findings = append(findings, Finding{
+				Rule:             RuleDateIntoString,
+				Severity:         SeverityPostgreReq,
+				Message:          fmt.Sprintf("Вставка значения типа datetime в строковую переменную: %s -> %s", expr, targetType),
+				File:             file.Path,
+				Line:             i + 1,
+				Object:           "@" + targetVar,
+				CurrentProductID: file.DsProductID,
+			})
+		}
+	}
+
+	// 3. DECLARE @var TYPE = expr
+	declRe := regexp.MustCompile(`(?is)^\s*declare\s+(@[A-Za-z_][A-Za-z0-9_]*)\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)\s*=\s*(.+)$`)
+	for i, line := range lines {
+		m := declRe.FindStringSubmatch(line)
+		if len(m) != 4 {
+			continue
+		}
+		targetVar := normalizeVariableName(m[1])
+		targetType := strings.TrimSpace(m[2])
+		if typeGroup(targetType) != "string" {
+			continue
+		}
+		expr := strings.TrimSpace(m[3])
+		if hasExplicitConversion(expr, targetType) {
+			continue
+		}
+		if isDateExpression(expr, variableTypes) {
+			findings = append(findings, Finding{
+				Rule:             RuleDateIntoString,
+				Severity:         SeverityPostgreReq,
+				Message:          fmt.Sprintf("Вставка значения типа datetime в строковую переменную: %s -> %s", expr, targetType),
+				File:             file.Path,
+				Line:             i + 1,
+				Object:           "@" + targetVar,
+				CurrentProductID: file.DsProductID,
+			})
+		}
+	}
+
+	// 4. UPDATE ... SET col = expr
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+		stmt, ok := parseUpdateSetStatement(fragment.QueryText)
+		if !ok {
+			continue
+		}
+		for _, a := range stmt.Assignments {
+			col := normalizeAssignmentTargetColumn(a.Target, stmt)
+			if col == "" || a.Expression == "" {
+				continue
+			}
+			targetType, err := r.db.FindLatestSQLColumnDefinitionType(stmt.TargetTable, col)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					continue
+				}
+				return nil, err
+			}
+			if typeGroup(targetType) != "string" {
+				continue
+			}
+			if hasExplicitConversion(a.Expression, targetType) {
+				continue
+			}
+			if isDateExpression(a.Expression, variableTypes) {
+				findings = append(findings, Finding{
+					Rule:             RuleDateIntoString,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Вставка значения типа datetime в строковый столбец: %s -> %s.%s", a.Expression, stmt.TargetTable, col),
+					File:             file.Path,
+					Line:             fragment.LineNumber,
+					Object:           fmt.Sprintf("%s.%s", stmt.TargetTable, col),
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	// 5. INSERT ... SELECT
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+		stmt, ok := parseInsertSelectStatement(fragment.QueryText)
+		if !ok {
+			continue
+		}
+		count := len(stmt.TargetColumns)
+		if len(stmt.SelectExpressions) < count {
+			count = len(stmt.SelectExpressions)
+		}
+		for i := 0; i < count; i++ {
+			col := normalizeIdentifier(stmt.TargetColumns[i])
+			expr := strings.TrimSpace(stmt.SelectExpressions[i])
+			if col == "" || expr == "" {
+				continue
+			}
+			targetType, err := r.db.FindLatestSQLColumnDefinitionType(stmt.TargetTable, col)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					continue
+				}
+				return nil, err
+			}
+			if typeGroup(targetType) != "string" {
+				continue
+			}
+			if hasExplicitConversion(expr, targetType) {
+				continue
+			}
+			if isDateExpression(expr, variableTypes) {
+				findings = append(findings, Finding{
+					Rule:             RuleDateIntoString,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Вставка значения типа datetime в строковый столбец: %s -> %s.%s", expr, stmt.TargetTable, col),
+					File:             file.Path,
+					Line:             fragment.LineNumber,
+					Object:           fmt.Sprintf("%s.%s", stmt.TargetTable, col),
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	// 6. INSERT ... VALUES
+	valuesRe := regexp.MustCompile(`(?is)insert\s+(?:into\s+)?([a-z_#][a-z0-9_#]*)[^\(]*\((.*?)\)\s*values\s*\((.*?)\)`)
+	for i, line := range lines {
+		m := valuesRe.FindStringSubmatch(line)
+		if len(m) != 4 {
+			continue
+		}
+		table := strings.TrimSpace(m[1])
+		cols := splitTopLevelCSV(m[2])
+		exprs := splitTopLevelCSV(m[3])
+		count := len(cols)
+		if len(exprs) < count {
+			count = len(exprs)
+		}
+		for j := 0; j < count; j++ {
+			col := normalizeIdentifier(cols[j])
+			expr := strings.TrimSpace(exprs[j])
+			if col == "" || expr == "" {
+				continue
+			}
+			targetType, err := r.db.FindLatestSQLColumnDefinitionType(table, col)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					continue
+				}
+				return nil, err
+			}
+			if typeGroup(targetType) != "string" {
+				continue
+			}
+			if hasExplicitConversion(expr, targetType) {
+				continue
+			}
+			if isDateExpression(expr, variableTypes) {
+				findings = append(findings, Finding{
+					Rule:             RuleDateIntoString,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Вставка значения типа datetime в строковый столбец: %s -> %s.%s", expr, table, col),
+					File:             file.Path,
+					Line:             i + 1,
+					Object:           fmt.Sprintf("%s.%s", table, col),
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	return findings, nil
+}
+
+func isDateExpression(expr string, varTypes map[string]string) bool {
+	trimmed := strings.TrimSpace(expr)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+
+	dateFuncRe := regexp.MustCompile(`(?is)\b(getdate|sysdatetime|sysutcdatetime|getutcdate|datefromparts|datetimefromparts|smalldatetimefromparts|datetime2fromparts|datetimeoffsetfromparts|timefromparts|eomonth|dateadd|datediff|datediff_big|datetrunc)\s*\(`)
+	if dateFuncRe.MatchString(lower) {
+		return true
+	}
+
+	if regexp.MustCompile(`(?i)\bcurrent_timestamp\b`).MatchString(lower) {
+		return true
+	}
+
+	varRe := regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*$`)
+	m := varRe.FindStringSubmatch(trimmed)
+	if len(m) == 2 {
+		name := normalizeVariableName(m[1])
+		if vtype, ok := varTypes[name]; ok && typeGroup(vtype) == "datetime" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	text := string(content)
+	variableTypes := collectVariableTypes(parsed, text)
+	lines := strings.Split(text, "\n")
+
+	// 1. Параметры процедур с DefaultValue = пустая строка
+	for _, proc := range parsed.Procedures {
+		if proc == nil {
+			continue
+		}
+		for _, p := range proc.Params {
+			if typeGroup(p.Type) != "datetime" {
+				continue
+			}
+			if isEmptyStringLiteral(p.DefaultValue) {
+				findings = append(findings, Finding{
+					Rule:             RuleEmptyStringDate,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Параметр %s типа %s имеет пустую строку по умолчанию", p.Name, p.Type),
+					File:             file.Path,
+					Line:             proc.LineStart,
+					Object:           p.Name,
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	// 2. SELECT @var = ''
+	assignRe := regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+		var assignments []selectAssignment
+		stmt, ok := parseSelectAssignStatement(fragment.QueryText)
+		if ok {
+			assignments = stmt.Assignments
+		} else {
+			text := strings.TrimSpace(fragment.QueryText)
+			lower := strings.ToLower(text)
+			if !strings.HasPrefix(lower, "select") {
+				continue
+			}
+			selectPart := strings.TrimSpace(text[len("select"):])
+			parts := splitTopLevelCSV(selectPart)
+			for _, part := range parts {
+				m := assignRe.FindStringSubmatch(strings.TrimSpace(part))
+				if len(m) != 3 {
+					continue
+				}
+				assignments = append(assignments, selectAssignment{
+					TargetVariable: strings.TrimSpace(m[1]),
+					Expression:     strings.TrimSpace(m[2]),
+				})
+			}
+		}
+		for _, a := range assignments {
+			targetVar := normalizeVariableName(a.TargetVariable)
+			targetType, exists := variableTypes[targetVar]
+			if !exists || typeGroup(targetType) != "datetime" {
+				continue
+			}
+			if isEmptyStringLiteral(a.Expression) {
+				findings = append(findings, Finding{
+					Rule:             RuleEmptyStringDate,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Присваивание пустой строки переменной %s типа %s", a.TargetVariable, targetType),
+					File:             file.Path,
+					Line:             fragment.LineNumber,
+					Object:           a.TargetVariable,
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	// 3. SET @var = ''
+	setRe := regexp.MustCompile(`(?is)^\s*set\s+(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	for i, line := range lines {
+		m := setRe.FindStringSubmatch(line)
+		if len(m) != 3 {
+			continue
+		}
+		targetVar := normalizeVariableName(m[1])
+		targetType, exists := variableTypes[targetVar]
+		if !exists || typeGroup(targetType) != "datetime" {
+			continue
+		}
+		expr := strings.TrimSpace(m[2])
+		if isEmptyStringLiteral(expr) {
+			findings = append(findings, Finding{
+				Rule:             RuleEmptyStringDate,
+				Severity:         SeverityPostgreReq,
+				Message:          fmt.Sprintf("Присваивание пустой строки переменной @%s типа %s", targetVar, targetType),
+				File:             file.Path,
+				Line:             i + 1,
+				Object:           "@" + targetVar,
+				CurrentProductID: file.DsProductID,
+			})
+		}
+	}
+
+	// 4. DECLARE @var datetime = ''
+	declRe := regexp.MustCompile(`(?is)^\s*declare\s+(@[A-Za-z_][A-Za-z0-9_]*)\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)\s*=\s*(.+)$`)
+	for i, line := range lines {
+		m := declRe.FindStringSubmatch(line)
+		if len(m) != 4 {
+			continue
+		}
+		targetVar := normalizeVariableName(m[1])
+		targetType := strings.TrimSpace(m[2])
+		if typeGroup(targetType) != "datetime" {
+			continue
+		}
+		expr := strings.TrimSpace(m[3])
+		if isEmptyStringLiteral(expr) {
+			findings = append(findings, Finding{
+				Rule:             RuleEmptyStringDate,
+				Severity:         SeverityPostgreReq,
+				Message:          fmt.Sprintf("Присваивание пустой строки переменной @%s типа %s", targetVar, targetType),
+				File:             file.Path,
+				Line:             i + 1,
+				Object:           "@" + targetVar,
+				CurrentProductID: file.DsProductID,
+			})
+		}
+	}
+
+	// 5. UPDATE ... SET dateCol = ''
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+		stmt, ok := parseUpdateSetStatement(fragment.QueryText)
+		if !ok {
+			continue
+		}
+		for _, a := range stmt.Assignments {
+			col := normalizeAssignmentTargetColumn(a.Target, stmt)
+			if col == "" || a.Expression == "" {
+				continue
+			}
+			targetType, err := r.db.FindLatestSQLColumnDefinitionType(stmt.TargetTable, col)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					continue
+				}
+				return nil, err
+			}
+			if typeGroup(targetType) != "datetime" {
+				continue
+			}
+			if isEmptyStringLiteral(a.Expression) {
+				findings = append(findings, Finding{
+					Rule:             RuleEmptyStringDate,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Присваивание пустой строки столбцу %s.%s типа %s", stmt.TargetTable, col, targetType),
+					File:             file.Path,
+					Line:             fragment.LineNumber,
+					Object:           fmt.Sprintf("%s.%s", stmt.TargetTable, col),
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	// 6. INSERT ... SELECT
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+		stmt, ok := parseInsertSelectStatement(fragment.QueryText)
+		if !ok {
+			continue
+		}
+		count := len(stmt.TargetColumns)
+		if len(stmt.SelectExpressions) < count {
+			count = len(stmt.SelectExpressions)
+		}
+		for i := 0; i < count; i++ {
+			col := normalizeIdentifier(stmt.TargetColumns[i])
+			expr := strings.TrimSpace(stmt.SelectExpressions[i])
+			if col == "" || expr == "" {
+				continue
+			}
+			targetType, err := r.db.FindLatestSQLColumnDefinitionType(stmt.TargetTable, col)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					continue
+				}
+				return nil, err
+			}
+			if typeGroup(targetType) != "datetime" {
+				continue
+			}
+			if isEmptyStringLiteral(expr) {
+				findings = append(findings, Finding{
+					Rule:             RuleEmptyStringDate,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Присваивание пустой строки столбцу %s.%s типа %s", stmt.TargetTable, col, targetType),
+					File:             file.Path,
+					Line:             fragment.LineNumber,
+					Object:           fmt.Sprintf("%s.%s", stmt.TargetTable, col),
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	// 7. INSERT ... VALUES
+	valuesRe := regexp.MustCompile(`(?is)insert\s+(?:into\s+)?([a-z_#][a-z0-9_#]*)[^\(]*\((.*?)\)\s*values\s*\((.*?)\)`)
+	for i, line := range lines {
+		m := valuesRe.FindStringSubmatch(line)
+		if len(m) != 4 {
+			continue
+		}
+		table := strings.TrimSpace(m[1])
+		cols := splitTopLevelCSV(m[2])
+		exprs := splitTopLevelCSV(m[3])
+		count := len(cols)
+		if len(exprs) < count {
+			count = len(exprs)
+		}
+		for j := 0; j < count; j++ {
+			col := normalizeIdentifier(cols[j])
+			expr := strings.TrimSpace(exprs[j])
+			if col == "" || expr == "" {
+				continue
+			}
+			targetType, err := r.db.FindLatestSQLColumnDefinitionType(table, col)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					continue
+				}
+				return nil, err
+			}
+			if typeGroup(targetType) != "datetime" {
+				continue
+			}
+			if isEmptyStringLiteral(expr) {
+				findings = append(findings, Finding{
+					Rule:             RuleEmptyStringDate,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Присваивание пустой строки столбцу %s.%s типа %s", table, col, targetType),
+					File:             file.Path,
+					Line:             i + 1,
+					Object:           fmt.Sprintf("%s.%s", table, col),
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	// 8. convert(datetime, '') / cast('' as datetime)
+	convertRe := regexp.MustCompile(`(?is)\bconvert\s*\(\s*([a-z_][a-z0-9_]*(?:\s*\([^)]*\))?)\s*,\s*(.+?)\s*\)`)
+	castRe := regexp.MustCompile(`(?is)\bcast\s*\(\s*(.+?)\s+as\s+([a-z_][a-z0-9_]*(?:\s*\([^)]*\))?)\s*\)`)
+	for i, line := range lines {
+		for _, m := range convertRe.FindAllStringSubmatch(line, -1) {
+			if len(m) >= 3 {
+				convType := strings.TrimSpace(m[1])
+				expr := strings.TrimSpace(m[2])
+				if typeGroup(convType) == "datetime" && isEmptyStringLiteral(expr) {
+					findings = append(findings, Finding{
+						Rule:             RuleEmptyStringDate,
+						Severity:         SeverityPostgreReq,
+						Message:          fmt.Sprintf("Передача пустой строки в convert(%s, ...)", convType),
+						File:             file.Path,
+						Line:             i + 1,
+						Object:           fmt.Sprintf("convert(%s, %s)", convType, expr),
+						CurrentProductID: file.DsProductID,
+					})
+				}
+			}
+		}
+		for _, m := range castRe.FindAllStringSubmatch(line, -1) {
+			if len(m) >= 3 {
+				expr := strings.TrimSpace(m[1])
+				castType := strings.TrimSpace(m[2])
+				if typeGroup(castType) == "datetime" && isEmptyStringLiteral(expr) {
+					findings = append(findings, Finding{
+						Rule:             RuleEmptyStringDate,
+						Severity:         SeverityPostgreReq,
+						Message:          fmt.Sprintf("Передача пустой строки в cast(... as %s)", castType),
+						File:             file.Path,
+						Line:             i + 1,
+						Object:           fmt.Sprintf("cast(%s as %s)", expr, castType),
+						CurrentProductID: file.DsProductID,
+					})
+				}
+			}
+		}
+	}
+
+	return findings, nil
+}
+
+func isEmptyStringLiteral(expr string) bool {
+	trimmed := strings.TrimSpace(expr)
+	if trimmed == "" {
+		return false
+	}
+	re := regexp.MustCompile(`(?is)^\s*(N)?\s*['"]\s*['"]\s*$`)
+	if re.MatchString(trimmed) {
+		return true
+	}
+	// Литерал с пробелами внутри: '   ' или "   "
+	re2 := regexp.MustCompile(`(?is)^\s*(N)?\s*['"][\s]*['"]\s*$`)
+	return re2.MatchString(trimmed)
+}
+
+func extractSetColumns(stmt string) []string {
+	columns := make([]string, 0)
+	lower := strings.ToLower(stmt)
+
+	setIdx := findKeywordPosition(lower, "set")
+	if setIdx == -1 {
+		return columns
+	}
+
+	setPart := stmt[setIdx+3:]
+	lowerSetPart := strings.ToLower(setPart)
+
+	endMarkers := []string{" where ", " from ", ";", " output ", " option "}
+	endIdx := len(setPart)
+	for _, marker := range endMarkers {
+		if idx := findKeywordPosition(lowerSetPart, strings.TrimSpace(marker)); idx >= 0 {
+			if idx < endIdx {
+				endIdx = idx
+			}
+		}
+	}
+	setPart = setPart[:endIdx]
+
+	assignments := splitTopLevelSetAssignments(setPart)
+	for _, assignment := range assignments {
+		assignment = strings.TrimSpace(assignment)
+		if assignment == "" {
+			continue
+		}
+		eqIdx := strings.Index(assignment, "=")
+		if eqIdx == -1 {
+			continue
+		}
+		leftPart := strings.TrimSpace(assignment[:eqIdx])
+		leftPart = normalizeIdentifier(leftPart)
+		if idx := strings.LastIndex(leftPart, "."); idx >= 0 {
+			leftPart = leftPart[idx+1:]
+		}
+		if leftPart != "" && !strings.HasPrefix(leftPart, "@") {
+			columns = append(columns, leftPart)
+		}
+	}
+
+	return columns
 }

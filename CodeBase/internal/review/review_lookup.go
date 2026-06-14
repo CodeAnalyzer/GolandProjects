@@ -184,6 +184,73 @@ func (r *Runner) lookupIndexExists(tableName, indexName string) (bool, error) {
 	return exists, nil
 }
 
+func (r *Runner) lookupIndexFieldsByName(indexName string) ([]string, error) {
+	normalized := strings.TrimSpace(indexName)
+	if normalized == "" {
+		return nil, nil
+	}
+
+	rows, err := r.db.Query(`
+		SELECT f.field_name
+		FROM sql_index_definitions i
+		LEFT JOIN sql_index_definition_fields f ON f.table_index_id = i.id
+		WHERE LOWER(i.index_name) = LOWER($1)
+		ORDER BY f.field_order, f.id
+	`, normalized)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var fields []string
+	for rows.Next() {
+		var field sql.NullString
+		if err := rows.Scan(&field); err != nil {
+			return nil, err
+		}
+		if field.Valid {
+			f := normalizeIdentifier(field.String)
+			if f != "" {
+				fields = append(fields, f)
+			}
+		}
+	}
+
+	// Также проверяем API-индексы
+	if len(fields) == 0 {
+		rows2, err := r.db.Query(`
+			SELECT f.field_name
+			FROM api_business_object_table_indexes i
+			JOIN api_business_object_tables t ON t.id = i.business_table_id
+			LEFT JOIN api_business_object_table_index_fields f ON f.table_index_id = i.id
+			WHERE LOWER(i.index_name) = LOWER($1)
+			ORDER BY f.field_order, f.id
+		`, normalized)
+		if err != nil {
+			return nil, err
+		}
+		defer rows2.Close()
+
+		for rows2.Next() {
+			var field sql.NullString
+			if err := rows2.Scan(&field); err != nil {
+				return nil, err
+			}
+			if field.Valid {
+				f := normalizeIdentifier(field.String)
+				if f != "" {
+					fields = append(fields, f)
+				}
+			}
+		}
+		if err := rows2.Err(); err != nil {
+			return nil, err
+		}
+	}
+
+	return fields, rows.Err()
+}
+
 func (r *Runner) lookupTableIndexCandidates(tableName string) ([]tableIndexCandidate, error) {
 	normalizedTable := strings.TrimSpace(tableName)
 	if normalizedTable == "" {

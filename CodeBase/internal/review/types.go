@@ -33,6 +33,15 @@ const (
 	RuleTooManyJoins          RuleID = "tooManyJoins"
 	RuleMaxProcParam          RuleID = "maxProcParam"
 	RuleModifyOutProc         RuleID = "modifyOutProc"
+	RuleEmptyReturn           RuleID = "emptyReturn"
+	RuleRawTransactionControl RuleID = "rawTransactionControl"
+	RuleDeferredUpdate        RuleID = "deferredUpdate"
+	RuleInSubQuery            RuleID = "inSubQuery"
+	RuleVarcharSize           RuleID = "varcharSize"
+	RuleColumnInsert          RuleID = "columnInsert"
+	RulePostgreLabelGotoLevel RuleID = "postgreLabelGotoLevel"
+	RuleDateIntoString        RuleID = "dateIntoString"
+	RuleEmptyStringDate       RuleID = "emptyStringDate"
 )
 
 const (

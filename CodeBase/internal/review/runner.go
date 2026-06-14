@@ -260,6 +260,51 @@ func (r *Runner) buildRuleTasks(ruleSet map[RuleID]bool, parsed *sqlparser.Parse
 			return r.checkModifyOutProc(parsed, file)
 		}})
 	}
+	if ruleSet[RuleEmptyReturn] {
+		tasks = append(tasks, ruleTask{rule: RuleEmptyReturn, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkEmptyReturn(file)
+		}})
+	}
+	if ruleSet[RuleRawTransactionControl] {
+		tasks = append(tasks, ruleTask{rule: RuleRawTransactionControl, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkRawTransactionControl(file)
+		}})
+	}
+	if ruleSet[RuleDeferredUpdate] {
+		tasks = append(tasks, ruleTask{rule: RuleDeferredUpdate, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkDeferredUpdate(file)
+		}})
+	}
+	if ruleSet[RuleInSubQuery] {
+		tasks = append(tasks, ruleTask{rule: RuleInSubQuery, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkInSubQuery(file)
+		}})
+	}
+	if ruleSet[RuleVarcharSize] {
+		tasks = append(tasks, ruleTask{rule: RuleVarcharSize, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkVarcharSize(parsed, file)
+		}})
+	}
+	if ruleSet[RuleColumnInsert] {
+		tasks = append(tasks, ruleTask{rule: RuleColumnInsert, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkColumnInsert(file)
+		}})
+	}
+	if ruleSet[RulePostgreLabelGotoLevel] {
+		tasks = append(tasks, ruleTask{rule: RulePostgreLabelGotoLevel, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkPostgreLabelGotoLevel(file)
+		}})
+	}
+	if ruleSet[RuleDateIntoString] {
+		tasks = append(tasks, ruleTask{rule: RuleDateIntoString, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkDateIntoString(parsed, file)
+		}})
+	}
+	if ruleSet[RuleEmptyStringDate] {
+		tasks = append(tasks, ruleTask{rule: RuleEmptyStringDate, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkEmptyStringDate(parsed, file)
+		}})
+	}
 	return tasks
 }
 

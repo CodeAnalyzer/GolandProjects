@@ -279,6 +279,123 @@ func TestParseReviewRules_ExistsWithAndInIf(t *testing.T) {
 	}
 }
 
+func TestParseReviewRules_EmptyReturn(t *testing.T) {
+	rules, raw, err := parseReviewRules("emptyReturn")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RuleEmptyReturn {
+		t.Fatalf("expected emptyReturn, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "emptyReturn" {
+		t.Fatalf("expected raw emptyReturn, got %v", raw)
+	}
+}
+
+func TestParseReviewRules_RawTransactionControl(t *testing.T) {
+	rules, raw, err := parseReviewRules("rawTransactionControl")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RuleRawTransactionControl {
+		t.Fatalf("expected rawTransactionControl, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "rawTransactionControl" {
+		t.Fatalf("expected raw rawTransactionControl, got %v", raw)
+	}
+}
+
+func TestParseReviewRules_DeferredUpdate(t *testing.T) {
+	rules, raw, err := parseReviewRules("deferredUpdate")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RuleDeferredUpdate {
+		t.Fatalf("expected deferredUpdate, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "deferredUpdate" {
+		t.Fatalf("expected raw deferredUpdate, got %v", raw)
+	}
+}
+
+func TestParseReviewRules_InSubQuery(t *testing.T) {
+	rules, raw, err := parseReviewRules("inSubQuery")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RuleInSubQuery {
+		t.Fatalf("expected inSubQuery, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "inSubQuery" {
+		t.Fatalf("expected raw inSubQuery, got %v", raw)
+	}
+}
+
+func TestParseReviewRules_VarcharSize(t *testing.T) {
+	rules, raw, err := parseReviewRules("varcharSize")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RuleVarcharSize {
+		t.Fatalf("expected varcharSize, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "varcharSize" {
+		t.Fatalf("expected raw varcharSize, got %v", raw)
+	}
+}
+
+func TestParseReviewRules_ColumnInsert(t *testing.T) {
+	rules, raw, err := parseReviewRules("columnInsert")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RuleColumnInsert {
+		t.Fatalf("expected columnInsert, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "columnInsert" {
+		t.Fatalf("expected raw columnInsert, got %v", raw)
+	}
+}
+
+func TestParseReviewRules_PostgreLabelGotoLevel(t *testing.T) {
+	rules, raw, err := parseReviewRules("postgreLabelGotoLevel")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RulePostgreLabelGotoLevel {
+		t.Fatalf("expected postgreLabelGotoLevel, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "postgreLabelGotoLevel" {
+		t.Fatalf("expected raw postgreLabelGotoLevel, got %v", raw)
+	}
+}
+
+func TestParseReviewRules_DateIntoString(t *testing.T) {
+	rules, raw, err := parseReviewRules("dateIntoString")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RuleDateIntoString {
+		t.Fatalf("expected dateIntoString, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "dateIntoString" {
+		t.Fatalf("expected raw dateIntoString, got %v", raw)
+	}
+}
+
+func TestParseReviewRules_EmptyStringDate(t *testing.T) {
+	rules, raw, err := parseReviewRules("emptyStringDate")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != review.RuleEmptyStringDate {
+		t.Fatalf("expected emptyStringDate, got %v", rules)
+	}
+	if len(raw) != 1 || raw[0] != "emptyStringDate" {
+		t.Fatalf("expected raw emptyStringDate, got %v", raw)
+	}
+}
+
 func TestParseReviewRules_UnknownRule(t *testing.T) {
 	_, _, err := parseReviewRules("unknownRule")
 	if err == nil {

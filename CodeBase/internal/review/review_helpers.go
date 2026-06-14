@@ -184,6 +184,15 @@ func enabledRuleSet(rules []RuleID) map[RuleID]bool {
 		RuleTooManyJoins:          true,
 		RuleMaxProcParam:          true,
 		RuleModifyOutProc:         true,
+		RuleEmptyReturn:           true,
+		RuleRawTransactionControl: true,
+		RuleDeferredUpdate:        true,
+		RuleInSubQuery:            true,
+		RuleVarcharSize:           true,
+		RuleColumnInsert:          true,
+		RulePostgreLabelGotoLevel: true,
+		RuleDateIntoString:        true,
+		RuleEmptyStringDate:       true,
 	}
 	if len(rules) == 0 {
 		return result
