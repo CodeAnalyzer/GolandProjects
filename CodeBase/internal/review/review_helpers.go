@@ -845,56 +845,6 @@ func normalizeHintStatementText(text string) string {
 	return lower
 }
 
-func findOriginalLineNumber(originalLines []string, processedLine string, currentLine int) int {
-	processedTrimmed := strings.TrimSpace(processedLine)
-	if processedTrimmed == "" {
-		return 0
-	}
-
-	startIndex := currentLine - 1
-	if startIndex < 0 {
-		startIndex = 0
-	}
-	if startIndex >= len(originalLines) {
-		startIndex = len(originalLines) - 1
-	}
-
-	// Ищем строку с таким же содержимым начиная с текущей позиции.
-	for i := startIndex; i < len(originalLines); i++ {
-		origLine := originalLines[i]
-		origTrimmed := strings.TrimSpace(origLine)
-		if origTrimmed == processedTrimmed {
-			return i + 1
-		}
-	}
-	for i := 0; i < startIndex; i++ {
-		origLine := originalLines[i]
-		origTrimmed := strings.TrimSpace(origLine)
-		if origTrimmed == processedTrimmed {
-			return i + 1
-		}
-	}
-
-	// Если точное совпадение не найдено, пробуем с учетом различий в пробелах.
-	processedNormalized := strings.Join(strings.Fields(processedLine), " ")
-	for i := startIndex; i < len(originalLines); i++ {
-		origLine := originalLines[i]
-		origNormalized := strings.Join(strings.Fields(origLine), " ")
-		if origNormalized == processedNormalized {
-			return i + 1
-		}
-	}
-	for i := 0; i < startIndex; i++ {
-		origLine := originalLines[i]
-		origNormalized := strings.Join(strings.Fields(origLine), " ")
-		if origNormalized == processedNormalized {
-			return i + 1
-		}
-	}
-
-	return 0
-}
-
 func sameTableReference(left, right string) bool {
 	l := normalizeIdentifier(left)
 	r := normalizeIdentifier(right)
@@ -1595,4 +1545,18 @@ func hasSelectInsideParens(lower string, openPos int) bool {
 		}
 	}
 	return false
+}
+
+func mapProcessedLineNumber(sourceMap []int, processedLineNumber int) int {
+	if processedLineNumber <= 0 {
+		return 0
+	}
+	idx := processedLineNumber - 1
+	if idx < 0 || idx >= len(sourceMap) {
+		return processedLineNumber
+	}
+	if sourceMap[idx] <= 0 {
+		return processedLineNumber
+	}
+	return sourceMap[idx]
 }

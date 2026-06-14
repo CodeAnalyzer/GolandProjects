@@ -645,8 +645,10 @@ func (r *Runner) checkPTableSpid(file *indexedFile) ([]Finding, error) {
 		return nil, err
 	}
 
-	// Удаляем макросы #define перед анализом
-	contentStr := removeMacros(string(content))
+	// Подставляем макросы #define перед анализом
+	macroResult := replaceMacros(string(content))
+	contentStr := macroResult.Content
+	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
@@ -656,7 +658,7 @@ func (r *Runner) checkPTableSpid(file *indexedFile) ([]Finding, error) {
 	inBlockComment := false
 
 	for i, line := range lines {
-		lineNum := i + 1
+		lineNum := mapProcessedLineNumber(sourceMap, i+1)
 
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--") {
@@ -799,8 +801,10 @@ func (r *Runner) checkForceOrder2Tbl(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Удаляем макросы #define перед анализом
-	contentStr := removeMacros(string(content))
+	// Подставляем макросы #define перед анализом
+	macroResult := replaceMacros(string(content))
+	contentStr := macroResult.Content
+	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
@@ -810,7 +814,7 @@ func (r *Runner) checkForceOrder2Tbl(file *indexedFile) ([]Finding, error) {
 	inBlockComment := false
 
 	for i, line := range lines {
-		lineNum := i + 1
+		lineNum := mapProcessedLineNumber(sourceMap, i+1)
 
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--") {
@@ -1245,8 +1249,10 @@ func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Удаляем макросы #define перед анализом
-	contentStr := removeMacros(string(content))
+	// Подставляем макросы #define перед анализом
+	macroResult := replaceMacros(string(content))
+	contentStr := macroResult.Content
+	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
@@ -1256,7 +1262,7 @@ func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
 	inBlockComment := false
 
 	for i, line := range lines {
-		lineNum := i + 1
+		lineNum := mapProcessedLineNumber(sourceMap, i+1)
 
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--") {
@@ -1750,12 +1756,14 @@ func (r *Runner) checkUseSelectAll(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Удаляем макросы #define перед анализом
-	contentStr := removeMacros(string(content))
+	// Подставляем макросы #define перед анализом
+	macroResult := replaceMacros(string(content))
+	contentStr := macroResult.Content
+	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
 
 	for i, line := range lines {
-		lineNum := i + 1
+		lineNum := mapProcessedLineNumber(sourceMap, i+1)
 
 		// Пропускаем комментарии (trim и проверяем --)
 		trimmed := strings.TrimSpace(line)
@@ -2137,11 +2145,12 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Сохраняем оригинальные строки для корректного определения номера строки
-	originalLines := strings.Split(string(content), "\n")
 
-	// Удаляем макросы #define перед анализом
-	contentStr := removeMacros(string(content))
+	// Подставляем макросы #define перед анализом
+	macroResult := replaceMacros(string(content))
+	contentStr := macroResult.Content
+	sourceMap := macroResult.SourceMap
+
 	contentStr = maskBlockCommentsKeepLines(contentStr)
 	lines := strings.Split(contentStr, "\n")
 
@@ -2154,7 +2163,7 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 	firstTable := ""
 
 	for i, line := range lines {
-		lineNum := i + 1
+		lineNum := mapProcessedLineNumber(sourceMap, i+1)
 
 		// Пропускаем комментарии целиком
 		trimmed := strings.TrimSpace(line)
@@ -2222,13 +2231,7 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 			case ',':
 				if parenDepth == 0 && !isInComment(line, j) {
 					hasComma = true
-					// Находим реальный номер строки в оригинальном файле
-					// Ищем строку с таким же содержимым, начиная с текущей позиции,
-					// чтобы одинаковые строки в разных местах файла не мапились в первое вхождение
-					commaLine = findOriginalLineNumber(originalLines, line, lineNum)
-					if commaLine == 0 {
-						commaLine = lineNum // fallback к текущему номеру
-					}
+					commaLine = lineNum
 				}
 			}
 		}
@@ -2521,8 +2524,10 @@ func (r *Runner) checkTableFullScan(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Удаляем макросы #define перед анализом
-	contentStr := removeMacros(string(content))
+	// Подставляем макросы #define перед анализом
+	macroResult := replaceMacros(string(content))
+	contentStr := macroResult.Content
+	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
@@ -2532,7 +2537,7 @@ func (r *Runner) checkTableFullScan(file *indexedFile) ([]Finding, error) {
 	stmtType := ""
 
 	for i, line := range lines {
-		lineNum := i + 1
+		lineNum := mapProcessedLineNumber(sourceMap, i+1)
 
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--") {
@@ -2708,8 +2713,10 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Удаляем макросы #define перед анализом
-	contentStr := removeMacros(string(content))
+	// Подставляем макросы #define перед анализом
+	macroResult := replaceMacros(string(content))
+	contentStr := macroResult.Content
+	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
@@ -2719,7 +2726,7 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 	stmtType := ""
 
 	for i, line := range lines {
-		lineNum := i + 1
+		lineNum := mapProcessedLineNumber(sourceMap, i+1)
 
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--") {
@@ -2799,8 +2806,10 @@ func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 		return nil, err
 	}
 
-	// Удаляем макросы #define перед анализом
-	contentStr := removeMacros(string(content))
+	// Подставляем макросы #define перед анализом
+	macroResult := replaceMacros(string(content))
+	contentStr := macroResult.Content
+	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
@@ -2810,7 +2819,7 @@ func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 	inBlockComment := false
 
 	for i, line := range lines {
-		lineNum := i + 1
+		lineNum := mapProcessedLineNumber(sourceMap, i+1)
 
 		// Отслеживаем блочные комментарии /* */
 		if inBlockComment {
@@ -3208,9 +3217,10 @@ func (r *Runner) checkModifyOutProc(parsed *sqlparser.ParseResult, file *indexed
 		return nil, err
 	}
 
-	// Убираем #define-макросы и маскируем блочные комментарии
-	text := removeMacros(string(content))
-	text = maskBlockCommentsKeepLines(text)
+	// Подставляем #define-макросы и маскируем блочные комментарии
+	macroResult := replaceMacros(string(content))
+	text := maskBlockCommentsKeepLines(macroResult.Content)
+	sourceMap := macroResult.SourceMap
 
 	// Строим set номеров строк, защищённых телом процедуры (1-based)
 	inProc := make(map[int]bool)
@@ -3227,11 +3237,10 @@ func (r *Runner) checkModifyOutProc(parsed *sqlparser.ParseResult, file *indexed
 	findings := make([]Finding, 0)
 
 	for i, line := range lines {
-		lineNo := i + 1
+		lineNo := mapProcessedLineNumber(sourceMap, i+1)
 		if inProc[lineNo] {
 			continue
 		}
-
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue

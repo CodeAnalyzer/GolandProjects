@@ -2,6 +2,7 @@ package review
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -425,34 +426,426 @@ func normalizeAssignmentTargetColumn(target string, stmt updateSetStatement) str
 	return clean
 }
 
-// removeMacros удаляет определения макросов #define и их тело
-// Удаляет строку с #define, все продолжения (заканчивающиеся на \) и финальную строку
-func removeMacros(content string) string {
-	// Нормализуем окончания строк для Windows \r\n
+type macroDefinition struct {
+	Name          string
+	Params        []string
+	BodyLines     []string
+	DeclStartLine int
+	DeclEndLine   int
+}
+
+type macroReplaceResult struct {
+	Content   string
+	SourceMap []int
+	Macros    []macroDefinition
+}
+
+func replaceMacros(content string) macroReplaceResult {
 	content = strings.ReplaceAll(content, "\r\n", "\n")
 	content = strings.ReplaceAll(content, "\r", "\n")
 
 	lines := strings.Split(content, "\n")
-	var result []string
+	macros := collectMacroDefinitions(lines)
+
+	withoutDecl, withoutDeclMap := stripMacroDeclarations(lines, macros)
+	expandedLines, expandedMap, usedNames := expandMacrosInLines(withoutDecl, withoutDeclMap, macros)
+
+	usedMacros := make([]macroDefinition, 0, len(usedNames))
+	for _, macro := range macros {
+		if _, exists := usedNames[strings.ToLower(macro.Name)]; exists {
+			usedMacros = append(usedMacros, macro)
+		}
+	}
+
+	return macroReplaceResult{
+		Content:   strings.Join(expandedLines, "\n"),
+		SourceMap: expandedMap,
+		Macros:    usedMacros,
+	}
+}
+
+func collectMacroDefinitions(lines []string) []macroDefinition {
+	result := make([]macroDefinition, 0)
 
 	for i := 0; i < len(lines); i++ {
-		line := lines[i]
-		trimmed := strings.TrimSpace(line)
-
-		// Начало макроса
-		if strings.HasPrefix(trimmed, "#define") {
-			// Пропускаем строки продолжения (оканчивающиеся на \)
-			for i < len(lines)-1 && strings.HasSuffix(lines[i], "\\") {
-				i++
-			}
-			// Пропускаем финальную строку (не оканчивается на \)
+		trimmed := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(trimmed, "#define") {
 			continue
 		}
 
-		result = append(result, line)
+		start := i
+		definitionLines := make([]string, 0)
+
+		for {
+			raw := strings.TrimRight(lines[i], " \t")
+			hasContinuation := strings.HasSuffix(raw, "\\")
+			if hasContinuation {
+				raw = strings.TrimRight(raw[:len(raw)-1], " \t")
+			}
+			definitionLines = append(definitionLines, raw)
+
+			if !hasContinuation || i >= len(lines)-1 {
+				break
+			}
+			i++
+		}
+
+		name, params, bodyLines := parseMacroDefinition(definitionLines)
+		if name == "" {
+			continue
+		}
+
+		result = append(result, macroDefinition{
+			Name:          name,
+			Params:        params,
+			BodyLines:     bodyLines,
+			DeclStartLine: start + 1,
+			DeclEndLine:   i + 1,
+		})
 	}
 
-	return strings.Join(result, "\n")
+	return result
+}
+
+func parseMacroDefinition(definitionLines []string) (string, []string, []string) {
+	if len(definitionLines) == 0 {
+		return "", nil, nil
+	}
+
+	header := strings.TrimSpace(definitionLines[0])
+	header = strings.TrimSpace(strings.TrimPrefix(header, "#define"))
+	if header == "" {
+		return "", nil, nil
+	}
+
+	nameEnd := 0
+	for nameEnd < len(header) {
+		ch := header[nameEnd]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' {
+			nameEnd++
+			continue
+		}
+		break
+	}
+	if nameEnd == 0 {
+		return "", nil, nil
+	}
+
+	name := strings.TrimSpace(header[:nameEnd])
+	rest := strings.TrimLeft(header[nameEnd:], " \t")
+
+	params := make([]string, 0)
+	bodyLines := make([]string, 0)
+
+	if strings.HasPrefix(rest, "(") {
+		depth := 0
+		end := -1
+	scanParams:
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					end = i
+					break scanParams
+				}
+			}
+		}
+		if end > 0 {
+			paramPart := strings.TrimSpace(rest[1:end])
+			if paramPart != "" {
+				for _, p := range splitTopLevelCSV(paramPart) {
+					param := strings.TrimSpace(p)
+					if param != "" {
+						params = append(params, param)
+					}
+				}
+			}
+			rest = strings.TrimSpace(rest[end+1:])
+		}
+	}
+
+	if rest != "" {
+		bodyLines = append(bodyLines, rest)
+	}
+	for _, line := range definitionLines[1:] {
+		bodyLines = append(bodyLines, strings.TrimSpace(line))
+	}
+
+	if len(bodyLines) == 0 {
+		bodyLines = []string{""}
+	}
+
+	return name, params, bodyLines
+}
+
+func stripMacroDeclarations(lines []string, macros []macroDefinition) ([]string, []int) {
+	skip := make(map[int]struct{})
+	for _, macro := range macros {
+		for ln := macro.DeclStartLine; ln <= macro.DeclEndLine; ln++ {
+			skip[ln] = struct{}{}
+		}
+	}
+
+	resultLines := make([]string, 0, len(lines))
+	resultMap := make([]int, 0, len(lines))
+	for i, line := range lines {
+		lineNo := i + 1
+		if _, shouldSkip := skip[lineNo]; shouldSkip {
+			continue
+		}
+		resultLines = append(resultLines, line)
+		resultMap = append(resultMap, lineNo)
+	}
+
+	return resultLines, resultMap
+}
+
+type macroCall struct {
+	Macro macroDefinition
+	Start int
+	End   int
+	Args  []string
+}
+
+func expandMacrosInLines(lines []string, sourceMap []int, macros []macroDefinition) ([]string, []int, map[string]struct{}) {
+	byName := make(map[string]macroDefinition, len(macros))
+	names := make([]string, 0, len(macros))
+	for _, macro := range macros {
+		key := strings.ToLower(strings.TrimSpace(macro.Name))
+		if key == "" {
+			continue
+		}
+		byName[key] = macro
+		names = append(names, key)
+	}
+
+	sort.Slice(names, func(i, j int) bool {
+		if len(names[i]) == len(names[j]) {
+			return names[i] < names[j]
+		}
+		return len(names[i]) > len(names[j])
+	})
+
+	usedNames := make(map[string]struct{})
+	resultLines := make([]string, 0, len(lines))
+	resultMap := make([]int, 0, len(sourceMap))
+
+	for idx := 0; idx < len(lines); idx++ {
+		lineSource := idx + 1
+		if idx < len(sourceMap) && sourceMap[idx] > 0 {
+			lineSource = sourceMap[idx]
+		}
+
+		currentLines := []string{lines[idx]}
+		currentMap := []int{lineSource}
+
+		for pass := 0; pass < 32; pass++ {
+			changedAny := false
+			nextLines := make([]string, 0, len(currentLines))
+			nextMap := make([]int, 0, len(currentMap))
+
+			for lineIdx, line := range currentLines {
+				srcLine := currentMap[lineIdx]
+				updatedLines, updatedMap, changed := expandFirstMacroCall(line, srcLine, names, byName, usedNames)
+				nextLines = append(nextLines, updatedLines...)
+				nextMap = append(nextMap, updatedMap...)
+				if changed {
+					changedAny = true
+				}
+			}
+
+			currentLines = nextLines
+			currentMap = nextMap
+			if !changedAny {
+				break
+			}
+		}
+
+		resultLines = append(resultLines, currentLines...)
+		resultMap = append(resultMap, currentMap...)
+	}
+
+	return resultLines, resultMap, usedNames
+}
+
+func expandFirstMacroCall(line string, sourceLine int, names []string, byName map[string]macroDefinition, usedNames map[string]struct{}) ([]string, []int, bool) {
+	call, ok := findEarliestMacroCall(line, names, byName)
+	if !ok {
+		return []string{line}, []int{sourceLine}, false
+	}
+
+	usedNames[strings.ToLower(call.Macro.Name)] = struct{}{}
+	replacement := applyMacroArguments(call.Macro, call.Args)
+	if len(replacement) == 0 {
+		replacement = []string{""}
+	}
+
+	prefix := line[:call.Start]
+	suffix := line[call.End:]
+
+	if len(replacement) == 1 {
+		return []string{prefix + replacement[0] + suffix}, []int{sourceLine}, true
+	}
+
+	updatedLines := make([]string, 0, len(replacement))
+	updatedMap := make([]int, 0, len(replacement))
+	for i := 0; i < len(replacement); i++ {
+		part := replacement[i]
+		if i == 0 {
+			part = prefix + part
+		}
+		if i == len(replacement)-1 {
+			part += suffix
+		}
+		updatedLines = append(updatedLines, part)
+		updatedMap = append(updatedMap, sourceLine)
+	}
+
+	return updatedLines, updatedMap, true
+}
+
+func findEarliestMacroCall(line string, names []string, byName map[string]macroDefinition) (macroCall, bool) {
+	best := macroCall{}
+	found := false
+
+	for _, name := range names {
+		macro := byName[name]
+		call, ok := findMacroCall(line, macro)
+		if !ok {
+			continue
+		}
+		if !found || call.Start < best.Start || (call.Start == best.Start && call.End > best.End) {
+			best = call
+			found = true
+		}
+	}
+
+	return best, found
+}
+
+func findMacroCall(line string, macro macroDefinition) (macroCall, bool) {
+	name := strings.TrimSpace(macro.Name)
+	if name == "" {
+		return macroCall{}, false
+	}
+
+	lowerLine := strings.ToLower(line)
+	lowerName := strings.ToLower(name)
+	searchPos := 0
+
+	for {
+		idx := strings.Index(lowerLine[searchPos:], lowerName)
+		if idx < 0 {
+			return macroCall{}, false
+		}
+		idx += searchPos
+		afterName := idx + len(name)
+
+		if idx > 0 && isWordChar(line[idx-1]) {
+			searchPos = idx + 1
+			continue
+		}
+
+		if len(macro.Params) == 0 {
+			if afterName < len(line) && isWordChar(line[afterName]) {
+				searchPos = idx + 1
+				continue
+			}
+			return macroCall{Macro: macro, Start: idx, End: afterName}, true
+		}
+
+		openPos := afterName
+		for openPos < len(line) && (line[openPos] == ' ' || line[openPos] == '\t') {
+			openPos++
+		}
+		if openPos >= len(line) || line[openPos] != '(' {
+			searchPos = idx + 1
+			continue
+		}
+
+		argsText, closePos, ok := parseMacroCallArguments(line, openPos)
+		if !ok {
+			searchPos = idx + 1
+			continue
+		}
+
+		args := splitTopLevelCSV(argsText)
+		for i := range args {
+			args[i] = strings.TrimSpace(args[i])
+		}
+
+		return macroCall{Macro: macro, Start: idx, End: closePos + 1, Args: args}, true
+	}
+}
+
+func parseMacroCallArguments(line string, openPos int) (string, int, bool) {
+	if openPos < 0 || openPos >= len(line) || line[openPos] != '(' {
+		return "", 0, false
+	}
+
+	depth := 0
+	inString := false
+	for i := openPos; i < len(line); i++ {
+		ch := line[i]
+		if ch == '\'' {
+			if inString && i+1 < len(line) && line[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return line[openPos+1 : i], i, true
+			}
+		}
+	}
+
+	return "", 0, false
+}
+
+func applyMacroArguments(macro macroDefinition, args []string) []string {
+	result := make([]string, len(macro.BodyLines))
+	copy(result, macro.BodyLines)
+
+	for i := range result {
+		line := result[i]
+		for pIdx, param := range macro.Params {
+			if strings.TrimSpace(param) == "" {
+				continue
+			}
+			replacement := ""
+			if pIdx < len(args) {
+				replacement = args[pIdx]
+			}
+			line = replaceIdentifierToken(line, param, replacement)
+		}
+		result[i] = line
+	}
+
+	return result
+}
+
+func replaceIdentifierToken(text string, token string, replacement string) string {
+	trimmedToken := strings.TrimSpace(token)
+	if trimmedToken == "" {
+		return text
+	}
+
+	re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(trimmedToken) + `\b`)
+	return re.ReplaceAllString(text, replacement)
 }
 
 // maskBlockCommentsKeepLines маскирует блочные комментарии /* */ с сохранением строк
