@@ -401,3 +401,14 @@ func TestEnabledRuleSet_PostgreLabelGotoLevel(t *testing.T) {
 		t.Fatalf("RuleForeignProcedureUsing should be disabled")
 	}
 }
+
+func TestEnabledRuleSet_UseOnlyDeclaredCursors(t *testing.T) {
+	rules := []RuleID{RuleUseOnlyDeclaredCursors}
+	set := enabledRuleSet(rules)
+	if !set[RuleUseOnlyDeclaredCursors] {
+		t.Fatalf("RuleUseOnlyDeclaredCursors should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}

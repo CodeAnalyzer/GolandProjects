@@ -2,11 +2,13 @@ package review
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/codebase/internal/model"
 	"github.com/lib/pq"
 )
 
@@ -1174,3 +1176,26 @@ func findStatementStartHint(lower string) (string, int) {
 	}
 	return "", -1
 }
+
+func (r *Runner) lookupProcedureParams(procName string) ([]model.SQLParam, error) {
+	var paramsJSON []byte
+	err := r.db.QueryRow(`
+		SELECT parameters 
+		FROM sql_procedures 
+		WHERE LOWER(proc_name) = LOWER($1)
+		ORDER BY id DESC 
+		LIMIT 1
+	`, strings.TrimSpace(procName)).Scan(&paramsJSON)
+	if err != nil {
+		return nil, err
+	}
+	if len(paramsJSON) == 0 {
+		return nil, nil
+	}
+	var params []model.SQLParam
+	if err := json.Unmarshal(paramsJSON, &params); err != nil {
+		return nil, err
+	}
+	return params, nil
+}
+

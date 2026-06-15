@@ -310,6 +310,21 @@ func (r *Runner) buildRuleTasks(ruleSet map[RuleID]bool, parsed *sqlparser.Parse
 			return r.checkVarUseAfterCursor(file)
 		}})
 	}
+	if ruleSet[RuleExcessProcParams] {
+		tasks = append(tasks, ruleTask{rule: RuleExcessProcParams, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkExcessProcParams(parsed, file)
+		}})
+	}
+	if ruleSet[RuleDuplicateOutputVariable] {
+		tasks = append(tasks, ruleTask{rule: RuleDuplicateOutputVariable, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkDuplicateOutputVariable(parsed, file)
+		}})
+	}
+	if ruleSet[RuleUseOnlyDeclaredCursors] {
+		tasks = append(tasks, ruleTask{rule: RuleUseOnlyDeclaredCursors, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkUseOnlyDeclaredCursors(parsed, file)
+		}})
+	}
 	return tasks
 }
 

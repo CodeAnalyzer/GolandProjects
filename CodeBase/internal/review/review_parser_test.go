@@ -209,3 +209,95 @@ func TestMapProcessedLineNumber_OutOfBounds(t *testing.T) {
 		t.Fatalf("out of bounds should return processed line number")
 	}
 }
+
+func TestParseExecArguments(t *testing.T) {
+	tests := []struct {
+		name       string
+		line       string
+		calleeName string
+		want       []execArgument
+	}{
+		{
+			name:       "Чисто позиционные",
+			line:       "exec my_proc 123, 'test', @var",
+			calleeName: "my_proc",
+			want: []execArgument{
+				{Raw: "123", IsNamed: false, Value: "123"},
+				{Raw: "'test'", IsNamed: false, Value: "'test'"},
+				{Raw: "@var", IsNamed: false, Value: "@var", VarName: "@var"},
+			},
+		},
+		{
+			name:       "Именованные",
+			line:       "exec my_proc @Id = 10, @Name = 'John'",
+			calleeName: "my_proc",
+			want: []execArgument{
+				{Raw: "@Id = 10", IsNamed: true, Name: "id", Value: "10"},
+				{Raw: "@Name = 'John'", IsNamed: true, Name: "name", Value: "'John'"},
+			},
+		},
+		{
+			name:       "Именованные и позиционные с output флагом",
+			line:       "exec my_proc @Id = @my_id output, @Name = 'John', @Ref = @loc_ref out, 123 out",
+			calleeName: "my_proc",
+			want: []execArgument{
+				{Raw: "@Id = @my_id output", IsNamed: true, Name: "id", Value: "@my_id", IsOutput: true, VarName: "@my_id"},
+				{Raw: "@Name = 'John'", IsNamed: true, Name: "name", Value: "'John'", IsOutput: false},
+				{Raw: "@Ref = @loc_ref out", IsNamed: true, Name: "ref", Value: "@loc_ref", IsOutput: true, VarName: "@loc_ref"},
+				{Raw: "123 out", IsNamed: false, Value: "123", IsOutput: true, VarName: ""},
+			},
+		},
+		{
+			name:       "С комментариями внутри",
+			line:       "exec my_proc @Id = 10 -- ID контракта\n, @Name = 'John' /* имя */",
+			calleeName: "my_proc",
+			want: []execArgument{
+				{Raw: "@Id = 10", IsNamed: true, Name: "id", Value: "10"},
+				{Raw: "@Name = 'John'", IsNamed: true, Name: "name", Value: "'John'"},
+			},
+		},
+		{
+			name:       "Пустые скобки и вызовы без параметров",
+			line:       "exec my_proc",
+			calleeName: "my_proc",
+			want:       nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseExecArguments(tt.line, tt.calleeName)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d arguments, want %d: %+v", len(got), len(tt.want), got)
+			}
+			for i := range got {
+				if got[i].IsNamed != tt.want[i].IsNamed ||
+					got[i].Name != tt.want[i].Name ||
+					got[i].Value != tt.want[i].Value ||
+					got[i].IsOutput != tt.want[i].IsOutput ||
+					got[i].VarName != tt.want[i].VarName {
+					t.Errorf("arg[%d] = %+v, want %+v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestCollectExecCallLines(t *testing.T) {
+	lines := []string{
+		"  select @RetVal = 0",
+		"  exec BankProduct_Delete ",
+		"         @BankProductID = @NodeID,",
+		"         @BankProductID = @FundID",
+		"  return @RetVal",
+	}
+
+	got := collectExecCallLines(lines, 2, "BankProduct_Delete")
+	want := "  exec BankProduct_Delete \n         @BankProductID = @NodeID,\n         @BankProductID = @FundID"
+
+	if got != want {
+		t.Fatalf("collectExecCallLines got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+

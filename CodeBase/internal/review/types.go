@@ -45,6 +45,9 @@ const (
 	RuleDateIntoString        RuleID = "dateIntoString"
 	RuleEmptyStringDate       RuleID = "emptyStringDate"
 	RuleVarUseAfterCursor     RuleID = "varUseAfterCursor"
+	RuleExcessProcParams        RuleID = "excessProcParams"
+	RuleDuplicateOutputVariable RuleID = "duplicateOutputVariable"
+	RuleUseOnlyDeclaredCursors  RuleID = "useOnlyDeclaredCursors"
 )
 
 const (

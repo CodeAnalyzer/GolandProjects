@@ -4783,3 +4783,302 @@ func extractSetColumns(stmt string) []string {
 
 	return columns
 }
+
+func (r *Runner) checkExcessProcParams(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	calls := dedupeProcedureCalls(parsed.Calls)
+	findings := make([]Finding, 0)
+
+	for _, call := range calls {
+		params, err := r.lookupProcedureParams(call.Name)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				continue // Процедура отсутствует в БД — это ловит execNotExistsProc
+			}
+			return nil, err
+		}
+
+		if call.Line < 1 || call.Line > len(r.exec.lines) {
+			continue
+		}
+		callText := collectExecCallLines(r.exec.lines, call.Line, call.Name)
+
+		args := parseExecArguments(callText, call.Name)
+		if hasFinding, detail := validateExecArguments(args, params); hasFinding {
+			findings = append(findings, Finding{
+				Rule:             RuleExcessProcParams,
+				Severity:         SeverityPostgreReq,
+				Message:          "Передача лишних параметров или дублирование параметров в вызове процедуры" + detail,
+				File:             file.Path,
+				Line:             call.Line,
+				Object:           call.Name,
+				CurrentProductID: file.DsProductID,
+			})
+		}
+	}
+	return findings, nil
+}
+
+func (r *Runner) checkDuplicateOutputVariable(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	calls := dedupeProcedureCalls(parsed.Calls)
+	findings := make([]Finding, 0)
+
+	for _, call := range calls {
+		if call.Line < 1 || call.Line > len(r.exec.lines) {
+			continue
+		}
+		callText := collectExecCallLines(r.exec.lines, call.Line, call.Name)
+
+		args := parseExecArguments(callText, call.Name)
+
+		params, err := r.lookupProcedureParams(call.Name)
+		if err != nil && err != sql.ErrNoRows {
+			return nil, err
+		}
+
+		paramMap := make(map[string]model.SQLParam)
+		for _, p := range params {
+			paramMap[normalizeIdentifier(p.Name)] = p
+		}
+
+		seenOutVars := make(map[string][]string) // varName -> list of parameter names
+		for i, arg := range args {
+			isOut := arg.IsOutput
+
+			if !isOut && len(params) > 0 {
+				if arg.IsNamed {
+					if p, exists := paramMap[arg.Name]; exists {
+						dir := strings.ToLower(p.Direction)
+						if dir == "out" || dir == "inout" {
+							isOut = true
+						}
+					}
+				} else {
+					if i < len(params) {
+						p := params[i]
+						dir := strings.ToLower(p.Direction)
+						if dir == "out" || dir == "inout" {
+							isOut = true
+						}
+					}
+				}
+			}
+
+			if isOut && arg.VarName != "" {
+				paramLabel := fmt.Sprintf("#%d", i+1)
+				if arg.IsNamed {
+					paramLabel = "@" + arg.Name
+				}
+				seenOutVars[arg.VarName] = append(seenOutVars[arg.VarName], paramLabel)
+			}
+		}
+
+		for varName, params := range seenOutVars {
+			if len(params) > 1 {
+				findings = append(findings, Finding{
+					Rule:             RuleDuplicateOutputVariable,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("В вызове процедуры в качестве OUT параметров используется одна и та же переменная %s для параметров: %s", varName, strings.Join(params, ", ")),
+					File:             file.Path,
+					Line:             call.Line,
+					Object:           call.Name,
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+	return findings, nil
+}
+
+// checkUseOnlyDeclaredCursors проверяет, что все используемые курсоры были объявлены в том же scope
+func (r *Runner) checkUseOnlyDeclaredCursors(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+
+	// Читаем файл построчно
+	content, err := os.ReadFile(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(content), "\n")
+
+	// Регулярки для поиска объявлений и использований курсоров
+	// DECLARE name CURSOR FOR или declare name insensitive cursor for
+	declareCursorRe := regexp.MustCompile(`(?i)\bDECLARE\s+(#?\w+)\s+(?:INSENSITIVE\s+)?CURSOR\s+FOR\b`)
+	// __DECLARE_CURSOR__(NAME)
+	declareMacroRe := regexp.MustCompile(`(?i)\b__DECLARE_CURSOR__\s*\(\s*(#?\w+)\s*\)`)
+
+	// OPEN name, FETCH ... FROM name, FETCH name INTO, CLOSE name, DEALLOCATE name
+	openCursorRe := regexp.MustCompile(`(?i)\bOPEN\s+(#?\w+)`)
+	fetchCursorRe := regexp.MustCompile(`(?i)\bFETCH\s+(?:\w+\s+)*?FROM\s+(#?\w+)`)
+	// FETCH без FROM: fetch cursor_name into ... или __FETCH_NEXT__ cursor_name into ...
+	// Ищем имя сразу после FETCH/__FETCH_NEXT__ (или NEXT/PRIOR) перед INTO - без FROM
+	fetchCursorDirectRe := regexp.MustCompile(`(?i)\b(?:FETCH|__FETCH_NEXT__)\s+(?:NEXT\s+|PRIOR\s+|FIRST\s+|LAST\s+)?(#?\w+)\s+INTO\b`)
+	closeCursorRe := regexp.MustCompile(`(?i)\bCLOSE\s+(#?\w+)`)
+	deallocCursorRe := regexp.MustCompile(`(?i)\bDEALLOCATE\s+(?:CURSOR\s+)?(#?\w+)`)
+	// Макрос для DEALLOCATE
+	deallocMacroRe := regexp.MustCompile(`(?i)\b__DEALLOCATE_CURSOR__\s*\(\s*(#?\w+)\s*\)`)
+
+	// Системные курсоры начинаются с @@ - исключаем их
+	systemCursorRe := regexp.MustCompile(`^@@`)
+
+	// Проверяем курсоры для каждой процедуры
+	for _, proc := range parsed.Procedures {
+		declaredCursors := make(map[string]int) // имя курсора -> номер строки объявления
+
+		// Определяем границы процедуры (индексы строк 0-based)
+		startLine := proc.LineStart - 1
+		endLine := proc.LineEnd
+		if startLine < 0 {
+			startLine = 0
+		}
+		if endLine > len(lines) {
+			endLine = len(lines)
+		}
+
+		// Первый проход: собираем объявленные курсоры
+		for i := startLine; i < endLine && i < len(lines); i++ {
+			line := lines[i]
+			lineNum := i + 1
+
+			// Удаляем комментарии для чистого анализа
+			cleanLine := removeComments(line)
+
+			// Ищем DECLARE ... CURSOR FOR
+			matches := declareCursorRe.FindStringSubmatch(cleanLine)
+			if len(matches) > 1 {
+				cursorName := strings.ToLower(matches[1])
+				// Пропускаем временные курсоры (начинаются с #)
+				if !strings.HasPrefix(cursorName, "#") {
+					declaredCursors[cursorName] = lineNum
+				}
+				continue
+			}
+
+			// Ищем __DECLARE_CURSOR__(NAME)
+			macroMatches := declareMacroRe.FindStringSubmatch(cleanLine)
+			if len(macroMatches) > 1 {
+				cursorName := strings.ToLower(macroMatches[1])
+				if !strings.HasPrefix(cursorName, "#") {
+					declaredCursors[cursorName] = lineNum
+				}
+			}
+		}
+
+		// Второй проход: проверяем использования курсоров
+		for i := startLine; i < endLine && i < len(lines); i++ {
+			line := lines[i]
+			lineNum := i + 1
+
+			cleanLine := removeComments(line)
+
+			// Проверяем OPEN
+			if matches := openCursorRe.FindStringSubmatch(cleanLine); len(matches) > 1 {
+				cursorName := strings.ToLower(matches[1])
+				if !systemCursorRe.MatchString(cursorName) && !strings.HasPrefix(cursorName, "#") {
+					if _, declared := declaredCursors[cursorName]; !declared {
+						findings = append(findings, Finding{
+							Rule:             RuleUseOnlyDeclaredCursors,
+							Severity:         SeverityPostgreReq,
+							Message:          fmt.Sprintf("Использование необъявленного курсора '%s' в операции OPEN", matches[1]),
+							File:             file.Path,
+							Line:             lineNum,
+							Object:           proc.ProcName,
+							CurrentProductID: file.DsProductID,
+						})
+					}
+				}
+			}
+
+			// Проверяем FETCH
+			if matches := fetchCursorRe.FindStringSubmatch(cleanLine); len(matches) > 1 {
+				cursorName := strings.ToLower(matches[1])
+				if !systemCursorRe.MatchString(cursorName) && !strings.HasPrefix(cursorName, "#") {
+					if _, declared := declaredCursors[cursorName]; !declared {
+						findings = append(findings, Finding{
+							Rule:             RuleUseOnlyDeclaredCursors,
+							Severity:         SeverityPostgreReq,
+							Message:          fmt.Sprintf("Использование необъявленного курсора '%s' в операции FETCH", matches[1]),
+							File:             file.Path,
+							Line:             lineNum,
+							Object:           proc.ProcName,
+							CurrentProductID: file.DsProductID,
+						})
+					}
+				}
+			}
+
+			// Проверяем FETCH без FROM (fetch cursor_name into ...)
+			if matches := fetchCursorDirectRe.FindStringSubmatch(cleanLine); len(matches) > 1 {
+				cursorName := strings.ToLower(matches[1])
+				if !systemCursorRe.MatchString(cursorName) && !strings.HasPrefix(cursorName, "#") {
+					if _, declared := declaredCursors[cursorName]; !declared {
+						findings = append(findings, Finding{
+							Rule:             RuleUseOnlyDeclaredCursors,
+							Severity:         SeverityPostgreReq,
+							Message:          fmt.Sprintf("Использование необъявленного курсора '%s' в операции FETCH (возможно опечатка?)", matches[1]),
+							File:             file.Path,
+							Line:             lineNum,
+							Object:           proc.ProcName,
+							CurrentProductID: file.DsProductID,
+						})
+					}
+				}
+			}
+
+			// Проверяем CLOSE
+			if matches := closeCursorRe.FindStringSubmatch(cleanLine); len(matches) > 1 {
+				cursorName := strings.ToLower(matches[1])
+				if !systemCursorRe.MatchString(cursorName) && !strings.HasPrefix(cursorName, "#") {
+					if _, declared := declaredCursors[cursorName]; !declared {
+						findings = append(findings, Finding{
+							Rule:             RuleUseOnlyDeclaredCursors,
+							Severity:         SeverityPostgreReq,
+							Message:          fmt.Sprintf("Использование необъявленного курсора '%s' в операции CLOSE", matches[1]),
+							File:             file.Path,
+							Line:             lineNum,
+							Object:           proc.ProcName,
+							CurrentProductID: file.DsProductID,
+						})
+					}
+				}
+			}
+
+			// Проверяем DEALLOCATE
+			if matches := deallocCursorRe.FindStringSubmatch(cleanLine); len(matches) > 1 {
+				cursorName := strings.ToLower(matches[1])
+				if !systemCursorRe.MatchString(cursorName) && !strings.HasPrefix(cursorName, "#") {
+					if _, declared := declaredCursors[cursorName]; !declared {
+						findings = append(findings, Finding{
+							Rule:             RuleUseOnlyDeclaredCursors,
+							Severity:         SeverityPostgreReq,
+							Message:          fmt.Sprintf("Использование необъявленного курсора '%s' в операции DEALLOCATE", matches[1]),
+							File:             file.Path,
+							Line:             lineNum,
+							Object:           proc.ProcName,
+							CurrentProductID: file.DsProductID,
+						})
+					}
+				}
+			}
+
+			// Проверяем __DEALLOCATE_CURSOR__(NAME)
+			if matches := deallocMacroRe.FindStringSubmatch(cleanLine); len(matches) > 1 {
+				cursorName := strings.ToLower(matches[1])
+				if !systemCursorRe.MatchString(cursorName) && !strings.HasPrefix(cursorName, "#") {
+					if _, declared := declaredCursors[cursorName]; !declared {
+						findings = append(findings, Finding{
+							Rule:             RuleUseOnlyDeclaredCursors,
+							Severity:         SeverityPostgreReq,
+							Message:          fmt.Sprintf("Использование необъявленного курсора '%s' в операции DEALLOCATE (макрос)", matches[1]),
+							File:             file.Path,
+							Line:             lineNum,
+							Object:           proc.ProcName,
+							CurrentProductID: file.DsProductID,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	return findings, nil
+}

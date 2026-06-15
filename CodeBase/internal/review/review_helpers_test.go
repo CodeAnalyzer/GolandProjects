@@ -2,6 +2,7 @@ package review
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/codebase/internal/model"
@@ -81,3 +82,75 @@ func TestCalculateIndexPrefixMatch(t *testing.T) {
 		t.Fatalf("calculateIndexPrefixMatch no match = %d, want 0", got)
 	}
 }
+
+func TestValidateExecArguments(t *testing.T) {
+	params := []model.SQLParam{
+		{Name: "Id", Type: "DSINT"},
+		{Name: "Name", Type: "DSVARCHAR"},
+	}
+
+	tests := []struct {
+		name        string
+		args        []execArgument
+		wantFinding bool
+		wantDetail  string
+	}{
+		{
+			name: "Корректные именованные",
+			args: []execArgument{
+				{IsNamed: true, Name: "id", Value: "1"},
+				{IsNamed: true, Name: "name", Value: "'test'"},
+			},
+			wantFinding: false,
+		},
+		{
+			name: "Корректные позиционные",
+			args: []execArgument{
+				{IsNamed: false, Value: "1"},
+				{IsNamed: false, Value: "'test'"},
+			},
+			wantFinding: false,
+		},
+		{
+			name: "Лишний именованный параметр",
+			args: []execArgument{
+				{IsNamed: true, Name: "id", Value: "1"},
+				{IsNamed: true, Name: "extra", Value: "123"},
+			},
+			wantFinding: true,
+			wantDetail:  "лишний параметр @extra",
+		},
+		{
+			name: "Дублирование именованного параметра",
+			args: []execArgument{
+				{IsNamed: true, Name: "id", Value: "1"},
+				{IsNamed: true, Name: "id", Value: "2"},
+			},
+			wantFinding: true,
+			wantDetail:  "параметр @id дублируется",
+		},
+		{
+			name: "Лишние позиционные параметры",
+			args: []execArgument{
+				{IsNamed: false, Value: "1"},
+				{IsNamed: false, Value: "2"},
+				{IsNamed: false, Value: "3"},
+			},
+			wantFinding: true,
+			wantDetail:  "позиционных параметров",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotFinding, gotDetail := validateExecArguments(tt.args, params)
+			if gotFinding != tt.wantFinding {
+				t.Fatalf("got finding %t, want %t", gotFinding, tt.wantFinding)
+			}
+			if tt.wantFinding && !strings.Contains(gotDetail, tt.wantDetail) {
+				t.Errorf("got detail %q, want it to contain %q", gotDetail, tt.wantDetail)
+			}
+		})
+	}
+}
+

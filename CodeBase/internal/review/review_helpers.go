@@ -195,6 +195,9 @@ func enabledRuleSet(rules []RuleID) map[RuleID]bool {
 		RuleDateIntoString:        true,
 		RuleEmptyStringDate:       true,
 		RuleVarUseAfterCursor:     true,
+		RuleExcessProcParams:      true,
+		RuleDuplicateOutputVariable: true,
+		RuleUseOnlyDeclaredCursors:  true,
 	}
 	if len(rules) == 0 {
 		return result
@@ -1560,4 +1563,45 @@ func mapProcessedLineNumber(sourceMap []int, processedLineNumber int) int {
 		return processedLineNumber
 	}
 	return sourceMap[idx]
+}
+
+func validateExecArguments(args []execArgument, params []model.SQLParam) (bool, string) {
+	if len(params) == 0 && len(args) > 0 {
+		return true, fmt.Sprintf(": процедура не принимает параметры, но передано %d", len(args))
+	}
+
+	seenNamed := make(map[string]int)
+	for _, arg := range args {
+		if arg.IsNamed {
+			seenNamed[arg.Name]++
+			if seenNamed[arg.Name] > 1 {
+				return true, fmt.Sprintf(": параметр @%s дублируется в вызове", arg.Name)
+			}
+		}
+	}
+
+	allowedParams := make(map[string]bool)
+	for _, p := range params {
+		allowedParams[normalizeIdentifier(p.Name)] = true
+	}
+
+	for _, arg := range args {
+		if arg.IsNamed {
+			if !allowedParams[arg.Name] {
+				return true, fmt.Sprintf(": передан лишний параметр @%s, отсутствующий в объявлении процедуры", arg.Name)
+			}
+		}
+	}
+
+	posCount := 0
+	for _, arg := range args {
+		if !arg.IsNamed {
+			posCount++
+		}
+	}
+	if posCount > len(params) {
+		return true, fmt.Sprintf(": передано %d позиционных параметров, а процедура принимает максимум %d", posCount, len(params))
+	}
+
+	return false, ""
 }

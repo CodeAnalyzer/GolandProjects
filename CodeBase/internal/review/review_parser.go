@@ -1215,3 +1215,175 @@ func hasRowLock(line string) bool {
 
 	return false
 }
+
+type execArgument struct {
+	Raw      string
+	IsNamed  bool
+	Name     string // Имя параметра без '@'
+	Value    string
+	IsOutput bool   // Указывает, передан ли параметр как OUTPUT/OUT
+	VarName  string // Имя передаваемой переменной (например, "@locObjectID")
+}
+
+func parseExecArguments(line string, calleeName string) []execArgument {
+	cleaned := removeComments(line)
+
+	lowerLine := strings.ToLower(cleaned)
+	lowerCallee := strings.ToLower(calleeName)
+
+	idx := strings.Index(lowerLine, lowerCallee)
+	if idx < 0 {
+		return nil
+	}
+
+	argsPart := strings.TrimSpace(cleaned[idx+len(calleeName):])
+	if argsPart == "" {
+		return nil
+	}
+
+	rawArgs := splitByCommasRespectingParens(argsPart)
+
+	var result []execArgument
+	for _, raw := range rawArgs {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+
+		if strings.HasPrefix(raw, "@") {
+			eqIdx := strings.Index(raw, "=")
+			if eqIdx > 0 {
+				paramName := strings.TrimSpace(raw[1:eqIdx])
+				val := strings.TrimSpace(raw[eqIdx+1:])
+
+				isOutput := false
+				varName := ""
+				valClean := val
+
+				outRe := regexp.MustCompile(`(?i)\s+\b(out(?:put)?)\b\s*$`)
+				if m := outRe.FindStringSubmatch(valClean); m != nil {
+					isOutput = true
+					valClean = strings.TrimSpace(valClean[:len(valClean)-len(m[0])])
+				}
+
+				if strings.HasPrefix(valClean, "@") {
+					varName = strings.ToLower(valClean)
+				}
+
+				result = append(result, execArgument{
+					Raw:      raw,
+					IsNamed:  true,
+					Name:     normalizeIdentifier(paramName),
+					Value:    valClean,
+					IsOutput: isOutput,
+					VarName:  varName,
+				})
+				continue
+			}
+		}
+
+		isOutput := false
+		varName := ""
+		valClean := raw
+
+		outRe := regexp.MustCompile(`(?i)\s+\b(out(?:put)?)\b\s*$`)
+		if m := outRe.FindStringSubmatch(valClean); m != nil {
+			isOutput = true
+			valClean = strings.TrimSpace(valClean[:len(valClean)-len(m[0])])
+		}
+
+		if strings.HasPrefix(valClean, "@") {
+			varName = strings.ToLower(valClean)
+		}
+
+		result = append(result, execArgument{
+			Raw:      raw,
+			IsNamed:  false,
+			Value:    valClean,
+			IsOutput: isOutput,
+			VarName:  varName,
+		})
+	}
+	return result
+}
+
+func cleanAndTrim(line string) string {
+	return strings.TrimSpace(removeComments(line))
+}
+
+func collectExecCallLines(lines []string, startLine int, calleeName string) string {
+	if startLine < 1 || startLine > len(lines) {
+		return ""
+	}
+
+	var collected []string
+	firstLine := lines[startLine-1]
+	collected = append(collected, firstLine)
+
+	firstCleaned := cleanAndTrim(firstLine)
+	lowerFirst := strings.ToLower(firstCleaned)
+	lowerCallee := strings.ToLower(calleeName)
+	idx := strings.Index(lowerFirst, lowerCallee)
+	hasArgsOnFirstLine := false
+	if idx >= 0 {
+		afterCallee := strings.TrimSpace(firstCleaned[idx+len(calleeName):])
+		if afterCallee != "" {
+			hasArgsOnFirstLine = true
+		}
+	}
+
+	for i := startLine; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "/*") && strings.HasSuffix(trimmed, "*/") {
+			continue
+		}
+
+		cleanedPrev := cleanAndTrim(collected[len(collected)-1])
+		cleanedCur := cleanAndTrim(line)
+
+		isPrevLineDangling := strings.HasSuffix(cleanedPrev, ",")
+		isCurLineContinuing := strings.HasPrefix(cleanedCur, ",") || strings.HasPrefix(cleanedCur, "@")
+
+		if len(collected) == 1 && !hasArgsOnFirstLine {
+			// Первая строка не имела аргументов, собираем вторую строку безусловно
+		} else {
+			if !isPrevLineDangling && !isCurLineContinuing {
+				break
+			}
+		}
+
+		lower := strings.ToLower(trimmed)
+		ends := strings.HasSuffix(lower, ";")
+
+		if !strings.HasPrefix(trimmed, "@") {
+			isNew := false
+			keywords := []string{"select", "insert", "update", "delete", "truncate", "declare", "begin", "end", "return", "go", "set", "if", "while", "exec", "execute"}
+			for _, kw := range keywords {
+				if strings.HasPrefix(lower, kw+" ") || strings.HasPrefix(lower, kw+"\t") || lower == kw {
+					isNew = true
+					break
+				}
+			}
+			if isNew {
+				break
+			}
+		}
+
+		collected = append(collected, line)
+		if ends {
+			break
+		}
+	}
+
+	return strings.Join(collected, "\n")
+}
+
+
