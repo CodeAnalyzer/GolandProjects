@@ -640,13 +640,10 @@ func analyzeStatementForUpdateOnlyVar(lines []string, startLine int, file *index
 func (r *Runner) checkPTableSpid(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := r.fileContent(file.Path)
+	macroResult, err := r.fileProcessedContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
-
-	// Подставляем макросы #define перед анализом
-	macroResult := replaceMacros(string(content))
 	contentStr := macroResult.Content
 	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
@@ -797,12 +794,10 @@ func (r *Runner) analyzeStatementForPTableSpid(lines []string, startLine int, fi
 func (r *Runner) checkForceOrder2Tbl(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := r.fileContent(file.Path)
+	macroResult, err := r.fileProcessedContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
-	// Подставляем макросы #define перед анализом
-	macroResult := replaceMacros(string(content))
 	contentStr := macroResult.Content
 	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
@@ -1245,12 +1240,10 @@ func (r *Runner) checkExistsWithAndInIf(file *indexedFile) ([]Finding, error) {
 func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := r.fileContent(file.Path)
+	macroResult, err := r.fileProcessedContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
-	// Подставляем макросы #define перед анализом
-	macroResult := replaceMacros(string(content))
 	contentStr := macroResult.Content
 	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
@@ -1751,13 +1744,10 @@ func (r *Runner) checkProcElseCase(file *indexedFile) ([]Finding, error) {
 func (r *Runner) checkUseSelectAll(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	// Читаем содержимое файла
-	content, err := r.fileContent(file.Path)
+	macroResult, err := r.fileProcessedContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
-	// Подставляем макросы #define перед анализом
-	macroResult := replaceMacros(string(content))
 	contentStr := macroResult.Content
 	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
@@ -2140,14 +2130,10 @@ func extractBareColumnName(expression string) string {
 func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	// Читаем содержимое файла
-	content, err := r.fileContent(file.Path)
+	macroResult, err := r.fileProcessedContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
-
-	// Подставляем макросы #define перед анализом
-	macroResult := replaceMacros(string(content))
 	contentStr := macroResult.Content
 	sourceMap := macroResult.SourceMap
 
@@ -2520,12 +2506,10 @@ func analyzeConditionForEqColumn(lines []string, startLine int, file *indexedFil
 func (r *Runner) checkTableFullScan(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := r.fileContent(file.Path)
+	macroResult, err := r.fileProcessedContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
-	// Подставляем макросы #define перед анализом
-	macroResult := replaceMacros(string(content))
 	contentStr := macroResult.Content
 	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
@@ -2709,12 +2693,10 @@ func analyzeStatementForFullScan(lines []string, startLine int, file *indexedFil
 func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := r.fileContent(file.Path)
+	macroResult, err := r.fileProcessedContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
-	// Подставляем макросы #define перед анализом
-	macroResult := replaceMacros(string(content))
 	contentStr := macroResult.Content
 	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
@@ -2801,13 +2783,10 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := r.fileContent(file.Path)
+	macroResult, err := r.fileProcessedContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
-
-	// Подставляем макросы #define перед анализом
-	macroResult := replaceMacros(string(content))
 	contentStr := macroResult.Content
 	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
@@ -3212,13 +3191,10 @@ func (r *Runner) checkModifyOutProc(parsed *sqlparser.ParseResult, file *indexed
 		return nil, nil
 	}
 
-	content, err := r.fileContent(file.Path)
+	macroResult, err := r.fileProcessedContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
-
-	// Подставляем #define-макросы и маскируем блочные комментарии
-	macroResult := replaceMacros(string(content))
 	text := maskBlockCommentsKeepLines(macroResult.Content)
 	sourceMap := macroResult.SourceMap
 
@@ -3813,27 +3789,24 @@ func parseVarDeclaration(item string) (string, string, string) {
 
 func (r *Runner) checkColumnInsert(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
-	content, err := r.fileContent(file.Path)
+	macroResult, err := r.fileProcessedContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
-	text := string(content)
+	text := macroResult.Content
+	sourceMap := macroResult.SourceMap
 
 	positions := findInsertWithoutColumns(text)
 	for _, pos := range positions {
-		lineNo := 1
-		for i := 0; i < pos && i < len(text); i++ {
-			if text[i] == '\n' {
-				lineNo++
-			}
-		}
+		lineNo := mapProcessedLineNumber(sourceMap, strings.Count(text[:pos], "\n")+1)
+		tableName := extractInsertTableName(text, pos)
 		findings = append(findings, Finding{
 			Rule:             RuleColumnInsert,
 			Severity:         SeverityDeployStopper,
 			Message:          "В операторе INSERT отсутствует явное перечисление столбцов. Укажите столбцы: INSERT INTO table (col1, col2) VALUES ...",
 			File:             file.Path,
 			Line:             lineNo,
-			Object:           "",
+			Object:           tableName,
 			CurrentProductID: file.DsProductID,
 		})
 	}
@@ -3841,9 +3814,36 @@ func (r *Runner) checkColumnInsert(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
+func extractInsertTableName(text string, pos int) string {
+	lower := toLowerASCIIPreservingLen(text)
+	j := pos + len("insert")
+	for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+		j++
+	}
+	if keywordMatchAt(lower, j, "into") {
+		j += len("into")
+		for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+			j++
+		}
+	}
+	start := j
+	for j < len(lower) && (isWordChar(lower[j]) || lower[j] == '.' || lower[j] == '[' || lower[j] == ']' || lower[j] == '#') {
+		j++
+	}
+	if start >= j || start >= len(lower) {
+		return ""
+	}
+	// Не должно начинаться с символов, не допустимых для имени таблицы
+	if !(isWordChar(lower[start]) || lower[start] == '#' || lower[start] == '[') {
+		return ""
+	}
+	tableName := strings.TrimSpace(text[start:j])
+	return tableName
+}
+
 func findInsertWithoutColumns(text string) []int {
 	positions := make([]int, 0)
-	lower := strings.ToLower(text)
+	lower := toLowerASCIIPreservingLen(text)
 	depth := 0
 	inString := false
 
@@ -4348,12 +4348,10 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 
 func (r *Runner) checkVarUseAfterCursor(file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
-	content, err := r.fileContent(file.Path)
+	macroResult, err := r.fileProcessedContent(file.Path)
 	if err != nil {
 		return nil, err
 	}
-
-	macroResult := replaceMacros(string(content))
 	text := macroResult.Content
 	lines := strings.Split(text, "\n")
 
@@ -4800,7 +4798,7 @@ func (r *Runner) checkExcessProcParams(parsed *sqlparser.ParseResult, file *inde
 		if call.Line < 1 || call.Line > len(r.exec.lines) {
 			continue
 		}
-		callText := collectExecCallLines(r.exec.lines, call.Line, call.Name)
+		callText := collectExecCallLines(r.exec.lines, call.Line)
 
 		args := parseExecArguments(callText, call.Name)
 		if hasFinding, detail := validateExecArguments(args, params); hasFinding {
@@ -4826,7 +4824,7 @@ func (r *Runner) checkDuplicateOutputVariable(parsed *sqlparser.ParseResult, fil
 		if call.Line < 1 || call.Line > len(r.exec.lines) {
 			continue
 		}
-		callText := collectExecCallLines(r.exec.lines, call.Line, call.Name)
+		callText := collectExecCallLines(r.exec.lines, call.Line)
 
 		args := parseExecArguments(callText, call.Name)
 

@@ -263,6 +263,42 @@ func TestParseContent_TopLevelExecCall(t *testing.T) {
 	}
 }
 
+func TestParseContent_ExecInsideStringLiteral_Ignored(t *testing.T) {
+	parser := NewParser()
+	content := "PROFILE_TIME_EX('exec ConsAccrualDetail_MassInsert')\n"
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(result.Calls) != 0 {
+		t.Fatalf("calls count = %d, want 0; calls = %+v", len(result.Calls), result.Calls)
+	}
+}
+
+func TestParseContent_ExecInsideIdentifier_Ignored(t *testing.T) {
+	parser := NewParser()
+	content := "insert into pCON_DocFile_MassExecute M_WITH_ROWLOCK (SPID)\n"
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(result.Calls) != 0 {
+		t.Fatalf("calls count = %d, want 0; calls = %+v", len(result.Calls), result.Calls)
+	}
+}
+
+func TestParseContent_ExecInsideBlockComment_Ignored(t *testing.T) {
+	parser := NewParser()
+	content := "/*\n  exec FCD_Cons_FindListProtocolByID\n*/\n"
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(result.Calls) != 0 {
+		t.Fatalf("calls count = %d, want 0; calls = %+v", len(result.Calls), result.Calls)
+	}
+}
+
 func TestParseContent_CreateTableAndIndexes(t *testing.T) {
 	parser := NewParser()
 	content := `create table tAccount (

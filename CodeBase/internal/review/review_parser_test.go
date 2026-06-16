@@ -21,6 +21,37 @@ func TestHasStatementEnded_EndInsideUpdateCase_DoesNotEnd(t *testing.T) {
 	}
 }
 
+func TestHasStatementEnded_EndInsideSelectCaseOn_DoesNotEnd(t *testing.T) {
+	stmtBuffer := []string{
+		"select 1",
+		"from t",
+		"inner join t2 on t.id = t2.id",
+		"and case",
+		"  when 1=1 then 1",
+		"  else 0",
+		"end = 1",
+	}
+	if hasStatementEnded("end = 1", stmtBuffer) {
+		t.Fatalf("hasStatementEnded should not end SELECT on CASE END inside ON")
+	}
+}
+
+func TestHasStatementEnded_StandaloneEndInsideSelectCase_DoesNotEnd(t *testing.T) {
+	stmtBuffer := []string{
+		"select 1",
+		"from t",
+		"inner join t2 on t.id = t2.id",
+		"and d.Date = case",
+		"  when 1=1 then dateadd(dd, -1, t.PlanDate)",
+		"  else dateadd(dd, -1, t.OperDate)",
+		"end",
+		"and d.RestDebt = 0",
+	}
+	if hasStatementEnded("end", stmtBuffer) {
+		t.Fatalf("hasStatementEnded should not end SELECT on standalone CASE END")
+	}
+}
+
 func TestHasStatementEnded_StandaloneEnd_EndsStatement(t *testing.T) {
 	stmtBuffer := []string{"begin", "select 1"}
 
@@ -292,8 +323,39 @@ func TestCollectExecCallLines(t *testing.T) {
 		"  return @RetVal",
 	}
 
-	got := collectExecCallLines(lines, 2, "BankProduct_Delete")
+	got := collectExecCallLines(lines, 2)
 	want := "  exec BankProduct_Delete \n         @BankProductID = @NodeID,\n         @BankProductID = @FundID"
+
+	if got != want {
+		t.Fatalf("collectExecCallLines got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestCollectExecCallLines_NoArgsNextLineProfileMacro(t *testing.T) {
+	lines := []string{
+		"  exec ConsAccrualDetail_MassInsert",
+		"  PROFILE_TIME_EX('exec ConsAccrualDetail_MassInsert')",
+		"  select 1",
+	}
+
+	got := collectExecCallLines(lines, 1)
+	want := "  exec ConsAccrualDetail_MassInsert"
+
+	if got != want {
+		t.Fatalf("collectExecCallLines got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestCollectExecCallLines_NoArgsNextLineParam(t *testing.T) {
+	lines := []string{
+		"  exec SomeProc",
+		"    @Param1 = 1,",
+		"    @Param2 = 2",
+		"  select 1",
+	}
+
+	got := collectExecCallLines(lines, 1)
+	want := "  exec SomeProc\n    @Param1 = 1,\n    @Param2 = 2"
 
 	if got != want {
 		t.Fatalf("collectExecCallLines got:\n%q\nwant:\n%q", got, want)

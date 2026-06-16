@@ -21,9 +21,10 @@ type Runner struct {
 }
 
 type reviewExecContext struct {
-	filePath string
-	content  []byte
-	lines    []string
+	filePath    string
+	content     []byte
+	macroResult macroReplaceResult
+	lines       []string
 }
 
 type ruleTask struct {
@@ -64,10 +65,12 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	macroResult := replaceMacros(string(content))
 	r.exec = &reviewExecContext{
-		filePath: normalizePath(file.Path),
-		content:  content,
-		lines:    strings.Split(string(content), "\n"),
+		filePath:    normalizePath(file.Path),
+		content:     content,
+		macroResult: macroResult,
+		lines:       strings.Split(string(content), "\n"),
 	}
 	defer func() {
 		r.exec = nil
@@ -443,3 +446,18 @@ func (r *Runner) fileContent(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+func (r *Runner) fileProcessedContent(path string) (macroReplaceResult, error) {
+	if r.exec != nil {
+		if normalizePath(path) == r.exec.filePath {
+			if len(r.exec.macroResult.SourceMap) == 0 && len(r.exec.content) > 0 {
+				r.exec.macroResult = replaceMacros(string(r.exec.content))
+			}
+			return r.exec.macroResult, nil
+		}
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return macroReplaceResult{}, err
+	}
+	return replaceMacros(string(content)), nil
+}

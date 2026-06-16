@@ -424,7 +424,7 @@ func NewParser() *Parser {
 		// Параметры процедуры: @ParamName Type [(size)] [= default] [output]
 		procParamRe: regexp.MustCompile(`@([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?)\s*(?:=\s*([^,\s]+))?`),
 		// Exec procedure
-		execRe: regexp.MustCompile(`(?i)exec(?:ute)?\s+(?:@\w+\s*=\s*)?(?:\[?[A-Za-z_][A-Za-z0-9_]*\]?\.)?(\[?[A-Za-z_][A-Za-z0-9_]*\]?)`),
+		execRe: regexp.MustCompile(`(?i)\bexec(?:ute)?\s+(?:@\w+\s*=\s*)?(?:\[?[A-Za-z_][A-Za-z0-9_]*\]?\.)?(\[?[A-Za-z_][A-Za-z0-9_]*\]?)`),
 		// Select
 		selectRe: regexp.MustCompile(`(?i)^\s*select\b`),
 		// Insert
@@ -509,6 +509,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		lineNum                 int
 		statementStart          int
 		statementLines          []string
+		inBlockComment          bool
 	)
 
 	appendColumnDefinition := func(tableName, definition, definitionKind string, currentLine int, columnOrder int) {
@@ -738,6 +739,18 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Text()
+
+		// Отслеживаем многострочные блочные комментарии /* */
+		if inBlockComment {
+			if strings.Contains(line, "*/") {
+				inBlockComment = false
+			}
+			continue
+		}
+		if strings.Contains(line, "/*") && !strings.Contains(line, "*/") {
+			inBlockComment = true
+		}
+
 		trimmed := strings.TrimSpace(line)
 		endOfStatement := strings.HasSuffix(trimmed, ";")
 		appendStatementLine(line, lineNum)
@@ -1556,6 +1569,10 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		// Parser отвечает только за text extraction, а indexer позже связывает имена с сущностями БД.
 		// Exec procedure calls
 		if matches := p.execRe.FindStringSubmatch(trimmed); matches != nil {
+			matchIndexes := p.execRe.FindStringSubmatchIndex(line)
+			if len(matchIndexes) >= 2 && p.isInsideSingleQuotedString(line, matchIndexes[0]) {
+				continue
+			}
 			callerName := ""
 			if currentProc != nil {
 				callerName = currentProc.ProcName

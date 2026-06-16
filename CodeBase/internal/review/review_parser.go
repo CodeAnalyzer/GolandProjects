@@ -1039,6 +1039,22 @@ func hasStatementEnded(lower string, stmtBuffer []string) bool {
 				return false
 			}
 		}
+
+		// END CASE внутри выражения (ON/WHERE/SELECT-list) не завершает оператор
+		// Standalone END без блоковых конструкций в буфере — тоже END CASE
+		trimmedLower := strings.ToLower(strings.TrimSpace(trimmed))
+		isStandaloneEnd := trimmedLower == "end" || strings.HasPrefix(trimmedLower, "end;") || strings.HasPrefix(trimmedLower, "end --")
+		if strings.Contains(currentStmt, " case") {
+			if !isStandaloneEnd {
+				return false
+			}
+			// Standalone END: если в буфере нет BEGIN/IF/WHILE/DECLARE — это END CASE
+			hasBlock := regexp.MustCompile(`(?i)\b(begin|if|while|declare)\b`).MatchString(currentStmt)
+			if !hasBlock {
+				return false
+			}
+		}
+
 		return true
 	}
 
@@ -1311,7 +1327,7 @@ func cleanAndTrim(line string) string {
 	return strings.TrimSpace(removeComments(line))
 }
 
-func collectExecCallLines(lines []string, startLine int, calleeName string) string {
+func collectExecCallLines(lines []string, startLine int) string {
 	if startLine < 1 || startLine > len(lines) {
 		return ""
 	}
@@ -1319,18 +1335,6 @@ func collectExecCallLines(lines []string, startLine int, calleeName string) stri
 	var collected []string
 	firstLine := lines[startLine-1]
 	collected = append(collected, firstLine)
-
-	firstCleaned := cleanAndTrim(firstLine)
-	lowerFirst := strings.ToLower(firstCleaned)
-	lowerCallee := strings.ToLower(calleeName)
-	idx := strings.Index(lowerFirst, lowerCallee)
-	hasArgsOnFirstLine := false
-	if idx >= 0 {
-		afterCallee := strings.TrimSpace(firstCleaned[idx+len(calleeName):])
-		if afterCallee != "" {
-			hasArgsOnFirstLine = true
-		}
-	}
 
 	for i := startLine; i < len(lines); i++ {
 		line := lines[i]
@@ -1352,12 +1356,8 @@ func collectExecCallLines(lines []string, startLine int, calleeName string) stri
 		isPrevLineDangling := strings.HasSuffix(cleanedPrev, ",")
 		isCurLineContinuing := strings.HasPrefix(cleanedCur, ",") || strings.HasPrefix(cleanedCur, "@")
 
-		if len(collected) == 1 && !hasArgsOnFirstLine {
-			// Первая строка не имела аргументов, собираем вторую строку безусловно
-		} else {
-			if !isPrevLineDangling && !isCurLineContinuing {
-				break
-			}
+		if !isPrevLineDangling && !isCurLineContinuing {
+			break
 		}
 
 		lower := strings.ToLower(trimmed)
@@ -1385,5 +1385,3 @@ func collectExecCallLines(lines []string, startLine int, calleeName string) stri
 
 	return strings.Join(collected, "\n")
 }
-
-

@@ -3334,3 +3334,4 @@ func TestValidateExecArguments_APIContractParamWithAtSign(t *testing.T) {
 		t.Fatalf("expected no finding when API param name has @ stripped, got: %s", detail)
 	}
 }
+
