@@ -117,7 +117,7 @@ func (q *Query) SearchAPIContract(name string, like bool, limit int) ([]APIContr
 		FROM api_contracts c
 		JOIN files f ON f.id = c.file_id
 		WHERE `+lookupCondition+`
-		ORDER BY c.contract_name, c.id DESC
+		ORDER BY c.contract_name, c.contract_kind, c.id DESC
 		LIMIT $2
 	`, lookupValue, limit)
 	if err != nil {

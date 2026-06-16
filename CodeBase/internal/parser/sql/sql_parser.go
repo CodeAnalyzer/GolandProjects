@@ -421,8 +421,8 @@ func NewParser() *Parser {
 		updateColumnsRe: regexp.MustCompile(`(?i)^\s*update\s+[A-Za-z_#][A-Za-z0-9_#]*\s+set\s+([A-Za-z_][A-Za-z0-9_]*\s*=\s*[^,]+(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*[^,]+)*)`),
 		// Объявление переменных: declare @var type, @var2 type2
 		varDeclRe: regexp.MustCompile(`(?i)@([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)`),
-		// Параметры процедуры: @ParamName DSType [= default] [output]
-		procParamRe: regexp.MustCompile(`@([A-Za-z_][A-Za-z0-9_]*)\s+(DS[A-Za-z0-9_]*)(?:\s*=\s*([^,\s]+))?`),
+		// Параметры процедуры: @ParamName Type [(size)] [= default] [output]
+		procParamRe: regexp.MustCompile(`@([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?)\s*(?:=\s*([^,\s]+))?`),
 		// Exec procedure
 		execRe: regexp.MustCompile(`(?i)exec(?:ute)?\s+(?:@\w+\s*=\s*)?(?:\[?[A-Za-z_][A-Za-z0-9_]*\]?\.)?(\[?[A-Za-z_][A-Za-z0-9_]*\]?)`),
 		// Select

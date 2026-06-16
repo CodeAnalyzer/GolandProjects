@@ -1180,22 +1180,73 @@ func findStatementStartHint(lower string) (string, int) {
 func (r *Runner) lookupProcedureParams(procName string) ([]model.SQLParam, error) {
 	var paramsJSON []byte
 	err := r.db.QueryRow(`
-		SELECT parameters 
-		FROM sql_procedures 
+		SELECT parameters
+		FROM sql_procedures
 		WHERE LOWER(proc_name) = LOWER($1)
-		ORDER BY id DESC 
+		ORDER BY id DESC
 		LIMIT 1
 	`, strings.TrimSpace(procName)).Scan(&paramsJSON)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+	if err == nil && len(paramsJSON) > 0 {
+		var params []model.SQLParam
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			return nil, err
+		}
+		if len(params) > 0 {
+			return params, nil
+		}
+	}
+	// fallback: API-контракты, где параметры живут в api_contract_params
+	return r.lookupAPIContractParams(procName)
+}
+
+func (r *Runner) lookupAPIContractParams(procName string) ([]model.SQLParam, error) {
+	var contractID int64
+	err := r.db.QueryRow(`
+		SELECT id FROM api_contracts
+		WHERE LOWER(contract_name) = LOWER($1)
+		ORDER BY id DESC LIMIT 1
+	`, strings.TrimSpace(procName)).Scan(&contractID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	if len(paramsJSON) == 0 {
-		return nil, nil
-	}
-	var params []model.SQLParam
-	if err := json.Unmarshal(paramsJSON, &params); err != nil {
+
+	rows, err := r.db.Query(`
+		SELECT param_name, COALESCE(type_name,''), direction
+		FROM api_contract_params
+		WHERE contract_id = $1
+		ORDER BY param_order, id
+	`, contractID)
+	if err != nil {
 		return nil, err
 	}
-	return params, nil
+	defer rows.Close()
+
+	var params []model.SQLParam
+	for rows.Next() {
+		var paramName, typeName, direction string
+		if err := rows.Scan(&paramName, &typeName, &direction); err != nil {
+			return nil, err
+		}
+		paramName = strings.TrimPrefix(strings.TrimSpace(paramName), "@")
+		dir := "in"
+		switch strings.ToLower(direction) {
+		case "output":
+			dir = "out"
+		case "input", "context":
+			dir = "in"
+		}
+		params = append(params, model.SQLParam{
+			Name:      paramName,
+			Type:      typeName,
+			Direction: dir,
+		})
+	}
+	return params, rows.Err()
 }
 

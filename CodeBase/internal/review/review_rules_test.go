@@ -3302,3 +3302,35 @@ as
 		t.Fatalf("message should contain typo cursor name 'RealCursor_Cu': %s", findings[0].Message)
 	}
 }
+
+func TestValidateExecArguments_APIContractParamsFallback(t *testing.T) {
+	// Симулируем params, которые вернул бы lookupAPIContractParams из api_contract_params
+	params := []model.SQLParam{
+		{Name: "RetCode", Type: "DSIDENTIFIER", Direction: "in"},
+		{Name: "Message", Type: "varchar(250)", Direction: "out"},
+		{Name: "ConstraintMode", Type: "int", Direction: "in"},
+	}
+	args := []execArgument{
+		{IsNamed: true, Name: "retcode", Value: "33166"},
+		{IsNamed: true, Name: "message", Value: "@msg", IsOutput: true, VarName: "@msg"},
+		{IsNamed: true, Name: "constraintmode", Value: "2"},
+	}
+	hasFinding, detail := validateExecArguments(args, params)
+	if hasFinding {
+		t.Fatalf("expected no finding for valid API-contract args, got: %s", detail)
+	}
+}
+
+func TestValidateExecArguments_APIContractParamWithAtSign(t *testing.T) {
+	// lookupAPIContractParams убирает @ из param_name перед созданием SQLParam
+	params := []model.SQLParam{
+		{Name: "ConstraintMode", Type: "int", Direction: "in"},
+	}
+	args := []execArgument{
+		{IsNamed: true, Name: "constraintmode", Value: "2"},
+	}
+	hasFinding, detail := validateExecArguments(args, params)
+	if hasFinding {
+		t.Fatalf("expected no finding when API param name has @ stripped, got: %s", detail)
+	}
+}

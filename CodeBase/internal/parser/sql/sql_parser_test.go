@@ -182,6 +182,71 @@ end
 			t.Fatalf("missing %s context for table %s: %+v", context, tableName, contextsByTable)
 		}
 	}
+
+	if len(proc.Params) != 2 {
+		t.Fatalf("procedure params count = %d, want 2; got %+v", len(proc.Params), proc.Params)
+	}
+	if proc.Params[0].Name != "AccountID" || proc.Params[0].Type != "int" {
+		t.Fatalf("unexpected param[0]: %+v", proc.Params[0])
+	}
+	if proc.Params[1].Name != "Name" || proc.Params[1].Type != "varchar(100)" || proc.Params[1].Direction != "out" {
+		t.Fatalf("unexpected param[1]: %+v", proc.Params[1])
+	}
+}
+
+func TestParseContent_DCLProcBegin_MixedParamTypes(t *testing.T) {
+	parser := NewParser()
+	content := `DCL_PROC_BEGIN(TestProcMixed)
+	@RetCode DSIDENTIFIER = null,
+	@Message varchar(250) = null output,
+	@Amount numeric(18,2) = 0
+as
+/* body */
+__BEGIN_PROCEDURE__(TestProcMixed)
+__END_PROCEDURE__(TestProcMixed)
+go
+`
+
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(result.Procedures) != 1 {
+		t.Fatalf("procedure count = %d, want 1", len(result.Procedures))
+	}
+	proc := result.Procedures[0]
+	if proc.ProcName != "TestProcMixed" {
+		t.Fatalf("procedure name = %q, want TestProcMixed", proc.ProcName)
+	}
+	if len(proc.Params) != 3 {
+		t.Fatalf("procedure params count = %d, want 3; got %+v", len(proc.Params), proc.Params)
+	}
+
+	tests := []struct {
+		name         string
+		paramType    string
+		direction    string
+		defaultValue string
+	}{
+		{"RetCode", "DSIDENTIFIER", "in", "null"},
+		{"Message", "varchar(250)", "out", "null"},
+		{"Amount", "numeric(18,2)", "in", "0"},
+	}
+	for i, tt := range tests {
+		p := proc.Params[i]
+		if p.Name != tt.name {
+			t.Fatalf("param[%d].Name = %q, want %q", i, p.Name, tt.name)
+		}
+		if p.Type != tt.paramType {
+			t.Fatalf("param[%d].Type = %q, want %q", i, p.Type, tt.paramType)
+		}
+		if p.Direction != tt.direction {
+			t.Fatalf("param[%d].Direction = %q, want %q", i, p.Direction, tt.direction)
+		}
+		if p.DefaultValue != tt.defaultValue {
+			t.Fatalf("param[%d].DefaultValue = %q, want %q", i, p.DefaultValue, tt.defaultValue)
+		}
+	}
 }
 
 func TestParseContent_TopLevelExecCall(t *testing.T) {
