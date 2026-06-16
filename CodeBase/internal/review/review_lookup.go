@@ -1168,7 +1168,7 @@ func findStatementStartForTableHintExists(lower string) (string, int) {
 }
 
 func findStatementStartHint(lower string) (string, int) {
-	keywords := []string{"select", "update", "delete"}
+	keywords := []string{"select", "update", "delete", "insert"}
 	for _, kw := range keywords {
 		if idx := findKeywordPosition(lower, kw); idx >= 0 {
 			return kw, idx

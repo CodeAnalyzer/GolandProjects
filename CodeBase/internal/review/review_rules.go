@@ -302,14 +302,14 @@ func (r *Runner) checkIndexWrong(file *indexedFile) ([]Finding, error) {
 					inStatement = true
 					stmtStartLine = lineNum
 					stmtBuffer = []string{line}
-					parenDepth = countParens(line)
+					parenDepth = countParensRespectingStrings(line)
 				}
 			}
 			continue
 		}
 
 		stmtBuffer = append(stmtBuffer, line)
-		parenDepth += countParens(line)
+		parenDepth += countParensRespectingStrings(line)
 
 		if hasStatementEnded(lower, stmtBuffer) {
 			items, err := r.analyzeStatementForIndexWrong(stmtBuffer, stmtStartLine, file)
@@ -514,14 +514,14 @@ func (r *Runner) checkUpdateOnlyVar(file *indexedFile) ([]Finding, error) {
 					inStatement = true
 					stmtStartLine = lineNum
 					stmtBuffer = []string{line}
-					parenDepth = countParens(line)
+					parenDepth = countParensRespectingStrings(line)
 				}
 			}
 			continue
 		}
 
 		stmtBuffer = append(stmtBuffer, line)
-		parenDepth += countParens(line)
+		parenDepth += countParensRespectingStrings(line)
 
 		if hasStatementEnded(lower, stmtBuffer) {
 			finding := analyzeStatementForUpdateOnlyVar(stmtBuffer, stmtStartLine, file)
@@ -708,14 +708,14 @@ func (r *Runner) checkPTableSpid(file *indexedFile) ([]Finding, error) {
 					inStatement = true
 					stmtStartLine = lineNum
 					stmtBuffer = []string{line}
-					parenDepth = countParens(line)
+					parenDepth = countParensRespectingStrings(line)
 				}
 			}
 			continue
 		}
 
 		stmtBuffer = append(stmtBuffer, line)
-		parenDepth += countParens(line)
+		parenDepth += countParensRespectingStrings(line)
 
 		if hasStatementEnded(lower, stmtBuffer) {
 			items, err := r.analyzeStatementForPTableSpid(stmtBuffer, stmtStartLine, file)
@@ -862,14 +862,14 @@ func (r *Runner) checkForceOrder2Tbl(file *indexedFile) ([]Finding, error) {
 					inStatement = true
 					stmtStartLine = lineNum
 					stmtBuffer = []string{line}
-					parenDepth = countParens(line)
+					parenDepth = countParensRespectingStrings(line)
 				}
 			}
 			continue
 		}
 
 		stmtBuffer = append(stmtBuffer, line)
-		parenDepth += countParens(line)
+		parenDepth += countParensRespectingStrings(line)
 
 		if hasStatementEnded(lower, stmtBuffer) {
 			finding := analyzeStatementForForceOrder2Tbl(stmtBuffer, stmtStartLine, file)
@@ -1060,13 +1060,13 @@ func (r *Runner) checkUseDrop(file *indexedFile) ([]Finding, error) {
 		if !inProcBody {
 			if isCreateProcStart(lower) {
 				inProcBody = true
-				parenDepth = countParens(line)
+				parenDepth = countParensRespectingStrings(line)
 			}
 			continue
 		}
 
 		// Мы внутри тела процедуры
-		parenDepth += countParens(line)
+		parenDepth += countParensRespectingStrings(line)
 
 		// Проверяем на DROP или DROP_CREATE
 		if hasDropInLine(lower) {
@@ -1308,14 +1308,14 @@ func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
 					inStatement = true
 					stmtStartLine = lineNum
 					stmtBuffer = []string{line}
-					parenDepth = countParens(line)
+					parenDepth = countParensRespectingStrings(line)
 				}
 			}
 			continue
 		}
 
 		stmtBuffer = append(stmtBuffer, line)
-		parenDepth += countParens(line)
+		parenDepth += countParensRespectingStrings(line)
 
 		if hasStatementEnded(lower, stmtBuffer) {
 			items, err := r.analyzeStatementForIndexExists(stmtBuffer, stmtStartLine, file)
@@ -2297,13 +2297,13 @@ func (r *Runner) checkInsertRowLock(file *indexedFile) ([]Finding, error) {
 					insertStartLine = lineNum
 					insertBuffer = []string{line}
 					// Считаем скобки в строке
-					parenDepth = countParens(line)
+					parenDepth = countParensRespectingStrings(line)
 				}
 			}
 		} else {
 			// Мы внутри INSERT - добавляем строку в буфер
 			insertBuffer = append(insertBuffer, line)
-			parenDepth += countParens(line)
+			parenDepth += countParensRespectingStrings(line)
 
 			// Проверяем конец INSERT (точка с запятой, начало нового оператора, или конец запроса)
 			if strings.Contains(lower, ";") || isNewSQLStatement(line) {
@@ -2409,14 +2409,14 @@ func (r *Runner) checkUseEqColumn(file *indexedFile) ([]Finding, error) {
 					inCondition = true
 					conditionStartLine = lineNum
 					conditionBuffer = []string{line}
-					parenDepth = countParens(line)
+					parenDepth = countParensRespectingStrings(line)
 				}
 			}
 			continue
 		}
 
 		conditionBuffer = append(conditionBuffer, line)
-		parenDepth += countParens(line)
+		parenDepth += countParensRespectingStrings(line)
 
 		if hasConditionEnded(lower) {
 			items := analyzeConditionForEqColumn(conditionBuffer, conditionStartLine, file)
@@ -2430,7 +2430,7 @@ func (r *Runner) checkUseEqColumn(file *indexedFile) ([]Finding, error) {
 				inCondition = true
 				conditionStartLine = lineNum
 				conditionBuffer = []string{line}
-				parenDepth = countParens(line)
+				parenDepth = countParensRespectingStrings(line)
 			}
 		}
 	}
@@ -2547,14 +2547,14 @@ func (r *Runner) checkTableFullScan(file *indexedFile) ([]Finding, error) {
 					inStatement = true
 					stmtStartLine = lineNum
 					stmtBuffer = []string{line}
-					parenDepth = countParens(line)
+					parenDepth = countParensRespectingStrings(line)
 				}
 			}
 			continue
 		}
 
 		stmtBuffer = append(stmtBuffer, line)
-		parenDepth += countParens(line)
+		parenDepth += countParensRespectingStrings(line)
 
 		if hasStatementEnded(lower, stmtBuffer) {
 			if finding := analyzeStatementForFullScan(stmtBuffer, stmtStartLine, file, stmtType); finding != nil {
@@ -2580,7 +2580,7 @@ func (r *Runner) checkTableFullScan(file *indexedFile) ([]Finding, error) {
 					inStatement = true
 					stmtStartLine = lineNum
 					stmtBuffer = []string{line}
-					parenDepth = countParens(line)
+					parenDepth = countParensRespectingStrings(line)
 				}
 			}
 		}
@@ -2734,14 +2734,14 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 					inStatement = true
 					stmtStartLine = lineNum
 					stmtBuffer = []string{line}
-					parenDepth = countParens(line)
+					parenDepth = countParensRespectingStrings(line)
 				}
 			}
 			continue
 		}
 
 		stmtBuffer = append(stmtBuffer, line)
-		parenDepth += countParens(line)
+		parenDepth += countParensRespectingStrings(line)
 
 		if hasStatementEnded(lower, stmtBuffer) {
 			items := analyzeStatementForTableHintExists(stmtBuffer, lines, stmtStartLine, file, stmtType)
@@ -2766,7 +2766,7 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 					inStatement = true
 					stmtStartLine = lineNum
 					stmtBuffer = []string{line}
-					parenDepth = countParens(line)
+					parenDepth = countParensRespectingStrings(line)
 				}
 			}
 		}
@@ -2796,6 +2796,7 @@ func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 	stmtBuffer := make([]string, 0)
 	parenDepth := 0
 	inBlockComment := false
+	isInsertStmt := false // INSERT...SELECT: не разрываем на внутреннем SELECT
 
 	for i, line := range lines {
 		lineNum := mapProcessedLineNumber(sourceMap, i+1)
@@ -2838,7 +2839,7 @@ func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 		lower := strings.ToLower(line)
 
 		if !inStatement {
-			_, startIdx := findStatementStartHint(lower)
+			kw, startIdx := findStatementStartHint(lower)
 			if startIdx >= 0 && !isInComment(line, startIdx) {
 				depthBefore := 0
 				for j := 0; j < startIdx; j++ {
@@ -2853,13 +2854,14 @@ func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 					inStatement = true
 					stmtStartLine = lineNum
 					stmtBuffer = []string{line}
-					parenDepth = countParens(line)
+					parenDepth = countParensRespectingStrings(line)
+					isInsertStmt = (kw == "insert")
 				}
 			}
 			continue
 		}
 
-		if _, nextStartIdx := findStatementStartHint(lower); nextStartIdx >= 0 && !isInComment(line, nextStartIdx) {
+		if nextKw, nextStartIdx := findStatementStartHint(lower); nextStartIdx >= 0 && !isInComment(line, nextStartIdx) {
 			depthBefore := 0
 			for j := 0; j < nextStartIdx; j++ {
 				switch line[j] {
@@ -2869,20 +2871,23 @@ func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 					depthBefore--
 				}
 			}
-			// Для tableHintIsRight всегда разрываем при новом DML на нулевом уровне
-			if parenDepth == 0 && depthBefore == 0 {
+			// Для INSERT...SELECT не разрываем на внутреннем SELECT
+			if isInsertStmt && nextKw == "select" {
+				// продолжаем накапливать буфер
+			} else if parenDepth == 0 && depthBefore == 0 {
 				items := analyzeStatementForHintType(stmtBuffer, stmtStartLine, file)
 				findings = append(findings, items...)
 
 				stmtStartLine = lineNum
 				stmtBuffer = []string{line}
-				parenDepth = countParens(line)
+				parenDepth = countParensRespectingStrings(line)
+				isInsertStmt = (nextKw == "insert")
 				continue
 			}
 		}
 
 		stmtBuffer = append(stmtBuffer, line)
-		parenDepth += countParens(line)
+		parenDepth += countParensRespectingStrings(line)
 	}
 
 	if inStatement && len(stmtBuffer) > 0 {
@@ -2902,10 +2907,30 @@ func analyzeStatementForHintType(lines []string, startLine int, file *indexedFil
 	fullText := strings.Join(lines, " ")
 	trimmedText := normalizeHintStatementText(strings.TrimSpace(fullText))
 
+	// Вычисляем смещения строк в fullText
+	offsets := make([]int, len(lines)+1)
+	offsets[0] = 0
+	for i := 0; i < len(lines); i++ {
+		offsets[i+1] = offsets[i] + len(lines[i]) + 1 // +1 за пробел
+	}
+
+	// Вычисляем смещение обрезки от normalizeHintStatementText
+	trimOffset := 0
+	if len(trimmedText) < len(fullText) {
+		fullLower := strings.ToLower(fullText)
+		trimLower := strings.ToLower(trimmedText)
+		if idx := strings.Index(fullLower, trimLower); idx >= 0 {
+			trimOffset = idx
+		}
+	}
+
 	// Разбиваем текст на отдельные операторы SELECT/UPDATE/DELETE на нулевом уровне
 	statements := splitStatementsForHintType(trimmedText)
 
-	for _, stmt := range statements {
+	for _, stmtRange := range statements {
+		stmt := stmtRange.Text
+		stmtStartPos := stmtRange.StartPos + trimOffset
+
 		lowerStmt := strings.ToLower(stmt)
 
 		// Определяем тип операции
@@ -2941,6 +2966,14 @@ func analyzeStatementForHintType(lines []string, startLine int, file *indexedFil
 			}
 		}
 
+		// Вычисляем actualStartLine по позиции в fullText
+		actualStartLine := startLine
+		for i := 0; i < len(lines); i++ {
+			if offsets[i] <= stmtStartPos && stmtStartPos < offsets[i+1] {
+				actualStartLine = startLine + i
+				break
+			}
+		}
 		// Проверяем все таблицы из FROM
 		for _, table := range tables {
 			// Пропускаем переменные и служебные
@@ -2996,7 +3029,7 @@ func analyzeStatementForHintType(lines []string, startLine int, file *indexedFil
 					Severity:         SeverityDeployStopper,
 					Message:          fmt.Sprintf("Таблица %s имеет неправильный хинт %s для операции %s", table.TableName, hint, stmtType),
 					File:             file.Path,
-					Line:             startLine,
+					Line:             actualStartLine,
 					Object:           table.TableName,
 					CurrentProductID: file.DsProductID,
 				})
@@ -3418,13 +3451,20 @@ func countTopLevelJoins(stmt string) int {
 	return count
 }
 
+type statementRange struct {
+	Text     string
+	StartPos int
+}
+
 // splitStatementsForHintType разбивает текст на отдельные операторы SELECT/UPDATE/DELETE на нулевом уровне вложенности
-func splitStatementsForHintType(text string) []string {
+func splitStatementsForHintType(text string) []statementRange {
 	lower := strings.ToLower(text)
-	statements := make([]string, 0)
+	statements := make([]statementRange, 0)
 	depth := 0
 	inString := false
 	startIdx := 0
+	// Отслеживаем, начинается ли текущий оператор с INSERT (для INSERT...SELECT)
+	currentStartsWithInsert := false
 
 	for i := 0; i < len(lower); i++ {
 		ch := lower[i]
@@ -3454,16 +3494,26 @@ func splitStatementsForHintType(text string) []string {
 			if keywordMatchAt(lower, i, "select") || keywordMatchAt(lower, i, "update") || keywordMatchAt(lower, i, "delete") {
 				// Проверяем, что это не часть другого слова
 				if i > 0 && isCharWordBoundary(lower[i-1]) {
+					// Для INSERT...SELECT не разрываем на внутреннем SELECT
+					if currentStartsWithInsert && keywordMatchAt(lower, i, "select") {
+						continue
+					}
 					// Добавляем предыдущий оператор
 					if startIdx < i {
 						stmt := strings.TrimSpace(text[startIdx:i])
 						if stmt != "" {
-							statements = append(statements, stmt)
+							statements = append(statements, statementRange{Text: stmt, StartPos: startIdx})
 						}
 					}
 					startIdx = i
+					currentStartsWithInsert = false
 				}
 			}
+		}
+
+		// Определяем, начинается ли текущий оператор с INSERT
+		if i == startIdx && keywordMatchAt(lower, i, "insert") {
+			currentStartsWithInsert = true
 		}
 	}
 
@@ -3471,7 +3521,7 @@ func splitStatementsForHintType(text string) []string {
 	if startIdx < len(text) {
 		stmt := strings.TrimSpace(text[startIdx:])
 		if stmt != "" {
-			statements = append(statements, stmt)
+			statements = append(statements, statementRange{Text: stmt, StartPos: startIdx})
 		}
 	}
 

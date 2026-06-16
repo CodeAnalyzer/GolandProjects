@@ -155,47 +155,47 @@ func typeGroup(dataType string) string {
 
 func enabledRuleSet(rules []RuleID) map[RuleID]bool {
 	result := map[RuleID]bool{
-		RuleForeignTablesUsing:    true,
-		RuleForeignPTablesUsing:   true,
-		RuleForeignProcedureUsing: true,
-		RuleExecNotExistsProc:     true,
-		RuleProcDuplicate:         true,
-		RuleProcParamDefValue:     true,
-		RuleProcElseCase:          true,
-		RuleUseSelectAll:          true,
-		RuleTruncTbl:              true,
-		RuleDatatype:              true,
-		RuleAnsiInJoin:            true,
-		RuleInsertRowLock:         true,
-		RuleUseEqColumn:           true,
-		RuleTableFullScan:         true,
-		RuleTableHintExists:       true,
-		RuleTableHintIsRight:      true,
-		RuleIndexExistsInDB:       true,
-		RuleIndexWrong:            true,
-		RuleUpdateOnlyVar:         true,
-		RulePTableSpid:            true,
-		RuleForceOrder2Tbl:        true,
-		RuleSaveTran:              true,
-		RuleUseDrop:               true,
-		RuleMathOperations:        true,
-		RuleExistsWithAndInIf:     true,
-		RuleNullComparison:        true,
-		RuleShouldBeCP866:         true,
-		RuleTooManyJoins:          true,
-		RuleMaxProcParam:          true,
-		RuleModifyOutProc:         true,
-		RuleEmptyReturn:           true,
-		RuleRawTransactionControl: true,
-		RuleDeferredUpdate:        true,
-		RuleInSubQuery:            true,
-		RuleVarcharSize:           true,
-		RuleColumnInsert:          true,
-		RulePostgreLabelGotoLevel: true,
-		RuleDateIntoString:        true,
-		RuleEmptyStringDate:       true,
-		RuleVarUseAfterCursor:     true,
-		RuleExcessProcParams:      true,
+		RuleForeignTablesUsing:      true,
+		RuleForeignPTablesUsing:     true,
+		RuleForeignProcedureUsing:   true,
+		RuleExecNotExistsProc:       true,
+		RuleProcDuplicate:           true,
+		RuleProcParamDefValue:       true,
+		RuleProcElseCase:            true,
+		RuleUseSelectAll:            true,
+		RuleTruncTbl:                true,
+		RuleDatatype:                true,
+		RuleAnsiInJoin:              true,
+		RuleInsertRowLock:           true,
+		RuleUseEqColumn:             true,
+		RuleTableFullScan:           true,
+		RuleTableHintExists:         true,
+		RuleTableHintIsRight:        true,
+		RuleIndexExistsInDB:         true,
+		RuleIndexWrong:              true,
+		RuleUpdateOnlyVar:           true,
+		RulePTableSpid:              true,
+		RuleForceOrder2Tbl:          true,
+		RuleSaveTran:                true,
+		RuleUseDrop:                 true,
+		RuleMathOperations:          true,
+		RuleExistsWithAndInIf:       true,
+		RuleNullComparison:          true,
+		RuleShouldBeCP866:           true,
+		RuleTooManyJoins:            true,
+		RuleMaxProcParam:            true,
+		RuleModifyOutProc:           true,
+		RuleEmptyReturn:             true,
+		RuleRawTransactionControl:   true,
+		RuleDeferredUpdate:          true,
+		RuleInSubQuery:              true,
+		RuleVarcharSize:             true,
+		RuleColumnInsert:            true,
+		RulePostgreLabelGotoLevel:   true,
+		RuleDateIntoString:          true,
+		RuleEmptyStringDate:         true,
+		RuleVarUseAfterCursor:       true,
+		RuleExcessProcParams:        true,
 		RuleDuplicateOutputVariable: true,
 		RuleUseOnlyDeclaredCursors:  true,
 	}
@@ -901,9 +901,22 @@ func isHintAllowed(hint string, allowed []string) bool {
 	return false
 }
 
-func countParens(line string) int {
+func countParensRespectingStrings(line string) int {
 	depth := 0
-	for _, ch := range line {
+	inString := false
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if ch == '\'' {
+			if inString && i+1 < len(line) && line[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
 		switch ch {
 		case '(':
 			depth++

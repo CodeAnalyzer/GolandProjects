@@ -362,6 +362,27 @@ func TestAnalyzeStatementForHintType_UpdateWrongTargetHint_AfterSelectAssignment
 	}
 }
 
+func TestAnalyzeStatementForHintType_InsertSelectDoesNotBreakOnInnerSelect(t *testing.T) {
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+
+	lines := []string{
+		"insert into pAPI_ACCR_AftMassProcNTF M_WITH_ROWLOCK",
+		"  (SPID, ObjectID, NTFID)",
+		"  select @@spid, LoanID, NTFID",
+		"    from pAPI_Loan_Notification M_NOLOCK_INDEX(XPKpAPI_Loan_Notification)",
+		"   where SPID = @@spid",
+		"  M_KEEPPLAN",
+	}
+
+	findings := analyzeStatementForHintType(lines, 3811, file)
+	// INSERT не проверяется правилом tableHintIsRight — splitStatementsForHintType
+	// пропустит его (не select/update/delete), а внутренний SELECT не должен
+	// быть ошибочно выделен как отдельный оператор
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings for INSERT...SELECT, got %#v", findings)
+	}
+}
+
 func TestAnalyzeStatementForHintType_DeleteAndUpdateWithoutGO(t *testing.T) {
 	file := &indexedFile{Path: "test.sql", DsProductID: 1}
 
