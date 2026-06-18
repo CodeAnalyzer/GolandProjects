@@ -5130,3 +5130,1438 @@ func (r *Runner) checkUseOnlyDeclaredCursors(parsed *sqlparser.ParseResult, file
 
 	return findings, nil
 }
+
+// checkCursorFetchArguments проверяет, что FETCH INTO из курсора содержит
+// столько же переменных, сколько выражений в SELECT объявления курсора.
+func (r *Runner) checkCursorFetchArguments(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	contentStr := string(content)
+	cursorDeclarations := parseCursorDeclarations(contentStr)
+	if len(cursorDeclarations) == 0 {
+		return findings, nil
+	}
+
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+
+		stmt, ok := parseFetchIntoStatement(fragment.QueryText)
+		if !ok {
+			continue
+		}
+
+		cursorDecl, exists := cursorDeclarations[normalizeIdentifier(stmt.CursorName)]
+		if !exists {
+			continue
+		}
+
+		fetchCount := len(stmt.Variables)
+		declareCount := len(cursorDecl.SelectExpressions)
+		if fetchCount == declareCount {
+			continue
+		}
+
+		findings = append(findings, Finding{
+			Rule:             RuleCursorFetchArguments,
+			Severity:         SeverityPostgreReq,
+			Message:          fmt.Sprintf("FETCH из курсора %s: %d переменных, а в DECLARE %d выражений", stmt.CursorName, fetchCount, declareCount),
+			File:             file.Path,
+			Line:             fragment.LineNumber,
+			Object:           stmt.CursorName,
+			CurrentProductID: file.DsProductID,
+		})
+	}
+
+	return findings, nil
+}
+
+// containsVarReference проверяет, содержит ли выражение ссылку на переменную @varName
+// с учётом word boundary (чтобы @a не матчило @ab).
+func containsVarReference(expr, varName string) bool {
+	v := strings.TrimPrefix(strings.TrimSpace(varName), "@")
+	if v == "" {
+		return false
+	}
+	re := regexp.MustCompile(`(?i)@` + regexp.QuoteMeta(v) + `\b`)
+	return re.MatchString(expr)
+}
+
+// findAssignmentLineOffset возвращает смещение строки (0-based) от начала текста
+// до позиции j-го assignment в многострочном SELECT.
+func findAssignmentLineOffset(queryText string, assignments []selectAssignment, j int) int {
+	if j < 0 || j >= len(assignments) {
+		return 0
+	}
+	searchFrom := 0
+	for i := 0; i <= j; i++ {
+		idx := strings.Index(strings.ToLower(queryText[searchFrom:]), strings.ToLower(assignments[i].TargetVariable))
+		if idx < 0 {
+			return 0
+		}
+		if i == j {
+			absPos := searchFrom + idx
+			return strings.Count(queryText[:absPos], "\n")
+		}
+		searchFrom += idx + len(assignments[i].TargetVariable)
+	}
+	return 0
+}
+
+// parseCasePartAssignments извлекает assignment'ы из THEN/ELSE веток CASE-выражения.
+// Возвращает selectAssignment для каждой переменной, присваиваемой внутри CASE.
+// Expression — весь CASE-текст целиком, чтобы cross-reference check мог найти
+// ссылки на переменные в WHEN-условиях.
+func parseCasePartAssignments(part string) []selectAssignment {
+	lower := strings.ToLower(strings.TrimSpace(part))
+	if !strings.HasPrefix(lower, "case") {
+		return nil
+	}
+
+	result := make([]selectAssignment, 0)
+	seen := make(map[string]bool)
+
+	branchRe := regexp.MustCompile(`(?i)(?:then|else)\s+(@[A-Za-z_][A-Za-z0-9_]*)\s*=`)
+	matches := branchRe.FindAllStringSubmatch(part, -1)
+	for _, m := range matches {
+		varName := strings.TrimSpace(m[1])
+		if !seen[varName] {
+			seen[varName] = true
+			result = append(result, selectAssignment{
+				TargetVariable: varName,
+				Expression:     part,
+			})
+		}
+	}
+	return result
+}
+
+// checkUsageVarInSameSelect проверяет, что в одном SELECT-операторе
+// переменная, присваиваемая в одном assignment, не используется в выражении
+// другого assignment, вычисляемого позже.
+func (r *Runner) checkUsageVarInSameSelect(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+
+	assignRe := regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+
+		var assignments []selectAssignment
+		queryText := strings.TrimSpace(fragment.QueryText)
+
+		stmt, ok := parseSelectAssignStatement(queryText)
+		if ok {
+			assignments = stmt.Assignments
+		} else {
+			lower := strings.ToLower(queryText)
+			if !strings.HasPrefix(lower, "select") {
+				continue
+			}
+			selectPart := strings.TrimSpace(queryText[len("select"):])
+			parts := splitTopLevelCSV(selectPart)
+			for _, part := range parts {
+				m := assignRe.FindStringSubmatch(strings.TrimSpace(part))
+				if len(m) != 3 {
+					continue
+				}
+				assignments = append(assignments, selectAssignment{
+					TargetVariable: strings.TrimSpace(m[1]),
+					Expression:     strings.TrimSpace(m[2]),
+				})
+			}
+		}
+
+		// Дополнительный проход: извлекаем assignment'ы из CASE-выражений
+		lower := strings.ToLower(queryText)
+		if strings.HasPrefix(lower, "select") {
+			fromPos := findTopLevelKeywordPosition(lower, "from")
+			var selectPart string
+			if fromPos >= 0 {
+				selectPart = strings.TrimSpace(queryText[len("select"):fromPos])
+			} else {
+				selectPart = strings.TrimSpace(queryText[len("select"):])
+			}
+			parts := splitTopLevelCSV(selectPart)
+			for _, part := range parts {
+				trimmedPart := strings.TrimSpace(part)
+				if !strings.HasPrefix(strings.ToLower(trimmedPart), "case") {
+					continue
+				}
+				assignments = append(assignments, parseCasePartAssignments(trimmedPart)...)
+			}
+		}
+
+		if len(assignments) < 2 {
+			continue
+		}
+
+		seenVars := make(map[string]bool)
+		for j, a := range assignments {
+			for seenVar := range seenVars {
+				if containsVarReference(a.Expression, seenVar) {
+					lineOffset := findAssignmentLineOffset(queryText, assignments, j)
+					findings = append(findings, Finding{
+						Rule:             RuleUsageVarInSameSelect,
+						Severity:         SeverityPostgreReq,
+						Message:          fmt.Sprintf("Переменная %s используется в выражении для %s, но вычислена в этом же SELECT", seenVar, a.TargetVariable),
+						File:             file.Path,
+						Line:             fragment.LineNumber + lineOffset,
+						Object:           a.TargetVariable,
+						CurrentProductID: file.DsProductID,
+					})
+				}
+			}
+			seenVars[normalizeVariableName(a.TargetVariable)] = true
+		}
+	}
+
+	return findings, nil
+}
+
+// findColLineOffsetInPart находит смещение строки для colName внутри part,
+// относительно начала queryText. Ищет colName в part, затем определяет
+// позицию part в queryText и вычисляет line offset.
+func findColLineOffsetInPart(queryText, part, colName string) int {
+	partIdx := strings.Index(strings.ToLower(queryText), strings.ToLower(part))
+	if partIdx < 0 {
+		partIdx = 0
+	}
+	colIdx := strings.Index(strings.ToLower(part), strings.ToLower(colName))
+	if colIdx < 0 {
+		colIdx = 0
+	}
+	absIdx := partIdx + colIdx
+	return strings.Count(queryText[:absIdx], "\n")
+}
+
+// findAllUnqualifiedColumnRefs возвращает все неквалифицированные ссылки на столбцы.
+func findAllUnqualifiedColumnRefs(expr string) []string {
+	cleaned := regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\b`).ReplaceAllString(expr, "")
+	cleaned = regexp.MustCompile(`(?i)@@?[a-z_][a-z0-9_]*`).ReplaceAllString(cleaned, "")
+	cleaned = regexp.MustCompile(`'[^']*'`).ReplaceAllString(cleaned, "")
+	cleaned = regexp.MustCompile(`\b\d+(\.\d+)?\b`).ReplaceAllString(cleaned, "")
+
+	idRe := regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\b`)
+	matches := idRe.FindAllStringSubmatch(cleaned, -1)
+	result := make([]string, 0, len(matches))
+	seen := make(map[string]bool)
+	for _, m := range matches {
+		name := strings.ToLower(m[1])
+		if sqlKeywordsMap[name] {
+			continue
+		}
+		if sqlFunctionsMap[name] {
+			continue
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		result = append(result, m[1])
+	}
+	return result
+}
+
+// checkStatementsWithJoinsRequireAliases проверяет, что в SELECT/UPDATE/DELETE
+// с JOIN (2+ таблицы) все ссылки на столбцы квалифицированы алиасом.
+func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+
+		queryText := strings.TrimSpace(fragment.QueryText)
+		lower := strings.ToLower(queryText)
+
+		var selectPart string
+		var wherePart string
+		var onParts []string
+		isUpdate := false
+
+		if strings.HasPrefix(lower, "select") {
+			fromPos := findTopLevelKeywordPosition(lower, "from")
+			if fromPos < 0 {
+				continue
+			}
+			selectPart = strings.TrimSpace(queryText[len("select"):fromPos])
+			wherePos := findTopLevelKeywordPosition(lower, "where")
+			if wherePos >= 0 {
+				wherePart = strings.TrimSpace(queryText[wherePos+len("where"):])
+			}
+			onParts = extractOnClauses(queryText)
+		} else if strings.HasPrefix(lower, "update") {
+			isUpdate = true
+			setPos := findTopLevelKeywordPosition(lower, "set")
+			if setPos < 0 {
+				continue
+			}
+			fromPos := findTopLevelKeywordPosition(lower, "from")
+			if fromPos < 0 {
+				continue
+			}
+			wherePos := findTopLevelKeywordPosition(lower, "where")
+			setEnd := fromPos
+			selectPart = strings.TrimSpace(queryText[setPos+len("set") : setEnd])
+			if wherePos >= 0 {
+				wherePart = strings.TrimSpace(queryText[wherePos+len("where"):])
+			}
+			onParts = extractOnClauses(queryText)
+		} else if strings.HasPrefix(lower, "delete") {
+			fromPos := findTopLevelKeywordPosition(lower, "from")
+			if fromPos < 0 {
+				continue
+			}
+			wherePos := findTopLevelKeywordPosition(lower, "where")
+			if wherePos >= 0 {
+				wherePart = strings.TrimSpace(queryText[wherePos+len("where"):])
+			}
+		} else {
+			continue
+		}
+
+		tables := extractTablesFromFromClause(queryText)
+		if len(tables) < 2 {
+			continue
+		}
+
+		if selectPart != "" {
+			parts := splitTopLevelCSV(selectPart)
+			for _, part := range parts {
+				trimmed := strings.TrimSpace(part)
+				if trimmed == "" || trimmed == "*" {
+					continue
+				}
+				// Для UPDATE SET: проверяем только правую часть присваивания (выражение)
+				if isUpdate {
+					eqIdx := strings.Index(trimmed, "=")
+					if eqIdx >= 0 {
+						trimmed = strings.TrimSpace(trimmed[eqIdx+1:])
+					}
+				}
+				if !isUpdate {
+					if asIdx := findTopLevelKeywordPosition(strings.ToLower(trimmed), "as"); asIdx >= 0 {
+						trimmed = strings.TrimSpace(trimmed[:asIdx])
+					}
+				}
+				if trimmed == "" {
+					continue
+				}
+				colNames := findAllUnqualifiedColumnRefs(trimmed)
+				for _, colName := range colNames {
+					lineOffset := findColLineOffsetInPart(queryText, trimmed, colName)
+					findings = append(findings, Finding{
+						Rule:             RuleStatementsWithJoinsRequireAliases,
+						Severity:         SeverityPostgreReq,
+						Message:          fmt.Sprintf("Неквалифицированная ссылка на столбец %s в запросе с JOIN — укажите алиас таблицы", colName),
+						File:             file.Path,
+						Line:             fragment.LineNumber + lineOffset,
+						Object:           colName,
+						CurrentProductID: file.DsProductID,
+					})
+				}
+			}
+		}
+
+		if wherePart != "" {
+			colNames := findAllUnqualifiedColumnRefs(wherePart)
+			for _, colName := range colNames {
+				lineOffset := findColLineOffsetInPart(queryText, wherePart, colName)
+				findings = append(findings, Finding{
+					Rule:             RuleStatementsWithJoinsRequireAliases,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Неквалифицированная ссылка на столбец %s в WHERE запроса с JOIN — укажите алиас таблицы", colName),
+					File:             file.Path,
+					Line:             fragment.LineNumber + lineOffset,
+					Object:           colName,
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+
+		// Проверяем ON-условия JOIN
+		for _, onPart := range onParts {
+			colNames := findAllUnqualifiedColumnRefs(onPart)
+			for _, colName := range colNames {
+				lineOffset := findColLineOffsetInPart(queryText, onPart, colName)
+				findings = append(findings, Finding{
+					Rule:             RuleStatementsWithJoinsRequireAliases,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Неквалифицированная ссылка на столбец %s в ON-условии JOIN — укажите алиас таблицы", colName),
+					File:             file.Path,
+					Line:             fragment.LineNumber + lineOffset,
+					Object:           colName,
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	return findings, nil
+}
+
+// extractOnClauses извлекает ON-условия из JOIN-выражений в запросе.
+func extractOnClauses(queryText string) []string {
+	result := make([]string, 0)
+	lower := strings.ToLower(queryText)
+
+	stopWords := []string{
+		"where", "group", "order", "having", "union",
+		"join", "inner", "left", "right", "outer", "full", "cross",
+		"option",
+	}
+
+	searchFrom := 0
+	for {
+		onIdx := findKeywordPosition(lower[searchFrom:], "on")
+		if onIdx < 0 {
+			break
+		}
+		onIdx += searchFrom
+		start := onIdx + 2 // skip "on"
+		// Пропускаем whitespace
+		for start < len(lower) && (lower[start] == ' ' || lower[start] == '\t' || lower[start] == '\n' || lower[start] == '\r') {
+			start++
+		}
+		// Ищем конец ON-условия — следующий stop-word или ; или конец строки
+		end := start
+		depth := 0
+	stopLoop:
+		for end < len(lower) {
+			ch := lower[end]
+			if ch == '(' {
+				depth++
+			} else if ch == ')' {
+				if depth > 0 {
+					depth--
+				}
+			} else if ch == ';' && depth == 0 {
+				break
+			} else if depth == 0 {
+				for _, kw := range stopWords {
+					if keywordMatchAt(lower, end, kw) {
+						break stopLoop
+					}
+				}
+			}
+			end++
+		}
+		if end > start {
+			result = append(result, strings.TrimSpace(queryText[start:end]))
+		}
+		searchFrom = onIdx + 2
+	}
+	return result
+}
+
+// checkVarAssignInUpdate проверяет, что в UPDATE SET не присваиваются значения
+// переменным (@var = expr). Любое такое присваивание запрещено.
+func (r *Runner) checkVarAssignInUpdate(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+
+		stmt, ok := parseUpdateSetStatement(fragment.QueryText)
+		if !ok {
+			continue
+		}
+
+		queryText := strings.TrimSpace(fragment.QueryText)
+		for _, a := range stmt.Assignments {
+			target := strings.TrimSpace(a.Target)
+			if !strings.HasPrefix(target, "@") {
+				continue
+			}
+
+			lineOffset := 0
+			idx := strings.Index(strings.ToLower(queryText), strings.ToLower(target))
+			if idx >= 0 {
+				lineOffset = strings.Count(queryText[:idx], "\n")
+			}
+
+			findings = append(findings, Finding{
+				Rule:             RuleVarAssignInUpdate,
+				Severity:         SeverityPostgreReq,
+				Message:          fmt.Sprintf("Установка значения переменной %s в UPDATE SET запрещена", target),
+				File:             file.Path,
+				Line:             fragment.LineNumber + lineOffset,
+				Object:           target,
+				CurrentProductID: file.DsProductID,
+			})
+		}
+	}
+
+	return findings, nil
+}
+
+// checkUseFuncInIndCol проверяет, что в WHERE и ON не используются функции
+// от столбцов, входящих в индекс, указанный в M_*_INDEX(...).
+func (r *Runner) checkUseFuncInIndCol(file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+
+	macroResult, err := r.fileProcessedContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	contentStr := macroResult.Content
+	sourceMap := macroResult.SourceMap
+	lines := strings.Split(contentStr, "\n")
+
+	inStatement := false
+	stmtStartLine := 0
+	stmtBuffer := make([]string, 0)
+	parenDepth := 0
+	inBlockComment := false
+
+	for i, line := range lines {
+		lineNum := mapProcessedLineNumber(sourceMap, i+1)
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+
+		if inBlockComment {
+			if idx := strings.Index(line, "*/"); idx >= 0 {
+				inBlockComment = false
+				line = line[idx+2:]
+			} else {
+				continue
+			}
+		}
+
+		for {
+			if idx := strings.Index(line, "/*"); idx >= 0 {
+				endIdx := strings.Index(line[idx:], "*/")
+				if endIdx > 0 {
+					line = line[:idx] + " " + line[idx+endIdx+2:]
+				} else {
+					inBlockComment = true
+					line = line[:idx]
+					break
+				}
+			} else {
+				break
+			}
+		}
+
+		if inBlockComment {
+			continue
+		}
+
+		lower := strings.ToLower(line)
+
+		if !inStatement {
+			_, startIdx := findStatementStartHint(lower)
+			if startIdx >= 0 && !isInComment(line, startIdx) {
+				depthBefore := 0
+				for j := 0; j < startIdx; j++ {
+					switch line[j] {
+					case '(':
+						depthBefore++
+					case ')':
+						depthBefore--
+					}
+				}
+				if depthBefore == 0 {
+					inStatement = true
+					stmtStartLine = lineNum
+					stmtBuffer = []string{line}
+					parenDepth = countParensRespectingStrings(line)
+				}
+			}
+			continue
+		}
+
+		stmtBuffer = append(stmtBuffer, line)
+		parenDepth += countParensRespectingStrings(line)
+
+		if hasStatementEnded(lower, stmtBuffer) {
+			items, err := r.analyzeStatementForUseFuncInIndCol(stmtBuffer, stmtStartLine, file)
+			if err != nil {
+				return nil, err
+			}
+			findings = append(findings, items...)
+			inStatement = false
+			stmtBuffer = nil
+			parenDepth = 0
+		}
+	}
+
+	if inStatement && len(stmtBuffer) > 0 {
+		items, err := r.analyzeStatementForUseFuncInIndCol(stmtBuffer, stmtStartLine, file)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, items...)
+	}
+
+	return findings, nil
+}
+
+// analyzeStatementForUseFuncInIndCol анализирует один оператор на использование
+// функций от индексных столбцов в WHERE и ON.
+func (r *Runner) analyzeStatementForUseFuncInIndCol(lines []string, startLine int, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	if len(lines) == 0 {
+		return findings, nil
+	}
+
+	fullText := strings.Join(lines, " ")
+	trimmedText := normalizeHintStatementText(strings.TrimSpace(fullText))
+	tables := extractTablesFromFromClause(trimmedText)
+	if len(tables) == 0 {
+		return findings, nil
+	}
+
+	wherePart := extractWherePartForIndexWrong(trimmedText)
+	onParts := extractOnPartsForIndexWrong(trimmedText)
+
+	seen := make(map[string]struct{})
+
+	for _, table := range tables {
+		if shouldSkipTableCheck(table.TableName) {
+			continue
+		}
+		if table.IndexName == "" {
+			continue
+		}
+
+		tableName := normalizeIdentifier(table.TableName)
+		indexName := normalizeIdentifier(table.IndexName)
+		if tableName == "" || indexName == "" {
+			continue
+		}
+
+		key := tableName + "|" + indexName
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		indexFields, err := r.lookupIndexFieldsByName(indexName)
+		if err != nil {
+			return nil, err
+		}
+		if len(indexFields) == 0 {
+			continue
+		}
+
+		indexFieldSet := make(map[string]bool)
+		for _, f := range indexFields {
+			indexFieldSet[normalizeIdentifier(f)] = true
+		}
+		alias := normalizeIdentifier(table.Alias)
+
+		// Проверяем WHERE
+		if wherePart != "" {
+			funcRefs := extractFuncColumnRefs(wherePart)
+			for _, fr := range funcRefs {
+				if isIndexedColumn(fr.column, alias, indexFieldSet) {
+					findings = append(findings, Finding{
+						Rule:             RuleUseFuncInIndCol,
+						Severity:         SeverityPostgreReq,
+						Message:          fmt.Sprintf("Функция %s от столбца %s в WHERE разрушает использование индекса %s", fr.funcName, fr.column, indexName),
+						File:             file.Path,
+						Line:             startLine,
+						Object:           fmt.Sprintf("%s(%s)", fr.funcName, fr.column),
+						CurrentProductID: file.DsProductID,
+					})
+				}
+			}
+		}
+
+		// Проверяем ON-условия
+		for _, onPart := range onParts {
+			funcRefs := extractFuncColumnRefs(onPart)
+			for _, fr := range funcRefs {
+				if isIndexedColumn(fr.column, alias, indexFieldSet) {
+					findings = append(findings, Finding{
+						Rule:             RuleUseFuncInIndCol,
+						Severity:         SeverityPostgreReq,
+						Message:          fmt.Sprintf("Функция %s от столбца %s в ON-условии разрушает использование индекса %s", fr.funcName, fr.column, indexName),
+						File:             file.Path,
+						Line:             startLine,
+						Object:           fmt.Sprintf("%s(%s)", fr.funcName, fr.column),
+						CurrentProductID: file.DsProductID,
+					})
+				}
+			}
+		}
+	}
+
+	return findings, nil
+}
+
+// funcColumnRef — ссылка на столбец внутри вызова функции.
+type funcColumnRef struct {
+	funcName string
+	column   string
+}
+
+// extractFuncColumnRefs ищет в выражении вызовы функций вида funcName(arg1, arg2, ...)
+// и возвращает пары (funcName, column) для аргументов, являющихся именами столбцов.
+func extractFuncColumnRefs(expr string) []funcColumnRef {
+	result := make([]funcColumnRef, 0)
+
+	// Удаляем строковые литералы
+	cleaned := regexp.MustCompile(`'[^']*'`).ReplaceAllString(expr, "")
+
+	// Ищем вызовы функций: identifier(args)
+	funcRe := regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\s*\(`)
+	matches := funcRe.FindAllStringSubmatchIndex(cleaned, -1)
+
+	for _, m := range matches {
+		funcName := cleaned[m[2]:m[3]]
+		lowerFunc := strings.ToLower(funcName)
+
+		// Пропускаем CAST/CONVERT — это не функции в классическом смысле
+		if lowerFunc == "cast" || lowerFunc == "convert" {
+			continue
+		}
+
+		// Извлекаем содержимое скобок с учётом вложенности
+		parenStart := m[1] - 1 // позиция '('
+		depth := 0
+		end := parenStart
+		for end < len(cleaned) {
+			switch cleaned[end] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					goto foundEnd
+				}
+			}
+			end++
+		}
+	foundEnd:
+		if end <= parenStart {
+			continue
+		}
+		args := cleaned[parenStart+1 : end]
+
+		// Разбиваем аргументы по запятой (top-level)
+		argParts := splitTopLevelCSV(args)
+		for _, arg := range argParts {
+			trimmed := strings.TrimSpace(arg)
+			if trimmed == "" {
+				continue
+			}
+			// Пропускаем переменные, числа, строки
+			if strings.HasPrefix(trimmed, "@") {
+				continue
+			}
+			if regexp.MustCompile(`^\d`).MatchString(trimmed) {
+				continue
+			}
+			if trimmed == "*" {
+				continue
+			}
+			// Извлекаем имя столбца: может быть alias.column или просто column
+			colRe := regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)(?:\.([a-z_][a-z0-9_]*))?\b`)
+			colMatch := colRe.FindStringSubmatch(trimmed)
+			if colMatch == nil {
+				continue
+			}
+			// Если есть alias.column, берём column; иначе берём просто column
+			var colName string
+			if colMatch[2] != "" {
+				colName = colMatch[2]
+			} else {
+				colName = colMatch[1]
+			}
+			// Пропускаем ключевые слова и функции
+			lowerCol := strings.ToLower(colName)
+			if sqlKeywordsMap[lowerCol] || sqlFunctionsMap[lowerCol] {
+				continue
+			}
+			result = append(result, funcColumnRef{
+				funcName: funcName,
+				column:   colName,
+			})
+		}
+	}
+
+	return result
+}
+
+// isIndexedColumn проверяет, входит ли столбец в набор полей индекса.
+// Учитывает алиас: если column содержит точку (alias.column), проверяет
+// совпадение prefix с алиасом таблицы и извлекает часть после точки.
+func isIndexedColumn(column, alias string, indexFieldSet map[string]bool) bool {
+	normalizedCol := normalizeIdentifier(column)
+	if normalizedCol == "" {
+		return false
+	}
+
+	// Если column содержит точку (alias.column), извлекаем часть после точки
+	if idx := strings.Index(normalizedCol, "."); idx >= 0 {
+		prefix := normalizeIdentifier(normalizedCol[:idx])
+		colOnly := normalizeIdentifier(normalizedCol[idx+1:])
+		// Если алиас таблицы задан, проверяем совпадение prefix
+		if alias != "" && prefix != alias {
+			return false
+		}
+		if indexFieldSet[colOnly] {
+			return true
+		}
+		return false
+	}
+
+	// column без точки — прямое совпадение
+	if indexFieldSet[normalizedCol] {
+		return true
+	}
+
+	return false
+}
+
+// checkIsNullSameTypes проверяет, что в ISNULL(expr1, expr2) оба выражения
+// имеют эквивалентные типы.
+func (r *Runner) checkIsNullSameTypes(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	seen := make(map[string]struct{})
+
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	variableTypes := collectVariableTypes(parsed, string(content))
+
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+		queryText := fragment.QueryText
+		isnullCalls := extractIsnullCalls(queryText)
+		if len(isnullCalls) == 0 {
+			continue
+		}
+
+		aliasMap := parseAliasMap(extractFromClause(queryText))
+
+		for _, call := range isnullCalls {
+			type1 := r.resolveArgType(call[0], variableTypes, aliasMap)
+			type2 := r.resolveArgType(call[1], variableTypes, aliasMap)
+
+			// Пропускаем если хотя бы один тип не определён (NULL или не удалось резолвить)
+			if type1 == "" || type2 == "" {
+				continue
+			}
+
+			if areEquivalentTypes(type1, type2) {
+				continue
+			}
+
+			key := fmt.Sprintf("%d|%s|%s|%s", fragment.LineNumber, call[0], call[1], normalizeDataType(type1)+normalizeDataType(type2))
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+
+			findings = append(findings, Finding{
+				Rule:             RuleIsNullSameTypes,
+				Severity:         SeverityPostgreReq,
+				Message:          fmt.Sprintf("ISNULL с разными типами: %s (%s) и %s (%s)", strings.TrimSpace(call[0]), type1, strings.TrimSpace(call[1]), type2),
+				File:             file.Path,
+				Line:             fragment.LineNumber,
+				Object:           fmt.Sprintf("ISNULL(%s, %s)", strings.TrimSpace(call[0]), strings.TrimSpace(call[1])),
+				CurrentProductID: file.DsProductID,
+			})
+		}
+	}
+
+	return findings, nil
+}
+
+// extractIsnullCalls ищет все вызовы ISNULL(...) в тексте и возвращает пары аргументов.
+func extractIsnullCalls(text string) [][2]string {
+	result := make([][2]string, 0)
+	lower := strings.ToLower(text)
+
+	searchFrom := 0
+	for {
+		idx := findKeywordPosition(lower[searchFrom:], "isnull")
+		if idx < 0 {
+			break
+		}
+		idx += searchFrom
+
+		// Пропускаем whitespace после isnull
+		pos := idx + len("isnull")
+		for pos < len(text) && (text[pos] == ' ' || text[pos] == '\t' || text[pos] == '\n' || text[pos] == '\r') {
+			pos++
+		}
+		if pos >= len(text) || text[pos] != '(' {
+			searchFrom = idx + len("isnull")
+			continue
+		}
+
+		// Извлекаем содержимое скобок с учётом вложенности
+		depth := 0
+		start := pos
+		end := pos
+		for end < len(text) {
+			switch text[end] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					goto foundEnd
+				}
+			}
+			end++
+		}
+	foundEnd:
+		if end <= start {
+			searchFrom = idx + len("isnull")
+			continue
+		}
+
+		args := text[start+1 : end]
+		argParts := splitTopLevelCSV(args)
+		if len(argParts) >= 2 {
+			result = append(result, [2]string{argParts[0], argParts[1]})
+		}
+		searchFrom = end + 1
+	}
+
+	return result
+}
+
+// resolveArgType определяет тип аргумента выражения.
+// Возвращает пустую строку если тип не удалось определить или это NULL.
+func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, aliasMap map[string]string) string {
+	trimmed := strings.TrimSpace(arg)
+	if trimmed == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(trimmed)
+
+	// NULL — пропускаем
+	if lower == "null" {
+		return ""
+	}
+
+	// Переменная @var
+	if strings.HasPrefix(trimmed, "@") {
+		varName := normalizeVariableName(trimmed)
+		if typeName, exists := variableTypes[varName]; exists {
+			return typeName
+		}
+		return ""
+	}
+
+	// Строковый литерал
+	if strings.HasPrefix(trimmed, "'") {
+		return "varchar"
+	}
+
+	// Числовой литерал
+	if regexp.MustCompile(`^\d+(\.\d+)?$`).MatchString(trimmed) {
+		return "int"
+	}
+
+	// Вызов функции: funcName(...)
+	funcRe := regexp.MustCompile(`(?i)^([a-z_][a-z0-9_]*)\s*\(`)
+	if m := funcRe.FindStringSubmatch(trimmed); m != nil {
+		funcName := strings.ToLower(m[1])
+		// Сначала проверяем известные функции с фиксированным типом возврата
+		if rt, ok := knownFunctionReturnType(funcName); ok {
+			return rt
+		}
+		// Для прочих функций пытаемся вывести тип из первого аргумента
+		innerArgs := extractFuncInnerArgs(trimmed)
+		if len(innerArgs) > 0 {
+			return r.resolveArgType(innerArgs[0], variableTypes, aliasMap)
+		}
+		return ""
+	}
+
+	// Ссылка на столбец: alias.column или просто column
+	refs := extractColumnRefsFromExpression(trimmed)
+	if len(refs) > 0 {
+		ref := refs[0]
+		tableName := ref.Table
+		if mapped, exists := aliasMap[strings.ToLower(strings.TrimSpace(tableName))]; exists {
+			tableName = mapped
+		}
+		typeName, err := r.db.FindLatestSQLColumnDefinitionType(tableName, ref.Column)
+		if err != nil {
+			return ""
+		}
+		return typeName
+	}
+
+	// Fallback: колонка без префикса таблицы — ищем по всем таблицам из aliasMap
+	colNameRe := regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`)
+	if colNameRe.MatchString(trimmed) && len(aliasMap) > 0 {
+		seenTables := make(map[string]struct{})
+		for _, tbl := range aliasMap {
+			if _, seen := seenTables[tbl]; seen {
+				continue
+			}
+			seenTables[tbl] = struct{}{}
+			typeName, err := r.db.FindLatestSQLColumnDefinitionType(tbl, trimmed)
+			if err == nil && typeName != "" {
+				return typeName
+			}
+		}
+	}
+
+	return ""
+}
+
+// knownFunctionReturnType возвращает тип результата для известных SQL-функций.
+func knownFunctionReturnType(funcName string) (string, bool) {
+	switch funcName {
+	case "getdate", "getutcdate", "sysdatetime", "sysutcdatetime":
+		return "datetime", true
+	case "upper", "lower", "ltrim", "rtrim", "left", "right", "substring",
+		"replace", "replicate", "stuff", "char", "space", "str":
+		return "varchar", true
+	case "len", "datalength", "charindex", "patindex":
+		return "int", true
+	case "abs", "ceiling", "floor", "round", "power", "sqrt", "square",
+		"rand", "sign", "dateadd", "datediff", "datepart", "day", "month", "year":
+		return "int", true
+	case "cast", "convert":
+		return "", false // тип определяется аргументами
+	default:
+		return "", false
+	}
+}
+
+// extractFuncInnerArgs извлекает аргументы из вызова функции funcName(arg1, arg2, ...).
+func extractFuncInnerArgs(expr string) []string {
+	// Находим первую '(' и соответствующую ')'
+	start := strings.Index(expr, "(")
+	if start < 0 {
+		return nil
+	}
+	depth := 0
+	end := start
+	for end < len(expr) {
+		switch expr[end] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				goto found
+			}
+		}
+		end++
+	}
+found:
+	if end <= start {
+		return nil
+	}
+	inner := expr[start+1 : end]
+	return splitTopLevelCSV(inner)
+}
+
+// extractFromClause извлекает FROM-часть из текста запроса.
+func extractFromClause(queryText string) string {
+	lower := strings.ToLower(queryText)
+	fromIdx := findTopLevelKeywordPosition(lower, "from")
+	if fromIdx < 0 {
+		return ""
+	}
+	endMarkers := []string{"where", "group", "order", "having", "union", "option"}
+	end := len(queryText)
+	for _, marker := range endMarkers {
+		if idx := findTopLevelKeywordPosition(lower[fromIdx:], marker); idx >= 0 {
+			absIdx := fromIdx + idx
+			if absIdx < end {
+				end = absIdx
+			}
+		}
+	}
+	return queryText[fromIdx:end]
+}
+
+// checkDiffTypesComparison проверяет, что в сравнениях (WHERE, ON, IF, CASE WHEN)
+// оба операнда имеют эквивалентные типы. Присвоения (UPDATE SET, SELECT @var =) не проверяются.
+func (r *Runner) checkDiffTypesComparison(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	seen := make(map[string]struct{})
+
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	variableTypes := collectVariableTypes(parsed, string(content))
+
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+		queryText := fragment.QueryText
+
+		aliasMap := parseAliasMap(extractFromClause(queryText))
+
+		// Собираем все выражения для проверки: WHERE, ON, CASE WHEN
+		exprParts := make([]string, 0)
+
+		wherePart := extractWherePartForIndexWrong(queryText)
+		if wherePart != "" {
+			exprParts = append(exprParts, wherePart)
+		}
+
+		onParts := extractOnPartsForIndexWrong(queryText)
+		exprParts = append(exprParts, onParts...)
+
+		// CASE WHEN проверяем всегда, даже в присвоениях
+		caseWhenParts := extractCaseWhenConditions(queryText)
+		exprParts = append(exprParts, caseWhenParts...)
+
+		for _, exprPart := range exprParts {
+			comparisons := extractComparisons(exprPart)
+			for _, cmp := range comparisons {
+				type1 := r.resolveArgType(cmp.left, variableTypes, aliasMap)
+				type2 := r.resolveArgType(cmp.right, variableTypes, aliasMap)
+
+				if type1 == "" || type2 == "" {
+					continue
+				}
+
+				if areEquivalentTypes(type1, type2) {
+					continue
+				}
+
+				key := fmt.Sprintf("%d|%s|%s|%s", fragment.LineNumber, cmp.left, cmp.right, cmp.op)
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+
+				findings = append(findings, Finding{
+					Rule:             RuleDiffTypesComparison,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Сравнение разных типов: %s (%s) %s %s (%s)", strings.TrimSpace(cmp.left), type1, cmp.op, strings.TrimSpace(cmp.right), type2),
+					File:             file.Path,
+					Line:             fragment.LineNumber,
+					Object:           fmt.Sprintf("%s %s %s", strings.TrimSpace(cmp.left), cmp.op, strings.TrimSpace(cmp.right)),
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	// Построчная проверка IF ... = ...
+	ifLines := strings.Split(string(content), "\n")
+	inBlockComment := false
+	for lineIdx, rawLine := range ifLines {
+		stripped, stillInBlock := stripLineComments(rawLine, inBlockComment)
+		inBlockComment = stillInBlock
+		trimmed := strings.TrimSpace(stripped)
+		if trimmed == "" {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+		if !strings.HasPrefix(lower, "if ") && !strings.HasPrefix(lower, "if(") {
+			continue
+		}
+
+		// Отрезаем if-префикс
+		ifExpr := strings.TrimSpace(trimmed[2:])
+		if strings.HasPrefix(strings.ToLower(ifExpr), "(") && strings.HasSuffix(ifExpr, ")") {
+			ifExpr = ifExpr[1 : len(ifExpr)-1]
+		}
+
+		comparisons := extractComparisons(ifExpr)
+		for _, cmp := range comparisons {
+			type1 := r.resolveArgType(cmp.left, variableTypes, nil)
+			type2 := r.resolveArgType(cmp.right, variableTypes, nil)
+
+			if type1 == "" || type2 == "" {
+				continue
+			}
+
+			if areEquivalentTypes(type1, type2) {
+				continue
+			}
+
+			lineNo := lineIdx + 1
+			key := fmt.Sprintf("%d|%s|%s|%s", lineNo, cmp.left, cmp.right, cmp.op)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+
+			findings = append(findings, Finding{
+				Rule:             RuleDiffTypesComparison,
+				Severity:         SeverityPostgreReq,
+				Message:          fmt.Sprintf("Сравнение разных типов: %s (%s) %s %s (%s)", strings.TrimSpace(cmp.left), type1, cmp.op, strings.TrimSpace(cmp.right), type2),
+				File:             file.Path,
+				Line:             lineNo,
+				Object:           fmt.Sprintf("%s %s %s", strings.TrimSpace(cmp.left), cmp.op, strings.TrimSpace(cmp.right)),
+				CurrentProductID: file.DsProductID,
+			})
+		}
+	}
+
+	return findings, nil
+}
+
+// comparisonExpr — пара операндов и оператор сравнения.
+type comparisonExpr struct {
+	left  string
+	right string
+	op    string
+}
+
+// extractComparisons разбивает выражение на подусловия по AND/OR (top-level)
+// и для каждого находит оператор сравнения на top-level (вне скобок).
+// Если подусловие заключено в скобки и не содержит top-level оператора,
+// рекурсивно обрабатывает содержимое скобок.
+func extractComparisons(expr string) []comparisonExpr {
+	result := make([]comparisonExpr, 0)
+
+	// Разбиваем по AND/OR на top-level
+	subExprs := splitByAndOr(expr)
+	for _, sub := range subExprs {
+		trimmed := strings.TrimSpace(sub)
+		if trimmed == "" {
+			continue
+		}
+		cmp := findComparisonOperator(trimmed)
+		if cmp.op != "" {
+			result = append(result, cmp)
+			continue
+		}
+		// Если нет top-level оператора и выражение обёрнуто в скобки — рекурсивно
+		if len(trimmed) >= 2 && trimmed[0] == '(' && trimmed[len(trimmed)-1] == ')' {
+			// Проверяем что внешние скобки охватывают всё выражение
+			depth := 0
+			allMatched := true
+			for i, ch := range trimmed {
+				if ch == '(' {
+					depth++
+				} else if ch == ')' {
+					depth--
+					if depth == 0 && i < len(trimmed)-1 {
+						allMatched = false
+						break
+					}
+				}
+			}
+			if allMatched {
+				result = append(result, extractComparisons(trimmed[1:len(trimmed)-1])...)
+			}
+		}
+	}
+	return result
+}
+
+// splitByAndOr разбивает выражение по top-level AND/OR.
+func splitByAndOr(expr string) []string {
+	result := make([]string, 0)
+	lower := strings.ToLower(expr)
+	depth := 0
+	caseDepth := 0
+	start := 0
+
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '(' {
+			depth++
+		} else if ch == ')' && depth > 0 {
+			depth--
+		}
+		// Отслеживаем CASE ... END
+		if isWordBoundary(lower, i-1) && strings.HasPrefix(lower[i:], "case") && isWordBoundary(lower, i+4) {
+			caseDepth++
+		}
+		if isWordBoundary(lower, i-1) && strings.HasPrefix(lower[i:], "end") && isWordBoundary(lower, i+3) && caseDepth > 0 {
+			caseDepth--
+		}
+
+		if depth == 0 && caseDepth == 0 {
+			if isWordBoundary(lower, i-1) && strings.HasPrefix(lower[i:], "and") && isWordBoundary(lower, i+3) {
+				result = append(result, expr[start:i])
+				start = i + 3
+				i += 2
+			} else if isWordBoundary(lower, i-1) && strings.HasPrefix(lower[i:], "or") && isWordBoundary(lower, i+2) {
+				result = append(result, expr[start:i])
+				start = i + 2
+				i += 1
+			}
+		}
+	}
+	result = append(result, expr[start:])
+	return result
+}
+
+// findComparisonOperator находит оператор сравнения на top-level (глубина скобок = 0)
+// и возвращает пару операндов с оператором.
+func findComparisonOperator(expr string) comparisonExpr {
+	lower := strings.ToLower(expr)
+	depth := 0
+	caseDepth := 0
+
+	// Список операторов в порядке проверки (длинные сначала)
+	operators := []string{"<>", "!=", "<=", ">=", "=", "<", ">"}
+
+	for i := 0; i < len(expr); i++ {
+		ch := expr[i]
+		if ch == '(' {
+			depth++
+			continue
+		}
+		if ch == ')' && depth > 0 {
+			depth--
+			continue
+		}
+
+		// Отслеживаем CASE ... END
+		if isWordBoundary(lower, i-1) && strings.HasPrefix(lower[i:], "case") && isWordBoundary(lower, i+4) {
+			caseDepth++
+			continue
+		}
+		if isWordBoundary(lower, i-1) && strings.HasPrefix(lower[i:], "end") && isWordBoundary(lower, i+3) && caseDepth > 0 {
+			caseDepth--
+			continue
+		}
+
+		if depth > 0 || caseDepth > 0 {
+			continue
+		}
+
+		// Пропускаем строковые литералы
+		if ch == '\'' {
+			i++
+			for i < len(expr) && expr[i] != '\'' {
+				i++
+			}
+			continue
+		}
+
+		for _, op := range operators {
+			if i+len(op) <= len(expr) && expr[i:i+len(op)] == op {
+				// Проверяем что это не часть слова (например, = в != уже обработан)
+				if op == "=" && i > 0 && (expr[i-1] == '<' || expr[i-1] == '>' || expr[i-1] == '!') {
+					continue
+				}
+				left := strings.TrimSpace(expr[:i])
+				right := strings.TrimSpace(expr[i+len(op):])
+				if left == "" || right == "" {
+					return comparisonExpr{}
+				}
+				return comparisonExpr{left: left, right: right, op: op}
+			}
+		}
+	}
+	return comparisonExpr{}
+}
+
+// isAssignmentFragment проверяет, является ли фрагмент присвоением (UPDATE SET или SELECT @var =).
+func isAssignmentFragment(queryText string) bool {
+	_, ok1 := parseUpdateSetStatement(queryText)
+	if ok1 {
+		return true
+	}
+	_, ok2 := parseSelectAssignStatement(queryText)
+	return ok2
+}
+
+// extractCaseWhenConditions извлекает WHEN-условия из CASE ... END конструкций.
+func extractCaseWhenConditions(queryText string) []string {
+	result := make([]string, 0)
+	lower := strings.ToLower(queryText)
+
+	searchFrom := 0
+	for {
+		caseIdx := findKeywordPosition(lower[searchFrom:], "case")
+		if caseIdx < 0 {
+			break
+		}
+		caseIdx += searchFrom
+
+		// Находим соответствующий END
+		depth := 1
+		endIdx := caseIdx + 4
+		for endIdx < len(lower) {
+			if isWordBoundary(lower, endIdx-1) && strings.HasPrefix(lower[endIdx:], "case") && isWordBoundary(lower, endIdx+4) {
+				depth++
+				endIdx += 4
+				continue
+			}
+			if isWordBoundary(lower, endIdx-1) && strings.HasPrefix(lower[endIdx:], "end") && isWordBoundary(lower, endIdx+3) {
+				depth--
+				if depth == 0 {
+					break
+				}
+				endIdx += 3
+				continue
+			}
+			endIdx++
+		}
+		if endIdx >= len(lower) {
+			// END не найден (парсер мог отрезать его в другой фрагмент) —
+			// используем остаток текста как тело CASE
+			endIdx = len(lower)
+		}
+
+		caseBody := queryText[caseIdx+4 : endIdx]
+		caseBodyLower := lower[caseIdx+4 : endIdx]
+
+		// Извлекаем WHEN-условия
+		whenIdx := 0
+		for {
+			pos := findKeywordPosition(caseBodyLower[whenIdx:], "when")
+			if pos < 0 {
+				break
+			}
+			pos += whenIdx
+
+			// Находим THEN на top-level
+			thenIdx := pos + 4
+			depth2 := 0
+			for thenIdx < len(caseBodyLower) {
+				ch := caseBodyLower[thenIdx]
+				if ch == '(' {
+					depth2++
+				} else if ch == ')' && depth2 > 0 {
+					depth2--
+				}
+				if depth2 == 0 && isWordBoundary(caseBodyLower, thenIdx-1) && strings.HasPrefix(caseBodyLower[thenIdx:], "then") && isWordBoundary(caseBodyLower, thenIdx+4) {
+					break
+				}
+				thenIdx++
+			}
+			if thenIdx >= len(caseBodyLower) {
+				break
+			}
+
+			whenCond := caseBody[pos+4 : thenIdx]
+			result = append(result, strings.TrimSpace(whenCond))
+			whenIdx = thenIdx + 4
+		}
+
+		searchFrom = endIdx + 3
+		if searchFrom >= len(lower) {
+			break
+		}
+	}
+
+	return result
+}

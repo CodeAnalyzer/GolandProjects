@@ -412,3 +412,80 @@ func TestEnabledRuleSet_UseOnlyDeclaredCursors(t *testing.T) {
 		t.Fatalf("RuleForeignProcedureUsing should be disabled")
 	}
 }
+
+func TestEnabledRuleSet_CursorFetchArguments(t *testing.T) {
+	rules := []RuleID{RuleCursorFetchArguments}
+	set := enabledRuleSet(rules)
+	if !set[RuleCursorFetchArguments] {
+		t.Fatalf("RuleCursorFetchArguments should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestEnabledRuleSet_UsageVarInSameSelect(t *testing.T) {
+	rules := []RuleID{RuleUsageVarInSameSelect}
+	set := enabledRuleSet(rules)
+	if !set[RuleUsageVarInSameSelect] {
+		t.Fatalf("RuleUsageVarInSameSelect should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestEnabledRuleSet_VarAssignInUpdate(t *testing.T) {
+	rules := []RuleID{RuleVarAssignInUpdate}
+	set := enabledRuleSet(rules)
+	if !set[RuleVarAssignInUpdate] {
+		t.Fatalf("RuleVarAssignInUpdate should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestEnabledRuleSet_StatementsWithJoinsRequireAliases(t *testing.T) {
+	rules := []RuleID{RuleStatementsWithJoinsRequireAliases}
+	set := enabledRuleSet(rules)
+	if !set[RuleStatementsWithJoinsRequireAliases] {
+		t.Fatalf("RuleStatementsWithJoinsRequireAliases should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestEnabledRuleSet_UseFuncInIndCol(t *testing.T) {
+	rules := []RuleID{RuleUseFuncInIndCol}
+	set := enabledRuleSet(rules)
+	if !set[RuleUseFuncInIndCol] {
+		t.Fatalf("RuleUseFuncInIndCol should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestEnabledRuleSet_IsNullSameTypes(t *testing.T) {
+	rules := []RuleID{RuleIsNullSameTypes}
+	set := enabledRuleSet(rules)
+	if !set[RuleIsNullSameTypes] {
+		t.Fatalf("RuleIsNullSameTypes should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestEnabledRuleSet_DiffTypesComparison(t *testing.T) {
+	rules := []RuleID{RuleDiffTypesComparison}
+	set := enabledRuleSet(rules)
+	if !set[RuleDiffTypesComparison] {
+		t.Fatalf("RuleDiffTypesComparison should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}

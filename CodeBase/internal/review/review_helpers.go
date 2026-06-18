@@ -198,6 +198,13 @@ func enabledRuleSet(rules []RuleID) map[RuleID]bool {
 		RuleExcessProcParams:        true,
 		RuleDuplicateOutputVariable: true,
 		RuleUseOnlyDeclaredCursors:  true,
+		RuleCursorFetchArguments:   true,
+		RuleUsageVarInSameSelect:   true,
+		RuleVarAssignInUpdate:      true,
+		RuleStatementsWithJoinsRequireAliases: true,
+		RuleUseFuncInIndCol:                  true,
+		RuleIsNullSameTypes:                  true,
+		RuleDiffTypesComparison:              true,
 	}
 	if len(rules) == 0 {
 		return result

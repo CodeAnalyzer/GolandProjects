@@ -5,49 +5,56 @@ import "regexp"
 type RuleID string
 
 const (
-	RuleForeignTablesUsing    RuleID = "foreignTablesUsing"
-	RuleForeignPTablesUsing   RuleID = "foreignPTablesUsing"
-	RuleForeignProcedureUsing RuleID = "foreignProcedureUsing"
-	RuleExecNotExistsProc     RuleID = "execNotExistsProc"
-	RuleProcDuplicate         RuleID = "procDuplicate"
-	RuleProcParamDefValue     RuleID = "procParamDefValue"
-	RuleProcElseCase          RuleID = "procElseCase"
-	RuleUseSelectAll          RuleID = "useSelectAll"
-	RuleTruncTbl              RuleID = "truncTbl"
-	RuleDatatype              RuleID = "datatype"
-	RuleAnsiInJoin            RuleID = "ansiInJoin"
-	RuleInsertRowLock         RuleID = "insertRowLock"
-	RuleUseEqColumn           RuleID = "useEqColumn"
-	RuleTableFullScan         RuleID = "tableFullScan"
-	RuleTableHintExists       RuleID = "tableHintExists"
-	RuleTableHintIsRight      RuleID = "tableHintIsRight"
-	RuleIndexExistsInDB       RuleID = "indexExistsInDB"
-	RuleIndexWrong            RuleID = "indexWrong"
-	RuleUpdateOnlyVar         RuleID = "updateOnlyVar"
-	RulePTableSpid            RuleID = "pTableSpid"
-	RuleForceOrder2Tbl        RuleID = "forceOrder2Tbl"
-	RuleSaveTran              RuleID = "saveTran"
-	RuleUseDrop               RuleID = "useDrop"
-	RuleMathOperations        RuleID = "mathOperations"
-	RuleExistsWithAndInIf     RuleID = "existsWithAndInIf"
-	RuleNullComparison        RuleID = "nullComparison"
-	RuleShouldBeCP866         RuleID = "shouldBeCP866"
-	RuleTooManyJoins          RuleID = "tooManyJoins"
-	RuleMaxProcParam          RuleID = "maxProcParam"
-	RuleModifyOutProc         RuleID = "modifyOutProc"
-	RuleEmptyReturn           RuleID = "emptyReturn"
-	RuleRawTransactionControl RuleID = "rawTransactionControl"
-	RuleDeferredUpdate        RuleID = "deferredUpdate"
-	RuleInSubQuery            RuleID = "inSubQuery"
-	RuleVarcharSize           RuleID = "varcharSize"
-	RuleColumnInsert          RuleID = "columnInsert"
-	RulePostgreLabelGotoLevel RuleID = "postgreLabelGotoLevel"
-	RuleDateIntoString        RuleID = "dateIntoString"
-	RuleEmptyStringDate       RuleID = "emptyStringDate"
-	RuleVarUseAfterCursor     RuleID = "varUseAfterCursor"
-	RuleExcessProcParams        RuleID = "excessProcParams"
-	RuleDuplicateOutputVariable RuleID = "duplicateOutputVariable"
-	RuleUseOnlyDeclaredCursors  RuleID = "useOnlyDeclaredCursors"
+	RuleForeignTablesUsing                RuleID = "foreignTablesUsing"
+	RuleForeignPTablesUsing               RuleID = "foreignPTablesUsing"
+	RuleForeignProcedureUsing             RuleID = "foreignProcedureUsing"
+	RuleExecNotExistsProc                 RuleID = "execNotExistsProc"
+	RuleProcDuplicate                     RuleID = "procDuplicate"
+	RuleProcParamDefValue                 RuleID = "procParamDefValue"
+	RuleProcElseCase                      RuleID = "procElseCase"
+	RuleUseSelectAll                      RuleID = "useSelectAll"
+	RuleTruncTbl                          RuleID = "truncTbl"
+	RuleDatatype                          RuleID = "datatype"
+	RuleAnsiInJoin                        RuleID = "ansiInJoin"
+	RuleInsertRowLock                     RuleID = "insertRowLock"
+	RuleUseEqColumn                       RuleID = "useEqColumn"
+	RuleTableFullScan                     RuleID = "tableFullScan"
+	RuleTableHintExists                   RuleID = "tableHintExists"
+	RuleTableHintIsRight                  RuleID = "tableHintIsRight"
+	RuleIndexExistsInDB                   RuleID = "indexExistsInDB"
+	RuleIndexWrong                        RuleID = "indexWrong"
+	RuleUpdateOnlyVar                     RuleID = "updateOnlyVar"
+	RulePTableSpid                        RuleID = "pTableSpid"
+	RuleForceOrder2Tbl                    RuleID = "forceOrder2Tbl"
+	RuleSaveTran                          RuleID = "saveTran"
+	RuleUseDrop                           RuleID = "useDrop"
+	RuleMathOperations                    RuleID = "mathOperations"
+	RuleExistsWithAndInIf                 RuleID = "existsWithAndInIf"
+	RuleNullComparison                    RuleID = "nullComparison"
+	RuleShouldBeCP866                     RuleID = "shouldBeCP866"
+	RuleTooManyJoins                      RuleID = "tooManyJoins"
+	RuleMaxProcParam                      RuleID = "maxProcParam"
+	RuleModifyOutProc                     RuleID = "modifyOutProc"
+	RuleEmptyReturn                       RuleID = "emptyReturn"
+	RuleRawTransactionControl             RuleID = "rawTransactionControl"
+	RuleDeferredUpdate                    RuleID = "deferredUpdate"
+	RuleInSubQuery                        RuleID = "inSubQuery"
+	RuleVarcharSize                       RuleID = "varcharSize"
+	RuleColumnInsert                      RuleID = "columnInsert"
+	RulePostgreLabelGotoLevel             RuleID = "postgreLabelGotoLevel"
+	RuleDateIntoString                    RuleID = "dateIntoString"
+	RuleEmptyStringDate                   RuleID = "emptyStringDate"
+	RuleVarUseAfterCursor                 RuleID = "varUseAfterCursor"
+	RuleExcessProcParams                  RuleID = "excessProcParams"
+	RuleDuplicateOutputVariable           RuleID = "duplicateOutputVariable"
+	RuleUseOnlyDeclaredCursors            RuleID = "useOnlyDeclaredCursors"
+	RuleCursorFetchArguments              RuleID = "cursorFetchArguments"
+	RuleUsageVarInSameSelect              RuleID = "usageVarInSameSelect"
+	RuleVarAssignInUpdate                 RuleID = "varAssignInUpdate"
+	RuleStatementsWithJoinsRequireAliases RuleID = "statementsWithJoinsRequireAliases"
+	RuleUseFuncInIndCol                   RuleID = "useFuncInIndCol"
+	RuleIsNullSameTypes                   RuleID = "isNullSameTypes"
+	RuleDiffTypesComparison               RuleID = "diffTypesComparison"
 )
 
 const (
@@ -133,6 +140,36 @@ var (
 	modifyOutProcDeleteRe   = regexp.MustCompile(`(?i)^\s*delete\s+(?:from\s+)?([A-Za-z_#][A-Za-z0-9_#]*)`)
 	modifyOutProcTruncateRe = regexp.MustCompile(`(?i)^\s*truncate\s+table\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
 )
+
+// sqlKeywordsMap — ключевые слова SQL, которые не должны считаться ссылками на столбцы.
+var sqlKeywordsMap = map[string]bool{
+	"select": true, "from": true, "where": true, "and": true, "or": true,
+	"not": true, "null": true, "case": true, "when": true, "then": true,
+	"else": true, "end": true, "is": true, "in": true, "like": true,
+	"between": true, "as": true, "top": true, "distinct": true, "all": true,
+	"join": true, "inner": true, "left": true, "right": true, "outer": true,
+	"full": true, "cross": true, "on": true, "group": true, "order": true,
+	"by": true, "having": true, "union": true, "insert": true, "into": true,
+	"values": true, "update": true, "set": true, "delete": true, "output": true,
+	"option": true, "with": true, "exists": true, "while": true, "begin": true,
+	"if": true, "return": true, "declare": true, "create": true, "proc": true,
+	"procedure": true, "go": true, "print": true, "exec": true, "execute": true,
+	"cast": true, "convert": true, "desc": true, "asc": true,
+}
+
+// sqlFunctionsMap — встроенные функции SQL, которые не должны считаться ссылками на столбцы.
+var sqlFunctionsMap = map[string]bool{
+	"isnull": true, "count": true, "sum": true, "max": true, "min": true,
+	"avg": true, "convert": true, "cast": true, "substring": true, "len": true,
+	"upper": true, "lower": true, "abs": true, "datediff": true, "dateadd": true,
+	"getdate": true, "replace": true, "rtrim": true, "ltrim": true,
+	"coalesce": true, "charindex": true, "left": true, "right": true,
+	"replicate": true, "space": true, "datename": true, "datepart": true,
+	"year": true, "month": true, "day": true, "round": true, "floor": true,
+	"ceiling": true, "power": true, "sqrt": true, "sign": true,
+	"row_number": true, "rank": true, "dense_rank": true,
+	"identity": true, "scope_identity": true, "nullif": true,
+}
 
 type Finding struct {
 	Rule             RuleID `json:"rule"`

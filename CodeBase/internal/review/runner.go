@@ -328,6 +328,41 @@ func (r *Runner) buildRuleTasks(ruleSet map[RuleID]bool, parsed *sqlparser.Parse
 			return r.checkUseOnlyDeclaredCursors(parsed, file)
 		}})
 	}
+	if ruleSet[RuleCursorFetchArguments] {
+		tasks = append(tasks, ruleTask{rule: RuleCursorFetchArguments, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkCursorFetchArguments(parsed, file)
+		}})
+	}
+	if ruleSet[RuleUsageVarInSameSelect] {
+		tasks = append(tasks, ruleTask{rule: RuleUsageVarInSameSelect, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkUsageVarInSameSelect(parsed, file)
+		}})
+	}
+	if ruleSet[RuleVarAssignInUpdate] {
+		tasks = append(tasks, ruleTask{rule: RuleVarAssignInUpdate, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkVarAssignInUpdate(parsed, file)
+		}})
+	}
+	if ruleSet[RuleStatementsWithJoinsRequireAliases] {
+		tasks = append(tasks, ruleTask{rule: RuleStatementsWithJoinsRequireAliases, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkStatementsWithJoinsRequireAliases(parsed, file)
+		}})
+	}
+	if ruleSet[RuleUseFuncInIndCol] {
+		tasks = append(tasks, ruleTask{rule: RuleUseFuncInIndCol, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkUseFuncInIndCol(file)
+		}})
+	}
+	if ruleSet[RuleIsNullSameTypes] {
+		tasks = append(tasks, ruleTask{rule: RuleIsNullSameTypes, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkIsNullSameTypes(parsed, file)
+		}})
+	}
+	if ruleSet[RuleDiffTypesComparison] {
+		tasks = append(tasks, ruleTask{rule: RuleDiffTypesComparison, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkDiffTypesComparison(parsed, file)
+		}})
+	}
 	return tasks
 }
 

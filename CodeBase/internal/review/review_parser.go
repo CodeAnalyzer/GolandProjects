@@ -477,6 +477,7 @@ func parseAliasMap(fromClause string) map[string]string {
 	if strings.TrimSpace(fromClause) == "" {
 		return result
 	}
+	// Сначала ищем table alias (с алиасом)
 	re := regexp.MustCompile(`(?is)\b(?:from|join)\s+([a-z_#][a-z0-9_#]*)\s+([a-z_][a-z0-9_]*)`)
 	matches := re.FindAllStringSubmatch(fromClause, -1)
 	for _, m := range matches {
@@ -489,6 +490,22 @@ func parseAliasMap(fromClause string) map[string]string {
 			continue
 		}
 		result[strings.ToLower(aliasName)] = tableName
+		result[strings.ToLower(tableName)] = tableName
+	}
+	// Также ищем таблицы без алиаса: from/join table (без второго слова-алиаса)
+	reNoAlias := regexp.MustCompile(`(?is)\b(?:from|join)\s+([a-z_#][a-z0-9_#]*)(?:\s|$)`)
+	noAliasMatches := reNoAlias.FindAllStringSubmatch(fromClause, -1)
+	for _, m := range noAliasMatches {
+		if len(m) < 2 {
+			continue
+		}
+		tableName := strings.TrimSpace(m[1])
+		if tableName == "" {
+			continue
+		}
+		if _, exists := result[strings.ToLower(tableName)]; !exists {
+			result[strings.ToLower(tableName)] = tableName
+		}
 	}
 	return result
 }

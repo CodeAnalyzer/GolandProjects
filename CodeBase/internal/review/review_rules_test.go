@@ -3356,3 +3356,1040 @@ func TestValidateExecArguments_APIContractParamWithAtSign(t *testing.T) {
 	}
 }
 
+func TestCheckCursorFetchArguments_MatchCount_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare cur1 cursor for select ID, Name from tContract
+  open cur1
+  fetch next from cur1 into @id, @name
+  close cur1
+  deallocate cur1
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_cursor_fetch_args_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings, got %d: %v", len(findings), findings)
+	}
+}
+
+func TestCheckCursorFetchArguments_MismatchCount_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare cur1 cursor for select ID, Name, Value from tContract
+  open cur1
+  fetch next from cur1 into @id, @name
+  close cur1
+  deallocate cur1
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_cursor_fetch_args_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("expected finding for mismatched cursor variable count")
+	}
+	if findings[0].Rule != RuleCursorFetchArguments {
+		t.Fatalf("expected RuleCursorFetchArguments, got %s", findings[0].Rule)
+	}
+	if findings[0].Severity != SeverityPostgreReq {
+		t.Fatalf("expected SeverityPostgreReq, got %d", findings[0].Severity)
+	}
+}
+
+func TestCheckCursorFetchArguments_UndeclaredCursor_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  fetch next from cur_unknown into @id
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_cursor_fetch_args_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings for undeclared cursor (not our rule), got %d", len(findings))
+	}
+}
+
+func TestCheckCursorFetchArguments_DeclareMacro_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  __DECLARE_CURSOR__(cur1)
+  select ID, Name from tContract
+  open cur1
+  __FETCH_NEXT__ cur1 into @id, @name
+  close cur1
+  __DEALLOCATE_CURSOR__(cur1)
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_cursor_fetch_args_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings with macro-based cursor, got %d: %v", len(findings), findings)
+	}
+}
+
+func TestCheckCursorFetchArguments_MoreFetchThanDeclare_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare cur1 cursor for select ID from tContract
+  open cur1
+  fetch next from cur1 into @id, @extra
+  close cur1
+  deallocate cur1
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_cursor_fetch_args_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("expected finding when FETCH has more variables than DECLARE")
+	}
+}
+
+func TestCheckUsageVarInSameSelect_NoCrossRef_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  select @a = t.ColA, @b = t.ColB from tTable t
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_usage_var_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkUsageVarInSameSelect(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings, got %d: %v", len(findings), findings)
+	}
+}
+
+func TestCheckUsageVarInSameSelect_CrossRef_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  select @a = 2, @b = @a + 1
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_usage_var_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkUsageVarInSameSelect(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("expected finding for cross-variable reference")
+	}
+	if findings[0].Rule != RuleUsageVarInSameSelect {
+		t.Fatalf("expected RuleUsageVarInSameSelect, got %s", findings[0].Rule)
+	}
+	if findings[0].Severity != SeverityPostgreReq {
+		t.Fatalf("expected SeverityPostgreReq, got %d", findings[0].Severity)
+	}
+}
+
+func TestCheckUsageVarInSameSelect_FromClause_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  select @a = t.Col, @b = @a + 1 from tTable t
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_usage_var_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkUsageVarInSameSelect(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("expected finding for cross-variable reference with FROM clause")
+	}
+}
+
+func TestCheckUsageVarInSameSelect_ReverseOrder_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  select @b = @a + 1, @a = 2
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_usage_var_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkUsageVarInSameSelect(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings (reverse order: @a not yet seen when @b is evaluated), got %d", len(findings))
+	}
+}
+
+func TestCheckUsageVarInSameSelect_Multiline_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  select @a = t.ColA,
+         @b = @a + 1
+    from tTable t
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_usage_var_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkUsageVarInSameSelect(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("expected finding for multiline cross-variable reference")
+	}
+	if findings[0].Line <= 0 {
+		t.Fatalf("expected positive line number, got %d", findings[0].Line)
+	}
+}
+
+func TestCheckUsageVarInSameSelect_SingleAssignment_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  select @a = t.ColA from tTable t
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_usage_var_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkUsageVarInSameSelect(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings for single assignment, got %d", len(findings))
+	}
+}
+
+func TestCheckUsageVarInSameSelect_CaseExpression_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  select @RetVal = 0,
+         case
+           when @RetVal = 0 then @NodeID = 1
+           else @NodeID = 2
+         end
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_usage_var_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkUsageVarInSameSelect(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("expected finding for @RetVal used in CASE expression")
+	}
+	if findings[0].Rule != RuleUsageVarInSameSelect {
+		t.Fatalf("expected RuleUsageVarInSameSelect, got %s", findings[0].Rule)
+	}
+}
+
+func TestCheckVarAssignInUpdate_VarAndColumn_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  update tContract set @a = 1, col = 2 where id = 3
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_var_assign_update_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkVarAssignInUpdate(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("expected finding for @a in UPDATE SET")
+	}
+	if findings[0].Rule != RuleVarAssignInUpdate {
+		t.Fatalf("expected RuleVarAssignInUpdate, got %s", findings[0].Rule)
+	}
+	if findings[0].Severity != SeverityPostgreReq {
+		t.Fatalf("expected SeverityPostgreReq, got %d", findings[0].Severity)
+	}
+}
+
+func TestCheckVarAssignInUpdate_OnlyColumns_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  update tContract set col1 = 1, col2 = 2 where id = 3
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_var_assign_update_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkVarAssignInUpdate(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings, got %d: %v", len(findings), findings)
+	}
+}
+
+func TestCheckVarAssignInUpdate_OnlyVar_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  update tContract set @a = 1 where id = 3
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_var_assign_update_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkVarAssignInUpdate(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("expected finding for @a in UPDATE SET")
+	}
+}
+
+func TestCheckVarAssignInUpdate_MultipleVars_Findings(t *testing.T) {
+	content := `create proc TestProc
+as
+  update tContract set @a = 1, @b = 2, col = 3 where id = 4
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_var_assign_update_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkVarAssignInUpdate(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 findings for @a and @b, got %d", len(findings))
+	}
+}
+
+func TestCheckVarAssignInUpdate_Multiline_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  update tContract
+  set col1 = 1,
+      @a = 2,
+      col2 = 3
+  where id = 4
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_var_assign_update_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkVarAssignInUpdate(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("expected finding for @a in multiline UPDATE SET")
+	}
+	if findings[0].Line <= 0 {
+		t.Fatalf("expected positive line number, got %d", findings[0].Line)
+	}
+}
+
+func TestCheckStatementsWithJoinsRequireAliases_Qualified_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  select t1.a, t2.b from t1 join t2 on t1.id = t2.id
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_joins_aliases_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings, got %d: %v", len(findings), findings)
+	}
+}
+
+func TestCheckStatementsWithJoinsRequireAliases_Unqualified_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  select a, t2.b from t1 join t2 on t1.id = t2.id
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_joins_aliases_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("expected finding for unqualified column 'a'")
+	}
+	if findings[0].Rule != RuleStatementsWithJoinsRequireAliases {
+		t.Fatalf("expected RuleStatementsWithJoinsRequireAliases, got %s", findings[0].Rule)
+	}
+	if findings[0].Severity != SeverityPostgreReq {
+		t.Fatalf("expected SeverityPostgreReq, got %d", findings[0].Severity)
+	}
+}
+
+func TestCheckStatementsWithJoinsRequireAliases_SingleTable_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  select a, b from t1
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_joins_aliases_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings for single table, got %d", len(findings))
+	}
+}
+
+func TestCheckStatementsWithJoinsRequireAliases_Functions_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  select isnull(t1.a, 0), t2.b from t1 join t2 on t1.id = t2.id
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_joins_aliases_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings, got %d: %v", len(findings), findings)
+	}
+}
+
+func TestCheckStatementsWithJoinsRequireAliases_UnqualifiedInWhere_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  select t1.a, t2.b from t1 join t2 on t1.id = t2.id where col = 1
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_joins_aliases_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("expected finding for unqualified column 'col' in WHERE")
+	}
+}
+
+func TestCheckStatementsWithJoinsRequireAliases_UpdateWithJoin_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  update t1 set t1.a = b from t1 join t2 on t1.id = t2.id
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_joins_aliases_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("expected finding for unqualified column 'b' in UPDATE SET expression")
+	}
+}
+
+func TestCheckStatementsWithJoinsRequireAliases_UpdateSetColumns_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  update t1 set col1 = @val1, col2 = @val2 from t1 join t2 on t1.id = t2.id
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_joins_aliases_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings (SET columns + @vars), got %d: %v", len(findings), findings)
+	}
+}
+
+func TestCheckStatementsWithJoinsRequireAliases_UnqualifiedInOn_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  select t1.a, t2.b from t1 join t2 on SPID = @@spid and ObjectID = t2.id
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_joins_aliases_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("expected finding for unqualified column in ON clause")
+	}
+}
+
+func TestExtractFuncColumnRefs_SimpleFunc(t *testing.T) {
+	refs := extractFuncColumnRefs("UPPER(Name) = 'ABC'")
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 ref, got %d", len(refs))
+	}
+	if refs[0].funcName != "UPPER" {
+		t.Fatalf("expected funcName UPPER, got %s", refs[0].funcName)
+	}
+	if refs[0].column != "Name" {
+		t.Fatalf("expected column Name, got %s", refs[0].column)
+	}
+}
+
+func TestExtractFuncColumnRefs_AliasedColumn(t *testing.T) {
+	refs := extractFuncColumnRefs("ISNULL(t.Status, 0) = 1")
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 ref, got %d", len(refs))
+	}
+	if refs[0].funcName != "ISNULL" {
+		t.Fatalf("expected funcName ISNULL, got %s", refs[0].funcName)
+	}
+	if refs[0].column != "Status" {
+		t.Fatalf("expected column Status (from t.Status), got %s", refs[0].column)
+	}
+}
+
+func TestExtractFuncColumnRefs_NoFunc(t *testing.T) {
+	refs := extractFuncColumnRefs("Name = 'ABC' and Status = 1")
+	if len(refs) != 0 {
+		t.Fatalf("expected 0 refs, got %d: %v", len(refs), refs)
+	}
+}
+
+func TestExtractFuncColumnRefs_MultipleFuncs(t *testing.T) {
+	refs := extractFuncColumnRefs("UPPER(Name) = 'ABC' and ISNULL(Status, 0) = 1")
+	if len(refs) != 2 {
+		t.Fatalf("expected 2 refs, got %d", len(refs))
+	}
+}
+
+func TestIsIndexedColumn_DirectMatch(t *testing.T) {
+	indexSet := map[string]bool{"name": true, "status": true}
+	if !isIndexedColumn("Name", "", indexSet) {
+		t.Fatalf("Name should be indexed")
+	}
+	if isIndexedColumn("Other", "", indexSet) {
+		t.Fatalf("Other should not be indexed")
+	}
+}
+
+func TestIsIndexedColumn_AliasedMatch(t *testing.T) {
+	indexSet := map[string]bool{"name": true}
+	if !isIndexedColumn("t.Name", "t", indexSet) {
+		t.Fatalf("t.Name should be indexed (alias.column -> Name)")
+	}
+	if isIndexedColumn("t.Other", "t", indexSet) {
+		t.Fatalf("t.Other should not be indexed")
+	}
+}
+
+func TestExtractIsnullCalls_Simple(t *testing.T) {
+	calls := extractIsnullCalls("ISNULL(col, 0)")
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if strings.TrimSpace(calls[0][0]) != "col" || strings.TrimSpace(calls[0][1]) != "0" {
+		t.Fatalf("unexpected args: %v", calls)
+	}
+}
+
+func TestExtractIsnullCalls_Multiple(t *testing.T) {
+	calls := extractIsnullCalls("ISNULL(a, b) and ISNULL(c, d)")
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 calls, got %d", len(calls))
+	}
+}
+
+func TestExtractIsnullCalls_NestedFunc(t *testing.T) {
+	calls := extractIsnullCalls("ISNULL(UPPER(col), 'default')")
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if strings.TrimSpace(calls[0][0]) != "UPPER(col)" {
+		t.Fatalf("expected UPPER(col) as first arg, got %s", calls[0][0])
+	}
+}
+
+func TestExtractIsnullCalls_NoCall(t *testing.T) {
+	calls := extractIsnullCalls("col = 1 and status = 0")
+	if len(calls) != 0 {
+		t.Fatalf("expected 0 calls, got %d", len(calls))
+	}
+}
+
+func TestExtractIsnullCalls_CaseInsensitive(t *testing.T) {
+	calls := extractIsnullCalls("isnull(col, 0)")
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call for lowercase isnull, got %d", len(calls))
+	}
+}
+
+func TestExtractComparisons_Simple(t *testing.T) {
+	cmps := extractComparisons("col = 1")
+	if len(cmps) != 1 {
+		t.Fatalf("expected 1 comparison, got %d", len(cmps))
+	}
+	if strings.TrimSpace(cmps[0].left) != "col" || cmps[0].op != "=" || strings.TrimSpace(cmps[0].right) != "1" {
+		t.Fatalf("unexpected: %+v", cmps[0])
+	}
+}
+
+func TestExtractComparisons_AndOr(t *testing.T) {
+	cmps := extractComparisons("a = 1 and b <> 2 or c > 3")
+	if len(cmps) != 3 {
+		t.Fatalf("expected 3 comparisons, got %d", len(cmps))
+	}
+}
+
+func TestExtractComparisons_NestedParens(t *testing.T) {
+	cmps := extractComparisons("(a = 1 and b = 2) or c = 3")
+	if len(cmps) != 3 {
+		t.Fatalf("expected 3 comparisons, got %d", len(cmps))
+	}
+}
+
+func TestFindComparisonOperator_NotEqual(t *testing.T) {
+	cmp := findComparisonOperator("a <> b")
+	if cmp.op != "<>" {
+		t.Fatalf("expected <>, got %s", cmp.op)
+	}
+}
+
+func TestFindComparisonOperator_LessThanOrEqual(t *testing.T) {
+	cmp := findComparisonOperator("a <= b")
+	if cmp.op != "<=" {
+		t.Fatalf("expected <=, got %s", cmp.op)
+	}
+}
+
+func TestIsAssignmentFragment_UpdateSet(t *testing.T) {
+	if !isAssignmentFragment("update t set col = 1") {
+		t.Fatalf("UPDATE SET should be assignment")
+	}
+}
+
+func TestIsAssignmentFragment_SelectAssign(t *testing.T) {
+	if !isAssignmentFragment("select @var = col from t") {
+		t.Fatalf("SELECT @var = should be assignment")
+	}
+}
+
+func TestIsAssignmentFragment_NotAssignment(t *testing.T) {
+	if isAssignmentFragment("select col from t where col = 1") {
+		t.Fatalf("SELECT with WHERE should not be assignment")
+	}
+}
+
+func TestExtractCaseWhenConditions_Simple(t *testing.T) {
+	conds := extractCaseWhenConditions("case when col = 1 then 'a' else 'b' end")
+	if len(conds) != 1 {
+		t.Fatalf("expected 1 WHEN condition, got %d", len(conds))
+	}
+	if strings.TrimSpace(conds[0]) != "col = 1" {
+		t.Fatalf("unexpected condition: %s", conds[0])
+	}
+}
+
+func TestExtractCaseWhenConditions_Multiple(t *testing.T) {
+	conds := extractCaseWhenConditions("case when a = 1 then 'a' when b = 2 then 'b' else 'c' end")
+	if len(conds) != 2 {
+		t.Fatalf("expected 2 WHEN conditions, got %d", len(conds))
+	}
+}
+
+func TestSplitByAndOr_Simple(t *testing.T) {
+	parts := splitByAndOr("a = 1 and b = 2")
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(parts))
+	}
+}
+
+func TestSplitByAndOr_OrOnly(t *testing.T) {
+	parts := splitByAndOr("a = 1 or b = 2 or c = 3")
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 parts, got %d", len(parts))
+	}
+}
+
+func TestExtractCaseWhenConditions_MultilineSelect(t *testing.T) {
+	text := "select @RetVal = case\n                     when @NodeID = getdate() then 1\n                     else 0\n                   end"
+	conds := extractCaseWhenConditions(text)
+	if len(conds) != 1 {
+		t.Fatalf("expected 1 WHEN condition, got %d: %v", len(conds), conds)
+	}
+	cmps := extractComparisons(conds[0])
+	if len(cmps) != 1 {
+		t.Fatalf("expected 1 comparison in WHEN, got %d: %v", len(cmps), cmps)
+	}
+	if cmps[0].op != "=" {
+		t.Fatalf("expected = operator, got %s", cmps[0].op)
+	}
+}
