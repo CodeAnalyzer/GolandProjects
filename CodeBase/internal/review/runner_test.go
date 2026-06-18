@@ -489,3 +489,36 @@ func TestEnabledRuleSet_DiffTypesComparison(t *testing.T) {
 		t.Fatalf("RuleForeignProcedureUsing should be disabled")
 	}
 }
+
+func TestEnabledRuleSet_FloatToStringConvert(t *testing.T) {
+	rules := []RuleID{RuleFloatToStringConvert}
+	set := enabledRuleSet(rules)
+	if !set[RuleFloatToStringConvert] {
+		t.Fatalf("RuleFloatToStringConvert should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestEnabledRuleSet_SelectAfterSetRowcount(t *testing.T) {
+	rules := []RuleID{RuleSelectAfterSetRowcount}
+	set := enabledRuleSet(rules)
+	if !set[RuleSelectAfterSetRowcount] {
+		t.Fatalf("RuleSelectAfterSetRowcount should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
+func TestEnabledRuleSet_AliasWhenUsingUnion(t *testing.T) {
+	rules := []RuleID{RuleAliasWhenUsingUnion}
+	set := enabledRuleSet(rules)
+	if !set[RuleAliasWhenUsingUnion] {
+		t.Fatalf("RuleAliasWhenUsingUnion should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}

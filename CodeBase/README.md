@@ -469,18 +469,14 @@ codebase review <путь_к_файлу.sql> --json
 codebase review <путь_к_файлу.sql> --rules foreignTablesUsing,execNotExistsProc
 ```
 
-**Deploy stoppers** (критические ошибки, блокирующие деплой):
+**Deploy stoppers** (severity=1, критические ошибки, блокирующие деплой):
 
-- `foreignTablesUsing` — использование таблиц из других продуктов
-- `foreignPTablesUsing` — использование p-таблиц из других продуктов
-- `foreignProcedureUsing` — вызов процедур из других продуктов
 - `execNotExistsProc` — `EXEC` несуществующей процедуры (проверка по индексу)
 - `procDuplicate` — дублирование имени процедуры в одном файле
 - `procParamDefValue` — параметр процедуры с DEFAULT значением
 - `procElseCase` — `ELSE` в `CASE` без обработки ошибок
 - `useSelectAll` — использование `SELECT *`
 - `truncTbl` — использование `TRUNCATE TABLE`
-- `datatype` — потенциальная потеря точности при assignment/conversion
 - `ansiInJoin` — ANSI-89 join syntax (comma joins)
 - `insertRowLock` — `INSERT` без `ROWLOCK`
 - `useEqColumn` — сравнение колонок разных типов
@@ -496,6 +492,44 @@ codebase review <путь_к_файлу.sql> --rules foreignTablesUsing,execNotE
 - `useDrop` — использование `DROP`/`DROP_CREATE` в теле процедуры
 - `mathOperations` — математические операции в `BETWEEN` и сравнениях (риск overflow)
 - `existsWithAndInIf` — `IF` с запросом к таблицам и `AND` (нет гарантии short-circuit)
+
+**PostgreReq** (severity=2, требования PostgreSQL):
+
+- `nullComparison` — сравнение с `NULL` через `=`/`<>` вместо `IS NULL`/`IS NOT NULL`
+- `shouldBeCP866` — строковые литералы должны быть в кодировке CP866
+- `tooManyJoins` — превышение лимита JOIN (более 12)
+- `maxProcParam` — превышение лимита параметров процедуры (более 90)
+- `modifyOutProc` — модификация выходных параметров процедуры
+- `emptyReturn` — пустой `RETURN` без значения
+- `rawTransactionControl` — прямое управление транзакциями (`BEGIN TRAN`/`COMMIT`/`ROLLBACK`)
+- `deferredUpdate` — отложенное обновление (UPDATE после INSERT в той же таблице)
+- `inSubQuery` — использование `IN` с подзапросом (рекомендуется `EXISTS`)
+- `varcharSize` — `VARCHAR` без указания размера
+- `columnInsert` — `INSERT` без явного указания колонок
+- `postgreLabelGotoLevel` — использование `GOTO` и меток
+- `dateIntoString` — приведение даты к строке
+- `emptyStringDate` — сравнение даты с пустой строкой
+- `varUseAfterCursor` — использование переменной после закрытия курсора
+- `excessProcParams` — избыточные параметры процедуры
+- `duplicateOutputVariable` — дублирование выходной переменной
+- `useOnlyDeclaredCursors` — использование курсоров без объявления
+- `cursorFetchArguments` — проверка аргументов `FETCH` курсора
+- `usageVarInSameSelect` — использование переменной в том же `SELECT`
+- `varAssignInUpdate` — присвоение переменной в `UPDATE`
+- `statementsWithJoinsRequireAliases` — запросы с JOIN требуют алиасы таблиц
+- `useFuncInIndCol` — использование функции в индексированной колонке
+- `isNullSameTypes` — `ISNULL` с аргументами разных типов
+- `diffTypesComparison` — сравнение выражений разных типов в `WHERE`/`ON`/`IF`/`CASE WHEN`
+- `floatToStringConvert` — приведение `FLOAT`/`DSFLOAT` к строке через `CONVERT`/`CAST`
+- `selectAfterSetRowcount` — `SELECT` в переменные и `INSERT...SELECT` после `SET ROWCOUNT N` без `ORDER BY`
+- `aliasWhenUsingUnion` — колонки `ORDER BY` при `UNION` должны быть в алиасах первого `SELECT`
+
+**Fine code** (severity=3, рекомендации по качеству кода):
+
+- `foreignTablesUsing` — использование таблиц из других продуктов
+- `foreignPTablesUsing` — использование p-таблиц из других продуктов
+- `foreignProcedureUsing` — вызов процедур из других продуктов
+- `datatype` — потенциальная потеря точности при assignment/conversion
 
 Опции:
 - `--rules` — список проверяемых правил (по умолчанию все deploy stoppers)

@@ -55,6 +55,9 @@ const (
 	RuleUseFuncInIndCol                   RuleID = "useFuncInIndCol"
 	RuleIsNullSameTypes                   RuleID = "isNullSameTypes"
 	RuleDiffTypesComparison               RuleID = "diffTypesComparison"
+	RuleFloatToStringConvert              RuleID = "floatToStringConvert"
+	RuleSelectAfterSetRowcount            RuleID = "selectAfterSetRowcount"
+	RuleAliasWhenUsingUnion               RuleID = "aliasWhenUsingUnion"
 )
 
 const (

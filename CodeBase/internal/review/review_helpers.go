@@ -205,6 +205,9 @@ func enabledRuleSet(rules []RuleID) map[RuleID]bool {
 		RuleUseFuncInIndCol:                  true,
 		RuleIsNullSameTypes:                  true,
 		RuleDiffTypesComparison:              true,
+		RuleFloatToStringConvert:             true,
+		RuleSelectAfterSetRowcount:           true,
+		RuleAliasWhenUsingUnion:              true,
 	}
 	if len(rules) == 0 {
 		return result

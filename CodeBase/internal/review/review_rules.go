@@ -6565,3 +6565,525 @@ func extractCaseWhenConditions(queryText string) []string {
 
 	return result
 }
+
+// checkFloatToStringConvert проверяет, что CONVERT и CAST не используются
+// для приведения float/DSFLOAT к строковому типу.
+func (r *Runner) checkFloatToStringConvert(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	seen := make(map[string]struct{})
+
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	variableTypes := collectVariableTypes(parsed, string(content))
+
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+		queryText := fragment.QueryText
+		aliasMap := parseAliasMap(extractFromClause(queryText))
+
+		// Ищем CONVERT(targetType, floatExpr, ...)
+		convertRe := regexp.MustCompile(`(?i)\bconvert\s*\(`)
+		convertMatches := convertRe.FindAllStringIndex(queryText, -1)
+		for _, m := range convertMatches {
+			start := m[0]
+			parenStart := strings.Index(queryText[start:], "(")
+			if parenStart < 0 {
+				continue
+			}
+			parenStart += start
+			inner, endIdx := extractParenContent(queryText, parenStart)
+			if inner == "" {
+				continue
+			}
+			args := splitTopLevelCSV(inner)
+			if len(args) < 2 {
+				continue
+			}
+			targetType := strings.TrimSpace(args[0])
+			sourceExpr := strings.TrimSpace(args[1])
+			if targetType == "" || sourceExpr == "" {
+				continue
+			}
+			if typeGroup(targetType) != "string" {
+				continue
+			}
+			sourceType := r.resolveArgType(sourceExpr, variableTypes, aliasMap)
+			if sourceType == "" {
+				continue
+			}
+			if typeGroup(sourceType) == "float" {
+				lineOffset := findColLineOffsetInPart(queryText, queryText[start:endIdx], "convert")
+				key := fmt.Sprintf("%d|%s|%s", fragment.LineNumber, sourceExpr, targetType)
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+				findings = append(findings, Finding{
+					Rule:             RuleFloatToStringConvert,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Использование CONVERT для приведения float к строке запрещено: CONVERT(%s, %s)", targetType, sourceExpr),
+					File:             file.Path,
+					Line:             fragment.LineNumber + lineOffset,
+					Object:           fmt.Sprintf("CONVERT(%s, %s)", targetType, sourceExpr),
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+
+		// Ищем CAST(floatExpr AS targetType)
+		castRe := regexp.MustCompile(`(?i)\bcast\s*\(`)
+		castMatches := castRe.FindAllStringIndex(queryText, -1)
+		for _, m := range castMatches {
+			start := m[0]
+			parenStart := strings.Index(queryText[start:], "(")
+			if parenStart < 0 {
+				continue
+			}
+			parenStart += start
+			inner, endIdx := extractParenContent(queryText, parenStart)
+			if inner == "" {
+				continue
+			}
+			// Разделяем по AS (top-level)
+			asIdx := findTopLevelKeywordPosition(strings.ToLower(inner), "as")
+			if asIdx < 0 {
+				continue
+			}
+			sourceExpr := strings.TrimSpace(inner[:asIdx])
+			targetType := strings.TrimSpace(inner[asIdx+2:])
+			if sourceExpr == "" || targetType == "" {
+				continue
+			}
+			if typeGroup(targetType) != "string" {
+				continue
+			}
+			sourceType := r.resolveArgType(sourceExpr, variableTypes, aliasMap)
+			if sourceType == "" {
+				continue
+			}
+			if typeGroup(sourceType) == "float" {
+				lineOffset := findColLineOffsetInPart(queryText, queryText[start:endIdx], "cast")
+				key := fmt.Sprintf("%d|%s|%s", fragment.LineNumber, sourceExpr, targetType)
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+				findings = append(findings, Finding{
+					Rule:             RuleFloatToStringConvert,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Использование CAST для приведения float к строке запрещено: CAST(%s AS %s)", sourceExpr, targetType),
+					File:             file.Path,
+					Line:             fragment.LineNumber + lineOffset,
+					Object:           fmt.Sprintf("CAST(%s AS %s)", sourceExpr, targetType),
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	return findings, nil
+}
+
+// extractParenContent извлекает содержимое скобок начиная с позиции openIdx.
+// Возвращает содержимое без внешних скобок и индекс закрывающей скобки.
+func extractParenContent(text string, openIdx int) (string, int) {
+	if openIdx >= len(text) || text[openIdx] != '(' {
+		return "", openIdx
+	}
+	depth := 0
+	for i := openIdx; i < len(text); i++ {
+		switch text[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return text[openIdx+1 : i], i + 1
+			}
+		}
+	}
+	return "", len(text)
+}
+
+// checkSelectAfterSetRowcount проверяет, что после SET ROWCOUNT N (N != 0)
+// SELECT-присвоения в переменные и INSERT...SELECT имеют ORDER BY.
+func (r *Runner) checkSelectAfterSetRowcount(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	seen := make(map[string]struct{})
+
+	rowcountActive := false
+
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+		queryText := fragment.QueryText
+		lower := strings.ToLower(queryText)
+
+		// Отслеживаем SET ROWCOUNT
+		rowcountRe := regexp.MustCompile(`(?is)\bset\s+rowcount\s+(\d+)`)
+		rowcountMatches := rowcountRe.FindAllStringSubmatch(lower, -1)
+		for _, m := range rowcountMatches {
+			if len(m) < 2 {
+				continue
+			}
+			n := strings.TrimSpace(m[1])
+			if n == "0" {
+				rowcountActive = false
+			} else {
+				rowcountActive = true
+			}
+		}
+
+		if !rowcountActive {
+			continue
+		}
+
+		// Проверяем SELECT @var = expr FROM ... без ORDER BY
+		if hasOrderBy(lower) {
+			continue
+		}
+
+		// Case 1: SELECT @var = field FROM ...
+		if stmt, ok := parseSelectAssignStatement(queryText); ok {
+			for _, assign := range stmt.Assignments {
+				if containsColumnRef(assign.Expression) {
+					key := fmt.Sprintf("%d|%s|%s", fragment.LineNumber, assign.TargetVariable, assign.Expression)
+					if _, exists := seen[key]; exists {
+						continue
+					}
+					seen[key] = struct{}{}
+					findings = append(findings, Finding{
+						Rule:             RuleSelectAfterSetRowcount,
+						Severity:         SeverityPostgreReq,
+						Message:          fmt.Sprintf("SELECT %s = %s после SET ROWCOUNT без ORDER BY — результат недетерминирован", assign.TargetVariable, assign.Expression),
+						File:             file.Path,
+						Line:             fragment.LineNumber,
+						Object:           fmt.Sprintf("SELECT %s = %s", assign.TargetVariable, assign.Expression),
+						CurrentProductID: file.DsProductID,
+					})
+				}
+			}
+			continue
+		}
+
+		// Case 2: INSERT INTO ... SELECT ... FROM ... без ORDER BY
+		if isInsertSelectFragment(queryText) {
+			selectExpr := extractInsertSelectExpr(queryText)
+			if selectExpr != "" && containsColumnRef(selectExpr) {
+				key := fmt.Sprintf("%d|%s", fragment.LineNumber, selectExpr)
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+				findings = append(findings, Finding{
+					Rule:             RuleSelectAfterSetRowcount,
+					Severity:         SeverityPostgreReq,
+					Message:          "INSERT...SELECT после SET ROWCOUNT без ORDER BY — результат недетерминирован",
+					File:             file.Path,
+					Line:             fragment.LineNumber,
+					Object:           "INSERT...SELECT",
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	return findings, nil
+}
+
+// hasOrderBy проверяет наличие ORDER BY в тексте запроса.
+func hasOrderBy(lowerQuery string) bool {
+	idx := findTopLevelKeywordPosition(lowerQuery, "order")
+	if idx < 0 {
+		return false
+	}
+	rest := lowerQuery[idx+5:]
+	return strings.HasPrefix(strings.TrimSpace(rest), "by")
+}
+
+// containsColumnRef проверяет, содержит ли выражение ссылку на колонку таблицы
+// (а не только литералы или переменные).
+func containsColumnRef(expr string) bool {
+	// Убираем qualified refs (alias.column) — они тоже считаются ссылками на колонки
+	refs := extractColumnRefsFromExpression(expr)
+	if len(refs) > 0 {
+		return true
+	}
+	// Проверяем неквалифицированные ссылки на колонки
+	// Убираем переменные (@var), числа, строки, функции
+	cleaned := regexp.MustCompile(`(?i)@@?[a-z_][a-z0-9_]*`).ReplaceAllString(expr, "")
+	cleaned = regexp.MustCompile(`(?i)\b\d+(\.\d+)?\b`).ReplaceAllString(cleaned, "")
+	cleaned = regexp.MustCompile(`'[^']*'`).ReplaceAllString(cleaned, "")
+	cleaned = regexp.MustCompile(`(?i)\b(null|isnull|convert|cast|case|when|then|else|end|and|or|not)\b`).ReplaceAllString(cleaned, "")
+	// Убираем известные функции
+	cleaned = regexp.MustCompile(`(?i)\b[a-z_]+\s*\(`).ReplaceAllString(cleaned, "")
+	// Остаёмся ли с идентификатором?
+	identRe := regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*\b`)
+	return identRe.MatchString(strings.TrimSpace(cleaned))
+}
+
+// isInsertSelectFragment проверяет, является ли фрагмент INSERT...SELECT.
+func isInsertSelectFragment(queryText string) bool {
+	lower := strings.ToLower(strings.TrimSpace(queryText))
+	return strings.HasPrefix(lower, "insert") && findTopLevelKeywordPosition(lower, "select") >= 0
+}
+
+// extractInsertSelectExpr извлекает SELECT-часть из INSERT...SELECT.
+func extractInsertSelectExpr(queryText string) string {
+	lower := strings.ToLower(queryText)
+	selectIdx := findTopLevelKeywordPosition(lower, "select")
+	if selectIdx < 0 {
+		return ""
+	}
+	// Ищем FROM после SELECT
+	rest := queryText[selectIdx:]
+	restLower := lower[selectIdx:]
+	fromIdx := findTopLevelKeywordPosition(restLower, "from")
+	if fromIdx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:fromIdx])
+}
+
+// checkAliasWhenUsingUnion проверяет, что при использовании ORDER BY после
+// SELECT-ов объединённых UNION, все имена из ORDER BY содержатся в алиасах
+// первого SELECT.
+func (r *Runner) checkAliasWhenUsingUnion(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	seen := make(map[string]struct{})
+
+	for _, fragment := range parsed.Fragments {
+		if fragment == nil {
+			continue
+		}
+		queryText := fragment.QueryText
+		lower := strings.ToLower(queryText)
+
+		// Проверяем только если есть UNION на top-level
+		if !containsTopLevelUnion(lower) {
+			continue
+		}
+
+		// Проверяем только если есть ORDER BY на top-level
+		if !hasOrderBy(lower) {
+			continue
+		}
+
+		// Извлекаем первый SELECT (от начала до первого UNION)
+		firstSelect, ok := extractFirstSelectBeforeUnion(queryText)
+		if !ok {
+			continue
+		}
+
+		// Извлекаем имена колонок первого SELECT
+		firstSelectNames := extractSelectColumnNames(firstSelect)
+		if len(firstSelectNames) == 0 {
+			continue
+		}
+
+		// Извлекаем колонки из ORDER BY
+		orderByCols := extractOrderByColumns(queryText)
+		if len(orderByCols) == 0 {
+			continue
+		}
+
+		// Проверяем каждую колонку ORDER BY
+		for _, col := range orderByCols {
+			colTrimmed := strings.TrimSpace(col)
+			if colTrimmed == "" {
+				continue
+			}
+			// Порядковый номер — всегда валиден
+			if isNumericLiteral(colTrimmed) {
+				continue
+			}
+			// Убираем квалификацию (alias.col → col)
+			if dotIdx := strings.LastIndex(colTrimmed, "."); dotIdx >= 0 {
+				colTrimmed = colTrimmed[dotIdx+1:]
+			}
+			colLower := strings.ToLower(strings.TrimSpace(colTrimmed))
+			if _, exists := firstSelectNames[colLower]; !exists {
+				key := fmt.Sprintf("%d|%s", fragment.LineNumber, colTrimmed)
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+				findings = append(findings, Finding{
+					Rule:             RuleAliasWhenUsingUnion,
+					Severity:         SeverityPostgreReq,
+					Message:          fmt.Sprintf("Колонка ORDER BY '%s' отсутствует в алиасах первого SELECT при использовании UNION", colTrimmed),
+					File:             file.Path,
+					Line:             fragment.LineNumber,
+					Object:           colTrimmed,
+					CurrentProductID: file.DsProductID,
+				})
+			}
+		}
+	}
+
+	return findings, nil
+}
+
+// containsTopLevelUnion проверяет наличие UNION на top-level.
+func containsTopLevelUnion(lowerQuery string) bool {
+	return findTopLevelKeywordPosition(lowerQuery, "union") >= 0
+}
+
+// extractFirstSelectBeforeUnion извлекает первый SELECT до первого UNION.
+func extractFirstSelectBeforeUnion(queryText string) (string, bool) {
+	lower := strings.ToLower(queryText)
+	if !strings.HasPrefix(strings.TrimSpace(lower), "select") {
+		return "", false
+	}
+	unionIdx := findTopLevelKeywordPosition(lower, "union")
+	if unionIdx < 0 {
+		return "", false
+	}
+	return strings.TrimSpace(queryText[:unionIdx]), true
+}
+
+// extractSelectColumnNames извлекает имена колонок из SELECT-части
+// (между SELECT и FROM). Возвращает map нижнего регистра.
+func extractSelectColumnNames(selectStmt string) map[string]struct{} {
+	result := make(map[string]struct{})
+	lower := strings.ToLower(selectStmt)
+	if !strings.HasPrefix(strings.TrimSpace(lower), "select") {
+		return result
+	}
+	fromIdx := findTopLevelKeywordPosition(lower, "from")
+	if fromIdx < 0 {
+		return result
+	}
+	selectPart := strings.TrimSpace(selectStmt[len("select"):fromIdx])
+	if selectPart == "" {
+		return result
+	}
+	parts := splitTopLevelCSV(selectPart)
+	for _, part := range parts {
+		name := extractColumnAliasName(strings.TrimSpace(part))
+		if name != "" {
+			result[strings.ToLower(name)] = struct{}{}
+		}
+	}
+	return result
+}
+
+// extractColumnAliasName извлекает имя/алиас из выражения колонки SELECT.
+// "col AS alias" → "alias", "col alias" → "alias", "col" → "col".
+func extractColumnAliasName(expr string) string {
+	// Убираем TOP N
+	expr = regexp.MustCompile(`(?i)^\s*top\s+\d+\s+`).ReplaceAllString(expr, "")
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return ""
+	}
+	// Проверяем "expr AS alias"
+	asRe := regexp.MustCompile(`(?i)\bas\s+([a-z_][a-z0-9_]*)\s*$`)
+	if m := asRe.FindStringSubmatch(expr); len(m) == 2 {
+		return m[1]
+	}
+	// Проверяем "expr alias" (последний идентификатор без ключевого слова)
+	// Разбиваем по пробелам, берём последний токен если он идентификатор
+	tokens := strings.Fields(expr)
+	if len(tokens) == 0 {
+		return ""
+	}
+	// Если один токен — это просто имя колонки
+	if len(tokens) == 1 {
+		// Убираем квалификацию table.column → column
+		clean := tokens[0]
+		if dotIdx := strings.LastIndex(clean, "."); dotIdx >= 0 {
+			clean = clean[dotIdx+1:]
+		}
+		// Проверяем что это идентификатор
+		if regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`).MatchString(clean) {
+			return clean
+		}
+		return ""
+	}
+	// Несколько токенов: последний может быть алиасом
+	last := tokens[len(tokens)-1]
+	// Предпоследний не должен быть ключевым словом (AS уже обработано выше)
+	if regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`).MatchString(last) {
+		// Проверяем что предпоследний токен не ключевое слово
+		prev := strings.ToLower(tokens[len(tokens)-2])
+		keywords := map[string]bool{
+			"from": true, "where": true, "and": true, "or": true,
+			"not": true, "is": true, "in": true, "like": true,
+			"between": true, "join": true, "on": true, "as": true,
+			"case": true, "when": true, "then": true, "else": true,
+			"end": true, "null": true, "select": true,
+		}
+		if !keywords[prev] {
+			return last
+		}
+	}
+	// Имя колонки из первого токена
+	clean := tokens[0]
+	if dotIdx := strings.LastIndex(clean, "."); dotIdx >= 0 {
+		clean = clean[dotIdx+1:]
+	}
+	if regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`).MatchString(clean) {
+		return clean
+	}
+	return ""
+}
+
+// extractOrderByColumns извлекает список колонок из ORDER BY.
+func extractOrderByColumns(queryText string) []string {
+	lower := strings.ToLower(queryText)
+	orderIdx := findTopLevelKeywordPosition(lower, "order")
+	if orderIdx < 0 {
+		return nil
+	}
+	rest := lower[orderIdx+5:]
+	restTrimmed := strings.TrimSpace(rest)
+	if !strings.HasPrefix(restTrimmed, "by") {
+		return nil
+	}
+	byEnd := orderIdx + 5 + strings.Index(rest, "by") + 2
+	// ORDER BY может быть последним — берём до конца или до следующего top-level keyword
+	remaining := queryText[byEnd:]
+	remainingLower := lower[byEnd:]
+	// Ищем конец ORDER BY (следующий top-level keyword или конец текста)
+	endKeywords := []string{"for", "compute", "option", "union", "except", "intersect"}
+	endIdx := len(remaining)
+	for _, kw := range endKeywords {
+		kwIdx := findTopLevelKeywordPosition(remainingLower, kw)
+		if kwIdx >= 0 && kwIdx < endIdx {
+			endIdx = kwIdx
+		}
+	}
+	orderByPart := strings.TrimSpace(remaining[:endIdx])
+	if orderByPart == "" {
+		return nil
+	}
+	// Обрезаем макросы M_FORCEORDER и подобные в конце
+	orderByLower := strings.ToLower(orderByPart)
+	for _, macro := range forceOrderMacros {
+		macroLower := strings.ToLower(macro)
+		if strings.HasSuffix(orderByLower, macroLower) {
+			orderByPart = strings.TrimSpace(orderByPart[:len(orderByPart)-len(macro)])
+			orderByLower = strings.ToLower(orderByPart)
+			break
+		}
+	}
+	// Разделяем по запятым на top-level
+	cols := splitTopLevelCSV(orderByPart)
+	result := make([]string, 0, len(cols))
+	for _, col := range cols {
+		colTrimmed := strings.TrimSpace(col)
+		// Убираем ASC/DESC
+		colTrimmed = regexp.MustCompile(`(?i)\s+(asc|desc)\s*$`).ReplaceAllString(colTrimmed, "")
+		colTrimmed = strings.TrimSpace(colTrimmed)
+		if colTrimmed != "" {
+			result = append(result, colTrimmed)
+		}
+	}
+	return result
+}

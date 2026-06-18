@@ -4393,3 +4393,166 @@ func TestExtractCaseWhenConditions_MultilineSelect(t *testing.T) {
 		t.Fatalf("expected = operator, got %s", cmps[0].op)
 	}
 }
+
+func TestExtractParenContent_Simple(t *testing.T) {
+	inner, end := extractParenContent("convert(varchar, @x)", 7)
+	if inner != "varchar, @x" {
+		t.Fatalf("expected 'varchar, @x', got %q", inner)
+	}
+	if end != 20 {
+		t.Fatalf("expected end=20, got %d", end)
+	}
+}
+
+func TestExtractParenContent_Nested(t *testing.T) {
+	inner, end := extractParenContent("convert(varchar, isnull(@x, 0))", 7)
+	if inner != "varchar, isnull(@x, 0)" {
+		t.Fatalf("expected 'varchar, isnull(@x, 0)', got %q", inner)
+	}
+	if end != 31 {
+		t.Fatalf("expected end=31, got %d", end)
+	}
+}
+
+func TestExtractParenContent_Empty(t *testing.T) {
+	inner, _ := extractParenContent("convert()", 7)
+	if inner != "" {
+		t.Fatalf("expected empty, got %q", inner)
+	}
+}
+
+func TestContainsColumnRef_Column(t *testing.T) {
+	if !containsColumnRef("field1") {
+		t.Fatalf("expected true for column ref")
+	}
+	if !containsColumnRef("t.field1") {
+		t.Fatalf("expected true for qualified column ref")
+	}
+}
+
+func TestContainsColumnRef_Literal(t *testing.T) {
+	if containsColumnRef("123") {
+		t.Fatalf("expected false for literal")
+	}
+	if containsColumnRef("'abc'") {
+		t.Fatalf("expected false for string literal")
+	}
+}
+
+func TestContainsColumnRef_Variable(t *testing.T) {
+	if containsColumnRef("@var") {
+		t.Fatalf("expected false for variable")
+	}
+}
+
+func TestHasOrderBy_WithOrderBy(t *testing.T) {
+	if !hasOrderBy("select * from t order by id") {
+		t.Fatalf("expected true for order by")
+	}
+}
+
+func TestHasOrderBy_WithoutOrderBy(t *testing.T) {
+	if hasOrderBy("select * from t") {
+		t.Fatalf("expected false without order by")
+	}
+}
+
+func TestIsInsertSelectFragment_True(t *testing.T) {
+	if !isInsertSelectFragment("insert into t1 (col) select field from t") {
+		t.Fatalf("expected true for insert...select")
+	}
+}
+
+func TestIsInsertSelectFragment_False(t *testing.T) {
+	if isInsertSelectFragment("select * from t") {
+		t.Fatalf("expected false for plain select")
+	}
+}
+
+func TestContainsTopLevelUnion_True(t *testing.T) {
+	if !containsTopLevelUnion("select a from t union select b from t2") {
+		t.Fatalf("expected true for union")
+	}
+}
+
+func TestContainsTopLevelUnion_False(t *testing.T) {
+	if containsTopLevelUnion("select a from t") {
+		t.Fatalf("expected false without union")
+	}
+}
+
+func TestExtractFirstSelectBeforeUnion(t *testing.T) {
+	s, ok := extractFirstSelectBeforeUnion("select col1 as a, col2 as b from t union select x, y from t2 order by a")
+	if !ok {
+		t.Fatalf("expected ok")
+	}
+	if !strings.Contains(strings.ToLower(s), "select col1 as a") {
+		t.Fatalf("expected first select, got %q", s)
+	}
+	if strings.Contains(strings.ToLower(s), "union") {
+		t.Fatalf("should not contain union, got %q", s)
+	}
+}
+
+func TestExtractSelectColumnNames_WithAlias(t *testing.T) {
+	names := extractSelectColumnNames("select col1 as a, col2 as b from t")
+	if _, ok := names["a"]; !ok {
+		t.Fatalf("expected alias 'a'")
+	}
+	if _, ok := names["b"]; !ok {
+		t.Fatalf("expected alias 'b'")
+	}
+}
+
+func TestExtractSelectColumnNames_WithoutAlias(t *testing.T) {
+	names := extractSelectColumnNames("select col1, col2 from t")
+	if _, ok := names["col1"]; !ok {
+		t.Fatalf("expected col1")
+	}
+	if _, ok := names["col2"]; !ok {
+		t.Fatalf("expected col2")
+	}
+}
+
+func TestExtractColumnAliasName_AsAlias(t *testing.T) {
+	if name := extractColumnAliasName("col1 as a"); name != "a" {
+		t.Fatalf("expected 'a', got %q", name)
+	}
+}
+
+func TestExtractColumnAliasName_NoAlias(t *testing.T) {
+	if name := extractColumnAliasName("col1"); name != "col1" {
+		t.Fatalf("expected 'col1', got %q", name)
+	}
+}
+
+func TestExtractColumnAliasName_QualifiedNoAlias(t *testing.T) {
+	if name := extractColumnAliasName("t.col1"); name != "col1" {
+		t.Fatalf("expected 'col1', got %q", name)
+	}
+}
+
+func TestExtractOrderByColumns_Simple(t *testing.T) {
+	cols := extractOrderByColumns("select a from t union select b from t2 order by a, b desc")
+	if len(cols) != 2 {
+		t.Fatalf("expected 2 cols, got %d: %v", len(cols), cols)
+	}
+	if cols[0] != "a" {
+		t.Fatalf("expected 'a', got %q", cols[0])
+	}
+	if cols[1] != "b" {
+		t.Fatalf("expected 'b', got %q", cols[1])
+	}
+}
+
+func TestIsNumericLiteral_True(t *testing.T) {
+	if !isNumericLiteral("1") {
+		t.Fatalf("expected true for '1'")
+	}
+}
+
+func TestIsNumericLiteral_False(t *testing.T) {
+	if isNumericLiteral("col1") {
+		t.Fatalf("expected false for 'col1'")
+	}
+}

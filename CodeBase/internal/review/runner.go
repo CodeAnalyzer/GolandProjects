@@ -363,6 +363,21 @@ func (r *Runner) buildRuleTasks(ruleSet map[RuleID]bool, parsed *sqlparser.Parse
 			return r.checkDiffTypesComparison(parsed, file)
 		}})
 	}
+	if ruleSet[RuleFloatToStringConvert] {
+		tasks = append(tasks, ruleTask{rule: RuleFloatToStringConvert, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkFloatToStringConvert(parsed, file)
+		}})
+	}
+	if ruleSet[RuleSelectAfterSetRowcount] {
+		tasks = append(tasks, ruleTask{rule: RuleSelectAfterSetRowcount, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkSelectAfterSetRowcount(parsed, file)
+		}})
+	}
+	if ruleSet[RuleAliasWhenUsingUnion] {
+		tasks = append(tasks, ruleTask{rule: RuleAliasWhenUsingUnion, run: func(ctx context.Context) ([]Finding, error) {
+			return r.checkAliasWhenUsingUnion(parsed, file)
+		}})
+	}
 	return tasks
 }
 
