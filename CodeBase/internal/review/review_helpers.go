@@ -63,6 +63,14 @@ func areEquivalentTypes(left, right string) bool {
 	return lg != "" && lg == rg
 }
 
+// isFloatType строго проверяет, что тип — это FLOAT или DSFLOAT.
+// Используется в правиле floatToStringConvert для узкой проверки,
+// в отличие от typeGroup, которая относит к float также money/numeric/decimal и т.д.
+func isFloatType(dataType string) bool {
+	v := normalizeDataType(dataType)
+	return strings.Contains(v, "float") || strings.HasPrefix(v, "dsfloat")
+}
+
 func typeGroup(dataType string) string {
 	v := normalizeDataType(dataType)
 	switch {
@@ -1260,38 +1268,42 @@ func hasSaveTran(lower string) bool {
 }
 
 func hasBetweenWithMathOp(lower string) bool {
-	// Ищем pattern: between @var and [number*@var|@var*number|@var+number|...]
-	// BETWEEN может быть без ведущего пробела
+	return extractBetweenWithMathOp(lower) != ""
+}
+
+// extractBetweenWithMathOp находит BETWEEN ... AND с матоперацией и возвращает
+// выражение после AND (для использования в Object finding-а).
+func extractBetweenWithMathOp(lower string) string {
 	idx := strings.Index(lower, "between ")
 	if idx == -1 {
-		return false
+		return ""
 	}
-
-	// Проверяем что это не часть слова (перед between должен быть пробел или начало)
 	if idx > 0 && lower[idx-1] != ' ' && lower[idx-1] != '\t' {
-		return false
+		return ""
 	}
 
-	// Находим позицию AND
-	startPos := idx + 8 // len("between ")
+	startPos := idx + 8
 	andIdx := strings.Index(lower[startPos:], " and ")
 	if andIdx == -1 {
-		return false
+		return ""
 	}
 	andIdx += startPos
 
-	// Проверяем выражение после AND
 	afterAnd := strings.TrimSpace(lower[andIdx+5:])
-
-	// Ищем матоперации: * / + -
-	return hasMathOperator(afterAnd)
+	if hasMathOperator(afterAnd) {
+		return afterAnd
+	}
+	return ""
 }
 
 func hasComparisonWithMathOp(lower string) bool {
-	// Операторы сравнения: >, <, >=, <=, <>, !=
-	// Проверяем если с одной стороны @var, с другой — выражение с * / + -
+	return extractComparisonWithMathOp(lower) != ""
+}
 
-	// Найдем все позиции операторов сравнения
+// extractComparisonWithMathOp находит сравнение с матоперацией и возвращает
+// выражение стороны с матоперацией (для использования в Object finding-а).
+func extractComparisonWithMathOp(lower string) string {
+	// Операторы сравнения: >, <, >=, <=, <>, !=
 	ops := []string{">=", "<=", "<>", "!=", ">", "<"}
 
 	for _, op := range ops {
@@ -1303,25 +1315,46 @@ func hasComparisonWithMathOp(lower string) bool {
 		left := strings.TrimSpace(lower[:opIdx])
 		right := strings.TrimSpace(lower[opIdx+len(op):])
 
-		// Если с одной стороны @var, а с другой выражение с матоперацией
 		leftIsVar := strings.HasPrefix(left, "@")
 		rightIsVar := strings.HasPrefix(right, "@")
 		leftHasMath := hasMathOperator(left)
 		rightHasMath := hasMathOperator(right)
 
-		if (leftIsVar && rightHasMath) || (rightIsVar && leftHasMath) {
-			return true
+		if leftIsVar && rightHasMath {
+			return right
+		}
+		if rightIsVar && leftHasMath {
+			return left
 		}
 	}
 
-	return false
+	return ""
 }
 
 func hasMathOperator(expr string) bool {
 	// Ищем * / + - между операндами (с учетом пробелов)
 	// Исключаем операторы внутри convert() или cast()
+	// Исключаем операторы внутри вызовов функций (внутри скобок)
+	parenDepth := 0
 	for i := 0; i < len(expr); i++ {
 		ch := expr[i]
+
+		// Отслеживаем глубину скобок
+		if ch == '(' {
+			parenDepth++
+			continue
+		}
+		if ch == ')' {
+			if parenDepth > 0 {
+				parenDepth--
+			}
+			continue
+		}
+
+		// Проверяем математические операторы только на верхнем уровне (parenDepth == 0)
+		if parenDepth > 0 {
+			continue
+		}
 		if ch != '*' && ch != '/' && ch != '+' && ch != '-' {
 			continue
 		}
@@ -1387,6 +1420,21 @@ func hasIfWithAndAndQuery(lower string) bool {
 
 	// Проверяем наличие запроса к таблицам в условии
 	return hasTableQuery(condition)
+}
+
+// isIfBodyStart проверяет, начинается ли строка с SQL-оператора,
+// что указывает на начало тела IF (без BEGIN), а не на продолжение условия.
+func isIfBodyStart(lower string) bool {
+	for _, kw := range []string{"if ", "if(", "delete ", "select ", "select(", "insert ",
+		"update ", "exec ", "set ", "print ", "goto ", "return ", "break",
+		"continue ", "waitfor ", "raiserror ", "commit ", "rollback ",
+		"save ", "truncate ", "merge ", "grant ", "revoke ", "alter ",
+		"create ", "drop "} {
+		if strings.HasPrefix(lower, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // hasIfWithAndAndQueryMulti проверяет многострочное IF условие.
@@ -1470,36 +1518,23 @@ func hasTableQuery(condition string) bool {
 	return false
 }
 
-// hasExplicitConversion проверяет, содержит ли выражение явное преобразование в targetType
-// через convert() или cast(). Проверяет эквивалентность типов, а не точное совпадение.
+// hasExplicitConversion проверяет, содержит ли выражение явное преобразование
+// через convert() или cast(). Если в выражении есть convert/cast, считается,
+// что разработчик осознанно привёл тип, и проверка потери точности не нужна.
 func hasExplicitConversion(expression string, targetType string) bool {
 	if expression == "" || targetType == "" {
 		return false
 	}
 	exprLower := strings.ToLower(expression)
 
-	// Извлекаем тип из convert(type, ...)
-	convertRe := regexp.MustCompile(`(?i)\bconvert\s*\(\s*([a-z_][a-z0-9_]*(?:\s*\([^)]*\))?)\s*[\,)]`)
-	convertMatches := convertRe.FindAllStringSubmatch(exprLower, -1)
-	for _, m := range convertMatches {
-		if len(m) > 1 {
-			convertedType := normalizeDataType(m[1])
-			if areEquivalentTypes(convertedType, targetType) {
-				return true
-			}
-		}
+	// Любой convert(...) — явное преобразование
+	if regexp.MustCompile(`(?i)\bconvert\s*\(`).MatchString(exprLower) {
+		return true
 	}
 
-	// Извлекаем тип из cast(... as type)
-	castRe := regexp.MustCompile(`(?i)\bcast\s*\([^)]+\s+as\s+([a-z_][a-z0-9_]*(?:\s*\([^)]*\))?)\s*\)`)
-	castMatches := castRe.FindAllStringSubmatch(exprLower, -1)
-	for _, m := range castMatches {
-		if len(m) > 1 {
-			castedType := normalizeDataType(m[1])
-			if areEquivalentTypes(castedType, targetType) {
-				return true
-			}
-		}
+	// Любой cast(... as ...) — явное преобразование
+	if regexp.MustCompile(`(?i)\bcast\s*\(`).MatchString(exprLower) {
+		return true
 	}
 
 	return false

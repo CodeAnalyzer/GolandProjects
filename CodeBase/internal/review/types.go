@@ -119,6 +119,9 @@ var (
 	}
 )
 
+// beginKeywordRe находит ключевое слово BEGIN (case-insensitive) для обрезки условия IF
+var beginKeywordRe = regexp.MustCompile(`(?i)\s+begin`)
+
 // selectAllRe находит SELECT * (с любыми пробелами между SELECT и *)
 var selectAllRe = regexp.MustCompile(`(?i)\bselect\s+\*`)
 
@@ -158,6 +161,11 @@ var sqlKeywordsMap = map[string]bool{
 	"if": true, "return": true, "declare": true, "create": true, "proc": true,
 	"procedure": true, "go": true, "print": true, "exec": true, "execute": true,
 	"cast": true, "convert": true, "desc": true, "asc": true,
+	// Datepart abbreviations for DATEADD/DATEDIFF/DATENAME/DATEPART
+	"dd": true, "dw": true, "dy": true, "qq": true, "q": true,
+	"mm": true, "m": true, "yy": true, "yyyy": true, "wk": true,
+	"ww": true, "hh": true, "mi": true, "n": true, "ss": true,
+	"s": true, "ms": true, "mcs": true, "ns": true,
 }
 
 // sqlFunctionsMap — встроенные функции SQL, которые не должны считаться ссылками на столбцы.

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/codebase/internal/encoding"
 	sqlparser "github.com/codebase/internal/parser/sql"
 	"github.com/codebase/internal/store"
 )
@@ -56,21 +57,28 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 		return nil, fmt.Errorf("ds_product_id is not set for file: %s", normalizedPath)
 	}
 
-	parsed, err := r.parser.ParseFile(normalizedPath)
+	// Читаем файл с кодировкой CP866 (как в sql_parser.ParseFile)
+	fileContent, err := encoding.ReadFile(normalizedPath, encoding.CP866)
 	if err != nil {
 		return nil, err
 	}
 
-	content, err := os.ReadFile(file.Path)
+	// Выполняем подстановку макросов ДО парсинга
+	macroResult := replaceMacros(fileContent)
+
+	// Парсим expanded-контент (с раскрытыми макросами)
+	parsed, err := r.parser.ParseContent(macroResult.Content)
 	if err != nil {
 		return nil, err
 	}
-	macroResult := replaceMacros(string(content))
+
+	// Expanded-контент (после replaceMacros) — все правила работают в expanded-пространстве,
+	// а ремаппинг Finding.Line в конце конвертирует обратно к оригинальным строкам
 	r.exec = &reviewExecContext{
 		filePath:    normalizePath(file.Path),
-		content:     content,
+		content:     []byte(macroResult.Content),
 		macroResult: macroResult,
-		lines:       strings.Split(string(content), "\n"),
+		lines:       strings.Split(macroResult.Content, "\n"),
 	}
 	defer func() {
 		r.exec = nil
@@ -87,6 +95,11 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 	minSeverity := opts.MinSeverity
 	if minSeverity <= 0 {
 		minSeverity = SeverityFineCode
+	}
+
+	// Ремаппим номера строк в findings из expanded-контента обратно к оригинальному файлу
+	for i := range findings {
+		findings[i].Line = mapExpandedLineToOriginal(findings[i].Line, macroResult.SourceMap)
 	}
 
 	filtered := make([]Finding, 0, len(findings))
@@ -510,4 +523,27 @@ func (r *Runner) fileProcessedContent(path string) (macroReplaceResult, error) {
 		return macroReplaceResult{}, err
 	}
 	return replaceMacros(string(content)), nil
+}
+
+// mapExpandedLineToOriginal преобразует номер строки из expanded-контента
+// (после replaceMacros) в номер строки оригинального файла используя SourceMap.
+func mapExpandedLineToOriginal(expandedLine int, sourceMap []int) int {
+	if expandedLine <= 0 || len(sourceMap) == 0 {
+		return expandedLine
+	}
+	idx := expandedLine - 1 // SourceMap 0-indexed
+	if idx < len(sourceMap) {
+		origLine := sourceMap[idx]
+		if origLine > 0 {
+			return origLine
+		}
+	}
+	// Если вышли за пределы — смещаем от последней известной
+	if len(sourceMap) > 0 {
+		lastOrig := sourceMap[len(sourceMap)-1]
+		if lastOrig > 0 {
+			return lastOrig + (expandedLine - len(sourceMap))
+		}
+	}
+	return expandedLine
 }

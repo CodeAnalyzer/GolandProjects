@@ -1219,7 +1219,7 @@ func TestHasExplicitConversion_DetectsConvertAndCast(t *testing.T) {
 		{"convert(smalldatetime, cc.CreditDateFrom)", "smalldatetime", true},
 		{"convert(varchar(10), col)", "varchar", true},
 		{"CONVERT(DATE, col)", "date", true},
-		{"convert(int, col)", "smalldatetime", false}, // другой targetType
+		{"convert(int, col)", "smalldatetime", true},  // любой convert — явное преобразование
 		{"col", "smalldatetime", false},               // нет convert
 
 		// convert() cases - эквивалентные типы (для datetime)
@@ -1233,7 +1233,7 @@ func TestHasExplicitConversion_DetectsConvertAndCast(t *testing.T) {
 		{"CAST(cc.CreditDateFrom AS smalldatetime)", "smalldatetime", true},
 		{"cast(col as varchar(10))", "varchar", true},
 		{"cast(col as date)", "date", true},
-		{"cast(col as int)", "smalldatetime", false}, // другой targetType
+		{"cast(col as int)", "smalldatetime", true}, // любой cast — явное преобразование
 
 		// cast() cases - эквивалентные типы (для datetime)
 		{"cast(col as smalldatetime)", "dsoperday", true}, // smalldatetime эквивалентен DSOPERDAY

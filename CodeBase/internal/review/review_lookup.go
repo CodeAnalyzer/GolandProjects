@@ -712,14 +712,28 @@ func extractTablesFromFromClause(fullText string) []tableFromClause {
 	fullText = removeComments(fullText)
 	lower := toLowerASCIIPreservingLen(fullText)
 
-	// Для UPDATE ... FROM синтаксиса: ищем FROM после SET
+	// Для UPDATE ... FROM синтаксиса: ищем FROM после SET,
+	// пропуская FROM внутри скобок (подзапросы в SET)
 	if strings.HasPrefix(lower, "update") {
 		setIdx := strings.Index(lower, " set ")
 		if setIdx > 0 {
-			// Ищем FROM после SET
-			fromIdx := strings.Index(lower[setIdx:], " from ")
+			fromIdx := -1
+			depth := 0
+			for i := setIdx; i < len(lower)-5; i++ {
+				switch lower[i] {
+				case '(':
+					depth++
+				case ')':
+					if depth > 0 {
+						depth--
+					}
+				}
+				if depth == 0 && lower[i] == ' ' && lower[i+1:i+5] == "from" && (i+5 >= len(lower) || lower[i+5] == ' ') {
+					fromIdx = i
+					break
+				}
+			}
 			if fromIdx >= 0 {
-				fromIdx += setIdx
 				fromStart := fromIdx
 				// Ищем конец FROM clause (до WHERE, GROUP BY, ORDER BY и т.д.)
 				fromEnd := len(lower)

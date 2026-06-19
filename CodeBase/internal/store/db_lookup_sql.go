@@ -131,6 +131,7 @@ func (db *DB) FindLatestSQLColumnDefinitionType(tableName string, columnName str
 		WHERE LOWER(table_name) = LOWER($1)
 		  AND LOWER(column_name) = LOWER($2)
 		  AND TRIM(COALESCE(data_type, '')) <> ''
+		  AND data_type <> 'DSUNKNOWN'
 		ORDER BY id DESC
 		LIMIT 1
 	`, strings.TrimSpace(tableName), strings.TrimSpace(columnName)).Scan(&dataType)

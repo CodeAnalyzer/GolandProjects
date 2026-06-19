@@ -24,9 +24,8 @@ func parseUpdateSetStatement(queryText string) (updateSetStatement, bool) {
 		return updateSetStatement{}, false
 	}
 
-	lower := strings.ToLower(remainder)
-	fromPos := findTopLevelKeywordPosition(lower, "from")
-	wherePos := findTopLevelKeywordPosition(lower, "where")
+	fromPos := findTopLevelKeywordPosition(remainder, "from")
+	wherePos := findTopLevelKeywordPosition(remainder, "where")
 
 	setPart := remainder
 	fromClause := ""
@@ -68,23 +67,30 @@ func parseUpdateSetStatement(queryText string) (updateSetStatement, bool) {
 	}, true
 }
 
-func findTopLevelKeywordPosition(lowerText string, keyword string) int {
+func hasPrefixFold(s, prefix string) bool {
+	if len(s) < len(prefix) {
+		return false
+	}
+	return strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+func findTopLevelKeywordPosition(text string, keyword string) int {
 	parenDepth := 0
 	caseDepth := 0
-	for i := 0; i < len(lowerText); i++ {
-		ch := lowerText[i]
+	for i := 0; i < len(text); i++ {
+		ch := text[i]
 		if ch == '(' {
 			parenDepth++
 		} else if ch == ')' && parenDepth > 0 {
 			parenDepth--
 		}
-		if isWordBoundary(lowerText, i-1) && strings.HasPrefix(lowerText[i:], "case") && isWordBoundary(lowerText, i+4) {
+		if isWordBoundary(text, i-1) && hasPrefixFold(text[i:], "case") && isWordBoundary(text, i+4) {
 			caseDepth++
 		}
-		if isWordBoundary(lowerText, i-1) && strings.HasPrefix(lowerText[i:], "end") && isWordBoundary(lowerText, i+3) && caseDepth > 0 {
+		if isWordBoundary(text, i-1) && hasPrefixFold(text[i:], "end") && isWordBoundary(text, i+3) && caseDepth > 0 {
 			caseDepth--
 		}
-		if parenDepth == 0 && caseDepth == 0 && strings.HasPrefix(lowerText[i:], keyword) && isWordBoundary(lowerText, i-1) && isWordBoundary(lowerText, i+len(keyword)) {
+		if parenDepth == 0 && caseDepth == 0 && hasPrefixFold(text[i:], keyword) && isWordBoundary(text, i-1) && isWordBoundary(text, i+len(keyword)) {
 			return i
 		}
 	}
@@ -127,7 +133,7 @@ func parseSelectAssignStatement(queryText string) (selectAssignStatement, bool) 
 		return selectAssignStatement{}, false
 	}
 
-	fromPos := findTopLevelKeywordPosition(lower, "from")
+	fromPos := findTopLevelKeywordPosition(text, "from")
 	if fromPos < 0 {
 		return selectAssignStatement{}, false
 	}
@@ -389,7 +395,7 @@ func parseSelectSourceStatement(queryText string) (insertSelectStatement, bool) 
 		return insertSelectStatement{}, false
 	}
 
-	fromPos := findTopLevelKeywordPosition(lower, "from")
+	fromPos := findTopLevelKeywordPosition(text, "from")
 	if fromPos < 0 {
 		return insertSelectStatement{}, false
 	}

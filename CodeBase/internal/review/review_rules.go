@@ -696,7 +696,6 @@ func (r *Runner) checkPTableSpid(file *indexedFile) ([]Finding, error) {
 		return nil, err
 	}
 	contentStr := macroResult.Content
-	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
@@ -706,7 +705,7 @@ func (r *Runner) checkPTableSpid(file *indexedFile) ([]Finding, error) {
 	inBlockComment := false
 
 	for i, line := range lines {
-		lineNum := mapProcessedLineNumber(sourceMap, i+1)
+		lineNum := i + 1
 
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--") {
@@ -850,7 +849,6 @@ func (r *Runner) checkForceOrder2Tbl(file *indexedFile) ([]Finding, error) {
 		return nil, err
 	}
 	contentStr := macroResult.Content
-	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
@@ -860,7 +858,7 @@ func (r *Runner) checkForceOrder2Tbl(file *indexedFile) ([]Finding, error) {
 	inBlockComment := false
 
 	for i, line := range lines {
-		lineNum := mapProcessedLineNumber(sourceMap, i+1)
+		lineNum := i + 1
 
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--") {
@@ -1192,28 +1190,28 @@ func (r *Runner) checkMathOperations(file *indexedFile) ([]Finding, error) {
 		lower := strings.ToLower(line)
 
 		// Проверяем BETWEEN ... AND
-		if hasBetweenWithMathOp(lower) {
+		if betweenExpr := extractBetweenWithMathOp(lower); betweenExpr != "" {
 			findings = append(findings, Finding{
 				Rule:             RuleMathOperations,
 				Severity:         SeverityDeployStopper,
 				Message:          "Обнаружена математическая операция в условии BETWEEN — риск переполнения типа при расширении результата",
 				File:             file.Path,
 				Line:             lineNum,
-				Object:           "",
+				Object:           betweenExpr,
 				CurrentProductID: file.DsProductID,
 			})
 			continue
 		}
 
 		// Проверяем сравнения с математическими операциями
-		if hasComparisonWithMathOp(lower) {
+		if expr := extractComparisonWithMathOp(lower); expr != "" {
 			findings = append(findings, Finding{
 				Rule:             RuleMathOperations,
 				Severity:         SeverityDeployStopper,
 				Message:          "Обнаружена математическая операция в условии сравнения — риск переполнения типа при расширении результата",
 				File:             file.Path,
 				Line:             lineNum,
-				Object:           "",
+				Object:           expr,
 				CurrentProductID: file.DsProductID,
 			})
 		}
@@ -1287,6 +1285,11 @@ func (r *Runner) checkExistsWithAndInIf(file *indexedFile) ([]Finding, error) {
 		if !strings.Contains(conditionLower, "begin") {
 			for j := i + 1; j < len(lines) && j < i+20; j++ {
 				jLower := strings.ToLower(strings.TrimSpace(lines[j]))
+				// Останавливаемся, если встретили начало тела IF (без BEGIN)
+				// — SQL-оператор или новый IF указывают на начало тела, а не продолжение условия
+				if isIfBodyStart(jLower) {
+					break
+				}
 				conditionLines = append(conditionLines, lines[j])
 				if strings.Contains(jLower, "begin") {
 					break
@@ -1304,8 +1307,8 @@ func (r *Runner) checkExistsWithAndInIf(file *indexedFile) ([]Finding, error) {
 		if hasIfWithAndAndQueryMulti(fullLower) {
 			// Извлекаем условие IF (от "if" до "begin") для object
 			objText := fullCondition
-			if beginIdx := strings.Index(strings.ToLower(objText), " begin"); beginIdx >= 0 {
-				objText = objText[:beginIdx]
+			if loc := beginKeywordRe.FindStringIndex(objText); loc != nil {
+				objText = objText[:loc[0]]
 			}
 			// Нормализуем пробелы и переносы строк
 			objText = regexp.MustCompile(`\s+`).ReplaceAllString(strings.TrimSpace(objText), " ")
@@ -1336,7 +1339,6 @@ func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
 		return nil, err
 	}
 	contentStr := macroResult.Content
-	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
@@ -1346,7 +1348,7 @@ func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
 	inBlockComment := false
 
 	for i, line := range lines {
-		lineNum := mapProcessedLineNumber(sourceMap, i+1)
+		lineNum := i + 1
 
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--") {
@@ -1718,6 +1720,12 @@ func (r *Runner) hasDefaultAssignmentInBody(procBody string, paramName string) b
 			continue
 		}
 
+		// Пропускаем строки-макросы (M_*, PROFILE_*, __*__) — это препроцессорные
+		// директивы (логирование, профилирование), а не реальное использование параметра
+		if strings.HasPrefix(trimmed, "M_") || strings.HasPrefix(trimmed, "PROFILE_") || strings.HasPrefix(trimmed, "__") {
+			continue
+		}
+
 		// Определяем начало нового оператора
 		if strings.HasPrefix(lower, "select ") || strings.HasPrefix(lower, "select(") {
 			inSelect = true
@@ -1840,11 +1848,10 @@ func (r *Runner) checkUseSelectAll(file *indexedFile) ([]Finding, error) {
 		return nil, err
 	}
 	contentStr := macroResult.Content
-	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
 
 	for i, line := range lines {
-		lineNum := mapProcessedLineNumber(sourceMap, i+1)
+		lineNum := i + 1
 
 		// Пропускаем комментарии (trim и проверяем --)
 		trimmed := strings.TrimSpace(line)
@@ -2226,7 +2233,6 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 		return nil, err
 	}
 	contentStr := macroResult.Content
-	sourceMap := macroResult.SourceMap
 
 	contentStr = maskBlockCommentsKeepLines(contentStr)
 	lines := strings.Split(contentStr, "\n")
@@ -2240,7 +2246,7 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 	firstTable := ""
 
 	for i, line := range lines {
-		lineNum := mapProcessedLineNumber(sourceMap, i+1)
+		lineNum := i + 1
 
 		// Пропускаем комментарии целиком
 		trimmed := strings.TrimSpace(line)
@@ -2602,7 +2608,6 @@ func (r *Runner) checkTableFullScan(file *indexedFile) ([]Finding, error) {
 		return nil, err
 	}
 	contentStr := macroResult.Content
-	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
@@ -2612,7 +2617,7 @@ func (r *Runner) checkTableFullScan(file *indexedFile) ([]Finding, error) {
 	stmtType := ""
 
 	for i, line := range lines {
-		lineNum := mapProcessedLineNumber(sourceMap, i+1)
+		lineNum := i + 1
 
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--") {
@@ -2789,7 +2794,6 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 		return nil, err
 	}
 	contentStr := macroResult.Content
-	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
@@ -2799,7 +2803,7 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 	stmtType := ""
 
 	for i, line := range lines {
-		lineNum := mapProcessedLineNumber(sourceMap, i+1)
+		lineNum := i + 1
 
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--") {
@@ -2879,7 +2883,6 @@ func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 		return nil, err
 	}
 	contentStr := macroResult.Content
-	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
@@ -2890,7 +2893,7 @@ func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
 	isInsertStmt := false // INSERT...SELECT: не разрываем на внутреннем SELECT
 
 	for i, line := range lines {
-		lineNum := mapProcessedLineNumber(sourceMap, i+1)
+		lineNum := i + 1
 
 		// Отслеживаем блочные комментарии /* */
 		if inBlockComment {
@@ -3320,7 +3323,6 @@ func (r *Runner) checkModifyOutProc(parsed *sqlparser.ParseResult, file *indexed
 		return nil, err
 	}
 	text := maskBlockCommentsKeepLines(macroResult.Content)
-	sourceMap := macroResult.SourceMap
 
 	// Строим set номеров строк, защищённых телом процедуры (1-based)
 	inProc := make(map[int]bool)
@@ -3337,7 +3339,7 @@ func (r *Runner) checkModifyOutProc(parsed *sqlparser.ParseResult, file *indexed
 	findings := make([]Finding, 0)
 
 	for i, line := range lines {
-		lineNo := mapProcessedLineNumber(sourceMap, i+1)
+		lineNo := i + 1
 		if inProc[lineNo] {
 			continue
 		}
@@ -3935,11 +3937,10 @@ func (r *Runner) checkColumnInsert(file *indexedFile) ([]Finding, error) {
 		return nil, err
 	}
 	text := macroResult.Content
-	sourceMap := macroResult.SourceMap
 
 	positions := findInsertWithoutColumns(text)
 	for _, pos := range positions {
-		lineNo := mapProcessedLineNumber(sourceMap, strings.Count(text[:pos], "\n")+1)
+		lineNo := strings.Count(text[:pos], "\n") + 1
 		tableName := extractInsertTableName(text, pos)
 		findings = append(findings, Finding{
 			Rule:             RuleColumnInsert,
@@ -4564,7 +4565,7 @@ func (r *Runner) checkVarUseAfterCursor(file *indexedFile) ([]Finding, error) {
 					Severity:         SeverityPostgreReq,
 					Message:          fmt.Sprintf("Использование переменной %s из курсора %s после его деалокации", v, da.CursorName),
 					File:             file.Path,
-					Line:             mapProcessedLineNumber(macroResult.SourceMap, i+1),
+					Line:             i + 1,
 					Object:           v,
 					CurrentProductID: file.DsProductID,
 				})
@@ -5348,6 +5349,7 @@ func (r *Runner) checkUsageVarInSameSelect(parsed *sqlparser.ParseResult, file *
 
 		var assignments []selectAssignment
 		queryText := strings.TrimSpace(fragment.QueryText)
+		queryText = truncateAtStatementBoundary(queryText)
 
 		stmt, ok := parseSelectAssignStatement(queryText)
 		if ok {
@@ -5374,7 +5376,7 @@ func (r *Runner) checkUsageVarInSameSelect(parsed *sqlparser.ParseResult, file *
 		// Дополнительный проход: извлекаем assignment'ы из CASE-выражений
 		lower := strings.ToLower(queryText)
 		if strings.HasPrefix(lower, "select") {
-			fromPos := findTopLevelKeywordPosition(lower, "from")
+			fromPos := findTopLevelKeywordPosition(queryText, "from")
 			var selectPart string
 			if fromPos >= 0 {
 				selectPart = strings.TrimSpace(queryText[len("select"):fromPos])
@@ -5436,10 +5438,23 @@ func findColLineOffsetInPart(queryText, part, colName string) int {
 
 // findAllUnqualifiedColumnRefs возвращает все неквалифицированные ссылки на столбцы.
 func findAllUnqualifiedColumnRefs(expr string) []string {
-	cleaned := regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\b`).ReplaceAllString(expr, "")
+	// Удаляем подзапросы в скобках (select ...) — алиасы и имена таблиц внутри
+	// не должны считаться неквалифицированными колонками
+	cleaned := stripSubqueries(expr)
+	// Удаляем однострочные комментарии --...
+	cleaned = regexp.MustCompile(`--[^\n]*`).ReplaceAllString(cleaned, "")
+	// Удаляем многострочные комментарии /* ... */
+	cleaned = regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(cleaned, "")
+	// Удаляем qualified refs (alias.column)
+	cleaned = regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\b`).ReplaceAllString(cleaned, "")
+	// Удаляем @variables и @@variables
 	cleaned = regexp.MustCompile(`(?i)@@?[a-z_][a-z0-9_]*`).ReplaceAllString(cleaned, "")
+	// Удаляем строковые литералы
 	cleaned = regexp.MustCompile(`'[^']*'`).ReplaceAllString(cleaned, "")
+	// Удаляем числовые литералы
 	cleaned = regexp.MustCompile(`\b\d+(\.\d+)?\b`).ReplaceAllString(cleaned, "")
+	// Удаляем макросы-хинты M_*_INDEX(...) вместе с содержимым скобок
+	cleaned = regexp.MustCompile(`(?i)\bM_\w+_INDEX\s*\([^)]*\)`).ReplaceAllString(cleaned, "")
 
 	idRe := regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\b`)
 	matches := idRe.FindAllStringSubmatch(cleaned, -1)
@@ -5473,6 +5488,8 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 		}
 
 		queryText := strings.TrimSpace(fragment.QueryText)
+		// Обрезаем на границе следующего оператора, если парсер объединил несколько в один фрагмент
+		queryText = truncateAtStatementBoundary(queryText)
 		lower := strings.ToLower(queryText)
 
 		var selectPart string
@@ -5481,41 +5498,41 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 		isUpdate := false
 
 		if strings.HasPrefix(lower, "select") {
-			fromPos := findTopLevelKeywordPosition(lower, "from")
+			fromPos := findTopLevelKeywordPosition(queryText, "from")
 			if fromPos < 0 {
 				continue
 			}
-			selectPart = strings.TrimSpace(queryText[len("select"):fromPos])
-			wherePos := findTopLevelKeywordPosition(lower, "where")
+			selectPart = truncateAtStatementBoundary(strings.TrimSpace(queryText[len("select"):fromPos]))
+			wherePos := findTopLevelKeywordPosition(queryText, "where")
 			if wherePos >= 0 {
-				wherePart = strings.TrimSpace(queryText[wherePos+len("where"):])
+				wherePart = truncateAtStatementBoundary(strings.TrimSpace(queryText[wherePos+len("where"):]))
 			}
 			onParts = extractOnClauses(queryText)
 		} else if strings.HasPrefix(lower, "update") {
 			isUpdate = true
-			setPos := findTopLevelKeywordPosition(lower, "set")
+			setPos := findTopLevelKeywordPosition(queryText, "set")
 			if setPos < 0 {
 				continue
 			}
-			fromPos := findTopLevelKeywordPosition(lower, "from")
+			fromPos := findTopLevelKeywordPosition(queryText, "from")
 			if fromPos < 0 {
 				continue
 			}
-			wherePos := findTopLevelKeywordPosition(lower, "where")
+			wherePos := findTopLevelKeywordPosition(queryText, "where")
 			setEnd := fromPos
-			selectPart = strings.TrimSpace(queryText[setPos+len("set") : setEnd])
+			selectPart = truncateAtStatementBoundary(strings.TrimSpace(queryText[setPos+len("set") : setEnd]))
 			if wherePos >= 0 {
-				wherePart = strings.TrimSpace(queryText[wherePos+len("where"):])
+				wherePart = truncateAtStatementBoundary(strings.TrimSpace(queryText[wherePos+len("where"):]))
 			}
 			onParts = extractOnClauses(queryText)
 		} else if strings.HasPrefix(lower, "delete") {
-			fromPos := findTopLevelKeywordPosition(lower, "from")
+			fromPos := findTopLevelKeywordPosition(queryText, "from")
 			if fromPos < 0 {
 				continue
 			}
-			wherePos := findTopLevelKeywordPosition(lower, "where")
+			wherePos := findTopLevelKeywordPosition(queryText, "where")
 			if wherePos >= 0 {
-				wherePart = strings.TrimSpace(queryText[wherePos+len("where"):])
+				wherePart = truncateAtStatementBoundary(strings.TrimSpace(queryText[wherePos+len("where"):]))
 			}
 		} else {
 			continue
@@ -5524,6 +5541,18 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 		tables := extractTablesFromFromClause(queryText)
 		if len(tables) < 2 {
 			continue
+		}
+
+		// Строим set известных имён таблиц и алиасов для фильтрации ложных срабатываний
+		knownTableNames := make(map[string]bool)
+		for _, t := range tables {
+			knownTableNames[strings.ToLower(t.TableName)] = true
+			if t.Alias != "" {
+				knownTableNames[strings.ToLower(t.Alias)] = true
+			}
+			if t.IndexName != "" {
+				knownTableNames[strings.ToLower(t.IndexName)] = true
+			}
 		}
 
 		if selectPart != "" {
@@ -5541,7 +5570,7 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 					}
 				}
 				if !isUpdate {
-					if asIdx := findTopLevelKeywordPosition(strings.ToLower(trimmed), "as"); asIdx >= 0 {
+					if asIdx := findTopLevelKeywordPosition(trimmed, "as"); asIdx >= 0 {
 						trimmed = strings.TrimSpace(trimmed[:asIdx])
 					}
 				}
@@ -5550,6 +5579,7 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 				}
 				colNames := findAllUnqualifiedColumnRefs(trimmed)
 				colNames = r.filterKnownNames(colNames)
+				colNames = filterOutTableNames(colNames, knownTableNames)
 				for _, colName := range colNames {
 					lineOffset := findColLineOffsetInPart(queryText, trimmed, colName)
 					findings = append(findings, Finding{
@@ -5568,6 +5598,7 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 		if wherePart != "" {
 			colNames := findAllUnqualifiedColumnRefs(wherePart)
 			colNames = r.filterKnownNames(colNames)
+			colNames = filterOutTableNames(colNames, knownTableNames)
 			for _, colName := range colNames {
 				lineOffset := findColLineOffsetInPart(queryText, wherePart, colName)
 				findings = append(findings, Finding{
@@ -5586,6 +5617,7 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 		for _, onPart := range onParts {
 			colNames := findAllUnqualifiedColumnRefs(onPart)
 			colNames = r.filterKnownNames(colNames)
+			colNames = filterOutTableNames(colNames, knownTableNames)
 			for _, colName := range colNames {
 				lineOffset := findColLineOffsetInPart(queryText, onPart, colName)
 				findings = append(findings, Finding{
@@ -5602,6 +5634,106 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 	}
 
 	return findings, nil
+}
+
+// truncateAtStatementBoundary обрезает выражение на первой границе оператора
+// (end, else, begin, insert, select, update, delete, exec, if, while и т.д.)
+// на верхнем уровне (глубина скобок = 0). Это предотвращает захват кода
+// из последующих операторов, когда парсер объединяет несколько операторов в один фрагмент.
+func truncateAtStatementBoundary(expr string) string {
+	lower := strings.ToLower(expr)
+	boundaries := []string{"end", "else", "begin", "insert", "select", "update",
+		"delete", "exec", "execute", "if", "while", "print", "goto", "return",
+		"break", "continue", "waitfor", "raiserror", "commit", "rollback"}
+	depth := 0
+	for i := 0; i < len(lower); i++ {
+		c := lower[i]
+		if c == '(' {
+			depth++
+			continue
+		}
+		if c == ')' {
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		if depth > 0 {
+			continue
+		}
+		// Проверяем слово на границу
+		if i > 0 && (lower[i-1] == '_' || (lower[i-1] >= 'a' && lower[i-1] <= 'z') || (lower[i-1] >= '0' && lower[i-1] <= '9')) {
+			continue
+		}
+		for _, kw := range boundaries {
+			if i+len(kw) <= len(lower) && lower[i:i+len(kw)] == kw {
+				after := i + len(kw)
+				if after >= len(lower) || lower[after] == ' ' || lower[after] == '\t' ||
+					lower[after] == '\n' || lower[after] == '\r' || lower[after] == '(' {
+					return expr[:i]
+				}
+			}
+		}
+	}
+	return expr
+}
+
+// stripSubqueries удаляет подзапросы в скобках (select ...) из выражения.
+// Это предотвращает ложные срабатывания, когда алиасы таблиц или имена таблиц
+// внутри подзапросов воспринимаются как неквалифицированные ссылки на столбцы.
+func stripSubqueries(expr string) string {
+	lower := strings.ToLower(expr)
+	var result strings.Builder
+	i := 0
+	for i < len(expr) {
+		// Ищем открывающую скобку
+		parenIdx := strings.IndexByte(expr[i:], '(')
+		if parenIdx < 0 {
+			result.WriteString(expr[i:])
+			break
+		}
+		parenIdx += i
+		// Копируем всё до скобки
+		result.WriteString(expr[i:parenIdx])
+		// Находим matching closing bracket
+		depth := 1
+		j := parenIdx + 1
+		for j < len(expr) && depth > 0 {
+			switch expr[j] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			j++
+		}
+		// Проверяем, содержит ли содержимое скобок SELECT (подзапрос)
+		content := lower[parenIdx+1 : j-1]
+		if strings.Contains(content, "select") {
+			// Это подзапрос — пропускаем его целиком
+		} else {
+			// Не подзапрос — сохраняем содержимое скобок
+			result.WriteString(expr[parenIdx:j])
+		}
+		i = j
+	}
+	return result.String()
+}
+
+// filterOutTableNames удаляет из списка имён те, которые являются именами таблиц,
+// алиасами или индексами из FROM clause (чтобы не путать их с неквалифицированными колонками).
+func filterOutTableNames(names []string, knownTableNames map[string]bool) []string {
+	if len(names) == 0 || len(knownTableNames) == 0 {
+		return names
+	}
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		if knownTableNames[strings.ToLower(name)] {
+			continue
+		}
+		result = append(result, name)
+	}
+	return result
 }
 
 // extractOnClauses извлекает ON-условия из JOIN-выражений в запросе.
@@ -5735,7 +5867,6 @@ func (r *Runner) checkUseFuncInIndCol(file *indexedFile) ([]Finding, error) {
 		return nil, err
 	}
 	contentStr := macroResult.Content
-	sourceMap := macroResult.SourceMap
 	lines := strings.Split(contentStr, "\n")
 
 	inStatement := false
@@ -5745,7 +5876,7 @@ func (r *Runner) checkUseFuncInIndCol(file *indexedFile) ([]Finding, error) {
 	inBlockComment := false
 
 	for i, line := range lines {
-		lineNum := mapProcessedLineNumber(sourceMap, i+1)
+		lineNum := i + 1
 
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--") {
@@ -5950,6 +6081,18 @@ func extractFuncColumnRefs(expr string) []funcColumnRef {
 		if lowerFunc == "cast" || lowerFunc == "convert" {
 			continue
 		}
+		// Пропускаем ключевые слова SQL (and, or, not, in, is, like, ...)
+		if sqlKeywordsMap[lowerFunc] {
+			continue
+		}
+		// Пропускаем встроенные функции SQL (isnull, count, sum, ...)
+		if sqlFunctionsMap[lowerFunc] {
+			continue
+		}
+		// Пропускаем макросы Diasoft (M_*)
+		if sqlMacrosMap[lowerFunc] {
+			continue
+		}
 
 		// Извлекаем содержимое скобок с учётом вложенности
 		parenStart := m[1] - 1 // позиция '('
@@ -6082,6 +6225,12 @@ func (r *Runner) checkIsNullSameTypes(parsed *sqlparser.ParseResult, file *index
 				continue
 			}
 
+			// Пропускаем литералы во втором аргументе — SQL Server неявно приводит
+			// литерал к типу первого аргумента ISNULL
+			if isLiteralArg(call[1]) {
+				continue
+			}
+
 			if areEquivalentTypes(type1, type2) {
 				continue
 			}
@@ -6178,6 +6327,11 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 		return ""
 	}
 
+	// CASE ... END — определяем тип по THEN-выражениям
+	if regexp.MustCompile(`(?i)^case\b`).MatchString(trimmed) {
+		return r.resolveCaseType(trimmed, variableTypes, aliasMap)
+	}
+
 	// Переменная @var
 	if strings.HasPrefix(trimmed, "@") {
 		varName := normalizeVariableName(trimmed)
@@ -6205,9 +6359,13 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 		if rt, ok := knownFunctionReturnType(funcName); ok {
 			return rt
 		}
-		// Для прочих функций пытаемся вывести тип из первого аргумента
+		// Для прочих функций пытаемся вывести тип из аргументов
 		innerArgs := extractFuncInnerArgs(trimmed)
 		if len(innerArgs) > 0 {
+			// dateadd(datepart, number, date) — тип определяется последним аргументом
+			if funcName == "dateadd" && len(innerArgs) >= 3 {
+				return r.resolveArgType(innerArgs[len(innerArgs)-1], variableTypes, aliasMap)
+			}
 			return r.resolveArgType(innerArgs[0], variableTypes, aliasMap)
 		}
 		return ""
@@ -6247,6 +6405,46 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 	return ""
 }
 
+// resolveCaseType определяет тип результата CASE ... END по THEN-выражениям.
+// Если все THEN-значения — строковые литералы, возвращает varchar.
+// Если все числовые — int. Иначе берёт тип первого нетривиального THEN-выражения.
+func (r *Runner) resolveCaseType(expr string, variableTypes map[string]string, aliasMap map[string]string) string {
+	// Извлекаем THEN-выражения
+	thenRe := regexp.MustCompile(`(?i)\bthen\b\s+(.*?)(?:\bwhen\b|\belse\b|\bend\b)`)
+	matches := thenRe.FindAllStringSubmatch(expr, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+
+	allString := true
+	allNumeric := true
+	var firstType string
+
+	for _, m := range matches {
+		thenExpr := strings.TrimSpace(m[1])
+		if thenExpr == "" {
+			continue
+		}
+		if !strings.HasPrefix(thenExpr, "'") {
+			allString = false
+		}
+		if !regexp.MustCompile(`^\d+(\.\d+)?$`).MatchString(thenExpr) {
+			allNumeric = false
+		}
+		if firstType == "" {
+			firstType = r.resolveArgType(thenExpr, variableTypes, aliasMap)
+		}
+	}
+
+	if allString {
+		return "varchar"
+	}
+	if allNumeric {
+		return "int"
+	}
+	return firstType
+}
+
 // knownFunctionReturnType возвращает тип результата для известных SQL-функций.
 func knownFunctionReturnType(funcName string) (string, bool) {
 	switch funcName {
@@ -6258,8 +6456,10 @@ func knownFunctionReturnType(funcName string) (string, bool) {
 	case "len", "datalength", "charindex", "patindex":
 		return "int", true
 	case "abs", "ceiling", "floor", "round", "power", "sqrt", "square",
-		"rand", "sign", "dateadd", "datediff", "datepart", "day", "month", "year":
+		"rand", "sign", "datediff", "datepart", "day", "month", "year":
 		return "int", true
+	case "dateadd":
+		return "", false // тип определяется вторым аргументом (датой)
 	case "cast", "convert":
 		return "", false // тип определяется аргументами
 	default:
@@ -6298,15 +6498,14 @@ found:
 
 // extractFromClause извлекает FROM-часть из текста запроса.
 func extractFromClause(queryText string) string {
-	lower := strings.ToLower(queryText)
-	fromIdx := findTopLevelKeywordPosition(lower, "from")
+	fromIdx := findTopLevelKeywordPosition(queryText, "from")
 	if fromIdx < 0 {
 		return ""
 	}
 	endMarkers := []string{"where", "group", "order", "having", "union", "option"}
 	end := len(queryText)
 	for _, marker := range endMarkers {
-		if idx := findTopLevelKeywordPosition(lower[fromIdx:], marker); idx >= 0 {
+		if idx := findTopLevelKeywordPosition(queryText[fromIdx:], marker); idx >= 0 {
 			absIdx := fromIdx + idx
 			if absIdx < end {
 				end = absIdx
@@ -6793,7 +6992,7 @@ func (r *Runner) checkFloatToStringConvert(parsed *sqlparser.ParseResult, file *
 			if sourceType == "" {
 				continue
 			}
-			if typeGroup(sourceType) == "float" {
+			if isFloatType(sourceType) {
 				lineOffset := findColLineOffsetInPart(queryText, queryText[start:endIdx], "convert")
 				key := fmt.Sprintf("%d|%s|%s", fragment.LineNumber, sourceExpr, targetType)
 				if _, exists := seen[key]; exists {
@@ -6827,7 +7026,7 @@ func (r *Runner) checkFloatToStringConvert(parsed *sqlparser.ParseResult, file *
 				continue
 			}
 			// Разделяем по AS (top-level)
-			asIdx := findTopLevelKeywordPosition(strings.ToLower(inner), "as")
+			asIdx := findTopLevelKeywordPosition(inner, "as")
 			if asIdx < 0 {
 				continue
 			}
@@ -6843,7 +7042,7 @@ func (r *Runner) checkFloatToStringConvert(parsed *sqlparser.ParseResult, file *
 			if sourceType == "" {
 				continue
 			}
-			if typeGroup(sourceType) == "float" {
+			if isFloatType(sourceType) {
 				lineOffset := findColLineOffsetInPart(queryText, queryText[start:endIdx], "cast")
 				key := fmt.Sprintf("%d|%s|%s", fragment.LineNumber, sourceExpr, targetType)
 				if _, exists := seen[key]; exists {
@@ -7007,21 +7206,19 @@ func containsColumnRef(expr string) bool {
 
 // isInsertSelectFragment проверяет, является ли фрагмент INSERT...SELECT.
 func isInsertSelectFragment(queryText string) bool {
-	lower := strings.ToLower(strings.TrimSpace(queryText))
-	return strings.HasPrefix(lower, "insert") && findTopLevelKeywordPosition(lower, "select") >= 0
+	trimmed := strings.TrimSpace(queryText)
+	return hasPrefixFold(trimmed, "insert") && findTopLevelKeywordPosition(trimmed, "select") >= 0
 }
 
 // extractInsertSelectExpr извлекает SELECT-часть из INSERT...SELECT.
 func extractInsertSelectExpr(queryText string) string {
-	lower := strings.ToLower(queryText)
-	selectIdx := findTopLevelKeywordPosition(lower, "select")
+	selectIdx := findTopLevelKeywordPosition(queryText, "select")
 	if selectIdx < 0 {
 		return ""
 	}
 	// Ищем FROM после SELECT
 	rest := queryText[selectIdx:]
-	restLower := lower[selectIdx:]
-	fromIdx := findTopLevelKeywordPosition(restLower, "from")
+	fromIdx := findTopLevelKeywordPosition(rest, "from")
 	if fromIdx < 0 {
 		return ""
 	}
@@ -7118,7 +7315,7 @@ func extractFirstSelectBeforeUnion(queryText string) (string, bool) {
 	if !strings.HasPrefix(strings.TrimSpace(lower), "select") {
 		return "", false
 	}
-	unionIdx := findTopLevelKeywordPosition(lower, "union")
+	unionIdx := findTopLevelKeywordPosition(queryText, "union")
 	if unionIdx < 0 {
 		return "", false
 	}
@@ -7133,7 +7330,7 @@ func extractSelectColumnNames(selectStmt string) map[string]struct{} {
 	if !strings.HasPrefix(strings.TrimSpace(lower), "select") {
 		return result
 	}
-	fromIdx := findTopLevelKeywordPosition(lower, "from")
+	fromIdx := findTopLevelKeywordPosition(selectStmt, "from")
 	if fromIdx < 0 {
 		return result
 	}
@@ -7214,25 +7411,24 @@ func extractColumnAliasName(expr string) string {
 
 // extractOrderByColumns извлекает список колонок из ORDER BY.
 func extractOrderByColumns(queryText string) []string {
-	lower := strings.ToLower(queryText)
-	orderIdx := findTopLevelKeywordPosition(lower, "order")
+	orderIdx := findTopLevelKeywordPosition(queryText, "order")
 	if orderIdx < 0 {
 		return nil
 	}
-	rest := lower[orderIdx+5:]
-	restTrimmed := strings.TrimSpace(rest)
+	rest := queryText[orderIdx+5:]
+	restLower := strings.ToLower(rest)
+	restTrimmed := strings.TrimSpace(restLower)
 	if !strings.HasPrefix(restTrimmed, "by") {
 		return nil
 	}
-	byEnd := orderIdx + 5 + strings.Index(rest, "by") + 2
+	byEnd := orderIdx + 5 + strings.Index(restLower, "by") + 2
 	// ORDER BY может быть последним — берём до конца или до следующего top-level keyword
 	remaining := queryText[byEnd:]
-	remainingLower := lower[byEnd:]
 	// Ищем конец ORDER BY (следующий top-level keyword или конец текста)
 	endKeywords := []string{"for", "compute", "option", "union", "except", "intersect"}
 	endIdx := len(remaining)
 	for _, kw := range endKeywords {
-		kwIdx := findTopLevelKeywordPosition(remainingLower, kw)
+		kwIdx := findTopLevelKeywordPosition(remaining, kw)
 		if kwIdx >= 0 && kwIdx < endIdx {
 			endIdx = kwIdx
 		}
