@@ -1375,13 +1375,70 @@ func hasIfWithAndAndQuery(lower string) bool {
 	conditionStart := ifIdx + 3
 	condition := lower[conditionStart:]
 
-	// Ищем AND в условии
-	if !strings.Contains(condition, " and ") {
+	// Обрезаем до BEGIN (конец условия)
+	if beginIdx := strings.Index(condition, " begin"); beginIdx >= 0 {
+		condition = condition[:beginIdx]
+	}
+
+	// Ищем AND на top-level в условии
+	if !hasTopLevelAnd(condition) {
 		return false
 	}
 
 	// Проверяем наличие запроса к таблицам в условии
 	return hasTableQuery(condition)
+}
+
+// hasIfWithAndAndQueryMulti проверяет многострочное IF условие.
+// Принимает уже склеенное условие (все строки объединены пробелами).
+func hasIfWithAndAndQueryMulti(lower string) bool {
+	ifIdx := strings.Index(lower, "if ")
+	if ifIdx == -1 {
+		return false
+	}
+
+	if ifIdx > 0 && isOperandChar(lower[ifIdx-1]) {
+		return false
+	}
+
+	conditionStart := ifIdx + 3
+	condition := lower[conditionStart:]
+
+	// Обрезаем до BEGIN (конец условия)
+	if beginIdx := strings.Index(condition, " begin"); beginIdx >= 0 {
+		condition = condition[:beginIdx]
+	}
+
+	// Проверяем AND только на top-level (глубина скобок = 0)
+	if !hasTopLevelAnd(condition) {
+		return false
+	}
+
+	return hasTableQuery(condition)
+}
+
+// hasTopLevelAnd проверяет, есть ли " and " на top-level (вне скобок).
+func hasTopLevelAnd(condition string) bool {
+	depth := 0
+	for i := 0; i < len(condition); i++ {
+		ch := condition[i]
+		if ch == '(' {
+			depth++
+			continue
+		}
+		if ch == ')' && depth > 0 {
+			depth--
+			continue
+		}
+		if depth > 0 {
+			continue
+		}
+		// Ищем " and " на top-level
+		if i+5 <= len(condition) && condition[i:i+5] == " and " {
+			return true
+		}
+	}
+	return false
 }
 
 func hasTableQuery(condition string) bool {

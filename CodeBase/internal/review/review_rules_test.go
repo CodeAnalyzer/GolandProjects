@@ -972,6 +972,39 @@ func TestHasTableQuery(t *testing.T) {
 	}
 }
 
+func TestHasIfWithAndAndQueryMulti_MultilineIfExistsAndCondition(t *testing.T) {
+	// Многострочное IF: exists(select ...) на одной строке, and @var = 0 на другой
+	condition := "if exists(select 1 from pLoanBureau_Resource r where r.SPID = @@SPID) and @BCH_INTRATE_CRLINE_ALG = 0 begin"
+	if !hasIfWithAndAndQueryMulti(condition) {
+		t.Fatalf("should detect multiline IF with EXISTS and AND")
+	}
+}
+
+func TestHasIfWithAndAndQueryMulti_NoAnd_NoFinding(t *testing.T) {
+	condition := "if exists(select 1 from t) begin"
+	if hasIfWithAndAndQueryMulti(condition) {
+		t.Fatalf("should NOT detect IF with query but no AND")
+	}
+}
+
+func TestHasTopLevelAnd(t *testing.T) {
+	// AND на top-level
+	if !hasTopLevelAnd("@a = 1 and @b = 2") {
+		t.Fatalf("should detect top-level AND")
+	}
+	if !hasTopLevelAnd("exists(select 1 from t) and @var = 0") {
+		t.Fatalf("should detect top-level AND after EXISTS")
+	}
+	// AND только внутри скобок — не top-level
+	if hasTopLevelAnd("exists(select 1 from t where a = 1 and b = 2)") {
+		t.Fatalf("should NOT detect AND inside parentheses")
+	}
+	// Нет AND вообще
+	if hasTopLevelAnd("@a = 1 or @b = 2") {
+		t.Fatalf("should NOT detect AND when none present")
+	}
+}
+
 func TestSplitTopLevelCSV_RespectsCaseCommas(t *testing.T) {
 	value := "@@SPID, case when a = 1 then b, c else d end, cr.DateFrom"
 	items := splitTopLevelCSV(value)
@@ -1151,6 +1184,27 @@ end`
 	types := collectVariableTypes(&sqlparser.ParseResult{}, content)
 	if got := strings.ToUpper(types["deleteflag"]); got != "DSTINYINT" {
 		t.Fatalf("deleteflag type = %q, want DSTINYINT", got)
+	}
+}
+
+func TestCollectVariableTypes_ExecOutputDoesNotOverwriteDeclareType(t *testing.T) {
+	content := `  declare
+    @StrValue                        DSCOMMENT,
+    @BCH_DATE_STARTLOADBHONCREDLINE  DSOPERDAY,
+    @BCH_INTRATE_CRLINE_ALG          DSIDENTIFIER
+
+  exec FCD_BKI_tConfigParam
+         @SysName  = 'BCH_DATE_STARTLOADBHONCREDLINE',
+         @StrValue = @StrValue output
+
+  select @BCH_DATE_STARTLOADBHONCREDLINE = convert(smalldatetime, isnull(@StrValue, '19000101'),103)`
+
+	types := collectVariableTypes(&sqlparser.ParseResult{}, content)
+	if got := strings.ToUpper(types["strvalue"]); got != "DSCOMMENT" {
+		t.Fatalf("strvalue type = %q, want DSCOMMENT (should not be overwritten by 'output' from exec)", got)
+	}
+	if got := strings.ToUpper(types["bch_intrate_crline_alg"]); got != "DSIDENTIFIER" {
+		t.Fatalf("bch_intrate_crline_alg type = %q, want DSIDENTIFIER", got)
 	}
 }
 
@@ -4529,6 +4583,126 @@ func TestExtractColumnAliasName_NoAlias(t *testing.T) {
 func TestExtractColumnAliasName_QualifiedNoAlias(t *testing.T) {
 	if name := extractColumnAliasName("t.col1"); name != "col1" {
 		t.Fatalf("expected 'col1', got %q", name)
+	}
+}
+
+func TestIsLiteralArg_NumericLiteral(t *testing.T) {
+	if !isLiteralArg("2") {
+		t.Fatalf("2 should be a literal")
+	}
+	if !isLiteralArg("0") {
+		t.Fatalf("0 should be a literal")
+	}
+	if !isLiteralArg("-1") {
+		t.Fatalf("-1 should be a literal")
+	}
+	if !isLiteralArg("3.14") {
+		t.Fatalf("3.14 should be a literal")
+	}
+}
+
+func TestIsLiteralArg_StringLiteral(t *testing.T) {
+	if !isLiteralArg("'19000101'") {
+		t.Fatalf("'19000101' should be a literal")
+	}
+}
+
+func TestIsLiteralArg_Null(t *testing.T) {
+	if !isLiteralArg("null") {
+		t.Fatalf("null should be a literal")
+	}
+	if !isLiteralArg("NULL") {
+		t.Fatalf("NULL should be a literal")
+	}
+}
+
+func TestIsLiteralArg_ColumnOrVariable(t *testing.T) {
+	if isLiteralArg("@BCH_INTRATE_CRLINE_ALG") {
+		t.Fatalf("@BCH_INTRATE_CRLINE_ALG should not be a literal")
+	}
+	if isLiteralArg("g.GroupID") {
+		t.Fatalf("g.GroupID should not be a literal")
+	}
+	if isLiteralArg("r.AmountOutst") {
+		t.Fatalf("r.AmountOutst should not be a literal")
+	}
+}
+
+func TestContainsSQLStatementKeyword(t *testing.T) {
+	if !containsSQLStatementKeyword("inner join tConsInstrumentSync it") {
+		t.Fatalf("should detect 'join' keyword")
+	}
+	if !containsSQLStatementKeyword("on it.InstrumentID") {
+		t.Fatalf("should detect 'on' keyword")
+	}
+	if !containsSQLStatementKeyword("where r.SPID = @@SPID") {
+		t.Fatalf("should detect 'where' keyword")
+	}
+	if containsSQLStatementKeyword("it.InstrumentID") {
+		t.Fatalf("it.InstrumentID should not contain SQL keywords")
+	}
+	if containsSQLStatementKeyword("c.DateFrom") {
+		t.Fatalf("c.DateFrom should not contain SQL keywords")
+	}
+	if containsSQLStatementKeyword("@BCH_INTRATE_CRLINE_ALG") {
+		t.Fatalf("@BCH_INTRATE_CRLINE_ALG should not contain SQL keywords")
+	}
+}
+
+func TestFindComparisonOperator_RejectsSQLKeywordsInOperand(t *testing.T) {
+	// Выражение с мусором от парсинга: left содержит "join" и "on"
+	expr := `(bc.Flag2 & CONSBPCOND2 = 0
+       inner join tConsInstrumentSync  it
+               on it.InstrumentID = c.InstrumentID`
+	cmp := findComparisonOperator(expr)
+	if cmp.op != "" {
+		t.Fatalf("should reject comparison with SQL keywords in operand, got op=%q left=%q right=%q", cmp.op, cmp.left, cmp.right)
+	}
+}
+
+func TestFindComparisonOperator_AcceptsCleanComparison(t *testing.T) {
+	cmp := findComparisonOperator("it.InstrumentID = c.InstrumentID")
+	if cmp.op != "=" {
+		t.Fatalf("expected op '=', got %q", cmp.op)
+	}
+	if strings.TrimSpace(cmp.left) != "it.InstrumentID" {
+		t.Fatalf("expected left 'it.InstrumentID', got %q", cmp.left)
+	}
+	if strings.TrimSpace(cmp.right) != "c.InstrumentID" {
+		t.Fatalf("expected right 'c.InstrumentID', got %q", cmp.right)
+	}
+}
+
+func TestSqlMacrosMap_ContainsKnownMacros(t *testing.T) {
+	if !sqlMacrosMap["m_forceorder"] {
+		t.Fatalf("m_forceorder should be in sqlMacrosMap")
+	}
+	if !sqlMacrosMap["m_keepplan"] {
+		t.Fatalf("m_keepplan should be in sqlMacrosMap")
+	}
+	if !sqlMacrosMap["m_with_rowlock"] {
+		t.Fatalf("m_with_rowlock should be in sqlMacrosMap")
+	}
+	if !sqlMacrosMap["m_delete_ptable"] {
+		t.Fatalf("m_delete_ptable should be in sqlMacrosMap")
+	}
+	if !sqlMacrosMap["m_businesslog_checkpoint"] {
+		t.Fatalf("m_businesslog_checkpoint should be in sqlMacrosMap")
+	}
+	if !sqlMacrosMap["m_log_table"] {
+		t.Fatalf("m_log_table should be in sqlMacrosMap")
+	}
+}
+
+func TestFilterKnownNames_FiltersMacros(t *testing.T) {
+	r := &Runner{}
+	names := []string{"M_FORCEORDER", "M_KEEPPLAN", "col1", "M_DELETE_PTABLE", "col2"}
+	filtered := r.filterKnownNames(names)
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 names after filtering, got %d: %v", len(filtered), filtered)
+	}
+	if filtered[0] != "col1" || filtered[1] != "col2" {
+		t.Fatalf("expected [col1 col2], got %v", filtered)
 	}
 }
 

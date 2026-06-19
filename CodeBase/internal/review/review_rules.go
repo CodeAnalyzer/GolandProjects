@@ -211,19 +211,70 @@ func collectVariableTypes(parsed *sqlparser.ParseResult, content string) map[str
 	}
 
 	declRe := regexp.MustCompile(`(?i)@([A-Za-z_][A-Za-z0-9_]*)[ \t]+([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)`)
-	for _, m := range declRe.FindAllStringSubmatch(content, -1) {
-		if len(m) < 3 {
-			continue
+	for _, block := range extractDeclareBlocks(content) {
+		for _, m := range declRe.FindAllStringSubmatch(block, -1) {
+			if len(m) < 3 {
+				continue
+			}
+			name := normalizeVariableName(m[1])
+			typeName := strings.TrimSpace(m[2])
+			if name == "" || typeName == "" {
+				continue
+			}
+			if isSQLKeywordNotType(typeName) {
+				continue
+			}
+			result[name] = typeName
 		}
-		name := normalizeVariableName(m[1])
-		typeName := strings.TrimSpace(m[2])
-		if name == "" || typeName == "" {
-			continue
-		}
-		result[name] = typeName
 	}
 
 	return result
+}
+
+// extractDeclareBlocks извлекает текст блоков declare из контента.
+// Блок начинается с ключевого слова declare и заканчивается на следующем
+// операторе SQL (exec, select, insert, update, delete, set, if, while, и т.д.).
+func extractDeclareBlocks(content string) []string {
+	var blocks []string
+	lower := strings.ToLower(content)
+	searchFrom := 0
+	stmtKeywords := []string{
+		"exec", "select", "insert", "update", "delete", "set",
+		"if", "while", "print", "return", "create", "alter",
+		"drop", "go", "begin", "end", "declare", "truncate",
+		"merge", "with", "waitfor", "raiserror", "throw",
+	}
+	for {
+		idx := findKeywordPosition(lower[searchFrom:], "declare")
+		if idx < 0 {
+			break
+		}
+		idx += searchFrom
+		start := idx + len("declare")
+		end := len(content)
+		for _, kw := range stmtKeywords {
+			kwIdx := findKeywordPosition(lower[start:], kw)
+			if kwIdx >= 0 {
+				absIdx := start + kwIdx
+				if absIdx < end {
+					end = absIdx
+				}
+			}
+		}
+		blocks = append(blocks, content[start:end])
+		searchFrom = end
+	}
+	return blocks
+}
+
+// isSQLKeywordNotType проверяет, является ли строка SQL-ключевым словом,
+// которое не может быть типом данных (например output, out, readonly).
+func isSQLKeywordNotType(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "output", "out", "readonly", "default", "null", "into", "from", "where", "and", "or", "not":
+		return true
+	}
+	return false
 }
 
 func normalizeVariableName(value string) string {
@@ -1182,31 +1233,31 @@ func (r *Runner) checkExistsWithAndInIf(file *indexedFile) ([]Finding, error) {
 
 	inBlockComment := false
 
-	for i, line := range lines {
+	for i := 0; i < len(lines); i++ {
 		lineNum := i + 1
 
-		trimmed := strings.TrimSpace(line)
+		trimmed := strings.TrimSpace(lines[i])
 		if strings.HasPrefix(trimmed, "--") {
 			continue
 		}
 
 		if inBlockComment {
-			if idx := strings.Index(line, "*/"); idx >= 0 {
+			if idx := strings.Index(lines[i], "*/"); idx >= 0 {
 				inBlockComment = false
-				line = line[idx+2:]
+				lines[i] = lines[i][idx+2:]
 			} else {
 				continue
 			}
 		}
 
 		for {
-			if idx := strings.Index(line, "/*"); idx >= 0 {
-				endIdx := strings.Index(line[idx:], "*/")
+			if idx := strings.Index(lines[i], "/*"); idx >= 0 {
+				endIdx := strings.Index(lines[i][idx:], "*/")
 				if endIdx > 0 {
-					line = line[:idx] + " " + line[idx+endIdx+2:]
+					lines[i] = lines[i][:idx] + " " + lines[i][idx+endIdx+2:]
 				} else {
 					inBlockComment = true
-					line = line[:idx]
+					lines[i] = lines[i][:idx]
 					break
 				}
 			} else {
@@ -1218,17 +1269,57 @@ func (r *Runner) checkExistsWithAndInIf(file *indexedFile) ([]Finding, error) {
 			continue
 		}
 
-		lower := strings.ToLower(line)
+		lower := strings.ToLower(lines[i])
 
 		// Ищем IF с условием, содержащим AND
-		if hasIfWithAndAndQuery(lower) {
+		if !strings.Contains(lower, "if ") {
+			continue
+		}
+		ifIdx := strings.Index(lower, "if ")
+		if ifIdx > 0 && isOperandChar(lower[ifIdx-1]) {
+			continue
+		}
+
+		// Накапливаем многострочное условие IF ... BEGIN
+		conditionLines := []string{lines[i]}
+		conditionLower := strings.ToLower(lines[i])
+		// Если на одной строке с IF нет BEGIN — собираем последующие строки
+		if !strings.Contains(conditionLower, "begin") {
+			for j := i + 1; j < len(lines) && j < i+20; j++ {
+				jLower := strings.ToLower(strings.TrimSpace(lines[j]))
+				conditionLines = append(conditionLines, lines[j])
+				if strings.Contains(jLower, "begin") {
+					break
+				}
+				// Если встретили конец условия без begin (например, then или else)
+				if strings.HasPrefix(jLower, "then") || strings.HasPrefix(jLower, "else") {
+					break
+				}
+			}
+		}
+
+		fullCondition := strings.Join(conditionLines, " ")
+		fullLower := strings.ToLower(fullCondition)
+
+		if hasIfWithAndAndQueryMulti(fullLower) {
+			// Извлекаем условие IF (от "if" до "begin") для object
+			objText := fullCondition
+			if beginIdx := strings.Index(strings.ToLower(objText), " begin"); beginIdx >= 0 {
+				objText = objText[:beginIdx]
+			}
+			// Нормализуем пробелы и переносы строк
+			objText = regexp.MustCompile(`\s+`).ReplaceAllString(strings.TrimSpace(objText), " ")
+			// Ограничиваем длину
+			if len(objText) > 80 {
+				objText = objText[:80] + "..."
+			}
 			findings = append(findings, Finding{
 				Rule:             RuleExistsWithAndInIf,
 				Severity:         SeverityDeployStopper,
 				Message:          "Обнаружено условие IF с запросом к таблицам и AND — запрос может выполняться даже при ложном условии. Используйте вложенный IF",
 				File:             file.Path,
 				Line:             lineNum,
-				Object:           "",
+				Object:           objText,
 				CurrentProductID: file.DsProductID,
 			})
 		}
@@ -5458,6 +5549,7 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 					continue
 				}
 				colNames := findAllUnqualifiedColumnRefs(trimmed)
+				colNames = r.filterKnownNames(colNames)
 				for _, colName := range colNames {
 					lineOffset := findColLineOffsetInPart(queryText, trimmed, colName)
 					findings = append(findings, Finding{
@@ -5475,6 +5567,7 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 
 		if wherePart != "" {
 			colNames := findAllUnqualifiedColumnRefs(wherePart)
+			colNames = r.filterKnownNames(colNames)
 			for _, colName := range colNames {
 				lineOffset := findColLineOffsetInPart(queryText, wherePart, colName)
 				findings = append(findings, Finding{
@@ -5492,6 +5585,7 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 		// Проверяем ON-условия JOIN
 		for _, onPart := range onParts {
 			colNames := findAllUnqualifiedColumnRefs(onPart)
+			colNames = r.filterKnownNames(colNames)
 			for _, colName := range colNames {
 				lineOffset := findColLineOffsetInPart(queryText, onPart, colName)
 				findings = append(findings, Finding{
@@ -5511,6 +5605,30 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 }
 
 // extractOnClauses извлекает ON-условия из JOIN-выражений в запросе.
+// filterKnownNames фильтрует список имён, удаляя известные Diasoft макросы (M_*)
+// и константы из H-файлов (h_files_defines).
+func (r *Runner) filterKnownNames(names []string) []string {
+	if len(names) == 0 {
+		return names
+	}
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		lower := strings.ToLower(name)
+		if sqlMacrosMap[lower] {
+			continue
+		}
+		// Проверяем в h_files_defines только если есть подключение к БД
+		if r.db != nil {
+			exists, err := r.db.FindHDefineExistsByName(name)
+			if err == nil && exists {
+				continue
+			}
+		}
+		result = append(result, name)
+	}
+	return result
+}
+
 func extractOnClauses(queryText string) []string {
 	result := make([]string, 0)
 	lower := strings.ToLower(queryText)
@@ -6214,7 +6332,7 @@ func (r *Runner) checkDiffTypesComparison(parsed *sqlparser.ParseResult, file *i
 		if fragment == nil {
 			continue
 		}
-		queryText := fragment.QueryText
+		queryText := removeComments(fragment.QueryText)
 
 		aliasMap := parseAliasMap(extractFromClause(queryText))
 
@@ -6236,6 +6354,12 @@ func (r *Runner) checkDiffTypesComparison(parsed *sqlparser.ParseResult, file *i
 		for _, exprPart := range exprParts {
 			comparisons := extractComparisons(exprPart)
 			for _, cmp := range comparisons {
+				// Пропускаем сравнения с литералами: SQL неявно приводит литерал
+				// к типу колонки/переменной
+				if isLiteralArg(cmp.left) || isLiteralArg(cmp.right) {
+					continue
+				}
+
 				type1 := r.resolveArgType(cmp.left, variableTypes, aliasMap)
 				type2 := r.resolveArgType(cmp.right, variableTypes, aliasMap)
 
@@ -6289,6 +6413,10 @@ func (r *Runner) checkDiffTypesComparison(parsed *sqlparser.ParseResult, file *i
 
 		comparisons := extractComparisons(ifExpr)
 		for _, cmp := range comparisons {
+			if isLiteralArg(cmp.left) || isLiteralArg(cmp.right) {
+				continue
+			}
+
 			type1 := r.resolveArgType(cmp.left, variableTypes, nil)
 			type2 := r.resolveArgType(cmp.right, variableTypes, nil)
 
@@ -6327,6 +6455,28 @@ type comparisonExpr struct {
 	left  string
 	right string
 	op    string
+}
+
+// isLiteralArg проверяет, является ли аргумент литералом (числовым, строковым или NULL).
+// SQL неявно приводит литералы к типу другого операнда, поэтому такие сравнения не являются ошибкой.
+func isLiteralArg(arg string) bool {
+	trimmed := strings.TrimSpace(arg)
+	if trimmed == "" {
+		return false
+	}
+	// NULL
+	if strings.ToLower(trimmed) == "null" {
+		return true
+	}
+	// Строковый литерал
+	if strings.HasPrefix(trimmed, "'") {
+		return true
+	}
+	// Числовой литерал (включая отрицательные)
+	if regexp.MustCompile(`^-?\d+(\.\d+)?$`).MatchString(trimmed) {
+		return true
+	}
+	return false
 }
 
 // extractComparisons разбивает выражение на подусловия по AND/OR (top-level)
@@ -6466,11 +6616,39 @@ func findComparisonOperator(expr string) comparisonExpr {
 				if left == "" || right == "" {
 					return comparisonExpr{}
 				}
+				// Отбрасываем сравнения, где операнд содержит SQL-ключевые слова
+				// (join, on, where, from, select и т.д.) — это артефакт парсинга,
+				// когда WHERE/ON часть захватила соседние конструкции
+				if containsSQLStatementKeyword(left) || containsSQLStatementKeyword(right) {
+					continue
+				}
 				return comparisonExpr{left: left, right: right, op: op}
 			}
 		}
 	}
 	return comparisonExpr{}
+}
+
+// containsSQLStatementKeyword проверяет, содержит ли выражение
+// SQL-ключевые слова конструкций (join, on, where, from, select и т.д.),
+// что указывает на артефакт парсинга — операнд не является корректным выражением.
+func containsSQLStatementKeyword(expr string) bool {
+	lower := strings.ToLower(expr)
+	// Ключевые слова-конструкции, которых не должно быть в операнде сравнения
+	wordKeywords := []string{"join", "where", "from", "select", "insert", "update", "delete", "having", "union", "except", "intersect"}
+	for _, kw := range wordKeywords {
+		if findKeywordPosition(lower, kw) >= 0 {
+			return true
+		}
+	}
+	// " on " и "group by" и "order by" проверяем как подстроки (с пробелами)
+	substrings := []string{" on ", "group by", "order by"}
+	for _, s := range substrings {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // isAssignmentFragment проверяет, является ли фрагмент присвоением (UPDATE SET или SELECT @var =).
@@ -7069,7 +7247,6 @@ func extractOrderByColumns(queryText string) []string {
 		macroLower := strings.ToLower(macro)
 		if strings.HasSuffix(orderByLower, macroLower) {
 			orderByPart = strings.TrimSpace(orderByPart[:len(orderByPart)-len(macro)])
-			orderByLower = strings.ToLower(orderByPart)
 			break
 		}
 	}

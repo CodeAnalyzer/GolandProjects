@@ -64,3 +64,22 @@ func (db *DB) FindHDefineIDsByFile(fileID int64) (map[string]int64, error) {
 
 	return result, nil
 }
+
+// FindHDefineExistsByName проверяет, существует ли define с указанным именем в h_files_defines.
+func (db *DB) FindHDefineExistsByName(defineName string) (bool, error) {
+	normalized := strings.ToLower(strings.TrimSpace(defineName))
+	if normalized == "" {
+		return false, nil
+	}
+	var exists bool
+	err := db.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM h_files_defines
+			WHERE LOWER(define_name) = $1
+		)
+	`, normalized).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
+}

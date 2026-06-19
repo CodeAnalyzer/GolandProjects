@@ -174,6 +174,23 @@ var sqlFunctionsMap = map[string]bool{
 	"identity": true, "scope_identity": true, "nullif": true,
 }
 
+// sqlMacrosMap — Diasoft макросы (M_*), которые не должны считаться ссылками на столбцы.
+var sqlMacrosMap = map[string]bool{
+	"m_forceorder": true, "m_forceorder_nospool": true, "m_forceorder_fast": true,
+	"m_forceorder_wo_loopjoin": true,
+	"m_keepplan":               true,
+	"m_with_rowlock":           true, "m_p_with_rowlock": true,
+	"m_delete_ptable":          true,
+	"m_businesslog_checkpoint": true,
+	"m_log_table":              true,
+	"m_index":                  true, "m_nolock_index": true, "m_readpast_index": true,
+	"m_holdlock_index": true, "m_p_readpast_index": true, "m_p_holdlock_index": true,
+	"m_rowlock_index": true, "m_rowlock_readpast_index": true,
+	"m_p_rowlock_index": true, "m_p_rowlock_readpast_index": true,
+	"m_updlock_index": true, "m_updlock_readpast_index": true,
+	"m_p_updlock_index": true, "m_p_updlock_readpast_index": true,
+}
+
 type Finding struct {
 	Rule             RuleID `json:"rule"`
 	Severity         int    `json:"severity"`
