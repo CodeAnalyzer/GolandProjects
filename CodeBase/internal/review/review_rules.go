@@ -2046,7 +2046,7 @@ func (r *Runner) checkDatatypeUpdateSet(parsed *sqlparser.ParseResult, file *ind
 				continue
 			}
 
-			targetType, err := r.db.FindLatestSQLColumnDefinitionType(stmt.TargetTable, targetColumn)
+			targetType, err := r.cachedFindColumnDefinitionType(stmt.TargetTable, targetColumn)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					continue
@@ -2110,7 +2110,7 @@ func (r *Runner) checkDatatypeInsertSelect(parsed *sqlparser.ParseResult, file *
 				continue
 			}
 
-			targetType, err := r.db.FindLatestSQLColumnDefinitionType(stmt.TargetTable, targetColumn)
+			targetType, err := r.cachedFindColumnDefinitionType(stmt.TargetTable, targetColumn)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					continue
@@ -2161,7 +2161,7 @@ func (r *Runner) resolveExpressionTypes(expression string, aliasMap map[string]s
 		if strings.TrimSpace(tableName) == "" || strings.TrimSpace(ref.Column) == "" {
 			continue
 		}
-		typeName, err := r.db.FindLatestSQLColumnDefinitionType(tableName, ref.Column)
+		typeName, err := r.cachedFindColumnDefinitionType(tableName, ref.Column)
 		if err != nil {
 			continue
 		}
@@ -2189,7 +2189,7 @@ func (r *Runner) resolveCursorSourceTypes(expression string, aliasMap map[string
 		return nil
 	}
 
-	typeName, err := r.db.FindLatestSQLColumnDefinitionType(defaultTable, columnName)
+	typeName, err := r.cachedFindColumnDefinitionType(defaultTable, columnName)
 	if err != nil {
 		return nil
 	}
@@ -4365,7 +4365,7 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 			if col == "" || a.Expression == "" {
 				continue
 			}
-			targetType, err := r.db.FindLatestSQLColumnDefinitionType(stmt.TargetTable, col)
+			targetType, err := r.cachedFindColumnDefinitionType(stmt.TargetTable, col)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					continue
@@ -4411,7 +4411,7 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 			if col == "" || expr == "" {
 				continue
 			}
-			targetType, err := r.db.FindLatestSQLColumnDefinitionType(stmt.TargetTable, col)
+			targetType, err := r.cachedFindColumnDefinitionType(stmt.TargetTable, col)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					continue
@@ -4458,7 +4458,7 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 			if col == "" || expr == "" {
 				continue
 			}
-			targetType, err := r.db.FindLatestSQLColumnDefinitionType(table, col)
+			targetType, err := r.cachedFindColumnDefinitionType(table, col)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					continue
@@ -4724,7 +4724,7 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 			if col == "" || a.Expression == "" {
 				continue
 			}
-			targetType, err := r.db.FindLatestSQLColumnDefinitionType(stmt.TargetTable, col)
+			targetType, err := r.cachedFindColumnDefinitionType(stmt.TargetTable, col)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					continue
@@ -4767,7 +4767,7 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 			if col == "" || expr == "" {
 				continue
 			}
-			targetType, err := r.db.FindLatestSQLColumnDefinitionType(stmt.TargetTable, col)
+			targetType, err := r.cachedFindColumnDefinitionType(stmt.TargetTable, col)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					continue
@@ -4811,7 +4811,7 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 			if col == "" || expr == "" {
 				continue
 			}
-			targetType, err := r.db.FindLatestSQLColumnDefinitionType(table, col)
+			targetType, err := r.cachedFindColumnDefinitionType(table, col)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					continue
@@ -6296,6 +6296,11 @@ func extractIsnullCalls(text string) [][2]string {
 			end++
 		}
 	foundEnd:
+		if end >= len(text) {
+			// Закрывающая ')' не найдена — некорректный/неполный вызов ISNULL, пропускаем
+			searchFrom = idx + len("isnull")
+			continue
+		}
 		if end <= start {
 			searchFrom = idx + len("isnull")
 			continue
@@ -6379,7 +6384,7 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 		if mapped, exists := aliasMap[strings.ToLower(strings.TrimSpace(tableName))]; exists {
 			tableName = mapped
 		}
-		typeName, err := r.db.FindLatestSQLColumnDefinitionType(tableName, ref.Column)
+		typeName, err := r.cachedFindColumnDefinitionType(tableName, ref.Column)
 		if err != nil {
 			return ""
 		}
@@ -6395,7 +6400,7 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 				continue
 			}
 			seenTables[tbl] = struct{}{}
-			typeName, err := r.db.FindLatestSQLColumnDefinitionType(tbl, trimmed)
+			typeName, err := r.cachedFindColumnDefinitionType(tbl, trimmed)
 			if err == nil && typeName != "" {
 				return typeName
 			}
@@ -6455,8 +6460,7 @@ func knownFunctionReturnType(funcName string) (string, bool) {
 		return "varchar", true
 	case "len", "datalength", "charindex", "patindex":
 		return "int", true
-	case "abs", "ceiling", "floor", "round", "power", "sqrt", "square",
-		"rand", "sign", "datediff", "datepart", "day", "month", "year":
+	case "rand", "datediff", "datepart", "day", "month", "year":
 		return "int", true
 	case "dateadd":
 		return "", false // тип определяется вторым аргументом (датой)

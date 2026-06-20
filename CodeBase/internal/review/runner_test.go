@@ -522,3 +522,45 @@ func TestEnabledRuleSet_AliasWhenUsingUnion(t *testing.T) {
 		t.Fatalf("RuleForeignProcedureUsing should be disabled")
 	}
 }
+
+func TestCachedFindColumnDefinitionType_CacheHit(t *testing.T) {
+	r := &Runner{colTypeCache: make(map[string]string)}
+
+	r.colTypeCache["mytable|mycol"] = "DSINT"
+	got, err := r.cachedFindColumnDefinitionType("MyTable", "MyCol")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "DSINT" {
+		t.Fatalf("got %q, want DSINT", got)
+	}
+}
+
+func TestCachedFindColumnDefinitionType_NegativeCache(t *testing.T) {
+	r := &Runner{colTypeCache: make(map[string]string)}
+
+	r.colTypeCache["notable|nocol"] = ""
+	got, err := r.cachedFindColumnDefinitionType("NoTable", "NoCol")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("got %q, want empty string for negative cache", got)
+	}
+}
+
+func TestKnownFunctionReturnType_AbsNotInt(t *testing.T) {
+	if rt, ok := knownFunctionReturnType("abs"); ok {
+		t.Fatalf("abs should not have fixed return type, got %q", rt)
+	}
+}
+
+func TestKnownFunctionReturnType_RandIsInt(t *testing.T) {
+	rt, ok := knownFunctionReturnType("rand")
+	if !ok {
+		t.Fatalf("rand should have fixed return type")
+	}
+	if rt != "int" {
+		t.Fatalf("rand return type = %q, want int", rt)
+	}
+}

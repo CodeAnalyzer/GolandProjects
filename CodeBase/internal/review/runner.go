@@ -16,9 +16,11 @@ import (
 )
 
 type Runner struct {
-	db     *store.DB
-	parser *sqlparser.Parser
-	exec   *reviewExecContext
+	db           *store.DB
+	parser       *sqlparser.Parser
+	exec         *reviewExecContext
+	colTypeCache map[string]string
+	colTypeMu    sync.Mutex
 }
 
 type reviewExecContext struct {
@@ -34,7 +36,7 @@ type ruleTask struct {
 }
 
 func NewRunner(db *store.DB) *Runner {
-	return &Runner{db: db, parser: sqlparser.NewParser()}
+	return &Runner{db: db, parser: sqlparser.NewParser(), colTypeCache: make(map[string]string)}
 }
 
 func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
@@ -44,6 +46,10 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 	if r.db == nil {
 		return nil, fmt.Errorf("database is not initialized")
 	}
+
+	r.colTypeMu.Lock()
+	r.colTypeCache = make(map[string]string)
+	r.colTypeMu.Unlock()
 
 	normalizedPath := normalizePath(path)
 	file, err := r.getIndexedFile(normalizedPath)
@@ -507,6 +513,30 @@ func (r *Runner) fileContent(path string) ([]byte, error) {
 		}
 	}
 	return os.ReadFile(path)
+}
+
+func (r *Runner) cachedFindColumnDefinitionType(tableName, columnName string) (string, error) {
+	key := strings.ToLower(strings.TrimSpace(tableName)) + "|" + strings.ToLower(strings.TrimSpace(columnName))
+	r.colTypeMu.Lock()
+	if v, ok := r.colTypeCache[key]; ok {
+		r.colTypeMu.Unlock()
+		return v, nil
+	}
+	r.colTypeMu.Unlock()
+	typeName, err := r.db.FindLatestSQLColumnDefinitionType(tableName, columnName)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			r.colTypeMu.Lock()
+			r.colTypeCache[key] = ""
+			r.colTypeMu.Unlock()
+			return "", nil
+		}
+		return "", err
+	}
+	r.colTypeMu.Lock()
+	r.colTypeCache[key] = typeName
+	r.colTypeMu.Unlock()
+	return typeName, nil
 }
 
 func (r *Runner) fileProcessedContent(path string) (macroReplaceResult, error) {
