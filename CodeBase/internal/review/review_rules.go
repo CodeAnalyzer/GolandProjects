@@ -820,11 +820,9 @@ func (r *Runner) analyzeStatementForPTableSpid(lines []string, startLine int, fi
 
 	// Проверяем условия по SPID для каждой p-таблицы
 	spidConditions := extractSpidConditions(trimmedText)
-
 	for _, table := range pTables {
 		tableName := normalizeIdentifier(table.TableName)
 		tableKey := tableConditionKey(table)
-
 		if _, hasSpidCondition := spidConditions[tableKey]; !hasSpidCondition {
 			findings = append(findings, Finding{
 				Rule:             RulePTableSpid,
@@ -1770,7 +1768,8 @@ func (r *Runner) hasDefaultAssignmentInBody(procBody string, paramName string) b
 		}
 
 		// Ищем использование параметра (кроме присваивания)
-		if strings.Contains(lower, strings.ToLower(paramPattern)) {
+		// Используем проверку границ слова, чтобы @AmountPrc не матчило внутри @AmountPrcOvrDbt
+		if containsParamUsage(lower, strings.ToLower(paramPattern)) {
 			// Проверяем, что это не присваивание (уже проверено выше)
 			if !isAssignment {
 				if firstUsagePos == -1 {
@@ -1787,6 +1786,26 @@ func (r *Runner) hasDefaultAssignmentInBody(procBody string, paramName string) b
 
 	// Если присваивание есть, а использования нет (или наоборот) - считаем OK если есть присваивание
 	return firstAssignmentPos != -1
+}
+
+func containsParamUsage(line, paramLower string) bool {
+	start := 0
+	for {
+		idx := strings.Index(line[start:], paramLower)
+		if idx == -1 {
+			return false
+		}
+		pos := idx + start
+		after := pos + len(paramLower)
+		if after >= len(line) || !isWordCharByte(line[after]) {
+			return true
+		}
+		start = pos + 1
+	}
+}
+
+func isWordCharByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
 }
 
 func (r *Runner) checkProcElseCase(file *indexedFile) ([]Finding, error) {
@@ -3161,6 +3180,11 @@ func (r *Runner) checkNullComparison(file *indexedFile) ([]Finding, error) {
 			continue
 		}
 
+		// Пропускаем строки присвоения в SELECT: @Var = null (continuation многострочного SELECT)
+		if nullSelectAssignRe.MatchString(stripped) {
+			continue
+		}
+
 		// Проверяем бинарные операторы: = NULL, <> NULL, < NULL и т.д.
 		if nullComparisonBinaryRe.MatchString(stripped) {
 			findings = append(findings, Finding{
@@ -3988,9 +4012,31 @@ func findInsertWithoutColumns(text string) []int {
 	lower := toLowerASCIIPreservingLen(text)
 	depth := 0
 	inString := false
+	inBlockComment := false
 
 	for i := 0; i < len(lower); i++ {
 		ch := lower[i]
+
+		// Пропускаем блочные комментарии /* ... */
+		if inBlockComment {
+			if ch == '*' && i+1 < len(lower) && lower[i+1] == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if ch == '/' && i+1 < len(lower) && lower[i+1] == '*' {
+			inBlockComment = true
+			i++
+			continue
+		}
+		// Пропускаем строчные комментарии -- ...
+		if ch == '-' && i+1 < len(lower) && lower[i+1] == '-' {
+			for i < len(lower) && lower[i] != '\n' {
+				i++
+			}
+			continue
+		}
 		if ch == '\'' {
 			if i+1 < len(lower) && lower[i+1] == '\'' {
 				i++
@@ -4079,6 +4125,20 @@ func findInsertWithoutColumns(text string) []int {
 				} else {
 					break
 				}
+			}
+
+			// Пропускаем whitespace и строчные комментарии перед (
+			for {
+				for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+					j++
+				}
+				if j+1 < len(lower) && lower[j] == '-' && lower[j+1] == '-' {
+					for j < len(lower) && lower[j] != '\n' {
+						j++
+					}
+					continue
+				}
+				break
 			}
 
 			if j < len(lower) && lower[j] == '(' {
@@ -5468,6 +5528,9 @@ func findAllUnqualifiedColumnRefs(expr string) []string {
 		if sqlFunctionsMap[name] {
 			continue
 		}
+		if sqlDataTypesMap[name] {
+			continue
+		}
 		if seen[name] {
 			continue
 		}
@@ -5661,9 +5724,18 @@ func truncateAtStatementBoundary(expr string) string {
 		if depth > 0 {
 			continue
 		}
+		// Не обрезаем в самом начале выражения — первый ключевое слово
+		// является началом оператора, а не границей между операторами
+		if i == 0 {
+			continue
+		}
 		// Проверяем слово на границу
 		if i > 0 && (lower[i-1] == '_' || (lower[i-1] >= 'a' && lower[i-1] <= 'z') || (lower[i-1] >= '0' && lower[i-1] <= '9')) {
 			continue
+		}
+		// Макросы профилирования PROFILE_TIME_* — отдельные операторы
+		if strings.HasPrefix(lower[i:], "profile_time") {
+			return expr[:i]
 		}
 		for _, kw := range boundaries {
 			if i+len(kw) <= len(lower) && lower[i:i+len(kw)] == kw {
@@ -6085,10 +6157,6 @@ func extractFuncColumnRefs(expr string) []funcColumnRef {
 		if sqlKeywordsMap[lowerFunc] {
 			continue
 		}
-		// Пропускаем встроенные функции SQL (isnull, count, sum, ...)
-		if sqlFunctionsMap[lowerFunc] {
-			continue
-		}
 		// Пропускаем макросы Diasoft (M_*)
 		if sqlMacrosMap[lowerFunc] {
 			continue
@@ -6148,7 +6216,7 @@ func extractFuncColumnRefs(expr string) []funcColumnRef {
 			}
 			// Пропускаем ключевые слова и функции
 			lowerCol := strings.ToLower(colName)
-			if sqlKeywordsMap[lowerCol] || sqlFunctionsMap[lowerCol] {
+			if sqlKeywordsMap[lowerCol] || sqlFunctionsMap[lowerCol] || sqlDataTypesMap[lowerCol] {
 				continue
 			}
 			result = append(result, funcColumnRef{
@@ -6838,14 +6906,14 @@ func findComparisonOperator(expr string) comparisonExpr {
 func containsSQLStatementKeyword(expr string) bool {
 	lower := strings.ToLower(expr)
 	// Ключевые слова-конструкции, которых не должно быть в операнде сравнения
-	wordKeywords := []string{"join", "where", "from", "select", "insert", "update", "delete", "having", "union", "except", "intersect"}
+	wordKeywords := []string{"join", "where", "from", "select", "insert", "update", "delete", "having", "union", "except", "intersect", "on"}
 	for _, kw := range wordKeywords {
 		if findKeywordPosition(lower, kw) >= 0 {
 			return true
 		}
 	}
-	// " on " и "group by" и "order by" проверяем как подстроки (с пробелами)
-	substrings := []string{" on ", "group by", "order by"}
+	// "group by" и "order by" проверяем как подстроки (с пробелами)
+	substrings := []string{"group by", "order by"}
 	for _, s := range substrings {
 		if strings.Contains(lower, s) {
 			return true

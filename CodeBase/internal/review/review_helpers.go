@@ -626,8 +626,8 @@ func extractSpidConditions(fullText string) map[string]struct{} {
 		for _, match := range spidRe.FindAllStringIndex(partLower, -1) {
 			// Определяем контекст - проверяем, относится ли к какой-либо таблице
 			contextStart := 0
-			if match[0] > 20 {
-				contextStart = match[0] - 20
+			if match[0] > 60 {
+				contextStart = match[0] - 60
 			}
 			context := part[contextStart:match[0]]
 			contextLower := strings.ToLower(context)

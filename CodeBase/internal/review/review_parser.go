@@ -1101,9 +1101,14 @@ func hasStatementEnded(lower string, stmtBuffer []string) bool {
 		return false
 	}
 
-	// UNION - не разрываем, это часть составного оператора
+	// UNION - не разрываем только если новая строка начинается с SELECT
+	// (SELECT ... UNION SELECT — это один оператор).
+	// DELETE/UPDATE/INSERT после UNION — это новый оператор.
 	if strings.Contains(currentLower, "union") {
-		return false
+		newSelectRe := regexp.MustCompile(`(?i)^\s*select\b`)
+		if newSelectRe.MatchString(lower) {
+			return false
+		}
 	}
 
 	// SELECT/UPDATE/DELETE с FROM/SET считаются полными - разрываем

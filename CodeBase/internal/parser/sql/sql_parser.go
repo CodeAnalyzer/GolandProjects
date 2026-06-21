@@ -753,6 +753,18 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 
 		trimmed := strings.TrimSpace(line)
 		endOfStatement := strings.HasSuffix(trimmed, ";")
+
+		// Сбрасываем текущий оператор на control-flow ключевых словах,
+		// чтобы SELECT внутри if/begin/end блоков становился отдельным фрагментом
+		lowerTrim := strings.ToLower(trimmed)
+		if statementStart > 0 && (strings.HasPrefix(lowerTrim, "if ") || strings.HasPrefix(lowerTrim, "if(") ||
+			strings.EqualFold(trimmed, "begin") || strings.EqualFold(trimmed, "end") ||
+			strings.HasPrefix(lowerTrim, "while ") || strings.HasPrefix(lowerTrim, "else")) {
+			flushStatement(lineNum - 1)
+			resetStatementState()
+			inMultiStatement = false
+		}
+
 		appendStatementLine(line, lineNum)
 
 		// Пропускаем пустые строки и комментарии

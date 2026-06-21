@@ -613,3 +613,41 @@ func TestSQLParserHelpers(t *testing.T) {
 		t.Fatalf("expected case-insensitive procedure param match")
 	}
 }
+
+func TestParseContent_SelectInsideIfBeginEnd_IsSeparateFragment(t *testing.T) {
+	parser := NewParser()
+	content := `DCL_PROC_BEGIN(TestProc)
+as
+  select @Var1 = t.ID
+    from tTable t
+   where t.SysName = 'TEST1'
+
+  if @ActionType = 1
+  begin
+      select @Var2 = t.ID
+        from tTable t
+       where t.SysName = 'TEST2'
+      M_ISOLAT
+  end
+__END_PROCEDURE__(TestProc)
+go
+`
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	selectAssignCount := 0
+	for _, frag := range result.Fragments {
+		if frag == nil {
+			continue
+		}
+		lower := strings.ToLower(strings.TrimSpace(frag.QueryText))
+		if strings.HasPrefix(lower, "select @") {
+			selectAssignCount++
+		}
+	}
+	if selectAssignCount != 2 {
+		t.Fatalf("expected 2 select-assign fragments, got %d (fragments: %+v)", selectAssignCount, result.Fragments)
+	}
+}

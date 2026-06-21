@@ -1774,6 +1774,18 @@ if @ContractID is not null
 			paramName:   "@InsurMode",
 			expectFound: true,
 		},
+		{
+			name: "param prefix collision in declare - AmountPrc vs AmountPrcOvrDbt",
+			procBody: `as
+  declare @AmountPrcOvrDbt DSMONEY
+
+  select @RetVal       = 0,
+         @AmountPrc    = 0
+  if @AmountPrc > 0
+    select 1`,
+			paramName:   "@AmountPrc",
+			expectFound: true,
+		},
 	}
 
 	for _, tc := range cases {
@@ -2386,6 +2398,11 @@ func TestCheckNullComparison_NoFalsePositive(t *testing.T) {
 		{name: "proc param default null no comma", content: "@CalcFlowMaxPrcMode  DSTINYINT    = null"},
 		{name: "proc param default null indented", content: "                 @PaymentMode    DSINT_KEY = null,"},
 		{name: "declare var default null", content: "@MyVar DSINT_KEY = null"},
+		{name: "proc param default null output", content: "@AmountDelinq      DSMONEY   = null output,"},
+		{name: "proc param default null output no comma", content: "@AmountPrc         DSMONEY   = null output"},
+		{name: "proc param default null output indented", content: "                 @AmountMain        DSMONEY   = null output,"},
+		{name: "select assign null continuation", content: "         @UserAnnual   = NULL"},
+		{name: "select assign null continuation comma", content: "         @UserAnnual   = NULL,"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

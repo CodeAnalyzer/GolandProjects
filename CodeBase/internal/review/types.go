@@ -133,7 +133,11 @@ var nullComparisonBinaryRe = regexp.MustCompile(`(?i)(?:^|[^a-zA-Z_])((?:=|<>|!=
 
 // nullParamDefaultRe соответствует строкам объявления параметра или переменной с дефолтом = null:
 // @Name   DSTYPE = null,   или   @Name DSTYPE = null
-var nullParamDefaultRe = regexp.MustCompile(`(?i)@\w+\s+\w+\s*=\s*null\s*,?\s*$`)
+var nullParamDefaultRe = regexp.MustCompile(`(?i)@\w+\s+\w+\s*=\s*null\s*(?:output\s*)?,?\s*$`)
+
+// nullSelectAssignRe соответствует строкам присвоения в SELECT: @Var = null  или  @Var = null,
+// (без объявления типа — это continuation-строка многострочного SELECT @var = ...)
+var nullSelectAssignRe = regexp.MustCompile(`(?i)^\s*@\w+\s*=\s*null\s*,?\s*$`)
 
 // nullComparisonInRe ищет IN (..., NULL, ...) или IN (NULL)
 var nullComparisonInRe = regexp.MustCompile(`(?i)\bin\s*\([^)]*\bnull\b[^)]*\)`)
@@ -166,6 +170,20 @@ var sqlKeywordsMap = map[string]bool{
 	"mm": true, "m": true, "yy": true, "yyyy": true, "wk": true,
 	"ww": true, "hh": true, "mi": true, "n": true, "ss": true,
 	"s": true, "ms": true, "mcs": true, "ns": true,
+}
+
+// sqlDataTypesMap — встроенные типы данных SQL Server, которые не должны считаться ссылками на столбцы.
+var sqlDataTypesMap = map[string]bool{
+	"int": true, "bigint": true, "smallint": true, "tinyint": true,
+	"varchar": true, "nvarchar": true, "char": true, "nchar": true,
+	"text": true, "ntext": true, "image": true,
+	"datetime": true, "smalldatetime": true, "date": true, "time": true,
+	"datetime2": true, "datetimeoffset": true,
+	"decimal": true, "numeric": true, "float": true, "real": true,
+	"money": true, "smallmoney": true, "bit": true,
+	"binary": true, "varbinary": true, "uniqueidentifier": true,
+	"xml": true, "sql_variant": true, "cursor": true, "table": true,
+	"timestamp": true, "rowversion": true,
 }
 
 // sqlFunctionsMap — встроенные функции SQL, которые не должны считаться ссылками на столбцы.
