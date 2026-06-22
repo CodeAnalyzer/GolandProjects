@@ -651,3 +651,48 @@ go
 		t.Fatalf("expected 2 select-assign fragments, got %d (fragments: %+v)", selectAssignCount, result.Fragments)
 	}
 }
+
+func TestParseContent_HFileLikeContent_DCLProcBegin(t *testing.T) {
+	parser := NewParser()
+	content := `#define DCL_PROC_BEGIN( NAME ) \
+	create procedure NAME as \
+	__BEGIN_PROCEDURE__(NAME) \
+	__END_PROCEDURE__(NAME)
+
+#define ARC_PROC_BEGIN(proc_name) \
+	DCL_PROC_BEGIN(proc_name)
+
+DCL_PROC_BEGIN(Ins_Check_ExistsLinkObject)
+
+as
+  __BEGIN_PROCEDURE__(Ins_Check_ExistsLinkObject)
+  select 1
+__END_PROCEDURE__(Ins_Check_ExistsLinkObject)
+
+go
+X_ANYMODE(Ins_Check_ExistsLinkObject)
+`
+
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	// SQL-парсер увидит все DCL_PROC_BEGIN-совпадения, включая макросы.
+	// Индексатор отфильтрует ложные на основе строки #define.
+	var realProc *model.SQLProcedure
+	for _, proc := range result.Procedures {
+		if proc.ProcName == "Ins_Check_ExistsLinkObject" {
+			realProc = proc
+		}
+	}
+	if realProc == nil {
+		t.Fatalf("expected real procedure Ins_Check_ExistsLinkObject, got procedures: %+v", result.Procedures)
+	}
+	if realProc.LineStart != 9 {
+		t.Fatalf("real procedure line start = %d, want 9", realProc.LineStart)
+	}
+	if realProc.LineEnd == 0 {
+		t.Fatalf("real procedure line end should be set, got 0")
+	}
+}

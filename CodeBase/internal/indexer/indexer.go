@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/codebase/internal/config"
+	"github.com/codebase/internal/encoding"
 	"github.com/codebase/internal/fswalk"
 	"github.com/codebase/internal/model"
 	"github.com/codebase/internal/parser/apimacro"
@@ -20,6 +21,7 @@ import (
 	jsparser "github.com/codebase/internal/parser/js"
 	rptparser "github.com/codebase/internal/parser/rpt"
 	smfparser "github.com/codebase/internal/parser/smf"
+	sqlparser "github.com/codebase/internal/parser/sql"
 	tprparser "github.com/codebase/internal/parser/tpr"
 	"github.com/codebase/internal/store"
 )
@@ -223,8 +225,14 @@ func cloneInt64Map(values map[string]int64) map[string]int64 {
 }
 
 func (idx *Indexer) parseHFile(path string, fileID int64, stats *model.ScanStats) error {
-	parser := h.NewParser()
-	result, err := parser.ParseFile(path)
+	content, err := encoding.ReadFile(path, encoding.CP866)
+	if err != nil {
+		return fmt.Errorf("failed to read H file: %w", err)
+	}
+	lines := strings.Split(content, "\n")
+
+	hParser := h.NewParser()
+	result, err := hParser.ParseContent(content)
 	if err != nil {
 		return fmt.Errorf("failed to parse H file: %w", err)
 	}
@@ -260,6 +268,45 @@ func (idx *Indexer) parseHFile(path string, fileID int64, stats *model.ScanStats
 	}
 	stats.Defines += len(definesBatch)
 
+	// H-файлы в Diasoft 5NT часто содержат определения SQL-процедур через DCL_PROC_BEGIN.
+	// Парсим их SQL-парсером, но отбрасываем процедуры, попавшие внутрь #define-макросов
+	// (например, #define DCL_PROC_BEGIN(NAME) ... или #define ARC_PROC_BEGIN(p) DCL_PROC_BEGIN(p)).
+	sqlParser := sqlparser.NewParser()
+	sqlResult, err := sqlParser.ParseContent(content)
+	if err != nil {
+		idx.logError(path, "Error parsing H file as SQL for procedures: %v", err)
+	} else if len(sqlResult.Procedures) > 0 {
+		procBatch := make([]*model.SQLProcedure, 0, len(sqlResult.Procedures))
+		procSymbols := make([]*model.Symbol, 0, len(sqlResult.Procedures))
+		for _, proc := range sqlResult.Procedures {
+			if isLineInsideMacroDefinition(lines, proc.LineStart) {
+				continue
+			}
+			proc.FileID = fileID
+			procBatch = append(procBatch, proc)
+			procSymbols = append(procSymbols, &model.Symbol{
+				FileID:     fileID,
+				SymbolName: proc.ProcName,
+				SymbolType: "procedure",
+				EntityType: "sql",
+				LineNumber: proc.LineStart,
+				Signature:  proc.ProcName,
+			})
+		}
+		if len(procBatch) > 0 {
+			if err := idx.db.BatchInsertSQLProcedures(procBatch, idx.config.Indexer.BatchSize); err != nil {
+				idx.logError(path, "Error batch inserting H-file procedures: %v", err)
+				stats.Errors += len(procBatch)
+				return err
+			}
+			stats.Procedures += len(procBatch)
+			if err := idx.db.BatchInsertSymbols(procSymbols, idx.config.Indexer.BatchSize); err != nil {
+				idx.logError(path, "Error batch inserting H-file procedure symbols: %v", err)
+				return err
+			}
+		}
+	}
+
 	for _, inc := range result.Includes {
 		if err := idx.saveIncludeDirective(fileID, path, inc.IncludePath, inc.LineNumber); err != nil {
 			idx.logError(path, "Error saving include %s: %v", inc.IncludePath, err)
@@ -268,6 +315,31 @@ func (idx *Indexer) parseHFile(path string, fileID int64, stats *model.ScanStats
 	}
 
 	return nil
+}
+
+// isLineInsideMacroDefinition возвращает true, если строка lineNum (1-индексированная)
+// является частью многострочного #define-макроса.
+func isLineInsideMacroDefinition(lines []string, lineNum int) bool {
+	if lineNum < 1 || lineNum > len(lines) {
+		return false
+	}
+	idx := lineNum - 1
+	if strings.HasPrefix(strings.TrimSpace(lines[idx]), "#define") {
+		return true
+	}
+	for i := idx - 1; i >= 0; i-- {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "#define") {
+			allContinued := true
+			for j := i; j < idx; j++ {
+				if !strings.HasSuffix(strings.TrimRight(lines[j], " \t\r\n"), "\\") {
+					allContinued = false
+					break
+				}
+			}
+			return allContinued
+		}
+	}
+	return false
 }
 
 func (idx *Indexer) parseDFMFile(path string, fileID int64, stats *model.ScanStats) error {
