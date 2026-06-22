@@ -362,4 +362,32 @@ func TestCollectExecCallLines_NoArgsNextLineParam(t *testing.T) {
 	}
 }
 
+func TestMaskSingleQuotedStringContent(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"set x = 'a;b'", "set x = '???'"},
+		{"set x = 'a''b'", "set x = '?''?'"},
+		{"set x = 'a'; select 1", "set x = '?'; select 1"},
+		{"set x = 'begin'", "set x = '?????'"},
+		{"no quotes here", "no quotes here"},
+	}
+	for _, tc := range cases {
+		got := maskSingleQuotedStringContent(tc.input)
+		if got != tc.want {
+			t.Fatalf("maskSingleQuotedStringContent(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
 
+func TestHasStatementEnded_SemicolonInsideStringLiteral_DoesNotEnd(t *testing.T) {
+	stmtBuffer := []string{
+		"update pCNENP_LoanExt_CollateralInfo",
+		"   set CollateralName = substring(ci.CollateralName + ';' + isnull(le.Name, ''), 1, 1954)",
+	}
+	line := "   set CollateralName = substring(ci.CollateralName + ';' + isnull(le.Name, ''), 1, 1954)"
+	if hasStatementEnded(strings.ToLower(line), stmtBuffer) {
+		t.Fatalf("hasStatementEnded should not end statement on semicolon inside string literal")
+	}
+}

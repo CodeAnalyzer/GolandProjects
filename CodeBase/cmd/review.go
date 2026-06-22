@@ -69,7 +69,7 @@ var reviewCmd = &cobra.Command{
 			return writeJSON(os.Stdout, response)
 		}
 
-		fmt.Printf("Review file: %s\n", result.AnalyzedFile)
+		fmt.Printf("Review file: %s\n", filePath)
 		fmt.Printf("Findings: %d\n\n", len(result.Findings))
 		for _, finding := range result.Findings {
 			fmt.Printf("- [%d] %s line=%d object=%s\n  %s\n", finding.Severity, finding.Rule, finding.Line, finding.Object, finding.Message)

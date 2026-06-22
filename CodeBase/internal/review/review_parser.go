@@ -1039,6 +1039,32 @@ func isNewSQLStatement(line string) bool {
 	return false
 }
 
+// maskSingleQuotedStringContent заменяет символы внутри одинарных кавычек
+// на символ '?' чтобы терминаторы внутри строковых литералов (;, go, begin и т.д.)
+// не приводили к ложному разделению SQL-операторов. Учитывает экранирование кавычек (”).
+func maskSingleQuotedStringContent(s string) string {
+	result := []byte(s)
+	inString := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\'' {
+			if inString && i+1 < len(s) && s[i+1] == '\'' {
+				// Экранированная одинарная кавычка — оставляем как есть
+				result[i] = '\''
+				result[i+1] = '\''
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			result[i] = '?'
+		}
+	}
+	return string(result)
+}
+
 // hasStatementEnded проверяет, закончился ли SQL оператор
 // stmtBuffer передаётся для контекста: если новый DML начинается, разрываем только если предыдущий уже "полный"
 func hasStatementEnded(lower string, stmtBuffer []string) bool {
@@ -1046,10 +1072,9 @@ func hasStatementEnded(lower string, stmtBuffer []string) bool {
 	// Например, "dependantinfo" содержит "end", но это не ключевое слово
 	// UNION не разрывает оператор - он часть составного оператора
 	re := regexp.MustCompile(`(?i)([;]|\b(?:go|begin|if|while|declare|exec|execute|return)\b)`)
-	if re.MatchString(lower) {
+	if re.MatchString(maskSingleQuotedStringContent(lower)) {
 		return true
 	}
-
 	trimmed := strings.TrimSpace(lower)
 	endRe := regexp.MustCompile(`(?i)^end(?:\s|;|$)`)
 	if endRe.MatchString(trimmed) {

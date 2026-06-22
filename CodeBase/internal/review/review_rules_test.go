@@ -693,6 +693,53 @@ func TestAnalyzeStatementForPTableSpid_WithSpidCondition(t *testing.T) {
 	}
 }
 
+func TestCheckTableFullScan_UpdateWithStringLiteralSemicolon_NoFinding(t *testing.T) {
+	// Регрессионный тест: точка с запятой внутри строкового литерала в SET
+	// не должна разрывать UPDATE-оператор до FROM/WHERE.
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+	lines := []string{
+		"  while @cnt > 0",
+		"  begin",
+		"",
+		"    update pCNENP_LoanExt_CollateralInfo",
+		"       set CollateralName = substring(ci.CollateralName + ';' + isnull(le.Name, ''), 1, 1954)",
+		"     from pCNENP_LoanExt_CollateralInfo ci M_UPDLOCK_INDEX(XPKpCNENP_LoanExt_CollateralInfo)",
+		"      inner join pAPI_CCvr_LinkElement le M_NOLOCK_INDEX(XIE0pAPI_CCvr_LinkElement)",
+		"              on le.SPID       = ci.SPID",
+		"             and le.ElementID  = ci.ElementID",
+		"      where ci.SPID      = @@SPID ",
+		"        and ci.ElementID > 0     ",
+		"     M_FORCEORDER",
+		"",
+		"    update pCNENP_LoanExt_CollateralInfo",
+		"       set ElementID = isnull((select min(oc.ElementID)",
+		"                         from pAPI_CCvr_ObjectCover   oc M_NOLOCK_INDEX(XPKpAPI_CCvr_ObjectCover)",
+		"                        where oc.SPID             = ci.SPID ",
+		"                          and oc.ContractCoverID  = ci.ContractCoverID",
+		"                          and oc.ElementID        > ci.ElementID),0)",
+		"      from pCNENP_LoanExt_CollateralInfo ci M_UPDLOCK_INDEX(XPKpCNENP_LoanExt_CollateralInfo)",
+		"     where ci.SPID      = @@SPID",
+		"       and ci.ElementID > 0 ",
+		"    M_FORCEORDER",
+	}
+	content := strings.Join(lines, "\n")
+
+	runner := &Runner{}
+	runner.exec = &reviewExecContext{
+		filePath:    normalizePath(file.Path),
+		content:     []byte(content),
+		macroResult: replaceMacros(content),
+		lines:       lines,
+	}
+	findings, err := runner.checkTableFullScan(file)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings, got %#v", findings)
+	}
+}
+
 func TestAnalyzeStatementForFullScan_HashTableNoFilter_NoFinding(t *testing.T) {
 	// #-таблица без фильтра — сессионная, finding не нужен
 	lines := []string{"select @StateOrder = max(p.StateOrder) from #ProtocolList p M_ISOLAT"}
@@ -1219,8 +1266,8 @@ func TestHasExplicitConversion_DetectsConvertAndCast(t *testing.T) {
 		{"convert(smalldatetime, cc.CreditDateFrom)", "smalldatetime", true},
 		{"convert(varchar(10), col)", "varchar", true},
 		{"CONVERT(DATE, col)", "date", true},
-		{"convert(int, col)", "smalldatetime", true},  // любой convert — явное преобразование
-		{"col", "smalldatetime", false},               // нет convert
+		{"convert(int, col)", "smalldatetime", true}, // любой convert — явное преобразование
+		{"col", "smalldatetime", false},              // нет convert
 
 		// convert() cases - эквивалентные типы (для datetime)
 		{"convert(smalldatetime, col)", "dsoperday", true}, // smalldatetime эквивалентен DSOPERDAY
