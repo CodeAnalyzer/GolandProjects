@@ -21,6 +21,7 @@ type Runner struct {
 	exec         *reviewExecContext
 	colTypeCache map[string]string
 	colTypeMu    sync.Mutex
+	onProgress   func(completed, total int)
 }
 
 type reviewExecContext struct {
@@ -37,6 +38,10 @@ type ruleTask struct {
 
 func NewRunner(db *store.DB) *Runner {
 	return &Runner{db: db, parser: sqlparser.NewParser(), colTypeCache: make(map[string]string)}
+}
+
+func (r *Runner) SetOnProgress(fn func(completed, total int)) {
+	r.onProgress = fn
 }
 
 func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
@@ -93,7 +98,7 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 	ruleSet := enabledRuleSet(opts.Rules)
 	tasks := r.buildRuleTasks(ruleSet, parsed, file)
 	maxWorkers := r.maxRuleWorkers(len(tasks))
-	findings, err := runRuleTasks(tasks, maxWorkers)
+	findings, err := runRuleTasks(tasks, maxWorkers, r.onProgress)
 	if err != nil {
 		return nil, err
 	}
@@ -423,7 +428,7 @@ func (r *Runner) maxRuleWorkers(enabledRules int) int {
 	return limit
 }
 
-func runRuleTasks(tasks []ruleTask, maxWorkers int) ([]Finding, error) {
+func runRuleTasks(tasks []ruleTask, maxWorkers int, onProgress func(int, int)) ([]Finding, error) {
 	if len(tasks) == 0 {
 		return nil, nil
 	}
@@ -487,9 +492,15 @@ func runRuleTasks(tasks []ruleTask, maxWorkers int) ([]Finding, error) {
 		close(resultsCh)
 	}()
 
+	total := len(tasks)
+	completed := 0
 	findings := make([]Finding, 0)
 	var firstErr error
 	for result := range resultsCh {
+		completed++
+		if onProgress != nil {
+			onProgress(completed, total)
+		}
 		if result.err != nil {
 			if firstErr == nil {
 				firstErr = result.err

@@ -8,8 +8,11 @@ import (
 	"github.com/codebase/internal/store"
 )
 
-func ExecuteWith(db *store.DB, path string, opts review.Options) (*review.Result, error) {
+func ExecuteWith(db *store.DB, path string, opts review.Options, onProgress func(completed, total int)) (*review.Result, error) {
 	runner := review.NewRunner(db)
+	if onProgress != nil {
+		runner.SetOnProgress(onProgress)
+	}
 	result, err := runner.RunSQLFile(path, opts)
 	if err != nil {
 		return nil, fmt.Errorf("review failed: %w", err)
@@ -17,7 +20,7 @@ func ExecuteWith(db *store.DB, path string, opts review.Options) (*review.Result
 	return result, nil
 }
 
-func Execute(path string, opts review.Options) (*review.Result, error) {
+func Execute(path string, opts review.Options, onProgress func(completed, total int)) (*review.Result, error) {
 	cfg := config.Get()
 	if cfg == nil {
 		return nil, fmt.Errorf("config not loaded")
@@ -33,5 +36,5 @@ func Execute(path string, opts review.Options) (*review.Result, error) {
 		return nil, fmt.Errorf("failed to init schema: %w", err)
 	}
 
-	return ExecuteWith(db, path, opts)
+	return ExecuteWith(db, path, opts, onProgress)
 }

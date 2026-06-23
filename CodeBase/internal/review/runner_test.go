@@ -17,7 +17,7 @@ func TestRunRuleTasks_SuccessAggregatesFindings(t *testing.T) {
 		}},
 	}
 
-	findings, err := runRuleTasks(tasks, 2)
+	findings, err := runRuleTasks(tasks, 2, nil)
 	if err != nil {
 		t.Fatalf("runRuleTasks(...) unexpected error: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestRunRuleTasks_FirstErrorCancels(t *testing.T) {
 		}},
 	}
 
-	_, err := runRuleTasks(tasks, 2)
+	_, err := runRuleTasks(tasks, 2, nil)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runRuleTasks(...) error = %v, want %v", err, wantErr)
 	}

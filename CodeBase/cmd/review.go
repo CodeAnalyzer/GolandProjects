@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/codebase/internal/review"
 	"github.com/codebase/internal/reviewsvc"
@@ -48,7 +50,20 @@ var reviewCmd = &cobra.Command{
 		if err != nil {
 			return handleReviewError(err)
 		}
-		result, err := reviewsvc.Execute(filePath, opts)
+		var progress *reviewProgress
+		if !reviewOutputJSON {
+			progress = newReviewProgress(filePath)
+			progress.start()
+		}
+
+		var onProgress func(completed, total int)
+		if progress != nil {
+			onProgress = progress.update
+		}
+		result, err := reviewsvc.Execute(filePath, opts, onProgress)
+		if progress != nil {
+			progress.stop()
+		}
 		if err != nil {
 			return handleReviewError(err)
 		}
@@ -166,6 +181,72 @@ func isReviewJSONMode(args []string) bool {
 		}
 	}
 	return false
+}
+
+var spinnerFrames = []string{"|", "/", "-", "\\"}
+
+type reviewProgress struct {
+	filePath string
+	mu       sync.Mutex
+	completed int
+	total     int
+	stopCh    chan struct{}
+	done      chan struct{}
+	stopped   bool
+}
+
+func newReviewProgress(filePath string) *reviewProgress {
+	return &reviewProgress{
+		filePath: filePath,
+		stopCh:   make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+}
+
+func (p *reviewProgress) update(completed, total int) {
+	p.mu.Lock()
+	p.completed = completed
+	p.total = total
+	p.mu.Unlock()
+}
+
+func (p *reviewProgress) start() {
+	go func() {
+		defer close(p.done)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		i := 0
+		for {
+			select {
+			case <-p.stopCh:
+				fmt.Fprintf(os.Stderr, "\r\033[K")
+				return
+			case <-ticker.C:
+				p.mu.Lock()
+				completed, total := p.completed, p.total
+				p.mu.Unlock()
+				frame := spinnerFrames[i%len(spinnerFrames)]
+				if total > 0 {
+					fmt.Fprintf(os.Stderr, "\rreview %s %s checked=%d/%d", frame, p.filePath, completed, total)
+				} else {
+					fmt.Fprintf(os.Stderr, "\rreview %s %s %s", frame, p.filePath, spinnerFrames[0])
+				}
+				i++
+			}
+		}
+	}()
+}
+
+func (p *reviewProgress) stop() {
+	p.mu.Lock()
+	if p.stopped {
+		p.mu.Unlock()
+		return
+	}
+	p.stopped = true
+	p.mu.Unlock()
+	close(p.stopCh)
+	<-p.done
 }
 
 func init() {

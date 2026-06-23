@@ -118,9 +118,9 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				opts := review.Options{Rules: rules, MinSeverity: minSeverity}
 				if db != nil {
-					return reviewsvc.ExecuteWith(db, filePath, opts)
+					return reviewsvc.ExecuteWith(db, filePath, opts, nil)
 				}
-				return reviewsvc.Execute(filePath, opts)
+				return reviewsvc.Execute(filePath, opts, nil)
 			},
 		},
 		"codebase_query_symbol": {
