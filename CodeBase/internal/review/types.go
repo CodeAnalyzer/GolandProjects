@@ -333,3 +333,21 @@ type stmtWithOffset struct {
 	stmt   string
 	offset int
 }
+
+type statementRange struct {
+	Text     string
+	StartPos int
+}
+
+// funcColumnRef — ссылка на столбец внутри вызова функции.
+type funcColumnRef struct {
+	funcName string
+	column   string
+}
+
+// comparisonExpr — пара операндов и оператор сравнения.
+type comparisonExpr struct {
+	left  string
+	right string
+	op    string
+}

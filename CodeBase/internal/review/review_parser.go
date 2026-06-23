@@ -1438,3 +1438,1180 @@ func collectExecCallLines(lines []string, startLine int) string {
 
 	return strings.Join(collected, "\n")
 }
+
+// splitStatementsWithOffsets аналогична splitStatementsForHintType, но дополнительно
+// сохраняет байтовый offset начала каждого оператора в исходном тексте.
+func splitStatementsWithOffsets(text string) []stmtWithOffset {
+	lower := toLowerASCII(text)
+	result := make([]stmtWithOffset, 0)
+	depth := 0
+	inString := false
+	startIdx := 0
+
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '\'' {
+			if i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+		if depth == 0 && i > 0 {
+			if keywordMatchAt(lower, i, "select") || keywordMatchAt(lower, i, "update") || keywordMatchAt(lower, i, "delete") {
+				if i > 0 && isCharWordBoundary(lower[i-1]) {
+					if startIdx < i {
+						stmt := strings.TrimSpace(text[startIdx:i])
+						if stmt != "" {
+							result = append(result, stmtWithOffset{stmt: stmt, offset: startIdx})
+						}
+					}
+					startIdx = i
+				}
+			}
+		}
+	}
+	if startIdx < len(text) {
+		stmt := strings.TrimSpace(text[startIdx:])
+		if stmt != "" {
+			result = append(result, stmtWithOffset{stmt: stmt, offset: startIdx})
+		}
+	}
+	return result
+}
+
+// countTopLevelJoins считает количество JOIN-ов на верхнем уровне вложенности (вне подзапросов).
+func countTopLevelJoins(stmt string) int {
+	lower := strings.ToLower(stmt)
+	count := 0
+	depth := 0
+	inString := false
+
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+
+		if ch == '\'' {
+			if i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+
+		if depth == 0 && keywordMatchAt(lower, i, "join") {
+			count++
+		}
+	}
+
+	return count
+}
+
+// splitStatementsForHintType разбивает текст на отдельные операторы SELECT/UPDATE/DELETE на нулевом уровне вложенности
+func splitStatementsForHintType(text string) []statementRange {
+	lower := strings.ToLower(text)
+	statements := make([]statementRange, 0)
+	depth := 0
+	inString := false
+	startIdx := 0
+	// Отслеживаем, начинается ли текущий оператор с INSERT (для INSERT...SELECT)
+	currentStartsWithInsert := false
+
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '\'' {
+			if i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+
+		// Если на нулевом уровне и встречаем новое ключевое слово SELECT/UPDATE/DELETE
+		if depth == 0 && i > 0 {
+			if keywordMatchAt(lower, i, "select") || keywordMatchAt(lower, i, "update") || keywordMatchAt(lower, i, "delete") {
+				// Проверяем, что это не часть другого слова
+				if i > 0 && isCharWordBoundary(lower[i-1]) {
+					// Для INSERT...SELECT не разрываем на внутреннем SELECT
+					if currentStartsWithInsert && keywordMatchAt(lower, i, "select") {
+						continue
+					}
+					// Добавляем предыдущий оператор
+					if startIdx < i {
+						stmt := strings.TrimSpace(text[startIdx:i])
+						if stmt != "" {
+							statements = append(statements, statementRange{Text: stmt, StartPos: startIdx})
+						}
+					}
+					startIdx = i
+					currentStartsWithInsert = false
+				}
+			}
+		}
+
+		// Определяем, начинается ли текущий оператор с INSERT
+		if i == startIdx && keywordMatchAt(lower, i, "insert") {
+			currentStartsWithInsert = true
+		}
+	}
+
+	// Добавляем последний оператор
+	if startIdx < len(text) {
+		stmt := strings.TrimSpace(text[startIdx:])
+		if stmt != "" {
+			statements = append(statements, statementRange{Text: stmt, StartPos: startIdx})
+		}
+	}
+
+	return statements
+}
+
+func findInSubqueryPositions(stmt string) []int {
+	positions := make([]int, 0)
+	lower := strings.ToLower(stmt)
+	depth := 0
+	inString := false
+
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '\'' {
+			if i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+
+		if depth == 0 {
+			if keywordMatchAt(lower, i, "not in") {
+				j := i + len("not in")
+				for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+					j++
+				}
+				if j < len(lower) && lower[j] == '(' {
+					if hasSelectInsideParens(lower, j) {
+						positions = append(positions, i)
+					}
+					i = j
+					continue
+				}
+			}
+			if keywordMatchAt(lower, i, "in") {
+				j := i + len("in")
+				for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+					j++
+				}
+				if j < len(lower) && lower[j] == '(' {
+					if hasSelectInsideParens(lower, j) {
+						positions = append(positions, i)
+					}
+					i = j
+					continue
+				}
+			}
+		}
+	}
+	return positions
+}
+
+func parseVarDeclaration(item string) (string, string, string) {
+	item = strings.TrimSpace(item)
+	if item == "" {
+		return "", "", ""
+	}
+	// @name [AS] type[(size)]
+	if !strings.HasPrefix(item, "@") {
+		return "", "", ""
+	}
+	// Находим конец имени переменной
+	nameEnd := 1
+	for nameEnd < len(item) && (isWordChar(item[nameEnd]) || item[nameEnd] == '_') {
+		nameEnd++
+	}
+	varName := item[:nameEnd]
+	rest := strings.TrimSpace(item[nameEnd:])
+
+	// Пропускаем AS если есть
+	if strings.HasPrefix(strings.ToLower(rest), "as ") {
+		rest = strings.TrimSpace(rest[3:])
+	}
+
+	// Извлекаем тип (слово до whitespace, (, или конца)
+	if rest == "" {
+		return varName, "", ""
+	}
+	typeEnd := 0
+	for typeEnd < len(rest) && (isWordChar(rest[typeEnd]) || rest[typeEnd] == '_') {
+		typeEnd++
+	}
+	varType := rest[:typeEnd]
+	return varName, varType, rest
+}
+
+func extractInsertTableName(text string, pos int) string {
+	lower := toLowerASCIIPreservingLen(text)
+	j := pos + len("insert")
+	for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+		j++
+	}
+	if keywordMatchAt(lower, j, "into") {
+		j += len("into")
+		for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+			j++
+		}
+	}
+	start := j
+	for j < len(lower) && (isWordChar(lower[j]) || lower[j] == '.' || lower[j] == '[' || lower[j] == ']' || lower[j] == '#') {
+		j++
+	}
+	if start >= j || start >= len(lower) {
+		return ""
+	}
+	// Не должно начинаться с символов, не допустимых для имени таблицы
+	if !(isWordChar(lower[start]) || lower[start] == '#' || lower[start] == '[') {
+		return ""
+	}
+	tableName := strings.TrimSpace(text[start:j])
+	return tableName
+}
+
+func findInsertWithoutColumns(text string) []int {
+	positions := make([]int, 0)
+	lower := toLowerASCIIPreservingLen(text)
+	depth := 0
+	inString := false
+	inBlockComment := false
+
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+
+		// Пропускаем блочные комментарии /* ... */
+		if inBlockComment {
+			if ch == '*' && i+1 < len(lower) && lower[i+1] == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if ch == '/' && i+1 < len(lower) && lower[i+1] == '*' {
+			inBlockComment = true
+			i++
+			continue
+		}
+		// Пропускаем строчные комментарии -- ...
+		if ch == '-' && i+1 < len(lower) && lower[i+1] == '-' {
+			for i < len(lower) && lower[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		if ch == '\'' {
+			if i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+		if depth != 0 {
+			continue
+		}
+
+		if keywordMatchAt(lower, i, "insert") {
+			j := i + len("insert")
+			// пропускаем whitespace
+			for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+				j++
+			}
+			// опционально пропускаем INTO
+			if keywordMatchAt(lower, j, "into") {
+				j += len("into")
+				for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+					j++
+				}
+			}
+			// пропускаем имя таблицы (слово, точка, квадратные скобки, #)
+			for j < len(lower) && (isWordChar(lower[j]) || lower[j] == '.' || lower[j] == '[' || lower[j] == ']' || lower[j] == '#') {
+				j++
+			}
+			// пропускаем whitespace
+			for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+				j++
+			}
+			// пропускаем макросы M_* (возможно со скобками)
+			macroHadParens := false
+			for {
+				macroStart := j
+				if j < len(lower) && lower[j] == 'm' && j+1 < len(lower) && lower[j+1] == '_' {
+					for j < len(lower) && (isWordChar(lower[j]) || lower[j] == '_') {
+						j++
+					}
+					if j < len(lower) && lower[j] == '(' {
+						macroHadParens = true
+						j++
+						macroDepth := 1
+						macroString := false
+						for j < len(lower) && macroDepth > 0 {
+							c := lower[j]
+							if c == '\'' {
+								if j+1 < len(lower) && lower[j+1] == '\'' {
+									j += 2
+									continue
+								}
+								macroString = !macroString
+								j++
+								continue
+							}
+							if macroString {
+								j++
+								continue
+							}
+							switch c {
+							case '(':
+								macroDepth++
+							case ')':
+								macroDepth--
+							}
+							j++
+						}
+					}
+					for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+						j++
+					}
+					if macroStart == j {
+						break
+					}
+				} else {
+					break
+				}
+			}
+
+			// Если найден макрос со скобками (например M_WITH_ROWLOCK(col1, col2)),
+			// колонки перечислены внутри макроса — не reporting
+			if macroHadParens {
+				i = j
+				continue
+			}
+
+			// Пропускаем whitespace и строчные комментарии перед (
+			for {
+				for j < len(lower) && (lower[j] == ' ' || lower[j] == '\t' || lower[j] == '\n' || lower[j] == '\r') {
+					j++
+				}
+				if j+1 < len(lower) && lower[j] == '-' && lower[j+1] == '-' {
+					for j < len(lower) && lower[j] != '\n' {
+						j++
+					}
+					continue
+				}
+				break
+			}
+
+			if j < len(lower) && lower[j] == '(' {
+				i = j
+				continue
+			}
+			if keywordMatchAt(lower, j, "values") || keywordMatchAt(lower, j, "select") ||
+				keywordMatchAt(lower, j, "exec") || keywordMatchAt(lower, j, "execute") ||
+				keywordMatchAt(lower, j, "default") {
+				positions = append(positions, i)
+				i = j
+				continue
+			}
+			// Не распознали следующий токен — тоже finding
+			positions = append(positions, i)
+			i = j
+		}
+	}
+	return positions
+}
+
+func extractSetColumns(stmt string) []string {
+	columns := make([]string, 0)
+	lower := strings.ToLower(stmt)
+
+	setIdx := findKeywordPosition(lower, "set")
+	if setIdx == -1 {
+		return columns
+	}
+
+	setPart := stmt[setIdx+3:]
+	lowerSetPart := strings.ToLower(setPart)
+
+	endMarkers := []string{" where ", " from ", ";", " output ", " option "}
+	endIdx := len(setPart)
+	for _, marker := range endMarkers {
+		if idx := findKeywordPosition(lowerSetPart, strings.TrimSpace(marker)); idx >= 0 {
+			if idx < endIdx {
+				endIdx = idx
+			}
+		}
+	}
+	setPart = setPart[:endIdx]
+
+	assignments := splitTopLevelSetAssignments(setPart)
+	for _, assignment := range assignments {
+		assignment = strings.TrimSpace(assignment)
+		if assignment == "" {
+			continue
+		}
+		eqIdx := strings.Index(assignment, "=")
+		if eqIdx == -1 {
+			continue
+		}
+		leftPart := strings.TrimSpace(assignment[:eqIdx])
+		leftPart = normalizeIdentifier(leftPart)
+		if idx := strings.LastIndex(leftPart, "."); idx >= 0 {
+			leftPart = leftPart[idx+1:]
+		}
+		if leftPart != "" && !strings.HasPrefix(leftPart, "@") {
+			columns = append(columns, leftPart)
+		}
+	}
+
+	return columns
+}
+
+// findAssignmentLineOffset возвращает смещение строки (0-based) от начала текста
+// до позиции j-го assignment в многострочном SELECT.
+func findAssignmentLineOffset(queryText string, assignments []selectAssignment, j int) int {
+	if j < 0 || j >= len(assignments) {
+		return 0
+	}
+	searchFrom := 0
+	for i := 0; i <= j; i++ {
+		idx := strings.Index(strings.ToLower(queryText[searchFrom:]), strings.ToLower(assignments[i].TargetVariable))
+		if idx < 0 {
+			return 0
+		}
+		if i == j {
+			absPos := searchFrom + idx
+			return strings.Count(queryText[:absPos], "\n")
+		}
+		searchFrom += idx + len(assignments[i].TargetVariable)
+	}
+	return 0
+}
+
+// parseCasePartAssignments извлекает assignment'ы из THEN/ELSE веток CASE-выражения.
+// Возвращает selectAssignment для каждой переменной, присваиваемой внутри CASE.
+// Expression — весь CASE-текст целиком, чтобы cross-reference check мог найти
+// ссылки на переменные в WHEN-условиях.
+func parseCasePartAssignments(part string) []selectAssignment {
+	lower := strings.ToLower(strings.TrimSpace(part))
+	if !strings.HasPrefix(lower, "case") {
+		return nil
+	}
+
+	result := make([]selectAssignment, 0)
+	seen := make(map[string]bool)
+
+	branchRe := regexp.MustCompile(`(?i)(?:then|else)\s+(@[A-Za-z_][A-Za-z0-9_]*)\s*=`)
+	matches := branchRe.FindAllStringSubmatch(part, -1)
+	for _, m := range matches {
+		varName := strings.TrimSpace(m[1])
+		if !seen[varName] {
+			seen[varName] = true
+			result = append(result, selectAssignment{
+				TargetVariable: varName,
+				Expression:     part,
+			})
+		}
+	}
+	return result
+}
+
+// findColLineOffsetInPart находит смещение строки для colName внутри part,
+// относительно начала queryText. Ищет colName в part, затем определяет
+// позицию part в queryText и вычисляет line offset.
+func findColLineOffsetInPart(queryText, part, colName string) int {
+	partIdx := strings.Index(strings.ToLower(queryText), strings.ToLower(part))
+	if partIdx < 0 {
+		partIdx = 0
+	}
+	colIdx := strings.Index(strings.ToLower(part), strings.ToLower(colName))
+	if colIdx < 0 {
+		colIdx = 0
+	}
+	absIdx := partIdx + colIdx
+	return strings.Count(queryText[:absIdx], "\n")
+}
+
+// findAllUnqualifiedColumnRefs возвращает все неквалифицированные ссылки на столбцы.
+func findAllUnqualifiedColumnRefs(expr string) []string {
+	// Удаляем подзапросы в скобках (select ...) — алиасы и имена таблиц внутри
+	// не должны считаться неквалифицированными колонками
+	cleaned := stripSubqueries(expr)
+	// Удаляем однострочные комментарии //...
+	cleaned = regexp.MustCompile(`//[^\n]*`).ReplaceAllString(cleaned, "")
+	// Удаляем однострочные комментарии --...
+	cleaned = regexp.MustCompile(`--[^\n]*`).ReplaceAllString(cleaned, "")
+	// Удаляем многострочные комментарии /* ... */
+	cleaned = regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(cleaned, "")
+	// Удаляем qualified refs (alias.column)
+	cleaned = regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\b`).ReplaceAllString(cleaned, "")
+	// Удаляем @variables и @@variables
+	cleaned = regexp.MustCompile(`(?i)@@?[a-z_][a-z0-9_]*`).ReplaceAllString(cleaned, "")
+	// Удаляем строковые литералы
+	cleaned = regexp.MustCompile(`'[^']*'`).ReplaceAllString(cleaned, "")
+	// Удаляем числовые литералы
+	cleaned = regexp.MustCompile(`\b\d+(\.\d+)?\b`).ReplaceAllString(cleaned, "")
+	// Удаляем макросы-хинты M_*_INDEX(...) вместе с содержимым скобок
+	cleaned = regexp.MustCompile(`(?i)\bM_\w+_INDEX\s*\([^)]*\)`).ReplaceAllString(cleaned, "")
+
+	idRe := regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\b`)
+	matches := idRe.FindAllStringSubmatch(cleaned, -1)
+	result := make([]string, 0, len(matches))
+	seen := make(map[string]bool)
+	for _, m := range matches {
+		name := strings.ToLower(m[1])
+		if sqlKeywordsMap[name] {
+			continue
+		}
+		if sqlFunctionsMap[name] {
+			continue
+		}
+		if sqlDataTypesMap[name] {
+			continue
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		result = append(result, m[1])
+	}
+	return result
+}
+
+// truncateAtStatementBoundary обрезает выражение на первой границе оператора
+// (end, else, begin, insert, select, update, delete, exec, if, while и т.д.)
+// на верхнем уровне (глубина скобок = 0). Это предотвращает захват кода
+// из последующих операторов, когда парсер объединяет несколько операторов в один фрагмент.
+func truncateAtStatementBoundary(expr string) string {
+	lower := strings.ToLower(expr)
+	isUpdate := strings.HasPrefix(lower, "update")
+	boundaries := []string{"end", "else", "begin", "insert", "select", "update",
+		"delete", "exec", "execute", "if", "while", "print", "goto", "return",
+		"break", "continue", "waitfor", "raiserror", "commit", "rollback", "set"}
+	depth := 0
+	for i := 0; i < len(lower); i++ {
+		c := lower[i]
+		if c == '(' {
+			depth++
+			continue
+		}
+		if c == ')' {
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		if depth > 0 {
+			continue
+		}
+		// Не обрезаем в самом начале выражения — первый ключевое слово
+		// является началом оператора, а не границей между операторами
+		if i == 0 {
+			continue
+		}
+		// Проверяем слово на границу
+		if i > 0 && (lower[i-1] == '_' || (lower[i-1] >= 'a' && lower[i-1] <= 'z') || (lower[i-1] >= '0' && lower[i-1] <= '9')) {
+			continue
+		}
+		// Макросы профилирования PROFILE_TIME_* — отдельные операторы
+		if strings.HasPrefix(lower[i:], "profile_time") {
+			return expr[:i]
+		}
+		for _, kw := range boundaries {
+			// Для UPDATE «set» — часть синтаксиса (UPDATE ... SET), не граница оператора
+			if kw == "set" && isUpdate {
+				continue
+			}
+			if i+len(kw) <= len(lower) && lower[i:i+len(kw)] == kw {
+				after := i + len(kw)
+				if after >= len(lower) || lower[after] == ' ' || lower[after] == '\t' ||
+					lower[after] == '\n' || lower[after] == '\r' || lower[after] == '(' {
+					return expr[:i]
+				}
+			}
+		}
+	}
+	return expr
+}
+
+// stripSubqueries удаляет подзапросы в скобках (select ...) из выражения.
+// Это предотвращает ложные срабатывания, когда алиасы таблиц или имена таблиц
+// внутри подзапросов воспринимаются как неквалифицированные ссылки на столбцы.
+func stripSubqueries(expr string) string {
+	lower := strings.ToLower(expr)
+	var result strings.Builder
+	i := 0
+	for i < len(expr) {
+		// Ищем открывающую скобку
+		parenIdx := strings.IndexByte(expr[i:], '(')
+		if parenIdx < 0 {
+			result.WriteString(expr[i:])
+			break
+		}
+		parenIdx += i
+		// Копируем всё до скобки
+		result.WriteString(expr[i:parenIdx])
+		// Находим matching closing bracket
+		depth := 1
+		j := parenIdx + 1
+		for j < len(expr) && depth > 0 {
+			switch expr[j] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			j++
+		}
+		// Проверяем, содержит ли содержимое скобок SELECT (подзапрос)
+		content := lower[parenIdx+1 : j-1]
+		if strings.Contains(content, "select") {
+			// Это подзапрос — пропускаем его целиком
+		} else {
+			// Не подзапрос — сохраняем содержимое скобок
+			result.WriteString(expr[parenIdx:j])
+		}
+		i = j
+	}
+	return result.String()
+}
+
+// extractOnClauses извлекает ON-условия из JOIN-выражений в запросе.
+func extractOnClauses(queryText string) []string {
+	result := make([]string, 0)
+	lower := strings.ToLower(queryText)
+
+	stopWords := []string{
+		"where", "group", "order", "having", "union",
+		"join", "inner", "left", "right", "outer", "full", "cross",
+		"option",
+	}
+
+	searchFrom := 0
+	for {
+		onIdx := findKeywordPosition(lower[searchFrom:], "on")
+		if onIdx < 0 {
+			break
+		}
+		onIdx += searchFrom
+		start := onIdx + 2 // skip "on"
+		// Пропускаем whitespace
+		for start < len(lower) && (lower[start] == ' ' || lower[start] == '\t' || lower[start] == '\n' || lower[start] == '\r') {
+			start++
+		}
+		// Ищем конец ON-условия — следующий stop-word или ; или конец строки
+		end := start
+		depth := 0
+	stopLoop:
+		for end < len(lower) {
+			ch := lower[end]
+			if ch == '(' {
+				depth++
+			} else if ch == ')' {
+				if depth > 0 {
+					depth--
+				}
+			} else if ch == ';' && depth == 0 {
+				break
+			} else if depth == 0 {
+				for _, kw := range stopWords {
+					if keywordMatchAt(lower, end, kw) {
+						break stopLoop
+					}
+				}
+			}
+			end++
+		}
+		if end > start {
+			result = append(result, strings.TrimSpace(queryText[start:end]))
+		}
+		searchFrom = onIdx + 2
+	}
+	return result
+}
+
+// extractComparisons разбивает выражение на подусловия по AND/OR (top-level)
+// и для каждого находит оператор сравнения на top-level (вне скобок).
+// Если подусловие заключено в скобки и не содержит top-level оператора,
+// рекурсивно обрабатывает содержимое скобок.
+func extractComparisons(expr string) []comparisonExpr {
+	result := make([]comparisonExpr, 0)
+
+	// Разбиваем по AND/OR на top-level
+	subExprs := splitByAndOr(expr)
+	for _, sub := range subExprs {
+		trimmed := strings.TrimSpace(sub)
+		if trimmed == "" {
+			continue
+		}
+		cmp := findComparisonOperator(trimmed)
+		if cmp.op != "" {
+			result = append(result, cmp)
+			continue
+		}
+		// Если нет top-level оператора и выражение обёрнуто в скобки — рекурсивно
+		if len(trimmed) >= 2 && trimmed[0] == '(' && trimmed[len(trimmed)-1] == ')' {
+			// Проверяем что внешние скобки охватывают всё выражение
+			depth := 0
+			allMatched := true
+			for i, ch := range trimmed {
+				if ch == '(' {
+					depth++
+				} else if ch == ')' {
+					depth--
+					if depth == 0 && i < len(trimmed)-1 {
+						allMatched = false
+						break
+					}
+				}
+			}
+			if allMatched {
+				result = append(result, extractComparisons(trimmed[1:len(trimmed)-1])...)
+			}
+		}
+	}
+	return result
+}
+
+// splitByAndOr разбивает выражение по top-level AND/OR.
+func splitByAndOr(expr string) []string {
+	result := make([]string, 0)
+	lower := strings.ToLower(expr)
+	depth := 0
+	caseDepth := 0
+	start := 0
+
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '(' {
+			depth++
+		} else if ch == ')' && depth > 0 {
+			depth--
+		}
+		// Отслеживаем CASE ... END
+		if isWordBoundary(lower, i-1) && strings.HasPrefix(lower[i:], "case") && isWordBoundary(lower, i+4) {
+			caseDepth++
+		}
+		if isWordBoundary(lower, i-1) && strings.HasPrefix(lower[i:], "end") && isWordBoundary(lower, i+3) && caseDepth > 0 {
+			caseDepth--
+		}
+
+		if depth == 0 && caseDepth == 0 {
+			if isWordBoundary(lower, i-1) && strings.HasPrefix(lower[i:], "and") && isWordBoundary(lower, i+3) {
+				result = append(result, expr[start:i])
+				start = i + 3
+				i += 2
+			} else if isWordBoundary(lower, i-1) && strings.HasPrefix(lower[i:], "or") && isWordBoundary(lower, i+2) {
+				result = append(result, expr[start:i])
+				start = i + 2
+				i += 1
+			}
+		}
+	}
+	result = append(result, expr[start:])
+	return result
+}
+
+// findComparisonOperator находит оператор сравнения на top-level (глубина скобок = 0)
+// и возвращает пару операндов с оператором.
+func findComparisonOperator(expr string) comparisonExpr {
+	lower := strings.ToLower(expr)
+	depth := 0
+	caseDepth := 0
+
+	// Список операторов в порядке проверки (длинные сначала)
+	operators := []string{"<>", "!=", "<=", ">=", "=", "<", ">"}
+
+	for i := 0; i < len(expr); i++ {
+		ch := expr[i]
+		if ch == '(' {
+			depth++
+			continue
+		}
+		if ch == ')' && depth > 0 {
+			depth--
+			continue
+		}
+
+		// Отслеживаем CASE ... END
+		if isWordBoundary(lower, i-1) && strings.HasPrefix(lower[i:], "case") && isWordBoundary(lower, i+4) {
+			caseDepth++
+			continue
+		}
+		if isWordBoundary(lower, i-1) && strings.HasPrefix(lower[i:], "end") && isWordBoundary(lower, i+3) && caseDepth > 0 {
+			caseDepth--
+			continue
+		}
+
+		if depth > 0 || caseDepth > 0 {
+			continue
+		}
+
+		// Пропускаем строковые литералы
+		if ch == '\'' {
+			i++
+			for i < len(expr) && expr[i] != '\'' {
+				i++
+			}
+			continue
+		}
+
+		for _, op := range operators {
+			if i+len(op) <= len(expr) && expr[i:i+len(op)] == op {
+				// Проверяем что это не часть слова (например, = в != уже обработан)
+				if op == "=" && i > 0 && (expr[i-1] == '<' || expr[i-1] == '>' || expr[i-1] == '!') {
+					continue
+				}
+				left := strings.TrimSpace(expr[:i])
+				right := strings.TrimSpace(expr[i+len(op):])
+				if left == "" || right == "" {
+					return comparisonExpr{}
+				}
+				// Отбрасываем сравнения, где операнд содержит SQL-ключевые слова
+				// (join, on, where, from, select и т.д.) — это артефакт парсинга,
+				// когда WHERE/ON часть захватила соседние конструкции
+				if containsSQLStatementKeyword(left) || containsSQLStatementKeyword(right) {
+					continue
+				}
+				return comparisonExpr{left: left, right: right, op: op}
+			}
+		}
+	}
+	return comparisonExpr{}
+}
+
+// extractCaseWhenConditions извлекает WHEN-условия из CASE ... END конструкций.
+func extractCaseWhenConditions(queryText string) []string {
+	result := make([]string, 0)
+	lower := strings.ToLower(queryText)
+
+	searchFrom := 0
+	for {
+		caseIdx := findKeywordPosition(lower[searchFrom:], "case")
+		if caseIdx < 0 {
+			break
+		}
+		caseIdx += searchFrom
+
+		// Находим соответствующий END
+		depth := 1
+		endIdx := caseIdx + 4
+		for endIdx < len(lower) {
+			if isWordBoundary(lower, endIdx-1) && strings.HasPrefix(lower[endIdx:], "case") && isWordBoundary(lower, endIdx+4) {
+				depth++
+				endIdx += 4
+				continue
+			}
+			if isWordBoundary(lower, endIdx-1) && strings.HasPrefix(lower[endIdx:], "end") && isWordBoundary(lower, endIdx+3) {
+				depth--
+				if depth == 0 {
+					break
+				}
+				endIdx += 3
+				continue
+			}
+			endIdx++
+		}
+		if endIdx >= len(lower) {
+			// END не найден (парсер мог отрезать его в другой фрагмент) —
+			// используем остаток текста как тело CASE
+			endIdx = len(lower)
+		}
+
+		caseBody := queryText[caseIdx+4 : endIdx]
+		caseBodyLower := lower[caseIdx+4 : endIdx]
+
+		// Извлекаем WHEN-условия
+		whenIdx := 0
+		for {
+			pos := findKeywordPosition(caseBodyLower[whenIdx:], "when")
+			if pos < 0 {
+				break
+			}
+			pos += whenIdx
+
+			// Находим THEN на top-level
+			thenIdx := pos + 4
+			depth2 := 0
+			for thenIdx < len(caseBodyLower) {
+				ch := caseBodyLower[thenIdx]
+				if ch == '(' {
+					depth2++
+				} else if ch == ')' && depth2 > 0 {
+					depth2--
+				}
+				if depth2 == 0 && isWordBoundary(caseBodyLower, thenIdx-1) && strings.HasPrefix(caseBodyLower[thenIdx:], "then") && isWordBoundary(caseBodyLower, thenIdx+4) {
+					break
+				}
+				thenIdx++
+			}
+			if thenIdx >= len(caseBodyLower) {
+				break
+			}
+
+			whenCond := caseBody[pos+4 : thenIdx]
+			result = append(result, strings.TrimSpace(whenCond))
+			whenIdx = thenIdx + 4
+		}
+
+		searchFrom = endIdx + 3
+		if searchFrom >= len(lower) {
+			break
+		}
+	}
+
+	return result
+}
+
+// extractParenContent извлекает содержимое скобок начиная с позиции openIdx.
+// Возвращает содержимое без внешних скобок и индекс закрывающей скобки.
+func extractParenContent(text string, openIdx int) (string, int) {
+	if openIdx >= len(text) || text[openIdx] != '(' {
+		return "", openIdx
+	}
+	depth := 0
+	for i := openIdx; i < len(text); i++ {
+		switch text[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return text[openIdx+1 : i], i + 1
+			}
+		}
+	}
+	return "", len(text)
+}
+
+// extractInsertSelectExpr извлекает SELECT-часть из INSERT...SELECT.
+func extractInsertSelectExpr(queryText string) string {
+	selectIdx := findTopLevelKeywordPosition(queryText, "select")
+	if selectIdx < 0 {
+		return ""
+	}
+	// Ищем FROM после SELECT
+	rest := queryText[selectIdx:]
+	fromIdx := findTopLevelKeywordPosition(rest, "from")
+	if fromIdx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:fromIdx])
+}
+
+// extractFirstSelectBeforeUnion извлекает первый SELECT до первого UNION.
+func extractFirstSelectBeforeUnion(queryText string) (string, bool) {
+	lower := strings.ToLower(queryText)
+	if !strings.HasPrefix(strings.TrimSpace(lower), "select") {
+		return "", false
+	}
+	unionIdx := findTopLevelKeywordPosition(queryText, "union")
+	if unionIdx < 0 {
+		return "", false
+	}
+	return strings.TrimSpace(queryText[:unionIdx]), true
+}
+
+// extractSelectColumnNames извлекает имена колонок из SELECT-части
+// (между SELECT и FROM). Возвращает map нижнего регистра.
+func extractSelectColumnNames(selectStmt string) map[string]struct{} {
+	result := make(map[string]struct{})
+	lower := strings.ToLower(selectStmt)
+	if !strings.HasPrefix(strings.TrimSpace(lower), "select") {
+		return result
+	}
+	fromIdx := findTopLevelKeywordPosition(selectStmt, "from")
+	if fromIdx < 0 {
+		return result
+	}
+	selectPart := strings.TrimSpace(selectStmt[len("select"):fromIdx])
+	if selectPart == "" {
+		return result
+	}
+	parts := splitTopLevelCSV(selectPart)
+	for _, part := range parts {
+		name := extractColumnAliasName(strings.TrimSpace(part))
+		if name != "" {
+			result[strings.ToLower(name)] = struct{}{}
+		}
+	}
+	return result
+}
+
+// extractColumnAliasName извлекает имя/алиас из выражения колонки SELECT.
+// "col AS alias" → "alias", "col alias" → "alias", "col" → "col".
+func extractColumnAliasName(expr string) string {
+	// Убираем TOP N
+	expr = regexp.MustCompile(`(?i)^\s*top\s+\d+\s+`).ReplaceAllString(expr, "")
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return ""
+	}
+	// Проверяем "expr AS alias"
+	asRe := regexp.MustCompile(`(?i)\bas\s+([a-z_][a-z0-9_]*)\s*$`)
+	if m := asRe.FindStringSubmatch(expr); len(m) == 2 {
+		return m[1]
+	}
+	// Проверяем "expr alias" (последний идентификатор без ключевого слова)
+	// Разбиваем по пробелам, берём последний токен если он идентификатор
+	tokens := strings.Fields(expr)
+	if len(tokens) == 0 {
+		return ""
+	}
+	// Если один токен — это просто имя колонки
+	if len(tokens) == 1 {
+		// Убираем квалификацию table.column → column
+		clean := tokens[0]
+		if dotIdx := strings.LastIndex(clean, "."); dotIdx >= 0 {
+			clean = clean[dotIdx+1:]
+		}
+		// Проверяем что это идентификатор
+		if regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`).MatchString(clean) {
+			return clean
+		}
+		return ""
+	}
+	// Несколько токенов: последний может быть алиасом
+	last := tokens[len(tokens)-1]
+	// Предпоследний не должен быть ключевым словом (AS уже обработано выше)
+	if regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`).MatchString(last) {
+		// Проверяем что предпоследний токен не ключевое слово
+		prev := strings.ToLower(tokens[len(tokens)-2])
+		keywords := map[string]bool{
+			"from": true, "where": true, "and": true, "or": true,
+			"not": true, "is": true, "in": true, "like": true,
+			"between": true, "join": true, "on": true, "as": true,
+			"case": true, "when": true, "then": true, "else": true,
+			"end": true, "null": true, "select": true,
+		}
+		if !keywords[prev] {
+			return last
+		}
+	}
+	// Имя колонки из первого токена
+	clean := tokens[0]
+	if dotIdx := strings.LastIndex(clean, "."); dotIdx >= 0 {
+		clean = clean[dotIdx+1:]
+	}
+	if regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`).MatchString(clean) {
+		return clean
+	}
+	return ""
+}
+
+// extractOrderByColumns извлекает список колонок из ORDER BY.
+func extractOrderByColumns(queryText string) []string {
+	orderIdx := findTopLevelKeywordPosition(queryText, "order")
+	if orderIdx < 0 {
+		return nil
+	}
+	rest := queryText[orderIdx+5:]
+	restLower := strings.ToLower(rest)
+	restTrimmed := strings.TrimSpace(restLower)
+	if !strings.HasPrefix(restTrimmed, "by") {
+		return nil
+	}
+	byEnd := orderIdx + 5 + strings.Index(restLower, "by") + 2
+	// ORDER BY может быть последним — берём до конца или до следующего top-level keyword
+	remaining := queryText[byEnd:]
+	// Ищем конец ORDER BY (следующий top-level keyword или конец текста)
+	endKeywords := []string{"for", "compute", "option", "union", "except", "intersect"}
+	endIdx := len(remaining)
+	for _, kw := range endKeywords {
+		kwIdx := findTopLevelKeywordPosition(remaining, kw)
+		if kwIdx >= 0 && kwIdx < endIdx {
+			endIdx = kwIdx
+		}
+	}
+	orderByPart := strings.TrimSpace(remaining[:endIdx])
+	if orderByPart == "" {
+		return nil
+	}
+	// Обрезаем макросы M_FORCEORDER и подобные в конце
+	orderByLower := strings.ToLower(orderByPart)
+	for _, macro := range forceOrderMacros {
+		macroLower := strings.ToLower(macro)
+		if strings.HasSuffix(orderByLower, macroLower) {
+			orderByPart = strings.TrimSpace(orderByPart[:len(orderByPart)-len(macro)])
+			break
+		}
+	}
+	// Разделяем по запятым на top-level
+	cols := splitTopLevelCSV(orderByPart)
+	result := make([]string, 0, len(cols))
+	for _, col := range cols {
+		colTrimmed := strings.TrimSpace(col)
+		// Убираем ASC/DESC
+		colTrimmed = regexp.MustCompile(`(?i)\s+(asc|desc)\s*$`).ReplaceAllString(colTrimmed, "")
+		colTrimmed = strings.TrimSpace(colTrimmed)
+		if colTrimmed != "" {
+			result = append(result, colTrimmed)
+		}
+	}
+	return result
+}

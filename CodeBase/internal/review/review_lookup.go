@@ -1264,3 +1264,26 @@ func (r *Runner) lookupAPIContractParams(procName string) ([]model.SQLParam, err
 	return params, rows.Err()
 }
 
+// filterKnownNames фильтрует список имён, удаляя известные Diasoft макросы (M_*)
+// и константы из H-файлов (h_files_defines).
+func (r *Runner) filterKnownNames(names []string) []string {
+	if len(names) == 0 {
+		return names
+	}
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		lower := strings.ToLower(name)
+		if sqlMacrosMap[lower] {
+			continue
+		}
+		// Проверяем в h_files_defines только если есть подключение к БД
+		if r.db != nil {
+			exists, err := r.db.FindHDefineExistsByName(name)
+			if err == nil && exists {
+				continue
+			}
+		}
+		result = append(result, name)
+	}
+	return result
+}

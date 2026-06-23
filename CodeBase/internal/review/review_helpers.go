@@ -7,8 +7,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/codebase/internal/model"
+	sqlparser "github.com/codebase/internal/parser/sql"
 )
 
 var sharedTTables = map[string]struct{}{
@@ -163,59 +165,59 @@ func typeGroup(dataType string) string {
 
 func enabledRuleSet(rules []RuleID) map[RuleID]bool {
 	result := map[RuleID]bool{
-		RuleForeignTablesUsing:      true,
-		RuleForeignPTablesUsing:     true,
-		RuleForeignProcedureUsing:   true,
-		RuleExecNotExistsProc:       true,
-		RuleProcDuplicate:           true,
-		RuleProcParamDefValue:       true,
-		RuleProcElseCase:            true,
-		RuleUseSelectAll:            true,
-		RuleTruncTbl:                true,
-		RuleDatatype:                true,
-		RuleAnsiInJoin:              true,
-		RuleInsertRowLock:           true,
-		RuleUseEqColumn:             true,
-		RuleTableFullScan:           true,
-		RuleTableHintExists:         true,
-		RuleTableHintIsRight:        true,
-		RuleIndexExistsInDB:         true,
-		RuleIndexWrong:              true,
-		RuleUpdateOnlyVar:           true,
-		RulePTableSpid:              true,
-		RuleForceOrder2Tbl:          true,
-		RuleSaveTran:                true,
-		RuleUseDrop:                 true,
-		RuleMathOperations:          true,
-		RuleExistsWithAndInIf:       true,
-		RuleNullComparison:          true,
-		RuleShouldBeCP866:           true,
-		RuleTooManyJoins:            true,
-		RuleMaxProcParam:            true,
-		RuleModifyOutProc:           true,
-		RuleEmptyReturn:             true,
-		RuleRawTransactionControl:   true,
-		RuleDeferredUpdate:          true,
-		RuleInSubQuery:              true,
-		RuleVarcharSize:             true,
-		RuleColumnInsert:            true,
-		RulePostgreLabelGotoLevel:   true,
-		RuleDateIntoString:          true,
-		RuleEmptyStringDate:         true,
-		RuleVarUseAfterCursor:       true,
-		RuleExcessProcParams:        true,
-		RuleDuplicateOutputVariable: true,
-		RuleUseOnlyDeclaredCursors:  true,
-		RuleCursorFetchArguments:   true,
-		RuleUsageVarInSameSelect:   true,
-		RuleVarAssignInUpdate:      true,
+		RuleForeignTablesUsing:                true,
+		RuleForeignPTablesUsing:               true,
+		RuleForeignProcedureUsing:             true,
+		RuleExecNotExistsProc:                 true,
+		RuleProcDuplicate:                     true,
+		RuleProcParamDefValue:                 true,
+		RuleProcElseCase:                      true,
+		RuleUseSelectAll:                      true,
+		RuleTruncTbl:                          true,
+		RuleDatatype:                          true,
+		RuleAnsiInJoin:                        true,
+		RuleInsertRowLock:                     true,
+		RuleUseEqColumn:                       true,
+		RuleTableFullScan:                     true,
+		RuleTableHintExists:                   true,
+		RuleTableHintIsRight:                  true,
+		RuleIndexExistsInDB:                   true,
+		RuleIndexWrong:                        true,
+		RuleUpdateOnlyVar:                     true,
+		RulePTableSpid:                        true,
+		RuleForceOrder2Tbl:                    true,
+		RuleSaveTran:                          true,
+		RuleUseDrop:                           true,
+		RuleMathOperations:                    true,
+		RuleExistsWithAndInIf:                 true,
+		RuleNullComparison:                    true,
+		RuleShouldBeCP866:                     true,
+		RuleTooManyJoins:                      true,
+		RuleMaxProcParam:                      true,
+		RuleModifyOutProc:                     true,
+		RuleEmptyReturn:                       true,
+		RuleRawTransactionControl:             true,
+		RuleDeferredUpdate:                    true,
+		RuleInSubQuery:                        true,
+		RuleVarcharSize:                       true,
+		RuleColumnInsert:                      true,
+		RulePostgreLabelGotoLevel:             true,
+		RuleDateIntoString:                    true,
+		RuleEmptyStringDate:                   true,
+		RuleVarUseAfterCursor:                 true,
+		RuleExcessProcParams:                  true,
+		RuleDuplicateOutputVariable:           true,
+		RuleUseOnlyDeclaredCursors:            true,
+		RuleCursorFetchArguments:              true,
+		RuleUsageVarInSameSelect:              true,
+		RuleVarAssignInUpdate:                 true,
 		RuleStatementsWithJoinsRequireAliases: true,
-		RuleUseFuncInIndCol:                  true,
-		RuleIsNullSameTypes:                  true,
-		RuleDiffTypesComparison:              true,
-		RuleFloatToStringConvert:             true,
-		RuleSelectAfterSetRowcount:           true,
-		RuleAliasWhenUsingUnion:              true,
+		RuleUseFuncInIndCol:                   true,
+		RuleIsNullSameTypes:                   true,
+		RuleDiffTypesComparison:               true,
+		RuleFloatToStringConvert:              true,
+		RuleSelectAfterSetRowcount:            true,
+		RuleAliasWhenUsingUnion:               true,
 	}
 	if len(rules) == 0 {
 		return result
@@ -1760,4 +1762,358 @@ func validateExecArguments(args []execArgument, params []model.SQLParam) (bool, 
 	}
 
 	return false, ""
+}
+
+func collectVariableTypes(parsed *sqlparser.ParseResult, content string) map[string]string {
+	result := make(map[string]string)
+
+	for _, proc := range parsed.Procedures {
+		if proc == nil {
+			continue
+		}
+		for _, p := range proc.Params {
+			name := normalizeVariableName(p.Name)
+			typeName := strings.TrimSpace(p.Type)
+			if name == "" || typeName == "" {
+				continue
+			}
+			result[name] = typeName
+		}
+	}
+
+	declRe := regexp.MustCompile(`(?i)@([A-Za-z_][A-Za-z0-9_]*)[ \t]+([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)`)
+	for _, block := range extractDeclareBlocks(content) {
+		for _, m := range declRe.FindAllStringSubmatch(block, -1) {
+			if len(m) < 3 {
+				continue
+			}
+			name := normalizeVariableName(m[1])
+			typeName := strings.TrimSpace(m[2])
+			if name == "" || typeName == "" {
+				continue
+			}
+			if isSQLKeywordNotType(typeName) {
+				continue
+			}
+			result[name] = typeName
+		}
+	}
+
+	return result
+}
+
+// extractDeclareBlocks извлекает текст блоков declare из контента.
+// Блок начинается с ключевого слова declare и заканчивается на следующем
+// операторе SQL (exec, select, insert, update, delete, set, if, while, и т.д.).
+func extractDeclareBlocks(content string) []string {
+	var blocks []string
+	lower := strings.ToLower(content)
+	searchFrom := 0
+	stmtKeywords := []string{
+		"exec", "select", "insert", "update", "delete", "set",
+		"if", "while", "print", "return", "create", "alter",
+		"drop", "go", "begin", "end", "declare", "truncate",
+		"merge", "with", "waitfor", "raiserror", "throw",
+	}
+	for {
+		idx := findKeywordPosition(lower[searchFrom:], "declare")
+		if idx < 0 {
+			break
+		}
+		idx += searchFrom
+		start := idx + len("declare")
+		end := len(content)
+		for _, kw := range stmtKeywords {
+			kwIdx := findKeywordPosition(lower[start:], kw)
+			if kwIdx >= 0 {
+				absIdx := start + kwIdx
+				if absIdx < end {
+					end = absIdx
+				}
+			}
+		}
+		blocks = append(blocks, content[start:end])
+		searchFrom = end
+	}
+	return blocks
+}
+
+// isSQLKeywordNotType проверяет, является ли строка SQL-ключевым словом,
+// которое не может быть типом данных (например output, out, readonly).
+func isSQLKeywordNotType(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "output", "out", "readonly", "default", "null", "into", "from", "where", "and", "or", "not":
+		return true
+	}
+	return false
+}
+
+func normalizeVariableName(value string) string {
+	v := strings.TrimSpace(value)
+	v = strings.Trim(v, "[]\"")
+	v = strings.TrimPrefix(v, "@")
+	return strings.ToLower(v)
+}
+
+func containsParamUsage(line, paramLower string) bool {
+	start := 0
+	for {
+		idx := strings.Index(line[start:], paramLower)
+		if idx == -1 {
+			return false
+		}
+		pos := idx + start
+		after := pos + len(paramLower)
+		if after >= len(line) || !isWordCharByte(line[after]) {
+			return true
+		}
+		start = pos + 1
+	}
+}
+
+func isWordCharByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+// detectFileEncoding определяет кодировку файла: "ASCII", "CP866", "UTF-8", "CP1251" или "UNKNOWN".
+// Алгоритм:
+//  1. Нет байт > 0x7F → ASCII (совместим с CP866)
+//  2. Валидный UTF-8 → UTF-8
+//  3. Эвристика по маркерным диапазонам:
+//     cp866Score  = кол-во байт 0x80–0x9F (А-Я в CP866, редкие спецсимволы в CP1251)
+//     cp1251Score = кол-во байт 0xC0–0xDF (А-Я в CP1251, псевдографика в CP866 — редка в тексте)
+//     Побеждает бо́льший счёт.
+func detectFileEncoding(data []byte) string {
+	hasHigh := false
+	for _, b := range data {
+		if b > 0x7F {
+			hasHigh = true
+			break
+		}
+	}
+	if !hasHigh {
+		return "ASCII"
+	}
+
+	if utf8.Valid(data) {
+		return "UTF-8"
+	}
+
+	var cp866Score, cp1251Score int
+	for _, b := range data {
+		switch {
+		case b >= 0x80 && b <= 0x9F:
+			cp866Score++
+		case b >= 0xC0 && b <= 0xDF:
+			cp1251Score++
+		}
+	}
+
+	if cp1251Score > cp866Score {
+		return "CP1251"
+	}
+	return "CP866"
+}
+
+// isIndexedColumn проверяет, входит ли столбец в набор полей индекса.
+// Учитывает алиас: если column содержит точку (alias.column), проверяет
+// совпадение prefix с алиасом таблицы и извлекает часть после точки.
+func isIndexedColumn(column, alias string, indexFieldSet map[string]bool) bool {
+	normalizedCol := normalizeIdentifier(column)
+	if normalizedCol == "" {
+		return false
+	}
+
+	// Если column содержит точку (alias.column), извлекаем часть после точки
+	if idx := strings.Index(normalizedCol, "."); idx >= 0 {
+		prefix := normalizeIdentifier(normalizedCol[:idx])
+		colOnly := normalizeIdentifier(normalizedCol[idx+1:])
+		// Если алиас таблицы задан, проверяем совпадение prefix
+		if alias != "" && prefix != alias {
+			return false
+		}
+		if indexFieldSet[colOnly] {
+			return true
+		}
+		return false
+	}
+
+	// column без точки — прямое совпадение
+	if indexFieldSet[normalizedCol] {
+		return true
+	}
+
+	return false
+}
+
+// knownFunctionReturnType возвращает тип результата для известных SQL-функций.
+func knownFunctionReturnType(funcName string) (string, bool) {
+	switch funcName {
+	case "getdate", "getutcdate", "sysdatetime", "sysutcdatetime":
+		return "datetime", true
+	case "upper", "lower", "ltrim", "rtrim", "left", "right", "substring",
+		"replace", "replicate", "stuff", "char", "space", "str":
+		return "varchar", true
+	case "len", "datalength", "charindex", "patindex":
+		return "int", true
+	case "rand", "datediff", "datepart", "day", "month", "year":
+		return "int", true
+	case "dateadd":
+		return "", false // тип определяется вторым аргументом (датой)
+	case "cast", "convert":
+		return "", false // тип определяется аргументами
+	default:
+		return "", false
+	}
+}
+
+// isLiteralArg проверяет, является ли аргумент литералом (числовым, строковым или NULL).
+// SQL неявно приводит литералы к типу другого операнда, поэтому такие сравнения не являются ошибкой.
+func isLiteralArg(arg string) bool {
+	trimmed := strings.TrimSpace(arg)
+	if trimmed == "" {
+		return false
+	}
+	// NULL
+	if strings.ToLower(trimmed) == "null" {
+		return true
+	}
+	// Строковый литерал
+	if strings.HasPrefix(trimmed, "'") {
+		return true
+	}
+	// Числовой литерал (включая отрицательные)
+	if regexp.MustCompile(`^-?\d+(\.\d+)?$`).MatchString(trimmed) {
+		return true
+	}
+	return false
+}
+
+// containsSQLStatementKeyword проверяет, содержит ли выражение
+// SQL-ключевые слова конструкций (join, on, where, from, select и т.д.),
+// что указывает на артефакт парсинга — операнд не является корректным выражением.
+func containsSQLStatementKeyword(expr string) bool {
+	lower := strings.ToLower(expr)
+	// Ключевые слова-конструкции, которых не должно быть в операнде сравнения
+	wordKeywords := []string{"join", "where", "from", "select", "insert", "update", "delete", "having", "union", "except", "intersect", "on"}
+	for _, kw := range wordKeywords {
+		if findKeywordPosition(lower, kw) >= 0 {
+			return true
+		}
+	}
+	// "group by" и "order by" проверяем как подстроки (с пробелами)
+	substrings := []string{"group by", "order by"}
+	for _, s := range substrings {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// isAssignmentFragment проверяет, является ли фрагмент присвоением (UPDATE SET или SELECT @var =).
+func isAssignmentFragment(queryText string) bool {
+	_, ok1 := parseUpdateSetStatement(queryText)
+	if ok1 {
+		return true
+	}
+	_, ok2 := parseSelectAssignStatement(queryText)
+	return ok2
+}
+
+// containsColumnRef проверяет, содержит ли выражение ссылку на колонку таблицы
+// (а не только литералы или переменные).
+func containsColumnRef(expr string) bool {
+	// Убираем qualified refs (alias.column) — они тоже считаются ссылками на колонки
+	refs := extractColumnRefsFromExpression(expr)
+	if len(refs) > 0 {
+		return true
+	}
+	// Проверяем неквалифицированные ссылки на колонки
+	// Убираем переменные (@var), числа, строки, функции
+	cleaned := regexp.MustCompile(`(?i)@@?[a-z_][a-z0-9_]*`).ReplaceAllString(expr, "")
+	cleaned = regexp.MustCompile(`(?i)\b\d+(\.\d+)?\b`).ReplaceAllString(cleaned, "")
+	cleaned = regexp.MustCompile(`'[^']*'`).ReplaceAllString(cleaned, "")
+	cleaned = regexp.MustCompile(`(?i)\b(null|isnull|convert|cast|case|when|then|else|end|and|or|not)\b`).ReplaceAllString(cleaned, "")
+	// Убираем известные функции
+	cleaned = regexp.MustCompile(`(?i)\b[a-z_]+\s*\(`).ReplaceAllString(cleaned, "")
+	// Остаёмся ли с идентификатором?
+	identRe := regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*\b`)
+	return identRe.MatchString(strings.TrimSpace(cleaned))
+}
+
+// isInsertSelectFragment проверяет, является ли фрагмент INSERT...SELECT.
+func isInsertSelectFragment(queryText string) bool {
+	trimmed := strings.TrimSpace(queryText)
+	return hasPrefixFold(trimmed, "insert") && findTopLevelKeywordPosition(trimmed, "select") >= 0
+}
+
+// containsTopLevelUnion проверяет наличие UNION на top-level.
+func containsTopLevelUnion(lowerQuery string) bool {
+	return findTopLevelKeywordPosition(lowerQuery, "union") >= 0
+}
+
+// hasOrderBy проверяет наличие ORDER BY в тексте запроса.
+func hasOrderBy(lowerQuery string) bool {
+	idx := findTopLevelKeywordPosition(lowerQuery, "order")
+	if idx < 0 {
+		return false
+	}
+	rest := lowerQuery[idx+5:]
+	return strings.HasPrefix(strings.TrimSpace(rest), "by")
+}
+
+// containsVarReference проверяет, содержит ли выражение ссылку на переменную @varName
+// с учётом word boundary (чтобы @a не матчило @ab).
+func containsVarReference(expr, varName string) bool {
+	v := strings.TrimPrefix(strings.TrimSpace(varName), "@")
+	if v == "" {
+		return false
+	}
+	re := regexp.MustCompile(`(?i)@` + regexp.QuoteMeta(v) + `\b`)
+	return re.MatchString(expr)
+}
+
+// filterOutTableNames удаляет из списка имён те, которые являются именами таблиц,
+// алиасами или индексами из FROM clause (чтобы не путать их с неквалифицированными колонками).
+func filterOutTableNames(names []string, knownTableNames map[string]bool) []string {
+	if len(names) == 0 || len(knownTableNames) == 0 {
+		return names
+	}
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		if knownTableNames[strings.ToLower(name)] {
+			continue
+		}
+		result = append(result, name)
+	}
+	return result
+}
+
+func parseFirstFromTable(fromClause string) string {
+	if strings.TrimSpace(fromClause) == "" {
+		return ""
+	}
+
+	re := regexp.MustCompile(`(?is)\bfrom\s+([a-z_#][a-z0-9_#]*)`)
+	m := re.FindStringSubmatch(fromClause)
+	if len(m) != 2 {
+		return ""
+	}
+
+	return strings.TrimSpace(m[1])
+}
+
+func extractBareColumnName(expression string) string {
+	if strings.TrimSpace(expression) == "" {
+		return ""
+	}
+
+	re := regexp.MustCompile(`(?is)^\s*\[?([a-z_][a-z0-9_]*)\]?\s*$`)
+	m := re.FindStringSubmatch(expression)
+	if len(m) != 2 {
+		return ""
+	}
+
+	return strings.TrimSpace(m[1])
 }
