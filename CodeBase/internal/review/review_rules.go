@@ -1456,6 +1456,12 @@ func (r *Runner) analyzeStatementForIndexExists(lines []string, startLine int, f
 			continue
 		}
 
+		// Числовые значения индекса (например 0 = clustered) — это ID индекса, не имя;
+		// проверку существования для них не выполняем
+		if isNumericIndex(indexName) {
+			continue
+		}
+
 		key := tableName + "|" + indexName
 		if _, exists := seen[key]; exists {
 			continue
@@ -1470,12 +1476,16 @@ func (r *Runner) analyzeStatementForIndexExists(lines []string, startLine int, f
 			continue
 		}
 
+		// Ищем реальную строку с хинтом внутри буфера оператора
+		hintLine := findHintLineInBuffer(lines, tableName, table.Hint, table.IndexName)
+		findingLine := startLine + hintLine
+
 		findings = append(findings, Finding{
 			Rule:             RuleIndexExistsInDB,
 			Severity:         SeverityDeployStopper,
 			Message:          fmt.Sprintf("Для таблицы %s не найден индекс %s, указанный в %s", tableName, indexName, table.Hint),
 			File:             file.Path,
-			Line:             startLine,
+			Line:             findingLine,
 			Object:           fmt.Sprintf("%s.%s", tableName, indexName),
 			CurrentProductID: file.DsProductID,
 		})
@@ -2471,6 +2481,11 @@ func analyzeInsertForRowLock(lines []string, startLine int, file *indexedFile) *
 		tableName = parseInsertTableName(fullText)
 	}
 	if tableName == "" {
+		return nil
+	}
+
+	// Исключаем temp-таблицы (#...) — rowlock на session-local temp tables бессмысленен
+	if strings.HasPrefix(tableName, "#") {
 		return nil
 	}
 

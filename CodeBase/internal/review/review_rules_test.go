@@ -1680,6 +1680,16 @@ end`,
 			findingLine:   1,
 			tableName:     "tTable",
 		},
+		{
+			name:          "insert into temp table (#) - no finding",
+			content:       "INSERT INTO #DealAttrValue VALUES (1, 2)",
+			expectFinding: false,
+		},
+		{
+			name:          "insert into temp table without INTO (#) - no finding",
+			content:       "INSERT #TempTable SELECT * FROM tSource",
+			expectFinding: false,
+		},
 	}
 
 	for _, tc := range cases {

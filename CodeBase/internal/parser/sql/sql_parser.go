@@ -711,6 +711,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 	var inMultiStatement bool                 // Флаг для многострочных операторов типа INSERT...SELECT
 	var inInsertFields bool                   // Флаг для сбора полей INSERT
 	var insertFieldsBuffer []string           // Буфер для полей из нескольких строк
+	var caseDepth int                         // Глубина CASE-выражения (для отличия else/end внутри CASE от control-flow)
 
 	// Вспомогательная функция для проверки что контекст еще не использовался для таблицы
 	// с учетом позиции (чтобы разрешать повторные упоминания в разных частях кода)
@@ -730,6 +731,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		inFromTableList = false
 		inInsertFields = false
 		insertFieldsBuffer = nil
+		caseDepth = 0
 		if !inMultiStatement {
 			tableContexts["current"] = ""
 		}
@@ -757,8 +759,28 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		// Сбрасываем текущий оператор на control-flow ключевых словах,
 		// чтобы SELECT внутри if/begin/end блоков становился отдельным фрагментом
 		lowerTrim := strings.ToLower(trimmed)
-		if statementStart > 0 && (strings.HasPrefix(lowerTrim, "if ") || strings.HasPrefix(lowerTrim, "if(") ||
-			strings.EqualFold(trimmed, "begin") || strings.EqualFold(trimmed, "end") ||
+
+		// Обновляем глубину CASE-выражения до проверки control-flow сброса,
+		// чтобы else/end внутри CASE не сбрасывали контекст оператора
+		caseCount := countKeywordWord(lowerTrim, "case")
+		endCount := countKeywordWord(lowerTrim, "end")
+		caseDepth += caseCount
+		if endCount > 0 {
+			if endCount >= caseDepth {
+				endCount -= caseDepth
+				caseDepth = 0
+			} else {
+				caseDepth -= endCount
+				endCount = 0
+			}
+		}
+
+		// caseDepth > 0 означает, что мы внутри CASE-выражения —
+		// else и end являются частью CASE, а не control-flow
+		if caseDepth > 0 && (strings.HasPrefix(lowerTrim, "else") || strings.EqualFold(trimmed, "end")) {
+			// Не сбрасываем контекст внутри CASE
+		} else if statementStart > 0 && (strings.HasPrefix(lowerTrim, "if ") || strings.HasPrefix(lowerTrim, "if(") ||
+			strings.EqualFold(trimmed, "begin") || (endCount > 0 && strings.EqualFold(trimmed, "end")) ||
 			strings.HasPrefix(lowerTrim, "while ") || strings.HasPrefix(lowerTrim, "else")) {
 			flushStatement(lineNum - 1)
 			resetStatementState()
@@ -1830,4 +1852,32 @@ func (p *Parser) isKeyword(word string) bool {
 		"ROWLOCK": true, "READPAST": true, "FORCE": true, "OPTION": true,
 	}
 	return keywords[strings.ToUpper(word)]
+}
+
+// countKeywordWord подсчитывает количество вхождений keyword как отдельного слова
+// в строке (case-insensitive). Используется для трекинга CASE/END глубины.
+func countKeywordWord(line, keyword string) int {
+	count := 0
+	lower := strings.ToLower(line)
+	target := strings.ToLower(keyword)
+	idx := 0
+	for {
+		pos := strings.Index(lower[idx:], target)
+		if pos < 0 {
+			break
+		}
+		pos += idx
+		// Проверяем границы слова
+		beforeOK := pos == 0 || !isWordChar(lower[pos-1])
+		afterOK := pos+len(target) >= len(lower) || !isWordChar(lower[pos+len(target)])
+		if beforeOK && afterOK {
+			count++
+		}
+		idx = pos + len(target)
+	}
+	return count
+}
+
+func isWordChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_'
 }

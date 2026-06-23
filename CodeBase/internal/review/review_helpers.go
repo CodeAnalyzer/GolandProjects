@@ -909,6 +909,47 @@ func shouldSkipTableCheck(tableName string) bool {
 	return false
 }
 
+// isNumericIndex проверяет, является ли имя индекса числовым ID (например 0 = clustered).
+// Числовые ID не нужно искать в БД по имени.
+func isNumericIndex(indexName string) bool {
+	s := strings.TrimSpace(indexName)
+	if s == "" {
+		return false
+	}
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// findHintLineInBuffer ищет смещение строки внутри буфера оператора,
+// содержащей хинт индекса для указанной таблицы.
+// Возвращает 0, если строка не найдена.
+func findHintLineInBuffer(lines []string, tableName, hint, indexName string) int {
+	lowerTable := strings.ToLower(tableName)
+	lowerHint := strings.ToLower(hint)
+	lowerIndex := strings.ToLower(indexName)
+	for i, line := range lines {
+		lowerLine := strings.ToLower(line)
+		if strings.Contains(lowerLine, lowerTable) &&
+			strings.Contains(lowerLine, lowerHint) &&
+			strings.Contains(lowerLine, lowerIndex) {
+			return i
+		}
+	}
+	// Если не нашли все три компонента, ищем хотя бы таблицу + хинт
+	for i, line := range lines {
+		lowerLine := strings.ToLower(line)
+		if strings.Contains(lowerLine, lowerTable) &&
+			strings.Contains(lowerLine, lowerHint) {
+			return i
+		}
+	}
+	return 0
+}
+
 func isHintAllowed(hint string, allowed []string) bool {
 	lowerHint := strings.ToLower(hint)
 	for _, allowedHint := range allowed {
