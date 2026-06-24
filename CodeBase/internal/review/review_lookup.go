@@ -1287,3 +1287,47 @@ func (r *Runner) filterKnownNames(names []string) []string {
 	}
 	return result
 }
+
+func (r *Runner) lookupMacroSignature(macroName string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(macroName))
+	if normalized == "" {
+		return "", nil
+	}
+	var signature string
+	err := r.db.QueryRow(`
+		SELECT define_value
+		FROM h_files_defines
+		WHERE LOWER(define_name) = $1
+		  AND define_type = 'macro'
+		ORDER BY id DESC
+		LIMIT 1
+	`, normalized).Scan(&signature)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return signature, err
+}
+
+func (r *Runner) cachedLookupMacroType(macroName string) string {
+	key := strings.ToLower(strings.TrimSpace(macroName))
+	r.macroTypeMu.Lock()
+	if v, ok := r.macroTypeCache[key]; ok {
+		r.macroTypeMu.Unlock()
+		return v
+	}
+	r.macroTypeMu.Unlock()
+
+	sig, err := r.lookupMacroSignature(macroName)
+	if err != nil || sig == "" {
+		r.macroTypeMu.Lock()
+		r.macroTypeCache[key] = ""
+		r.macroTypeMu.Unlock()
+		return ""
+	}
+
+	result := inferTypeFromMacroSignature(sig)
+	r.macroTypeMu.Lock()
+	r.macroTypeCache[key] = result
+	r.macroTypeMu.Unlock()
+	return result
+}

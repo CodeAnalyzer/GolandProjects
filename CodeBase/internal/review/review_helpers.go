@@ -400,6 +400,29 @@ func extractConditionColumnsForIndexWrong(fullText string, tables []tableFromCla
 	return result
 }
 
+func extractWhereOnlyColumnsForIndexWrong(fullText string, tables []tableFromClause) map[string]map[string]struct{} {
+	result := make(map[string]map[string]struct{})
+	for _, table := range tables {
+		result[tableConditionKey(table)] = make(map[string]struct{})
+	}
+
+	wherePart := extractWherePartForIndexWrong(fullText)
+	if strings.TrimSpace(wherePart) != "" {
+		mergeTableColumns(result, collectColumnsFromConditionExpression(wherePart, tables))
+	}
+
+	return result
+}
+
+func containsForceOrderMacro(lowerText string) bool {
+	for _, macro := range forceOrderMacros {
+		if strings.Contains(lowerText, strings.ToLower(macro)) {
+			return true
+		}
+	}
+	return false
+}
+
 func extractWherePartForIndexWrong(fullText string) string {
 	lower := strings.ToLower(fullText)
 	whereIdx := strings.Index(lower, " where ")
@@ -736,6 +759,20 @@ func isInComment(line string, pos int) bool {
 		}
 	}
 	return false
+}
+
+func isInStringLiteral(line string, pos int) bool {
+	inString := false
+	for i := 0; i < pos && i < len(line); i++ {
+		if line[i] == '\'' {
+			if inString && i+1 < len(line) && line[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+		}
+	}
+	return inString
 }
 
 func findCaseEndAndElse(lines []string, startLine, casePos int) (int, bool) {
@@ -1965,6 +2002,41 @@ func knownFunctionReturnType(funcName string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// inferTypeFromMacroSignature определяет тип результата макроса по его телу.
+// Поддерживает convert(тип, ...) и cast(... as тип).
+func inferTypeFromMacroSignature(signature string) string {
+	trimmed := strings.TrimSpace(signature)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+
+	// convert(тип, ...) — тип определяется первым аргументом
+	if idx := strings.Index(lower, "convert("); idx >= 0 {
+		inner, _ := extractParenContent(trimmed, idx+7)
+		if inner == "" {
+			return ""
+		}
+		args := splitTopLevelCSV(inner)
+		if len(args) > 0 {
+			return normalizeDataType(strings.TrimSpace(args[0]))
+		}
+	}
+
+	// cast(... as тип) — тип после AS
+	if idx := strings.Index(lower, "cast("); idx >= 0 {
+		inner, _ := extractParenContent(trimmed, idx+4)
+		if inner == "" {
+			return ""
+		}
+		if asIdx := findTopLevelKeywordPosition(inner, "as"); asIdx >= 0 {
+			return normalizeDataType(strings.TrimSpace(inner[asIdx+2:]))
+		}
+	}
+
+	return ""
 }
 
 // isLiteralArg проверяет, является ли аргумент литералом (числовым, строковым или NULL).

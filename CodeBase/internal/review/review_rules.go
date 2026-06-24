@@ -308,9 +308,11 @@ func (r *Runner) analyzeStatementForIndexWrong(lines []string, startLine int, fi
 
 	conditionColumns := extractConditionColumnsForIndexWrong(trimmedText, tables)
 	joinColumns := extractJoinColumnsForIndexWrong(trimmedText, tables)
+	hasForceOrder := containsForceOrderMacro(strings.ToLower(trimmedText))
+	whereOnlyColumns := extractWhereOnlyColumnsForIndexWrong(trimmedText, tables)
 	seen := make(map[string]struct{})
 
-	for _, table := range tables {
+	for i, table := range tables {
 		if shouldSkipTableCheck(table.TableName) {
 			continue
 		}
@@ -330,7 +332,12 @@ func (r *Runner) analyzeStatementForIndexWrong(lines []string, startLine int, fi
 		}
 		seen[key] = struct{}{}
 
-		cols := conditionColumns[tableConditionKey(table)]
+		var cols map[string]struct{}
+		if hasForceOrder && i == 0 {
+			cols = whereOnlyColumns[tableConditionKey(table)]
+		} else {
+			cols = conditionColumns[tableConditionKey(table)]
+		}
 		if len(cols) == 0 {
 			continue
 		}
@@ -862,18 +869,7 @@ func analyzeStatementForForceOrder2Tbl(lines []string, startLine int, file *inde
 	}
 
 	// Проверяем наличие макроса M_FORCEORDER* во всем тексте оператора (включая UNION)
-	lower := strings.ToLower(fullText)
-	hasForceOrderMacro := false
-
-	for _, macro := range forceOrderMacros {
-		macroLower := strings.ToLower(macro)
-		if strings.Contains(lower, macroLower) {
-			hasForceOrderMacro = true
-			break
-		}
-	}
-
-	if hasForceOrderMacro {
+	if containsForceOrderMacro(strings.ToLower(fullText)) {
 		return nil
 	}
 
@@ -2276,7 +2272,7 @@ func (r *Runner) checkInsertRowLock(file *indexedFile) ([]Finding, error) {
 		// Ищем начало INSERT
 		if !inInsert {
 			insertIdx := findKeywordPosition(lower, "insert")
-			if insertIdx >= 0 && !isInComment(line, insertIdx) {
+			if insertIdx >= 0 && !isInComment(line, insertIdx) && !isInStringLiteral(line, insertIdx) {
 				// Проверяем, что INSERT не внутри подзапроса
 				if !isInsertInSubquery(line) {
 					inInsert = true
@@ -5462,6 +5458,10 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 		// Сначала проверяем известные функции с фиксированным типом возврата
 		if rt, ok := knownFunctionReturnType(funcName); ok {
 			return rt
+		}
+		// Проверяем, является ли вызов макросом #define с известным типом результата
+		if macroType := r.cachedLookupMacroType(funcName); macroType != "" {
+			return macroType
 		}
 		// Для прочих функций пытаемся вывести тип из аргументов
 		innerArgs := extractFuncInnerArgs(trimmed)

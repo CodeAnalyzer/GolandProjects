@@ -16,12 +16,14 @@ import (
 )
 
 type Runner struct {
-	db           *store.DB
-	parser       *sqlparser.Parser
-	exec         *reviewExecContext
-	colTypeCache map[string]string
-	colTypeMu    sync.Mutex
-	onProgress   func(completed, total int)
+	db             *store.DB
+	parser         *sqlparser.Parser
+	exec           *reviewExecContext
+	colTypeCache   map[string]string
+	colTypeMu      sync.Mutex
+	macroTypeCache map[string]string
+	macroTypeMu    sync.Mutex
+	onProgress     func(completed, total int)
 }
 
 type reviewExecContext struct {
@@ -37,7 +39,7 @@ type ruleTask struct {
 }
 
 func NewRunner(db *store.DB) *Runner {
-	return &Runner{db: db, parser: sqlparser.NewParser(), colTypeCache: make(map[string]string)}
+	return &Runner{db: db, parser: sqlparser.NewParser(), colTypeCache: make(map[string]string), macroTypeCache: make(map[string]string)}
 }
 
 func (r *Runner) SetOnProgress(fn func(completed, total int)) {
@@ -55,6 +57,10 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 	r.colTypeMu.Lock()
 	r.colTypeCache = make(map[string]string)
 	r.colTypeMu.Unlock()
+
+	r.macroTypeMu.Lock()
+	r.macroTypeCache = make(map[string]string)
+	r.macroTypeMu.Unlock()
 
 	normalizedPath := normalizePath(path)
 	file, err := r.getIndexedFile(normalizedPath)

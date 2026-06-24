@@ -1248,7 +1248,7 @@ func isOperandChar(ch byte) bool {
 // isInsertInSubquery проверяет, находится ли INSERT внутри подзапроса/CTE
 func isInsertInSubquery(line string) bool {
 	// Если перед INSERT есть открывающая скобка - это подзапрос
-	lower := strings.ToLower(line)
+	lower := strings.ToLower(maskSingleQuotedStringContent(line))
 	insertIdx := strings.Index(lower, "insert")
 	if insertIdx == -1 {
 		return false
@@ -1807,7 +1807,10 @@ func findInsertWithoutColumns(text string) []int {
 						j++
 					}
 					if j < len(lower) && lower[j] == '(' {
-						macroHadParens = true
+						macroName := lower[macroStart:j]
+						if !strings.HasSuffix(macroName, "_index") {
+							macroHadParens = true
+						}
 						j++
 						macroDepth := 1
 						macroString := false

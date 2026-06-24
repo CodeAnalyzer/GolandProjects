@@ -3,6 +3,7 @@ package dsxml
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/text/encoding/charmap"
@@ -156,7 +157,7 @@ func TestParseContent_StandaloneTableWithIndexes(t *testing.T) {
 </Table>`
 
 	parser := NewParser()
-	result, err := parser.ParseContent("/repo/DSArchitectData/Module/BObject/BusinessObject/Table/tBusinessTable.xml", content)
+	result, err := parser.ParseContent("/repo/API_Module/DSArchitectData/Module/BObject/BusinessObject/Table/tBusinessTable.xml", content)
 	if err != nil {
 		t.Fatalf("ParseContent returned error: %v", err)
 	}
@@ -319,5 +320,116 @@ func TestParseFile_CP1251WithoutDeclaration(t *testing.T) {
 
 	if result.Params[0].RusName != "Параметр" {
 		t.Fatalf("param rus name = %q, want %q", result.Params[0].RusName, "Параметр")
+	}
+}
+
+func TestIsAPIModulePath(t *testing.T) {
+	cases := []struct {
+		path  string
+		want  bool
+	}{
+		{"fa-administrator/API_AccrualCore/DSArchitectData/BObject/AccrualCore_PTbl/Table/pAccrual_Detail.xml", true},
+		{"fa-administrator/Administrator/DSArchitectData/BObject/Administrator_PTbl/Table/pPortObject.xml", false},
+		{"repo/API_Credit/BObject/Credit/Table/tCredit.xml", true},
+		{"repo/Consumer/BObject/Consumer/Table/tConsumer.xml", false},
+	}
+	for _, tc := range cases {
+		parts := strings.Split(tc.path, "/")
+		got := isAPIModulePath(parts)
+		if got != tc.want {
+			t.Fatalf("isAPIModulePath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestParseContent_APITableGoesToBusinessObjectTables(t *testing.T) {
+	content := `<?xml version="1.0" encoding="windows-1251"?>
+<Table>
+  <ParamName>pAPITest</ParamName>
+  <TypeName>TestType</TypeName>
+  <WsParamName>pApiTest</WsParamName>
+  <RusName>API тест</RusName>
+  <Description>API test table</Description>
+  <Fields>
+    <Field>
+      <ParamOrder>1</ParamOrder>
+      <ParamName>Field1</ParamName>
+      <TypeName>Integer</TypeName>
+    </Field>
+  </Fields>
+</Table>`
+
+	parser := NewParser()
+	result, err := parser.ParseContent("fa-administrator/API_AccrualCore/DSArchitectData/BObject/AccrualCore_PTbl/Table/pAPITest.xml", content)
+	if err != nil {
+		t.Fatalf("ParseContent returned error: %v", err)
+	}
+	if len(result.BusinessObjectTables) != 1 {
+		t.Fatalf("BusinessObjectTables count = %d, want 1", len(result.BusinessObjectTables))
+	}
+	if result.BusinessObjectTables[0].TableName != "pAPITest" {
+		t.Fatalf("BusinessObjectTables[0].TableName = %q, want %q", result.BusinessObjectTables[0].TableName, "pAPITest")
+	}
+	if len(result.InternalPTables) != 0 {
+		t.Fatalf("InternalPTables count = %d, want 0", len(result.InternalPTables))
+	}
+}
+
+func TestParseContent_InternalTableGoesToInternalPTables(t *testing.T) {
+	content := `<?xml version="1.0" encoding="windows-1251"?>
+<Table>
+  <ParamName>pPortObject</ParamName>
+  <TypeName>TestType</TypeName>
+  <WsParamName>pPortObject</WsParamName>
+  <RusName>Внутренняя p-таблица</RusName>
+  <Description>Internal p-table</Description>
+  <Fields>
+    <Field>
+      <ParamOrder>1</ParamOrder>
+      <ParamName>Field1</ParamName>
+      <TypeName>Integer</TypeName>
+    </Field>
+  </Fields>
+</Table>`
+
+	parser := NewParser()
+	result, err := parser.ParseContent("fa-administrator/Administrator/DSArchitectData/BObject/Administrator_PTbl/Table/pPortObject.xml", content)
+	if err != nil {
+		t.Fatalf("ParseContent returned error: %v", err)
+	}
+	if len(result.InternalPTables) != 1 {
+		t.Fatalf("InternalPTables count = %d, want 1", len(result.InternalPTables))
+	}
+	ptable := result.InternalPTables[0]
+	if ptable.TableName != "pPortObject" {
+		t.Fatalf("InternalPTables[0].TableName = %q, want %q", ptable.TableName, "pPortObject")
+	}
+	if ptable.Context != "create" {
+		t.Fatalf("InternalPTables[0].Context = %q, want %q", ptable.Context, "create")
+	}
+	if !ptable.IsTemporary {
+		t.Fatalf("InternalPTables[0].IsTemporary = false, want true")
+	}
+	if len(result.BusinessObjectTables) != 0 {
+		t.Fatalf("BusinessObjectTables count = %d, want 0", len(result.BusinessObjectTables))
+	}
+	hasInternalSymbol := false
+	for _, sym := range result.Symbols {
+		if sym.SymbolType == "table" && sym.SymbolName == "pPortObject" && sym.EntityType == "sql" {
+			hasInternalSymbol = true
+		}
+	}
+	if !hasInternalSymbol {
+		t.Fatalf("Symbols should contain table symbol with EntityType=sql for pPortObject")
+	}
+	if len(result.InternalPTableColumns) != 1 {
+		t.Fatalf("InternalPTableColumns count = %d, want 1", len(result.InternalPTableColumns))
+	}
+	col := result.InternalPTableColumns[0]
+	if col.TableName != "pPortObject" || col.ColumnName != "Field1" || col.DataType != "Integer" {
+		t.Fatalf("InternalPTableColumns[0] = %+v, want {pPortObject, Field1, Integer}", col)
+	}
+	if col.DefinitionKind != "create" {
+		t.Fatalf("InternalPTableColumns[0].DefinitionKind = %q, want %q", col.DefinitionKind, "create")
 	}
 }

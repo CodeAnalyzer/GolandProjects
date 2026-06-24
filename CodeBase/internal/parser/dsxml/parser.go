@@ -31,6 +31,8 @@ type ParseResult struct {
 	ReturnValues         []*model.APIContractReturnValue
 	Contexts             []*model.APIContractContext
 	Symbols              []*model.Symbol
+	InternalPTables      []*model.SQLTable
+	InternalPTableColumns []*model.SQLColumnDefinition
 }
 
 type objectXML struct {
@@ -197,6 +199,8 @@ func (p *Parser) ParseContent(path string, content string) (*ParseResult, error)
 		ReturnValues:         make([]*model.APIContractReturnValue, 0),
 		Contexts:             make([]*model.APIContractContext, 0),
 		Symbols:              make([]*model.Symbol, 0),
+		InternalPTables:      make([]*model.SQLTable, 0),
+		InternalPTableColumns: make([]*model.SQLColumnDefinition, 0),
 	}
 	if strings.TrimSpace(content) == "" {
 		return res, nil
@@ -219,48 +223,77 @@ func (p *Parser) ParseContent(path string, content string) (*ParseResult, error)
 		if err := unmarshalXML(content, &table); err != nil {
 			return nil, fmt.Errorf("failed to parse standalone table xml: %w", err)
 		}
-		res.BusinessObjectTables = append(res.BusinessObjectTables, &model.APIBusinessObjectTable{
-			BusinessObject: businessObject,
-			TableName:      strings.TrimSpace(table.ParamName),
-			TypeName:       strings.TrimSpace(table.TypeName),
-			WsParamName:    strings.TrimSpace(table.WsParamName),
-			RusName:        strings.TrimSpace(table.RusName),
-			Description:    strings.TrimSpace(table.Description),
-			LineNumber:     1,
-		})
-		res.Symbols = append(res.Symbols, &model.Symbol{SymbolName: strings.TrimSpace(table.ParamName), SymbolType: "api_table", EntityType: "xml", LineNumber: 1, Signature: strings.TrimSpace(table.ParamName)})
-		for _, field := range table.Fields {
-			res.BusinessTableFields = append(res.BusinessTableFields, &model.APIBusinessObjectTableField{
-				ParentTableName: strings.TrimSpace(table.ParamName),
-				BusinessObject:  businessObject,
-				FieldName:       strings.TrimSpace(field.ParamName),
-				TypeName:        strings.TrimSpace(field.TypeName),
-				WsParamName:     strings.TrimSpace(field.WsParamName),
-				RusName:         strings.TrimSpace(field.RusName),
-				Description:     strings.TrimSpace(field.Description),
-				ParamOrder:      field.ParamOrder,
-				LineNumber:      1,
+		pathParts := strings.Split(cleanPath, "/")
+		if isAPIModulePath(pathParts) {
+			res.BusinessObjectTables = append(res.BusinessObjectTables, &model.APIBusinessObjectTable{
+				BusinessObject: businessObject,
+				TableName:      strings.TrimSpace(table.ParamName),
+				TypeName:       strings.TrimSpace(table.TypeName),
+				WsParamName:    strings.TrimSpace(table.WsParamName),
+				RusName:        strings.TrimSpace(table.RusName),
+				Description:    strings.TrimSpace(table.Description),
+				LineNumber:     1,
 			})
-		}
-		for _, index := range table.Indexes {
-			indexName := strings.TrimSpace(index.IndexName)
-			res.BusinessTableIndexes = append(res.BusinessTableIndexes, &model.APIBusinessObjectTableIndex{
-				ParentTableName: strings.TrimSpace(table.ParamName),
-				BusinessObject:  businessObject,
-				IndexName:       indexName,
-				IndexFields:     strings.TrimSpace(index.IndexFields),
-				IndexType:       index.IndexType,
-				IsClustered:     index.IsClustered != 0,
-				LineNumber:      1,
-			})
-			for fieldOrder, field := range index.Fields {
-				res.BusinessIndexFields = append(res.BusinessIndexFields, &model.APIBusinessObjectTableIndexField{
-					ParentIndexName: indexName,
+			res.Symbols = append(res.Symbols, &model.Symbol{SymbolName: strings.TrimSpace(table.ParamName), SymbolType: "api_table", EntityType: "xml", LineNumber: 1, Signature: strings.TrimSpace(table.ParamName)})
+			for _, field := range table.Fields {
+				res.BusinessTableFields = append(res.BusinessTableFields, &model.APIBusinessObjectTableField{
 					ParentTableName: strings.TrimSpace(table.ParamName),
 					BusinessObject:  businessObject,
-					FieldName:       strings.TrimSpace(field.FieldName),
-					FieldOrder:      fieldOrder,
+					FieldName:       strings.TrimSpace(field.ParamName),
+					TypeName:        strings.TrimSpace(field.TypeName),
+					WsParamName:     strings.TrimSpace(field.WsParamName),
+					RusName:         strings.TrimSpace(field.RusName),
+					Description:     strings.TrimSpace(field.Description),
+					ParamOrder:      field.ParamOrder,
 					LineNumber:      1,
+				})
+			}
+			for _, index := range table.Indexes {
+				indexName := strings.TrimSpace(index.IndexName)
+				res.BusinessTableIndexes = append(res.BusinessTableIndexes, &model.APIBusinessObjectTableIndex{
+					ParentTableName: strings.TrimSpace(table.ParamName),
+					BusinessObject:  businessObject,
+					IndexName:       indexName,
+					IndexFields:     strings.TrimSpace(index.IndexFields),
+					IndexType:       index.IndexType,
+					IsClustered:     index.IsClustered != 0,
+					LineNumber:      1,
+				})
+				for fieldOrder, field := range index.Fields {
+					res.BusinessIndexFields = append(res.BusinessIndexFields, &model.APIBusinessObjectTableIndexField{
+						ParentIndexName: indexName,
+						ParentTableName: strings.TrimSpace(table.ParamName),
+						BusinessObject:  businessObject,
+						FieldName:       strings.TrimSpace(field.FieldName),
+						FieldOrder:      fieldOrder,
+						LineNumber:      1,
+					})
+				}
+			}
+		} else {
+			res.InternalPTables = append(res.InternalPTables, &model.SQLTable{
+				TableName:   strings.TrimSpace(table.ParamName),
+				Context:     "create",
+				IsTemporary: true,
+				LineNumber:  1,
+				ColNumber:   0,
+			})
+			res.Symbols = append(res.Symbols, &model.Symbol{
+				SymbolName: strings.TrimSpace(table.ParamName),
+				SymbolType: "table",
+				EntityType: "sql",
+				LineNumber: 1,
+				SQLContext: "create",
+				Signature:  strings.TrimSpace(table.ParamName),
+			})
+			for _, field := range table.Fields {
+				res.InternalPTableColumns = append(res.InternalPTableColumns, &model.SQLColumnDefinition{
+					TableName:      strings.TrimSpace(table.ParamName),
+					ColumnName:     strings.TrimSpace(field.ParamName),
+					DataType:       strings.TrimSpace(field.TypeName),
+					DefinitionKind: "create",
+					LineNumber:     1,
+					ColumnOrder:    field.ParamOrder,
 				})
 			}
 		}
@@ -337,6 +370,15 @@ func (p *Parser) ParseContent(path string, content string) (*ParseResult, error)
 		}
 		return res, nil
 	}
+}
+
+func isAPIModulePath(parts []string) bool {
+	for _, part := range parts {
+		if strings.HasPrefix(part, "API_") {
+			return true
+		}
+	}
+	return false
 }
 
 func classifyPath(path string) (string, string) {

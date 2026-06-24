@@ -1139,11 +1139,24 @@ func (idx *Indexer) parseXMLFile(path string, fileID int64, stats *model.ScanSta
 	if err := idx.db.BatchInsertSymbols(result.Symbols, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
+	for _, item := range result.InternalPTables {
+		item.FileID = fileID
+	}
+	if err := idx.db.BatchInsertSQLTables(result.InternalPTables, idx.config.Indexer.BatchSize); err != nil {
+		return err
+	}
+	for _, col := range result.InternalPTableColumns {
+		col.FileID = fileID
+	}
+	if err := idx.db.BatchInsertSQLColumnDefinitions(result.InternalPTableColumns, idx.config.Indexer.BatchSize); err != nil {
+		return err
+	}
 	stats.APIContracts += len(result.Contracts)
 	stats.APIParams += len(result.Params) + len(result.BusinessObjectParams)
 	stats.APITables += len(result.Tables) + len(result.BusinessObjectTables)
 	stats.APITableFields += len(result.TableFields) + len(result.BusinessTableFields)
 	stats.APITableIndexes += len(result.BusinessTableIndexes)
+	stats.Tables += len(result.InternalPTables)
 	return nil
 }
 

@@ -1690,6 +1690,27 @@ end`,
 			content:       "INSERT #TempTable SELECT * FROM tSource",
 			expectFinding: false,
 		},
+		{
+			name: "string literal 'insert' in SELECT list with real INSERT+ROWLOCK",
+			content: `insert pTable M_WITH_ROWLOCK
+           (ID, Msg)
+    select @@spid,
+           'insert',
+           'BPCondition'
+
+    exec FCD_CON_Message`,
+			expectFinding: false,
+		},
+		{
+			name:          "string literal 'insert' in IF condition, no real INSERT",
+			content:       "if @Action = 'insert'\n    select 1",
+			expectFinding: false,
+		},
+		{
+			name:          "string literal 'insert into tTable' in error message",
+			content:       "select 'insert into tTable' as Msg",
+			expectFinding: false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -1727,6 +1748,30 @@ end`,
 				if len(findings) > 0 {
 					t.Fatalf("expected no finding, got %v", findings)
 				}
+			}
+		})
+	}
+}
+
+func TestIsInStringLiteral(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		pos  int
+		want bool
+	}{
+		{"inside single quotes", "select 'insert'", 10, true},
+		{"outside quotes", "select insert", 7, false},
+		{"no quotes at all", "insert into t", 0, false},
+		{"escaped quote inside string", "select 'it''s insert'", 14, true},
+		{"after closing quote", "select 'val' insert", 14, false},
+		{"pos at opening quote", "select 'insert'", 7, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isInStringLiteral(tc.line, tc.pos)
+			if got != tc.want {
+				t.Fatalf("isInStringLiteral(%q, %d) = %v, want %v", tc.line, tc.pos, got, tc.want)
 			}
 		})
 	}
@@ -4802,5 +4847,167 @@ func TestIsNumericLiteral_True(t *testing.T) {
 func TestIsNumericLiteral_False(t *testing.T) {
 	if isNumericLiteral("col1") {
 		t.Fatalf("expected false for 'col1'")
+	}
+}
+
+func TestExtractWhereOnlyColumnsForIndexWrong(t *testing.T) {
+	tables := []tableFromClause{
+		{TableName: "tConsAccountLink", Alias: "a"},
+		{TableName: "tConsRuleAccSync", Alias: "r"},
+	}
+
+	sql := `select *
+from tConsAccountLink a
+inner join tConsRuleAccSync r
+        on r.RuleID = a.RuleID
+       and r.PropVal in (1, 2)
+ where a.ResourceID = @AccountID
+   and a.OnDate <= @Date`
+
+	whereCols := extractWhereOnlyColumnsForIndexWrong(sql, tables)
+
+	// a.ResourceID и a.OnDate из WHERE
+	if _, exists := whereCols["a"]["resourceid"]; !exists {
+		t.Fatalf("expected a.resourceid in WHERE-only columns, got %#v", whereCols["a"])
+	}
+	if _, exists := whereCols["a"]["ondate"]; !exists {
+		t.Fatalf("expected a.ondate in WHERE-only columns, got %#v", whereCols["a"])
+	}
+	// a.RuleID из ON — не должно быть в WHERE-only
+	if _, exists := whereCols["a"]["ruleid"]; exists {
+		t.Fatalf("a.ruleid should NOT be in WHERE-only columns, got %#v", whereCols["a"])
+	}
+	// r.RuleID из ON — не должно быть в WHERE-only
+	if _, exists := whereCols["r"]["ruleid"]; exists {
+		t.Fatalf("r.ruleid should NOT be in WHERE-only columns, got %#v", whereCols["r"])
+	}
+}
+
+func TestExtractWhereOnlyColumnsForIndexWrong_NoWhere(t *testing.T) {
+	tables := []tableFromClause{{TableName: "t1", Alias: "a"}}
+	cols := extractWhereOnlyColumnsForIndexWrong("select * from t1 a", tables)
+	if len(cols["a"]) != 0 {
+		t.Fatalf("expected empty WHERE-only columns when no WHERE clause, got %#v", cols["a"])
+	}
+}
+
+func TestContainsForceOrderMacro(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		{"select * from t M_FORCEORDER", true},
+		{"select * from t M_FORCEORDER_NOSPOOL", true},
+		{"select * from t M_FORCEORDER_FAST", true},
+		{"select * from t M_FORCEORDER_WO_LOOPJOIN", true},
+		{"select * from t m_forceorder", true},
+		{"select * from t", false},
+		{"select * from t where x = 1", false},
+	}
+	for _, tc := range cases {
+		got := containsForceOrderMacro(strings.ToLower(tc.text))
+		if got != tc.want {
+			t.Fatalf("containsForceOrderMacro(%q) = %v, want %v", tc.text, got, tc.want)
+		}
+	}
+}
+
+func TestExtractWhereOnlyVsCombined_ForceOrderLeadingTable(t *testing.T) {
+	tables := []tableFromClause{
+		{TableName: "tConsAccountLink", Alias: "a"},
+		{TableName: "tConsRuleAccSync", Alias: "r"},
+	}
+
+	sql := `select *
+from tConsAccountLink a
+inner join tConsRuleAccSync r
+        on r.RuleID = a.RuleID
+ where a.ResourceID = @AccountID
+   and a.OnDate <= @Date`
+
+	combined := extractConditionColumnsForIndexWrong(sql, tables)
+	whereOnly := extractWhereOnlyColumnsForIndexWrong(sql, tables)
+
+	// Combined должен включать RuleID из ON
+	if _, exists := combined["a"]["ruleid"]; !exists {
+		t.Fatalf("combined should include a.ruleid from ON, got %#v", combined["a"])
+	}
+	// WHERE-only не должен включать RuleID
+	if _, exists := whereOnly["a"]["ruleid"]; exists {
+		t.Fatalf("WHERE-only should NOT include a.ruleid from ON, got %#v", whereOnly["a"])
+	}
+	// Оба должны включать ResourceID из WHERE
+	if _, exists := whereOnly["a"]["resourceid"]; !exists {
+		t.Fatalf("WHERE-only should include a.resourceid, got %#v", whereOnly["a"])
+	}
+	if _, exists := combined["a"]["resourceid"]; !exists {
+		t.Fatalf("combined should include a.resourceid, got %#v", combined["a"])
+	}
+}
+
+func TestInferTypeFromMacroSignature(t *testing.T) {
+	cases := []struct {
+		name      string
+		signature string
+		want      string
+	}{
+		{
+			name:      "convert int from date macro",
+			signature: "convert(int, convert(varchar, _date_, 112))",
+			want:      "int",
+		},
+		{
+			name:      "cast as varchar",
+			signature: "cast(@x as varchar(10))",
+			want:      "varchar(10)",
+		},
+		{
+			name:      "cast as datetime",
+			signature: "cast(@d as datetime)",
+			want:      "datetime",
+		},
+		{
+			name:      "empty signature",
+			signature: "",
+			want:      "",
+		},
+		{
+			name:      "no convert or cast",
+			signature: "@x + 1",
+			want:      "",
+		},
+		{
+			name:      "convert with DSINT_KEY type",
+			signature: "convert(DSINT_KEY, @val)",
+			want:      "dsint_key",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := inferTypeFromMacroSignature(tc.signature)
+			if got != tc.want {
+				t.Fatalf("inferTypeFromMacroSignature(%q) = %q, want %q", tc.signature, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCachedLookupMacroType_CacheHit(t *testing.T) {
+	r := &Runner{macroTypeCache: make(map[string]string)}
+	r.macroTypeCache["_convert_date_to_int_"] = "int"
+
+	got := r.cachedLookupMacroType("_CONVERT_DATE_TO_INT_")
+	if got != "int" {
+		t.Fatalf("expected 'int' from cache, got %q", got)
+	}
+}
+
+func TestCachedLookupMacroType_NegativeCache(t *testing.T) {
+	r := &Runner{macroTypeCache: make(map[string]string)}
+	r.macroTypeCache["_unknown_macro_"] = ""
+
+	got := r.cachedLookupMacroType("_UNKNOWN_MACRO_")
+	if got != "" {
+		t.Fatalf("expected empty string from negative cache, got %q", got)
 	}
 }
