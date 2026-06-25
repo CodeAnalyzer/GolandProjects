@@ -693,6 +693,27 @@ func (idx *Indexer) buildT01GeneratedSubscriberRelations(path string, fileID int
 	if err != nil {
 		return nil, err
 	}
+
+	// Collect unique callee names for batch-resolve.
+	calleeNameSet := make(map[string]struct{})
+	for _, call := range calls {
+		if call == nil {
+			continue
+		}
+		name := strings.TrimSpace(call.CalleeName)
+		if name != "" {
+			calleeNameSet[strings.ToLower(name)] = struct{}{}
+		}
+	}
+	calleeNames := make([]string, 0, len(calleeNameSet))
+	for name := range calleeNameSet {
+		calleeNames = append(calleeNames, name)
+	}
+	calleeIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(calleeNames)
+	if err != nil {
+		return nil, err
+	}
+
 	relations := make([]*model.Relation, 0)
 	seen := make(map[string]struct{})
 	for _, call := range calls {
@@ -710,8 +731,8 @@ func (idx *Indexer) buildT01GeneratedSubscriberRelations(path string, fileID int
 		if sourceID == 0 {
 			continue
 		}
-		targetID, err := idx.db.FindLatestSQLProcedureIDByName(call.CalleeName)
-		if err != nil || targetID == 0 {
+		targetID := calleeIDMap[strings.ToLower(strings.TrimSpace(call.CalleeName))]
+		if targetID == 0 {
 			continue
 		}
 		key := fmt.Sprintf("sql_procedure|%d|sql_procedure|%d|dispatches_to_subscriber|%d", sourceID, targetID, call.LineNumber)

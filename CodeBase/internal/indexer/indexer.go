@@ -444,11 +444,17 @@ func (idx *Indexer) parseDFMFile(path string, fileID int64, stats *model.ScanSta
 	if err := idx.db.BatchInsertDFMComponents(componentsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
+	// Cache FindDFMComponentIDsByForm per unique FormID to avoid N+1 queries.
+	componentIDsCache := make(map[int64]map[string]int64)
 	for _, component := range componentsBatch {
-		componentIDs, err := idx.db.FindDFMComponentIDsByForm(component.FormID)
-		if err != nil {
-			return fmt.Errorf("failed to resolve DFM component ids for symbols: %w", err)
+		if _, cached := componentIDsCache[component.FormID]; !cached {
+			ids, err := idx.db.FindDFMComponentIDsByForm(component.FormID)
+			if err != nil {
+				return fmt.Errorf("failed to resolve DFM component ids for symbols: %w", err)
+			}
+			componentIDsCache[component.FormID] = ids
 		}
+		componentIDs := componentIDsCache[component.FormID]
 		componentID := componentIDs[store.BuildDFMComponentLookupKey(component.ComponentName, component.LineStart)]
 		if componentID == 0 {
 			continue
@@ -1183,32 +1189,71 @@ func (idx *Indexer) indexAPIMacros(path string, fileID int64, language string, s
 	if err := idx.db.BatchInsertAPIMacroInvocations(result.Invocations, idx.config.Indexer.BatchSize); err != nil {
 		return nil, err
 	}
+
+	// Pre-collect unique (targetName, kind) pairs and proc names for batch-resolve.
+	contractPairs := make([]store.APIContractNameKind, 0)
+	procNameSet := make(map[string]struct{})
+	for _, invocation := range result.Invocations {
+		targetName := strings.TrimSpace(invocation.TargetName)
+		if targetName == "" {
+			continue
+		}
+		switch invocation.MacroType {
+		case "create_proc":
+			contractPairs = append(contractPairs, store.APIContractNameKind{Name: targetName, Kind: "service"})
+			contractPairs = append(contractPairs, store.APIContractNameKind{Name: targetName, Kind: "callback_event"})
+		case "init_event":
+			contractPairs = append(contractPairs, store.APIContractNameKind{Name: targetName, Kind: "event"})
+		case "exec_contract":
+			contractPairs = append(contractPairs, store.APIContractNameKind{Name: targetName, Kind: "used_service"})
+			contractPairs = append(contractPairs, store.APIContractNameKind{Name: targetName, Kind: "service"})
+		case "dispatches_to":
+			procNameSet[strings.ToLower(targetName)] = struct{}{}
+		}
+	}
+	contractIDMap, err := idx.db.FindLatestAPIContractIDsByNamesAndKinds(contractPairs)
+	if err != nil {
+		contractIDMap = map[string]int64{}
+	}
+	procNames := make([]string, 0, len(procNameSet))
+	for name := range procNameSet {
+		if name != "" {
+			procNames = append(procNames, name)
+		}
+	}
+	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(procNames)
+	if err != nil {
+		procIDMap = map[string]int64{}
+	}
+
 	relations := make([]*model.Relation, 0, len(result.Invocations))
 	for _, invocation := range result.Invocations {
 		sourceID := procedureIDs[strings.ToLower(strings.TrimSpace(invocation.ProcedureName))]
 		if sourceID == 0 {
 			continue
 		}
+		targetName := strings.TrimSpace(invocation.TargetName)
+		nameKey := strings.ToLower(targetName)
 		switch invocation.MacroType {
 		case "create_proc":
-			if targetID, err := idx.db.FindLatestAPIContractIDByNameAndKind(invocation.TargetName, "service"); err == nil {
+			if targetID := contractIDMap[nameKey+"|service"]; targetID != 0 {
 				relations = append(relations, &model.Relation{SourceType: "sql_procedure", SourceID: sourceID, TargetType: "api_contract", TargetID: targetID, RelationType: "implements_contract", Confidence: "regex", LineNumber: invocation.LineNumber})
-			} else if targetID, err := idx.db.FindLatestAPIContractIDByNameAndKind(invocation.TargetName, "callback_event"); err == nil {
+			} else if targetID := contractIDMap[nameKey+"|callback_event"]; targetID != 0 {
 				relations = append(relations, &model.Relation{SourceType: "sql_procedure", SourceID: sourceID, TargetType: "api_contract", TargetID: targetID, RelationType: "implements_contract", Confidence: "regex", LineNumber: invocation.LineNumber})
 			}
 		case "init_event":
-			if targetID, err := idx.db.FindLatestAPIContractIDByNameAndKind(invocation.TargetName, "event"); err == nil {
+			if targetID := contractIDMap[nameKey+"|event"]; targetID != 0 {
 				relations = append(relations, &model.Relation{SourceType: "sql_procedure", SourceID: sourceID, TargetType: "api_contract", TargetID: targetID, RelationType: "publishes_event", Confidence: "regex", LineNumber: invocation.LineNumber})
 			}
 		case "exec_contract":
-			if targetID, err := idx.db.FindLatestAPIContractIDByNameAndKind(invocation.TargetName, "used_service"); err == nil {
+			if targetID := contractIDMap[nameKey+"|used_service"]; targetID != 0 {
 				relations = append(relations, &model.Relation{SourceType: "sql_procedure", SourceID: sourceID, TargetType: "api_contract", TargetID: targetID, RelationType: "executes_contract", Confidence: "regex", LineNumber: invocation.LineNumber})
-			} else if targetID, err := idx.db.FindLatestAPIContractIDByNameAndKind(invocation.TargetName, "service"); err == nil {
+			} else if targetID := contractIDMap[nameKey+"|service"]; targetID != 0 {
 				relations = append(relations, &model.Relation{SourceType: "sql_procedure", SourceID: sourceID, TargetType: "api_contract", TargetID: targetID, RelationType: "executes_contract", Confidence: "regex", LineNumber: invocation.LineNumber})
 			}
 		case "dispatches_to":
-			targetID, err := idx.db.FindLatestSQLProcedureIDByName(invocation.TargetName)
-			if err == nil && targetID != 0 {
+			targetID := procIDMap[nameKey]
+			if targetID != 0 {
 				relations = append(relations, &model.Relation{SourceType: "sql_procedure", SourceID: sourceID, TargetType: "sql_procedure", TargetID: targetID, RelationType: "dispatches_to", Confidence: "regex", LineNumber: invocation.LineNumber})
 			}
 		}

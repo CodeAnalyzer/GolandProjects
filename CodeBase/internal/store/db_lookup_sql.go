@@ -123,6 +123,50 @@ func (db *DB) FindLatestSQLTableIDByName(tableName string) (int64, error) {
 	return id, nil
 }
 
+// FindLatestSQLTableIDsByNames возвращает map нижнего имени таблицы -> последний id.
+// Один SQL-запрос вместо N вызовов FindLatestSQLTableIDByName.
+func (db *DB) FindLatestSQLTableIDsByNames(tableNames []string) (map[string]int64, error) {
+	normalized := make([]string, 0, len(tableNames))
+	seen := make(map[string]struct{})
+	for _, name := range tableNames {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, key)
+	}
+	result := make(map[string]int64, len(normalized))
+	if len(normalized) == 0 {
+		return result, nil
+	}
+	rows, err := db.Query(`
+		SELECT DISTINCT ON (table_key) table_key, id
+		FROM (
+			SELECT LOWER(TRIM(table_name)) AS table_key, id
+			FROM sql_tables
+			WHERE LOWER(TRIM(table_name)) = ANY($1)
+		) AS tables
+		ORDER BY table_key, id DESC
+	`, pq.Array(normalized))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var tableKey string
+		var id int64
+		if err := rows.Scan(&tableKey, &id); err != nil {
+			return nil, err
+		}
+		result[tableKey] = id
+	}
+	return result, rows.Err()
+}
+
 func (db *DB) FindLatestSQLColumnDefinitionType(tableName string, columnName string) (string, error) {
 	var dataType string
 	err := db.QueryRow(`

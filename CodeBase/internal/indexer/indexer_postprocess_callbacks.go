@@ -1,7 +1,6 @@
 package indexer
 
 import (
-	dbsql "database/sql"
 	"fmt"
 	"strings"
 
@@ -26,6 +25,27 @@ func (idx *Indexer) postProcessCallbackEventRelations(collector *statsCollector)
 		return
 	}
 
+	// Collect unique event names from callbacks for batch-resolve.
+	eventNames := make([]string, 0, len(callbacks))
+	for _, cb := range callbacks {
+		if cb == nil {
+			continue
+		}
+		name := strings.TrimSpace(cb.UsedObjectName)
+		if name != "" {
+			eventNames = append(eventNames, name)
+		}
+	}
+
+	lookup, err := idx.db.FindLatestEventContractIDsByNames(eventNames)
+	if err != nil {
+		idx.logError("<post-processing>", "Error batch-loading event contracts: %v", err)
+		collector.Add(func(stats *model.ScanStats) {
+			stats.Errors++
+		})
+		return
+	}
+
 	relations := make([]*model.Relation, 0, len(callbacks))
 	seen := make(map[string]struct{})
 	for _, callback := range callbacks {
@@ -37,16 +57,16 @@ func (idx *Indexer) postProcessCallbackEventRelations(collector *statsCollector)
 			continue
 		}
 
-		targetID, resolveErr := idx.db.FindLatestAPIContractIDByNameKindAndOwnerModule(usedObjectName, "event", strings.TrimSpace(callback.UsedModuleSysName))
-		if resolveErr != nil {
-			if resolveErr == dbsql.ErrNoRows {
-				continue
-			}
-			idx.logError("<post-processing>", "Error resolving event contract for callback %s (id=%d): %v", callback.ContractName, callback.ID, resolveErr)
-			collector.Add(func(stats *model.ScanStats) {
-				stats.Errors++
-			})
-			continue
+		nameKey := strings.ToLower(usedObjectName)
+		moduleKey := strings.ToLower(strings.TrimSpace(callback.UsedModuleSysName))
+
+		// Try name+module first, then fallback to name only.
+		var targetID int64
+		if moduleKey != "" {
+			targetID = lookup.ByNameAndModule[nameKey+"|"+moduleKey]
+		}
+		if targetID == 0 {
+			targetID = lookup.ByName[nameKey]
 		}
 		if targetID == 0 {
 			continue

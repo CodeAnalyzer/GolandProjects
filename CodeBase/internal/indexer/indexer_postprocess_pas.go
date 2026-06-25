@@ -1,9 +1,10 @@
 package indexer
 
 import (
-	dbsql "database/sql"
+	"strings"
 
 	"github.com/codebase/internal/model"
+	"github.com/codebase/internal/store"
 )
 
 // PendingMethod метод, ожидающий привязки к классу
@@ -71,96 +72,116 @@ func (idx *Indexer) postProcessPASPending(collector *statsCollector) {
 	idx.pendingFields = idx.pendingFields[:0]
 	idx.pendingMu.Unlock()
 
-	for _, pending := range pendingClasses {
-		dfmFormID, err := idx.db.FindLatestDFMFormIDByClassName(pending.ClassName)
-		if err != nil {
-			if err != dbsql.ErrNoRows {
-				idx.logError(pending.FilePath, "Error post-processing PAS class %s for DFM form link: %v", pending.ClassName, err)
-				collector.Add(func(stats *model.ScanStats) {
-					stats.Errors++
-				})
-			}
-			continue
-		}
-
-		if err := idx.db.UpdatePASClassDFMForm(pending.ClassID, dfmFormID); err != nil {
-			idx.logError(pending.FilePath, "Error updating DFM form link for PAS class %s: %v", pending.ClassName, err)
-			collector.Add(func(stats *model.ScanStats) {
-				stats.Errors++
-			})
+	// Collect unique class names from all pending items for batch-resolve.
+	classNameSet := make(map[string]struct{})
+	for _, p := range pendingClasses {
+		classNameSet[strings.ToLower(strings.TrimSpace(p.ClassName))] = struct{}{}
+	}
+	for _, p := range pendingMethods {
+		classNameSet[strings.ToLower(strings.TrimSpace(p.ClassName))] = struct{}{}
+	}
+	for _, p := range pendingFields {
+		classNameSet[strings.ToLower(strings.TrimSpace(p.ClassName))] = struct{}{}
+	}
+	classNames := make([]string, 0, len(classNameSet))
+	for name := range classNameSet {
+		if name != "" {
+			classNames = append(classNames, name)
 		}
 	}
 
+	// Batch-resolve PAS class IDs.
+	classIDMap, err := idx.db.FindLatestPASClassIDsByNames(classNames)
+	if err != nil {
+		idx.logError("<post-processing>", "Error batch-resolving PAS class IDs: %v", err)
+		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+		return
+	}
+
+	// Batch-resolve DFM form IDs by class names.
+	dfmFormIDMap, err := idx.db.FindLatestDFMFormIDsByClassNames(classNames)
+	if err != nil {
+		idx.logError("<post-processing>", "Error batch-resolving DFM form IDs: %v", err)
+		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+		return
+	}
+
+	// Process pending classes: link to DFM forms.
+	for _, pending := range pendingClasses {
+		classKey := strings.ToLower(strings.TrimSpace(pending.ClassName))
+		dfmFormID := dfmFormIDMap[classKey]
+		if dfmFormID == 0 {
+			continue
+		}
+		if err := idx.db.UpdatePASClassDFMForm(pending.ClassID, dfmFormID); err != nil {
+			idx.logError(pending.FilePath, "Error updating DFM form link for PAS class %s: %v", pending.ClassName, err)
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+		}
+	}
+
+	// Process pending methods: link to classes.
 	for _, pending := range pendingMethods {
-		classID, err := idx.db.FindLatestPASClassIDByName(pending.ClassName)
-		if err != nil {
-			if err != dbsql.ErrNoRows {
-				idx.logError(pending.FilePath, "Error post-processing PAS method %s for class %s: %v", pending.MethodName, pending.ClassName, err)
-				collector.Add(func(stats *model.ScanStats) {
-					stats.Errors++
-				})
-				continue
-			}
+		classKey := strings.ToLower(strings.TrimSpace(pending.ClassName))
+		classID := classIDMap[classKey]
+		if classID == 0 {
 			idx.logError(pending.FilePath, "Warning: class %s not found for PAS method %s during post-processing", pending.ClassName, pending.MethodName)
 			continue
 		}
-
 		if err := idx.db.UpdatePASMethodClass(pending.MethodID, classID); err != nil {
 			idx.logError(pending.FilePath, "Error updating class for PAS method %s: %v", pending.MethodName, err)
-			collector.Add(func(stats *model.ScanStats) {
-				stats.Errors++
-			})
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		}
 	}
 
+	// Process pending fields: link to classes.
 	for _, pending := range pendingFields {
-		classID, err := idx.db.FindLatestPASClassIDByName(pending.ClassName)
-		if err != nil {
-			if err != dbsql.ErrNoRows {
-				idx.logError(pending.FilePath, "Error post-processing PAS field %s for class %s: %v", pending.FieldName, pending.ClassName, err)
-				collector.Add(func(stats *model.ScanStats) {
-					stats.Errors++
-				})
-				continue
-			}
+		classKey := strings.ToLower(strings.TrimSpace(pending.ClassName))
+		classID := classIDMap[classKey]
+		if classID == 0 {
 			idx.logError(pending.FilePath, "Warning: class %s not found for PAS field %s during post-processing", pending.ClassName, pending.FieldName)
 			continue
 		}
-
 		if err := idx.db.UpdatePASFieldClass(pending.FieldID, classID); err != nil {
 			idx.logError(pending.FilePath, "Error updating class for PAS field %s: %v", pending.FieldName, err)
-			collector.Add(func(stats *model.ScanStats) {
-				stats.Errors++
-			})
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		}
 	}
 
+	// DFM component linking for PAS fields.
 	fieldCandidates, err := idx.db.FindPASFieldDFMLinkCandidates()
 	if err != nil {
-		collector.Add(func(stats *model.ScanStats) {
-			stats.Errors++
-		})
+		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		idx.logError("<post-processing>", "Error loading PAS field DFM link candidates: %v", err)
 		return
 	}
 
-	for _, candidate := range fieldCandidates {
-		dfmComponentID, err := idx.db.FindLatestDFMComponentIDByFormAndName(candidate.DFMFormID, candidate.FieldName)
+	// Group candidates by FormID for batch-resolve.
+	candidatesByForm := make(map[int64][]store.PASFieldDFMLinkCandidate)
+	for _, c := range fieldCandidates {
+		candidatesByForm[c.DFMFormID] = append(candidatesByForm[c.DFMFormID], c)
+	}
+
+	for formID, candidates := range candidatesByForm {
+		fieldNames := make([]string, 0, len(candidates))
+		for _, c := range candidates {
+			fieldNames = append(fieldNames, c.FieldName)
+		}
+		componentIDMap, err := idx.db.FindLatestDFMComponentIDsByFormAndNames(formID, fieldNames)
 		if err != nil {
-			if err != dbsql.ErrNoRows {
-				idx.logError("<post-processing>", "Error resolving DFM component for PAS field %s: %v", candidate.FieldName, err)
-				collector.Add(func(stats *model.ScanStats) {
-					stats.Errors++
-				})
-			}
+			idx.logError("<post-processing>", "Error batch-resolving DFM components for form %d: %v", formID, err)
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 			continue
 		}
-
-		if err := idx.db.UpdatePASFieldDFMComponent(candidate.FieldID, dfmComponentID); err != nil {
-			idx.logError("<post-processing>", "Error updating DFM component link for PAS field %s: %v", candidate.FieldName, err)
-			collector.Add(func(stats *model.ScanStats) {
-				stats.Errors++
-			})
+		for _, candidate := range candidates {
+			compKey := strings.ToLower(strings.TrimSpace(candidate.FieldName))
+			dfmComponentID := componentIDMap[compKey]
+			if dfmComponentID == 0 {
+				continue
+			}
+			if err := idx.db.UpdatePASFieldDFMComponent(candidate.FieldID, dfmComponentID); err != nil {
+				idx.logError("<post-processing>", "Error updating DFM component link for PAS field %s: %v", candidate.FieldName, err)
+				collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+			}
 		}
 	}
 }

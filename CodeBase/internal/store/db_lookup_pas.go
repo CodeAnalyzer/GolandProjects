@@ -3,6 +3,8 @@ package store
 import (
 	"fmt"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 // FindLatestPASClassIDByName возвращает последний id класса по имени.
@@ -20,6 +22,50 @@ func (db *DB) FindLatestPASClassIDByName(className string) (int64, error) {
 	}
 
 	return id, nil
+}
+
+// FindLatestPASClassIDsByNames возвращает map нижнего имени класса -> последний id.
+// Один SQL-запрос вместо N вызовов FindLatestPASClassIDByName.
+func (db *DB) FindLatestPASClassIDsByNames(classNames []string) (map[string]int64, error) {
+	normalized := make([]string, 0, len(classNames))
+	seen := make(map[string]struct{})
+	for _, name := range classNames {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, key)
+	}
+	result := make(map[string]int64, len(normalized))
+	if len(normalized) == 0 {
+		return result, nil
+	}
+	rows, err := db.Query(`
+		SELECT DISTINCT ON (class_key) class_key, id
+		FROM (
+			SELECT LOWER(TRIM(class_name)) AS class_key, id
+			FROM pas_classes
+			WHERE LOWER(TRIM(class_name)) = ANY($1)
+		) AS classes
+		ORDER BY class_key, id DESC
+	`, pq.Array(normalized))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var classKey string
+		var id int64
+		if err := rows.Scan(&classKey, &id); err != nil {
+			return nil, err
+		}
+		result[classKey] = id
+	}
+	return result, rows.Err()
 }
 
 // FindPASFieldDFMLinkCandidates возвращает PAS поля, которые можно связать с DFM-компонентами через уже привязанный класс.

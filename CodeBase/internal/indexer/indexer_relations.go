@@ -150,13 +150,37 @@ func (idx *Indexer) saveRelations(relations []*model.Relation, path string, stat
 }
 
 func (idx *Indexer) buildJSProcedureCallRelations(fileID int64, calls []*model.JSProcedureCall) ([]*model.Relation, error) {
+	// Collect unique proc names for batch-resolve.
+	procNameSet := make(map[string]struct{})
+	for _, call := range calls {
+		if call == nil {
+			continue
+		}
+		name := strings.TrimSpace(call.ProcName)
+		if name != "" {
+			procNameSet[strings.ToLower(name)] = struct{}{}
+		}
+	}
+	procNames := make([]string, 0, len(procNameSet))
+	for name := range procNameSet {
+		procNames = append(procNames, name)
+	}
+	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(procNames)
+	if err != nil {
+		return nil, err
+	}
+
 	return buildJSProcedureCallRelationsWithResolvers(
 		calls,
 		func(lineNumber int) (int64, error) {
 			return idx.db.FindJSFunctionIDByFileAndLine(fileID, lineNumber)
 		},
 		func(procName string) (int64, error) {
-			return idx.db.FindLatestSQLProcedureIDByName(procName)
+			id := procIDMap[strings.ToLower(strings.TrimSpace(procName))]
+			if id == 0 {
+				return 0, dbsql.ErrNoRows
+			}
+			return id, nil
 		},
 	)
 }
@@ -537,6 +561,42 @@ func (idx *Indexer) buildQueryFragmentRelations(fileID int64, fragments []*model
 	if err != nil {
 		return nil, err
 	}
+
+	// Pre-collect unique table names and procedure names for batch-resolve.
+	tableNameSet := make(map[string]struct{})
+	procNameSet := make(map[string]struct{})
+	for _, fragment := range fragments {
+		if fragment == nil {
+			continue
+		}
+		for _, tableName := range uniqueStrings(fragment.TablesReferenced) {
+			tableNameSet[strings.ToLower(strings.TrimSpace(tableName))] = struct{}{}
+		}
+		for _, procName := range extractProcedureCallsFromQuery(fragment.QueryText) {
+			procNameSet[strings.ToLower(strings.TrimSpace(procName))] = struct{}{}
+		}
+	}
+	tableNames := make([]string, 0, len(tableNameSet))
+	for name := range tableNameSet {
+		if name != "" {
+			tableNames = append(tableNames, name)
+		}
+	}
+	procNames := make([]string, 0, len(procNameSet))
+	for name := range procNameSet {
+		if name != "" {
+			procNames = append(procNames, name)
+		}
+	}
+	tableIDMap, err := idx.db.FindLatestSQLTableIDsByNames(tableNames)
+	if err != nil {
+		return nil, err
+	}
+	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(procNames)
+	if err != nil {
+		return nil, err
+	}
+
 	relations := make([]*model.Relation, 0)
 	seen := make(map[string]struct{})
 
@@ -565,12 +625,9 @@ func (idx *Indexer) buildQueryFragmentRelations(fileID int64, fragments []*model
 			}
 		}
 		for _, tableName := range uniqueStrings(fragment.TablesReferenced) {
-			targetID, err := idx.db.FindLatestSQLTableIDByName(tableName)
-			if err != nil {
-				if err == dbsql.ErrNoRows {
-					continue
-				}
-				return nil, err
+			targetID := tableIDMap[strings.ToLower(strings.TrimSpace(tableName))]
+			if targetID == 0 {
+				continue
 			}
 			key := fmt.Sprintf("query_fragment|%d|sql_table|%d|references_table|%d", fragmentID, targetID, fragment.LineNumber)
 			if _, exists := seen[key]; exists {
@@ -588,12 +645,9 @@ func (idx *Indexer) buildQueryFragmentRelations(fileID int64, fragments []*model
 			})
 		}
 		for _, procName := range extractProcedureCallsFromQuery(fragment.QueryText) {
-			targetID, err := idx.db.FindLatestSQLProcedureIDByName(procName)
-			if err != nil {
-				if err == dbsql.ErrNoRows {
-					continue
-				}
-				return nil, err
+			targetID := procIDMap[strings.ToLower(strings.TrimSpace(procName))]
+			if targetID == 0 {
+				continue
 			}
 			key := fmt.Sprintf("query_fragment|%d|sql_procedure|%d|calls_procedure|%d", fragmentID, targetID, fragment.LineNumber)
 			if _, exists := seen[key]; exists {

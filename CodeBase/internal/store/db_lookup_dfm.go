@@ -1,5 +1,11 @@
 package store
 
+import (
+	"strings"
+
+	"github.com/lib/pq"
+)
+
 // FindLatestDFMFormIDByClassName возвращает последний id DFM формы по имени класса формы.
 func (db *DB) FindLatestDFMFormIDByClassName(className string) (int64, error) {
 	var id int64
@@ -33,6 +39,95 @@ func (db *DB) FindLatestDFMComponentIDByFormAndName(formID int64, componentName 
 	}
 
 	return id, nil
+}
+
+// FindLatestDFMFormIDsByClassNames возвращает map нижнего имени класса -> последний id DFM формы.
+// Один SQL-запрос вместо N вызовов FindLatestDFMFormIDByClassName.
+func (db *DB) FindLatestDFMFormIDsByClassNames(classNames []string) (map[string]int64, error) {
+	normalized := make([]string, 0, len(classNames))
+	seen := make(map[string]struct{})
+	for _, name := range classNames {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, key)
+	}
+	result := make(map[string]int64, len(normalized))
+	if len(normalized) == 0 {
+		return result, nil
+	}
+	rows, err := db.Query(`
+		SELECT DISTINCT ON (class_key) class_key, id
+		FROM (
+			SELECT LOWER(TRIM(form_class)) AS class_key, id
+			FROM dfm_forms
+			WHERE LOWER(TRIM(form_class)) = ANY($1)
+		) AS forms
+		ORDER BY class_key, id DESC
+	`, pq.Array(normalized))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var classKey string
+		var id int64
+		if err := rows.Scan(&classKey, &id); err != nil {
+			return nil, err
+		}
+		result[classKey] = id
+	}
+	return result, rows.Err()
+}
+
+// FindLatestDFMComponentIDsByFormAndNames возвращает map нижнего имени компонента -> последний id
+// для заданной формы. Один SQL-запрос вместо N вызовов FindLatestDFMComponentIDByFormAndName.
+func (db *DB) FindLatestDFMComponentIDsByFormAndNames(formID int64, componentNames []string) (map[string]int64, error) {
+	normalized := make([]string, 0, len(componentNames))
+	seen := make(map[string]struct{})
+	for _, name := range componentNames {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, key)
+	}
+	result := make(map[string]int64, len(normalized))
+	if len(normalized) == 0 {
+		return result, nil
+	}
+	rows, err := db.Query(`
+		SELECT DISTINCT ON (comp_key) comp_key, id
+		FROM (
+			SELECT LOWER(TRIM(component_name)) AS comp_key, id
+			FROM dfm_components
+			WHERE form_id = $1
+			  AND LOWER(TRIM(component_name)) = ANY($2)
+		) AS components
+		ORDER BY comp_key, id DESC
+	`, formID, pq.Array(normalized))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var compKey string
+		var id int64
+		if err := rows.Scan(&compKey, &id); err != nil {
+			return nil, err
+		}
+		result[compKey] = id
+	}
+	return result, rows.Err()
 }
 
 // FindDFMComponentIDsByForm возвращает id компонентов формы по имени и line_start.
