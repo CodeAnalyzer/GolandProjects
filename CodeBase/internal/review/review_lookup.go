@@ -849,8 +849,7 @@ func extractColumnRefsFromOn(lower string) []string {
 }
 
 func extractColumnRefsFromExpression(expression string) []columnRef {
-	re := regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b`)
-	matches := re.FindAllStringSubmatch(expression, -1)
+	matches := reTableColumnRef.FindAllStringSubmatch(expression, -1)
 	result := make([]columnRef, 0, len(matches))
 	seen := make(map[string]struct{})
 	for _, m := range matches {

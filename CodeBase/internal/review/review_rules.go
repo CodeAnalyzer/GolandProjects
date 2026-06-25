@@ -11,6 +11,21 @@ import (
 	sqlparser "github.com/codebase/internal/parser/sql"
 )
 
+// Precompiled regexes for hot-path functions (resolveArgType, resolveCaseType, extractFuncColumnRefs)
+var (
+	reCaseStart      = regexp.MustCompile(`(?i)^case\b`)
+	reNumericLiteral = regexp.MustCompile(`^\d+(\.\d+)?$`)
+	reFuncCall       = regexp.MustCompile(`(?i)^([a-z_][a-z0-9_]*)\s*\(`)
+	reColumnNameOnly = regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`)
+	reThenExpr       = regexp.MustCompile(`(?i)\bthen\b\s+(.*?)(?:\bwhen\b|\belse\b|\bend\b)`)
+	reStringLiteral  = regexp.MustCompile(`'[^']*'`)
+	reFuncName       = regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\s*\(`)
+	reDigitStart     = regexp.MustCompile(`^\d`)
+	reColumnRef      = regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)(?:\.([a-z_][a-z0-9_]*))?\b`)
+	reTableColumnRef = regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b`)
+	reNumericSigned  = regexp.MustCompile(`^-?\d+(\.\d+)?$`)
+)
+
 func (r *Runner) checkForeignTables(parsed *sqlparser.ParseResult, file *indexedFile, prefix string) ([]Finding, error) {
 	tables := dedupeTableRefs(parsed.Tables, prefix)
 	findings := make([]Finding, 0)
@@ -3717,7 +3732,7 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 	variableTypes := collectVariableTypes(parsed, text)
 
 	// 1. SELECT @var = expr
-	assignRe := regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	assignRe := reSelectAssign
 	for _, fragment := range parsed.Fragments {
 		if fragment == nil {
 			continue
@@ -3770,7 +3785,7 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 	}
 
 	// 2. SET @var = expr
-	setRe := regexp.MustCompile(`(?is)^\s*set\s+(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	setRe := reSetAssign
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
 		m := setRe.FindStringSubmatch(line)
@@ -3800,7 +3815,7 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 	}
 
 	// 3. DECLARE @var TYPE = expr
-	declRe := regexp.MustCompile(`(?is)^\s*declare\s+(@[A-Za-z_][A-Za-z0-9_]*)\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)\s*=\s*(.+)$`)
+	declRe := reDeclareAssign
 	for i, line := range lines {
 		m := declRe.FindStringSubmatch(line)
 		if len(m) != 4 {
@@ -4087,7 +4102,7 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 	}
 
 	// 2. SELECT @var = ''
-	assignRe := regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	assignRe := reSelectAssign
 	for _, fragment := range parsed.Fragments {
 		if fragment == nil {
 			continue
@@ -4136,7 +4151,7 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 	}
 
 	// 3. SET @var = ''
-	setRe := regexp.MustCompile(`(?is)^\s*set\s+(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	setRe := reSetAssign
 	for i, line := range lines {
 		m := setRe.FindStringSubmatch(line)
 		if len(m) != 3 {
@@ -4162,7 +4177,7 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 	}
 
 	// 4. DECLARE @var datetime = ''
-	declRe := regexp.MustCompile(`(?is)^\s*declare\s+(@[A-Za-z_][A-Za-z0-9_]*)\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)\s*=\s*(.+)$`)
+	declRe := reDeclareAssign
 	for i, line := range lines {
 		m := declRe.FindStringSubmatch(line)
 		if len(m) != 4 {
@@ -5197,10 +5212,10 @@ func extractFuncColumnRefs(expr string) []funcColumnRef {
 	result := make([]funcColumnRef, 0)
 
 	// Удаляем строковые литералы
-	cleaned := regexp.MustCompile(`'[^']*'`).ReplaceAllString(expr, "")
+	cleaned := reStringLiteral.ReplaceAllString(expr, "")
 
 	// Ищем вызовы функций: identifier(args)
-	funcRe := regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\s*\(`)
+	funcRe := reFuncName
 	matches := funcRe.FindAllStringSubmatchIndex(cleaned, -1)
 
 	for _, m := range matches {
@@ -5253,14 +5268,14 @@ func extractFuncColumnRefs(expr string) []funcColumnRef {
 			if strings.HasPrefix(trimmed, "@") {
 				continue
 			}
-			if regexp.MustCompile(`^\d`).MatchString(trimmed) {
+			if reDigitStart.MatchString(trimmed) {
 				continue
 			}
 			if trimmed == "*" {
 				continue
 			}
 			// Извлекаем имя столбца: может быть alias.column или просто column
-			colRe := regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)(?:\.([a-z_][a-z0-9_]*))?\b`)
+			colRe := reColumnRef
 			colMatch := colRe.FindStringSubmatch(trimmed)
 			if colMatch == nil {
 				continue
@@ -5428,7 +5443,7 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 	}
 
 	// CASE ... END — определяем тип по THEN-выражениям
-	if regexp.MustCompile(`(?i)^case\b`).MatchString(trimmed) {
+	if reCaseStart.MatchString(trimmed) {
 		return r.resolveCaseType(trimmed, variableTypes, aliasMap)
 	}
 
@@ -5447,24 +5462,35 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 	}
 
 	// Числовой литерал
-	if regexp.MustCompile(`^\d+(\.\d+)?$`).MatchString(trimmed) {
+	if reNumericLiteral.MatchString(trimmed) {
 		return "int"
 	}
 
 	// Вызов функции: funcName(...)
-	funcRe := regexp.MustCompile(`(?i)^([a-z_][a-z0-9_]*)\s*\(`)
+	funcRe := reFuncCall
 	if m := funcRe.FindStringSubmatch(trimmed); m != nil {
 		funcName := strings.ToLower(m[1])
 		// Сначала проверяем известные функции с фиксированным типом возврата
 		if rt, ok := knownFunctionReturnType(funcName); ok {
 			return rt
 		}
+		// convert(type, expr) и cast(expr AS type) — обрабатываем до macro lookup,
+		// так как тип определяется напрямую из аргумента
+		innerArgs := extractFuncInnerArgs(trimmed)
+		if funcName == "convert" && len(innerArgs) >= 2 {
+			return normalizeDataType(strings.TrimSpace(innerArgs[0]))
+		}
+		if funcName == "cast" && len(innerArgs) >= 1 {
+			inner := innerArgs[0]
+			if asIdx := findTopLevelKeywordPosition(inner, "as"); asIdx >= 0 {
+				return normalizeDataType(strings.TrimSpace(inner[asIdx+2:]))
+			}
+		}
 		// Проверяем, является ли вызов макросом #define с известным типом результата
 		if macroType := r.cachedLookupMacroType(funcName); macroType != "" {
 			return macroType
 		}
 		// Для прочих функций пытаемся вывести тип из аргументов
-		innerArgs := extractFuncInnerArgs(trimmed)
 		if len(innerArgs) > 0 {
 			// dateadd(datepart, number, date) — тип определяется последним аргументом
 			if funcName == "dateadd" && len(innerArgs) >= 3 {
@@ -5491,7 +5517,7 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 	}
 
 	// Fallback: колонка без префикса таблицы — ищем по всем таблицам из aliasMap
-	colNameRe := regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`)
+	colNameRe := reColumnNameOnly
 	if colNameRe.MatchString(trimmed) && len(aliasMap) > 0 {
 		seenTables := make(map[string]struct{})
 		for _, tbl := range aliasMap {
@@ -5514,7 +5540,7 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 // Если все числовые — int. Иначе берёт тип первого нетривиального THEN-выражения.
 func (r *Runner) resolveCaseType(expr string, variableTypes map[string]string, aliasMap map[string]string) string {
 	// Извлекаем THEN-выражения
-	thenRe := regexp.MustCompile(`(?i)\bthen\b\s+(.*?)(?:\bwhen\b|\belse\b|\bend\b)`)
+	thenRe := reThenExpr
 	matches := thenRe.FindAllStringSubmatch(expr, -1)
 	if len(matches) == 0 {
 		return ""
@@ -5532,7 +5558,7 @@ func (r *Runner) resolveCaseType(expr string, variableTypes map[string]string, a
 		if !strings.HasPrefix(thenExpr, "'") {
 			allString = false
 		}
-		if !regexp.MustCompile(`^\d+(\.\d+)?$`).MatchString(thenExpr) {
+		if !reNumericLiteral.MatchString(thenExpr) {
 			allNumeric = false
 		}
 		if firstType == "" {

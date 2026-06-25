@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/codebase/internal/encoding"
 	sqlparser "github.com/codebase/internal/parser/sql"
@@ -443,7 +444,9 @@ func runRuleTasks(tasks []ruleTask, maxWorkers int, onProgress func(int, int)) (
 	}
 
 	type taskResult struct {
+		rule     RuleID
 		findings []Finding
+		duration time.Duration
 		err      error
 	}
 
@@ -471,8 +474,9 @@ func runRuleTasks(tasks []ruleTask, maxWorkers int, onProgress func(int, int)) (
 					if !ok {
 						return
 					}
+					start := time.Now()
 					items, err := task.run(ctx)
-					resultsCh <- taskResult{findings: items, err: err}
+					resultsCh <- taskResult{rule: task.rule, findings: items, duration: time.Since(start), err: err}
 					if err != nil {
 						cancel()
 						return

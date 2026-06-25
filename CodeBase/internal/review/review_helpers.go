@@ -13,6 +13,27 @@ import (
 	sqlparser "github.com/codebase/internal/parser/sql"
 )
 
+// Precompiled regexes for hot-path helper functions
+var (
+	reDateFunc         = regexp.MustCompile(`(?is)\b(getdate|sysdatetime|sysutcdatetime|getutcdate|datefromparts|datetimefromparts|smalldatetimefromparts|datetime2fromparts|datetimeoffsetfromparts|timefromparts|eomonth|dateadd|datediff|datediff_big|datetrunc)\s*\(`)
+	reCurrentTimestamp = regexp.MustCompile(`(?i)\bcurrent_timestamp\b`)
+	reVarOnly          = regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*$`)
+	reEmptyString1     = regexp.MustCompile(`(?is)^\s*(N)?\s*['"]\s*['"]\s*$`)
+	reEmptyString2     = regexp.MustCompile(`(?is)^\s*(N)?\s*['"][\s]*['"]\s*$`)
+	reConvertCall      = regexp.MustCompile(`(?i)\bconvert\s*\(`)
+	reCastCall         = regexp.MustCompile(`(?i)\bcast\s*\(`)
+	reDeclareVar       = regexp.MustCompile(`(?i)@([A-Za-z_][A-Za-z0-9_]*)[ \t]+([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)`)
+	reAtVar            = regexp.MustCompile(`(?i)@@?[a-z_][a-z0-9_]*`)
+	reNumber           = regexp.MustCompile(`(?i)\b\d+(\.\d+)?\b`)
+	reNullEtc          = regexp.MustCompile(`(?i)\b(null|isnull|convert|cast|case|when|then|else|end|and|or|not)\b`)
+	reFuncPrefix       = regexp.MustCompile(`(?i)\b[a-z_]+\s*\(`)
+	reIdentifier       = regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*\b`)
+	reBareColumn       = regexp.MustCompile(`(?is)^\s*\[?([a-z_][a-z0-9_]*)\]?\s*$`)
+	reSelectAssign     = regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	reSetAssign        = regexp.MustCompile(`(?is)^\s*set\s+(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	reDeclareAssign    = regexp.MustCompile(`(?is)^\s*declare\s+(@[A-Za-z_][A-Za-z0-9_]*)\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)\s*=\s*(.+)$`)
+)
+
 var sharedTTables = map[string]struct{}{
 	"tcontract":   {},
 	"tdeal":       {},
@@ -1279,17 +1300,15 @@ func isDateExpression(expr string, varTypes map[string]string) bool {
 	}
 	lower := strings.ToLower(trimmed)
 
-	dateFuncRe := regexp.MustCompile(`(?is)\b(getdate|sysdatetime|sysutcdatetime|getutcdate|datefromparts|datetimefromparts|smalldatetimefromparts|datetime2fromparts|datetimeoffsetfromparts|timefromparts|eomonth|dateadd|datediff|datediff_big|datetrunc)\s*\(`)
-	if dateFuncRe.MatchString(lower) {
+	if reDateFunc.MatchString(lower) {
 		return true
 	}
 
-	if regexp.MustCompile(`(?i)\bcurrent_timestamp\b`).MatchString(lower) {
+	if reCurrentTimestamp.MatchString(lower) {
 		return true
 	}
 
-	varRe := regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*$`)
-	m := varRe.FindStringSubmatch(trimmed)
+	m := reVarOnly.FindStringSubmatch(trimmed)
 	if len(m) == 2 {
 		name := normalizeVariableName(m[1])
 		if vtype, ok := varTypes[name]; ok && typeGroup(vtype) == "datetime" {
@@ -1305,13 +1324,11 @@ func isEmptyStringLiteral(expr string) bool {
 	if trimmed == "" {
 		return false
 	}
-	re := regexp.MustCompile(`(?is)^\s*(N)?\s*['"]\s*['"]\s*$`)
-	if re.MatchString(trimmed) {
+	if reEmptyString1.MatchString(trimmed) {
 		return true
 	}
 	// Литерал с пробелами внутри: '   ' или "   "
-	re2 := regexp.MustCompile(`(?is)^\s*(N)?\s*['"][\s]*['"]\s*$`)
-	return re2.MatchString(trimmed)
+	return reEmptyString2.MatchString(trimmed)
 }
 
 func hasSaveTran(lower string) bool {
@@ -1608,12 +1625,12 @@ func hasExplicitConversion(expression string, targetType string) bool {
 	exprLower := strings.ToLower(expression)
 
 	// Любой convert(...) — явное преобразование
-	if regexp.MustCompile(`(?i)\bconvert\s*\(`).MatchString(exprLower) {
+	if reConvertCall.MatchString(exprLower) {
 		return true
 	}
 
 	// Любой cast(... as ...) — явное преобразование
-	if regexp.MustCompile(`(?i)\bcast\s*\(`).MatchString(exprLower) {
+	if reCastCall.MatchString(exprLower) {
 		return true
 	}
 
@@ -1818,9 +1835,8 @@ func collectVariableTypes(parsed *sqlparser.ParseResult, content string) map[str
 		}
 	}
 
-	declRe := regexp.MustCompile(`(?i)@([A-Za-z_][A-Za-z0-9_]*)[ \t]+([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)`)
 	for _, block := range extractDeclareBlocks(content) {
-		for _, m := range declRe.FindAllStringSubmatch(block, -1) {
+		for _, m := range reDeclareVar.FindAllStringSubmatch(block, -1) {
 			if len(m) < 3 {
 				continue
 			}
@@ -2055,7 +2071,7 @@ func isLiteralArg(arg string) bool {
 		return true
 	}
 	// Числовой литерал (включая отрицательные)
-	if regexp.MustCompile(`^-?\d+(\.\d+)?$`).MatchString(trimmed) {
+	if reNumericSigned.MatchString(trimmed) {
 		return true
 	}
 	return false
@@ -2067,7 +2083,7 @@ func isLiteralArg(arg string) bool {
 func containsSQLStatementKeyword(expr string) bool {
 	lower := strings.ToLower(expr)
 	// Ключевые слова-конструкции, которых не должно быть в операнде сравнения
-	wordKeywords := []string{"join", "where", "from", "select", "insert", "update", "delete", "having", "union", "except", "intersect", "on"}
+	wordKeywords := []string{"join", "where", "from", "select", "insert", "update", "delete", "having", "union", "except", "intersect", "on", "left", "right", "outer", "inner", "cross"}
 	for _, kw := range wordKeywords {
 		if findKeywordPosition(lower, kw) >= 0 {
 			return true
@@ -2103,15 +2119,14 @@ func containsColumnRef(expr string) bool {
 	}
 	// Проверяем неквалифицированные ссылки на колонки
 	// Убираем переменные (@var), числа, строки, функции
-	cleaned := regexp.MustCompile(`(?i)@@?[a-z_][a-z0-9_]*`).ReplaceAllString(expr, "")
-	cleaned = regexp.MustCompile(`(?i)\b\d+(\.\d+)?\b`).ReplaceAllString(cleaned, "")
-	cleaned = regexp.MustCompile(`'[^']*'`).ReplaceAllString(cleaned, "")
-	cleaned = regexp.MustCompile(`(?i)\b(null|isnull|convert|cast|case|when|then|else|end|and|or|not)\b`).ReplaceAllString(cleaned, "")
+	cleaned := reAtVar.ReplaceAllString(expr, "")
+	cleaned = reNumber.ReplaceAllString(cleaned, "")
+	cleaned = reStringLiteral.ReplaceAllString(cleaned, "")
+	cleaned = reNullEtc.ReplaceAllString(cleaned, "")
 	// Убираем известные функции
-	cleaned = regexp.MustCompile(`(?i)\b[a-z_]+\s*\(`).ReplaceAllString(cleaned, "")
+	cleaned = reFuncPrefix.ReplaceAllString(cleaned, "")
 	// Остаёмся ли с идентификатором?
-	identRe := regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*\b`)
-	return identRe.MatchString(strings.TrimSpace(cleaned))
+	return reIdentifier.MatchString(strings.TrimSpace(cleaned))
 }
 
 // isInsertSelectFragment проверяет, является ли фрагмент INSERT...SELECT.
@@ -2181,8 +2196,7 @@ func extractBareColumnName(expression string) string {
 		return ""
 	}
 
-	re := regexp.MustCompile(`(?is)^\s*\[?([a-z_][a-z0-9_]*)\]?\s*$`)
-	m := re.FindStringSubmatch(expression)
+	m := reBareColumn.FindStringSubmatch(expression)
 	if len(m) != 2 {
 		return ""
 	}

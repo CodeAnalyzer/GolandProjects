@@ -5011,3 +5011,36 @@ func TestCachedLookupMacroType_NegativeCache(t *testing.T) {
 		t.Fatalf("expected empty string from negative cache, got %q", got)
 	}
 }
+
+func TestResolveArgType_ConvertNumeric(t *testing.T) {
+	r := &Runner{macroTypeCache: make(map[string]string)}
+	got := r.resolveArgType("convert(numeric(15, 0), @CurrID + MAX_COUNT_ID)", map[string]string{}, map[string]string{})
+	if got != "numeric(15, 0)" {
+		t.Fatalf("expected 'numeric(15, 0)', got %q", got)
+	}
+}
+
+func TestResolveArgType_ConvertDatetime(t *testing.T) {
+	r := &Runner{macroTypeCache: make(map[string]string)}
+	got := r.resolveArgType("convert(datetime, @SomeDate)", map[string]string{}, map[string]string{})
+	if got != "datetime" {
+		t.Fatalf("expected 'datetime', got %q", got)
+	}
+}
+
+func TestResolveArgType_CastAsInt(t *testing.T) {
+	r := &Runner{macroTypeCache: make(map[string]string)}
+	got := r.resolveArgType("cast(@x as int)", map[string]string{}, map[string]string{})
+	if got != "int" {
+		t.Fatalf("expected 'int', got %q", got)
+	}
+}
+
+func TestResolveArgType_ConvertNumericEquivalDSIdentifier(t *testing.T) {
+	r := &Runner{macroTypeCache: make(map[string]string)}
+	t1 := r.resolveArgType("convert(numeric(15, 0), @CurrID + MAX_COUNT_ID)", map[string]string{}, map[string]string{})
+	t2 := "DSIDENTIFIER"
+	if !areEquivalentTypes(t1, t2) {
+		t.Fatalf("convert(numeric(15,0)) type %q should be equivalent to DSIDENTIFIER", t1)
+	}
+}
