@@ -102,4 +102,6 @@ var (
 	relationType       string
 	inspectName        string
 	inspectType        string
+	retCode            int64
+	retCodeMessage     string
 )

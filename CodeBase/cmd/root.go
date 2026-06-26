@@ -14,8 +14,8 @@ import (
 
 var (
 	appName        = "CodeBase"
-	version        = "0.7.6"
-	buildNumber    = "1064"
+	version        = "0.8.1"
+	buildNumber    = "1088"
 	copyright      = "Copyright (c) 2026"
 	cfgFile        string
 	commandLogger  *log.Logger
@@ -34,6 +34,7 @@ Supported modes:
   review - SQL file checks before deployment
   query  - point-in-time index queries for symbols, tables, DFM forms/components/captions, SQL fragments, reports, JS, SMF and relations
   stats  - index summary
+  rti    - RTI trace log analyzer (parse, summary, tree, errors, slow)
   mcp    - MCP JSON-RPC server over stdio`,
 		Version: version,
 	}

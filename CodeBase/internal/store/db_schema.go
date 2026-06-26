@@ -421,6 +421,58 @@ func (db *DB) InitSchema() error {
 			confidence TEXT,
 			line_number INTEGER NOT NULL DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS ds_return_codes (
+			id BIGSERIAL PRIMARY KEY,
+			file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+			ret_code BIGINT NOT NULL,
+			message TEXT NOT NULL,
+			proc_name TEXT,
+			module_id INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS rti_sessions (
+			id BIGSERIAL PRIMARY KEY,
+			file_path TEXT NOT NULL,
+			file_size BIGINT NOT NULL DEFAULT 0,
+			parsed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			total_calls INTEGER NOT NULL DEFAULT 0,
+			errors_count INTEGER NOT NULL DEFAULT 0,
+			max_nest_level INTEGER NOT NULL DEFAULT 0,
+			unparsed_lines INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE TABLE IF NOT EXISTS rti_calls (
+			id BIGSERIAL PRIMARY KEY,
+			session_id BIGINT NOT NULL REFERENCES rti_sessions(id) ON DELETE CASCADE,
+			procedure TEXT NOT NULL,
+			enter_line INTEGER NOT NULL DEFAULT 0,
+			exit_line INTEGER NOT NULL DEFAULT 0,
+			enter_time TIMESTAMPTZ,
+			exit_time TIMESTAMPTZ,
+			elapsed_ms INTEGER NOT NULL DEFAULT 0,
+			nest_level INTEGER NOT NULL DEFAULT 0,
+			module_id INTEGER NOT NULL DEFAULT 0,
+			module_name TEXT,
+			tran_count INTEGER NOT NULL DEFAULT 0,
+			begin_cnt INTEGER NOT NULL DEFAULT 0,
+			ret_val INTEGER,
+			ret_val_context TEXT,
+			parent_id BIGINT,
+			spid INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE TABLE IF NOT EXISTS rti_params (
+			id BIGSERIAL PRIMARY KEY,
+			call_id BIGINT NOT NULL REFERENCES rti_calls(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			type TEXT NOT NULL,
+			value TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS rti_checkpoints (
+			id BIGSERIAL PRIMARY KEY,
+			call_id BIGINT NOT NULL REFERENCES rti_calls(id) ON DELETE CASCADE,
+			label TEXT NOT NULL,
+			timestamp TIMESTAMPTZ,
+			elapsed_ms INTEGER NOT NULL DEFAULT 0,
+			line_no INTEGER NOT NULL DEFAULT 0
+		)`,
 		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ds_products_product_name ON ds_products(product_name)`,
 		`CREATE INDEX IF NOT EXISTS idx_files_scan_run_id ON files(scan_run_id)`,
@@ -503,6 +555,14 @@ func (db *DB) InitSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_relations_source_type_relation ON relations(source_type, relation_type, source_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_relations_target_type_relation ON relations(target_type, relation_type, target_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_relations_relation_type ON relations(relation_type)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ds_return_codes_code ON ds_return_codes(ret_code)`,
+		`CREATE INDEX IF NOT EXISTS idx_rti_sessions_parsed_at ON rti_sessions(parsed_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_rti_calls_session_id ON rti_calls(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_rti_calls_procedure ON rti_calls(procedure)`,
+		`CREATE INDEX IF NOT EXISTS idx_rti_calls_elapsed_ms ON rti_calls(elapsed_ms DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_rti_calls_parent_id ON rti_calls(parent_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_rti_params_call_id ON rti_params(call_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_rti_checkpoints_call_id ON rti_checkpoints(call_id)`,
 	}
 
 	for _, stmt := range statements {

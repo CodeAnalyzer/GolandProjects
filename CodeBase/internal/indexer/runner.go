@@ -211,7 +211,7 @@ func (idx *Indexer) runPostProcessingParallel(collector *statsCollector, paralle
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		idx.postProcessPASPending(collector)
@@ -223,6 +223,10 @@ func (idx *Indexer) runPostProcessingParallel(collector *statsCollector, paralle
 	go func() {
 		defer wg.Done()
 		idx.postProcessCallbackEventRelations(collector)
+	}()
+	go func() {
+		defer wg.Done()
+		idx.postProcessRetCodeConstants(collector)
 	}()
 	wg.Wait()
 }

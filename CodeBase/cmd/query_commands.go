@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/querysvc"
 	"github.com/spf13/cobra"
@@ -340,6 +342,30 @@ var querySMFTypeCmd = &cobra.Command{
 			},
 			run: func(q *query.Query) (interface{}, error) {
 				return q.SearchSMFByType(smfType, limit)
+			},
+		})
+	},
+}
+
+var queryRetCodeCmd = &cobra.Command{
+	Use:   "retcode [--code <N>] [--message <text>]",
+	Short: "Look up return code descriptions from ds_return_codes",
+	Long:  `Search ds_return_codes by numeric ret_code (exact) or by message text fragment (case-insensitive partial match).`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runQueryCommand(queryCommandSpec{
+			commandName: "query retcode",
+			filters: map[string]string{
+				"code":    fmt.Sprintf("%d", retCode),
+				"message": retCodeMessage,
+			},
+			run: func(q *query.Query) (interface{}, error) {
+				if retCode != 0 {
+					return q.LookupRetCode(retCode)
+				}
+				if retCodeMessage != "" {
+					return q.LookupRetCodeByMessage(retCodeMessage, limit)
+				}
+				return nil, fmt.Errorf("either --code or --message is required")
 			},
 		})
 	},

@@ -599,3 +599,14 @@ type APIMacroInvocation struct {
 	LineNumber    int
 	RawText       string
 }
+
+// RetCodeEntry — запись о коде возврата из SQL-файла (ReturnCode_Insert, макросы)
+type RetCodeEntry struct {
+	FileID      int64
+	RetCode     int64
+	Message     string
+	ProcName    string
+	ModuleID    int
+	IsConstant  bool   // true если message — имя константы из H-файла (нужен lookup)
+	LineNumber  int
+}

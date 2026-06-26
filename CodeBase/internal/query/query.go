@@ -1026,3 +1026,46 @@ func (q *Query) SearchSMFByType(scenarioType string, limit int) ([]SMFInstrument
 
 	return results, nil
 }
+
+// RetCodeResult результат поиска кода возврата
+type RetCodeResult struct {
+	RetCode  int64  `json:"ret_code"`
+	Message  string `json:"message"`
+	ProcName string `json:"proc_name,omitempty"`
+	ModuleID int    `json:"module_id"`
+}
+
+// LookupRetCode ищет описание кода возврата по числовому значению.
+func (q *Query) LookupRetCode(retCode int64) (*RetCodeResult, error) {
+	r, err := q.db.LookupRetCode(retCode)
+	if err != nil {
+		return nil, err
+	}
+	if r == nil {
+		return nil, nil
+	}
+	return &RetCodeResult{
+		RetCode:  r.RetCode,
+		Message:  r.Message,
+		ProcName: r.ProcName,
+		ModuleID: r.ModuleID,
+	}, nil
+}
+
+// LookupRetCodeByMessage ищет коды возврата по фрагменту текста сообщения.
+func (q *Query) LookupRetCodeByMessage(messagePattern string, limit int) ([]RetCodeResult, error) {
+	items, err := q.db.LookupRetCodeByMessage(messagePattern, limit)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]RetCodeResult, 0, len(items))
+	for _, r := range items {
+		results = append(results, RetCodeResult{
+			RetCode:  r.RetCode,
+			Message:  r.Message,
+			ProcName: r.ProcName,
+			ModuleID: r.ModuleID,
+		})
+	}
+	return results, nil
+}

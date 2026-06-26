@@ -170,6 +170,46 @@ func DetectXMLEncoding(data []byte) Encoding {
 	return WIN1251
 }
 
+// DetectFromBytes определяет кодировку по содержимому байтов.
+// Алгоритм:
+//  1. Нет байт > 0x7F → ASCII (совместим с CP866)
+//  2. Валидный UTF-8 → UTF-8
+//  3. Эвристика по маркерным диапазонам:
+//     cp866Score  = кол-во байт 0x80–0x9F (А-Я в CP866, редкие спецсимволы в CP1251)
+//     cp1251Score = кол-во байт 0xC0–0xDF (А-Я в CP1251, псевдографика в CP866 — редка в тексте)
+//     Побеждает бо́льший счёт.
+func DetectFromBytes(data []byte) Encoding {
+	hasHigh := false
+	for _, b := range data {
+		if b > 0x7F {
+			hasHigh = true
+			break
+		}
+	}
+	if !hasHigh {
+		return CP866 // ASCII compatible
+	}
+
+	if utf8.Valid(data) {
+		return UTF8
+	}
+
+	var cp866Score, cp1251Score int
+	for _, b := range data {
+		switch {
+		case b >= 0x80 && b <= 0x9F:
+			cp866Score++
+		case b >= 0xC0:
+			cp1251Score++
+		}
+	}
+
+	if cp1251Score > cp866Score {
+		return WIN1251
+	}
+	return CP866
+}
+
 // DecodeBytes декодирует байты из указанной кодировки в UTF-8 строку
 func DecodeBytes(data []byte, encoding Encoding) (string, error) {
 	if encoding == UTF8 {

@@ -10,6 +10,7 @@ import (
 	cbencoding "github.com/codebase/internal/encoding"
 	"github.com/codebase/internal/model"
 	pasparser "github.com/codebase/internal/parser/pas"
+	"github.com/codebase/internal/parser/retcode"
 	sqlparser "github.com/codebase/internal/parser/sql"
 	"github.com/codebase/internal/store"
 )
@@ -373,6 +374,21 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 		if err := idx.saveIncludeDirective(fileID, path, inc.IncludePath, inc.LineNumber); err != nil {
 			idx.logError(path, "Error saving include %s: %v", inc.IncludePath, err)
 			stats.Errors++
+		}
+	}
+
+	// Retcode parsing: prescreen content, then parse and batch insert
+	if content, err := cbencoding.ReadFile(path, cbencoding.CP866); err == nil {
+		if retcode.HasReturnCodes(content) {
+			entries := retcode.Parse(content)
+			for _, e := range entries {
+				e.FileID = fileID
+			}
+			if len(entries) > 0 {
+				if err := idx.db.BatchInsertRetCodes(entries, idx.config.Indexer.BatchSize); err != nil {
+					idx.logError(path, "Error batch inserting return codes: %v", err)
+				}
+			}
 		}
 	}
 

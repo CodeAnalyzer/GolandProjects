@@ -204,3 +204,42 @@ func TestDecodeBytes(t *testing.T) {
 		t.Fatalf("DecodeBytes(CP866) = %q, want %q", got, "Тест")
 	}
 }
+
+func TestDetectFromBytes_ASCII(t *testing.T) {
+	data := []byte("plain ascii text")
+	if got := DetectFromBytes(data); got != CP866 {
+		t.Fatalf("DetectFromBytes(ascii) = %q, want %q (CP866 as ASCII-compatible)", got, CP866)
+	}
+}
+
+func TestDetectFromBytes_UTF8(t *testing.T) {
+	data := []byte("Привет мир UTF-8")
+	if got := DetectFromBytes(data); got != UTF8 {
+		t.Fatalf("DetectFromBytes(valid UTF-8) = %q, want %q", got, UTF8)
+	}
+}
+
+func TestDetectFromBytes_CP1251(t *testing.T) {
+	// "Проверка" encoded in WIN1251 — bytes 0xC0-0xDF dominate
+	cp1251Data := []byte{0xCF, 0xF0, 0xEE, 0xE2, 0xE5, 0xF0, 0xEA, 0xE0}
+	if got := DetectFromBytes(cp1251Data); got != WIN1251 {
+		t.Fatalf("DetectFromBytes(CP1251 data) = %q, want %q", got, WIN1251)
+	}
+}
+
+func TestDetectFromBytes_CP866(t *testing.T) {
+	// CP866 data — bytes 0x80-0x9F dominate (А-Я in CP866)
+	cp866Data, err := charmap.CodePage866.NewEncoder().Bytes([]byte("АБВГД"))
+	if err != nil {
+		t.Fatalf("encode CP866: %v", err)
+	}
+	if got := DetectFromBytes(cp866Data); got != CP866 {
+		t.Fatalf("DetectFromBytes(CP866 data) = %q, want %q", got, CP866)
+	}
+}
+
+func TestDetectFromBytes_Empty(t *testing.T) {
+	if got := DetectFromBytes([]byte{}); got != CP866 {
+		t.Fatalf("DetectFromBytes(empty) = %q, want %q (CP866 as ASCII-compatible)", got, CP866)
+	}
+}

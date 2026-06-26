@@ -1,0 +1,59 @@
+package rti
+
+import (
+	"fmt"
+
+	"github.com/codebase/internal/query"
+)
+
+// ProcedureEnrichment — результат обогащения процедуры данными из CodeBase
+type ProcedureEnrichment struct {
+	Procedure   string                       `json:"procedure"`
+	SourceFile  string                       `json:"source_file,omitempty"`
+	LineNumber  int                          `json:"line_number,omitempty"`
+	LineStart   int                          `json:"line_start,omitempty"`
+	LineEnd     int                          `json:"line_end,omitempty"`
+	Params      []query.SQLParamResult       `json:"params,omitempty"`
+	Found       bool                         `json:"found"`
+}
+
+// EnrichCalls обогащает вызовы данными из CodeBase DB.
+// Возвращает map: procedure name → enrichment.
+func EnrichCalls(q *query.Query, calls []*RTICall) map[string]*ProcedureEnrichment {
+	result := make(map[string]*ProcedureEnrichment)
+	for _, c := range calls {
+		if _, ok := result[c.Procedure]; ok {
+			continue
+		}
+		enrich, err := EnrichProcedure(q, c.Procedure)
+		if err != nil {
+			result[c.Procedure] = &ProcedureEnrichment{
+				Procedure:  c.Procedure,
+				Found:      false,
+				SourceFile: "(not found)",
+			}
+			continue
+		}
+		result[c.Procedure] = enrich
+	}
+	return result
+}
+
+// EnrichProcedure ищет процедуру в CodeBase DB и возвращает enrichment.
+func EnrichProcedure(q *query.Query, procName string) (*ProcedureEnrichment, error) {
+	proc, err := q.GetProcedureResult(procName)
+	if err != nil {
+		return nil, fmt.Errorf("procedure %q not found: %w", procName, err)
+	}
+
+	enrich := &ProcedureEnrichment{
+		Procedure:  procName,
+		SourceFile: proc.File,
+		LineStart:  proc.LineStart,
+		LineEnd:    proc.LineEnd,
+		Params:     proc.Params,
+		Found:      true,
+	}
+
+	return enrich, nil
+}

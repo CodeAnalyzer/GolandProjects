@@ -2318,8 +2318,8 @@ func TestDetectFileEncoding(t *testing.T) {
 		data []byte
 		want string
 	}{
-		{name: "pure ASCII", data: []byte("SELECT * FROM t WHERE x = 1"), want: "ASCII"},
-		{name: "empty", data: []byte{}, want: "ASCII"},
+		{name: "pure ASCII", data: []byte("SELECT * FROM t WHERE x = 1"), want: "CP866"},
+		{name: "empty", data: []byte{}, want: "CP866"},
 		{name: "UTF-8 with cyrillic", data: []byte("-- комментарий\nSELECT 1"), want: "UTF-8"},
 		{name: "UTF-8 BOM", data: append([]byte{0xEF, 0xBB, 0xBF}, []byte("SELECT 1")...), want: "UTF-8"},
 		// CP866: А-Я = 0x80–0x9F. Байты 0x80,0x81 — буквы "А","Б" в CP866

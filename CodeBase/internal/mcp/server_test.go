@@ -77,3 +77,97 @@ func TestDecodeSDKToolArgsValid(t *testing.T) {
 		t.Fatalf("unexpected args: %v", args)
 	}
 }
+
+func TestRTIToolsInRegistry(t *testing.T) {
+	expected := []string{
+		"codebase_rti_parse",
+		"codebase_rti_list",
+		"codebase_rti_summary",
+		"codebase_rti_tree",
+		"codebase_rti_errors",
+		"codebase_rti_slow",
+		"codebase_rti_details",
+		"codebase_rti_delete",
+		"codebase_rti_prune",
+	}
+	for _, name := range expected {
+		if _, ok := toolRegistry[name]; !ok {
+			t.Errorf("tool %s not in registry", name)
+		}
+	}
+}
+
+func TestRTIToolsListIncludesAll(t *testing.T) {
+	list := tools()
+	got := make(map[string]bool)
+	for _, tool := range list {
+		got[tool.Name] = true
+	}
+	expected := []string{
+		"codebase_rti_parse",
+		"codebase_rti_list",
+		"codebase_rti_summary",
+		"codebase_rti_tree",
+		"codebase_rti_errors",
+		"codebase_rti_slow",
+		"codebase_rti_details",
+		"codebase_rti_delete",
+		"codebase_rti_prune",
+	}
+	for _, name := range expected {
+		if !got[name] {
+			t.Errorf("tool %s not in tools()", name)
+		}
+	}
+}
+
+func TestRTIParseHandlerRequiresFilePath(t *testing.T) {
+	tool, ok := toolRegistry["codebase_rti_parse"]
+	if !ok {
+		t.Fatal("codebase_rti_parse not in toolRegistry")
+	}
+	_, err := tool.Handler(map[string]interface{}{})
+	if err == nil {
+		t.Fatal("expected error for missing file_path")
+	}
+}
+
+func TestRTISlowHandlerRequiresSessionOrFile(t *testing.T) {
+	tool, ok := toolRegistry["codebase_rti_slow"]
+	if !ok {
+		t.Fatal("codebase_rti_slow not in toolRegistry")
+	}
+	_, err := tool.Handler(map[string]interface{}{})
+	if err == nil {
+		t.Fatal("expected error for missing session_id and file_path")
+	}
+}
+
+func TestRTIDetailsHandlerRequiresProcedure(t *testing.T) {
+	tool, ok := toolRegistry["codebase_rti_details"]
+	if !ok {
+		t.Fatal("codebase_rti_details not in toolRegistry")
+	}
+	_, err := tool.Handler(map[string]interface{}{})
+	if err == nil {
+		t.Fatal("expected error for missing procedure")
+	}
+}
+
+func TestRetCodeToolInRegistry(t *testing.T) {
+	if _, ok := toolRegistry["codebase_query_retcode"]; !ok {
+		t.Fatal("codebase_query_retcode not in toolRegistry")
+	}
+}
+
+func TestRetCodeHandlerRequiresArg(t *testing.T) {
+	tool, ok := toolRegistry["codebase_query_retcode"]
+	if !ok {
+		t.Fatal("codebase_query_retcode not in toolRegistry")
+	}
+	_, err := tool.Handler(map[string]interface{}{})
+	// Without DB, runQueryOpt returns "database not available"
+	if err == nil {
+		t.Fatal("expected error for no args without DB")
+	}
+}

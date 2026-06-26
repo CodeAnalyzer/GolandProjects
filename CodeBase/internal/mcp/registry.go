@@ -9,6 +9,7 @@ import (
 	"github.com/codebase/internal/querysvc"
 	"github.com/codebase/internal/review"
 	"github.com/codebase/internal/reviewsvc"
+	"github.com/codebase/internal/rti"
 	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/systemsvc"
 )
@@ -492,6 +493,225 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				})
 			},
 		},
+		"codebase_query_retcode": {
+			Definition: toolDefinition{Name: "codebase_query_retcode", Description: "Look up return code descriptions from ds_return_codes. Supports two modes: (1) search by ret_code (integer) — returns a single match with message, proc_name, module_id; (2) search by message text fragment (string, case-insensitive ILIKE) — returns all matching codes. Use when you need to decode a numeric return value from a stored procedure or find which error code corresponds to an error message.", InputSchema: objectSchema(map[string]interface{}{"ret_code": intProp("Return code to look up (exact match)"), "message": stringProp("Message text fragment to search (case-insensitive partial match)"), "limit": intProp("Max results for message search (default 50)")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					retCode, err := optionalInt64(args, "ret_code")
+					if err != nil {
+						return nil, err
+					}
+					if retCode != 0 {
+						r, err := q.LookupRetCode(retCode)
+						if err != nil {
+							return nil, err
+						}
+						if r == nil {
+							return []interface{}{}, nil
+						}
+						return r, nil
+					}
+					msgPattern, err := optionalString(args, "message")
+					if err != nil {
+						return nil, err
+					}
+					if msgPattern == "" {
+						return nil, fmt.Errorf("either ret_code or message is required")
+					}
+					limit := optionalLimit(args)
+					return q.LookupRetCodeByMessage(msgPattern, limit)
+				})
+			},
+		},
+		"codebase_rti_parse": {
+			Definition: toolDefinition{Name: "codebase_rti_parse", Description: "Parse an RTI trace log file and save the session to the database. Returns summary statistics (total calls, errors, max nest level, top slowest calls) and the saved session ID. Use this as the first step before querying RTI data via other rti tools.", InputSchema: objectSchema(map[string]interface{}{"file_path": stringProp("Absolute path to .rti file")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				filePath, err := requiredString(args, "file_path")
+				if err != nil {
+					return nil, err
+				}
+				result, err := rti.ParseFile(filePath)
+				if err != nil {
+					return nil, fmt.Errorf("failed to parse RTI file: %w", err)
+				}
+				var sessionID int64
+				if db != nil {
+					sessionID, err = rti.SaveSession(db, result, filePath)
+					if err != nil {
+						return nil, fmt.Errorf("failed to save session: %w", err)
+					}
+				}
+				return map[string]interface{}{
+					"summary":     result.Summary,
+					"session_id":  sessionID,
+				}, nil
+			},
+		},
+		"codebase_rti_list": {
+			Definition: toolDefinition{Name: "codebase_rti_list", Description: "List saved RTI parsing sessions from the database, ordered by most recent first. Returns session ID, file path, call counts, error counts, file size, and parse timestamp.", InputSchema: objectSchema(map[string]interface{}{"limit": intProp("Max sessions to return (default 20)")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				if db == nil {
+					return nil, fmt.Errorf("database not available")
+				}
+				limit := optionalLimit(args)
+				sessions, err := rti.ListSessions(db, limit)
+				if err != nil {
+					return nil, err
+				}
+				return sessions, nil
+			},
+		},
+		"codebase_rti_summary": {
+			Definition: toolDefinition{Name: "codebase_rti_summary", Description: "Get summary statistics for an RTI session: total calls, errors, max nest level, unparsed lines, top 10 slowest calls. Requires either a saved session ID or a file path to parse on the fly.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file to parse on the fly")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				result, err := loadRTIFromArgs(db, args)
+				if err != nil {
+					return nil, err
+				}
+				return result.Summary, nil
+			},
+		},
+		"codebase_rti_tree": {
+			Definition: toolDefinition{Name: "codebase_rti_tree", Description: "Build and return a call tree from an RTI session. The tree shows nested procedure calls with elapsed time, return values, module info, and source file locations (enriched from CodeBase index). If procedure is omitted, auto-selects the root call with the most descendants.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "procedure": stringProp("Root procedure name (default: auto-select)"), "max_depth": intProp("Max tree depth (0 = unlimited)")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				result, err := loadRTIFromArgs(db, args)
+				if err != nil {
+					return nil, err
+				}
+				procName, _ := optionalString(args, "procedure")
+				maxDepth, _ := optionalInt(args, "max_depth")
+				tree := rti.BuildTree(result.Calls, procName, maxDepth)
+				if tree == nil {
+					return nil, fmt.Errorf("procedure %q not found in RTI log", procName)
+				}
+				return tree, nil
+			},
+		},
+		"codebase_rti_errors": {
+			Definition: toolDefinition{Name: "codebase_rti_errors", Description: "Find all calls with non-zero RetVal in an RTI session. Returns procedure name, line number, return value, error context, elapsed time, nest level, module info, error code description (from ds_return_codes), and source file (from CodeBase index).", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				result, err := loadRTIFromArgs(db, args)
+				if err != nil {
+					return nil, err
+				}
+				var errors []*rti.RTICall
+				for _, c := range result.Calls {
+					if c.RetVal != nil && *c.RetVal != 0 {
+						errors = append(errors, c)
+					}
+				}
+				return map[string]interface{}{
+					"count":  len(errors),
+					"errors": errors,
+				}, nil
+			},
+		},
+		"codebase_rti_slow": {
+			Definition: toolDefinition{Name: "codebase_rti_slow", Description: "Find the slowest calls in an RTI session above a threshold. Returns calls sorted by elapsed time descending with procedure name, line, elapsed ms, return value, module info, and context.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "threshold_ms": intProp("Minimum elapsed milliseconds (default 100)")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				result, err := loadRTIFromArgs(db, args)
+				if err != nil {
+					return nil, err
+				}
+				threshold, _ := optionalInt(args, "threshold_ms")
+				if threshold <= 0 {
+					threshold = 100
+				}
+				var slow []*rti.RTICall
+				for _, c := range result.Calls {
+					if c.ElapsedMs >= threshold {
+						slow = append(slow, c)
+					}
+				}
+				return map[string]interface{}{
+					"count":    len(slow),
+					"threshold": threshold,
+					"calls":    slow,
+				}, nil
+			},
+		},
+		"codebase_rti_details": {
+			Definition: toolDefinition{Name: "codebase_rti_details", Description: "Get enriched details for a specific procedure in an RTI session: source file path, line range, parameter definitions (name, type, direction) from CodeBase index, all call instances with timing, return values, error descriptions, and context.", InputSchema: objectSchema(map[string]interface{}{"procedure": stringProp("Procedure name"), "session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				procName, err := requiredString(args, "procedure")
+				if err != nil {
+					return nil, err
+				}
+				result, err := loadRTIFromArgs(db, args)
+				if err != nil {
+					return nil, err
+				}
+				var calls []*rti.RTICall
+				for _, c := range result.Calls {
+					if c.Procedure == procName {
+						calls = append(calls, c)
+					}
+				}
+				if len(calls) == 0 {
+					return nil, fmt.Errorf("procedure %q not found in RTI log", procName)
+				}
+				var enrich *rti.ProcedureEnrichment
+				if db != nil {
+					q := query.New(db)
+					enrich, _ = rti.EnrichProcedure(q, procName)
+				}
+				return map[string]interface{}{
+					"procedure":  procName,
+					"calls":      calls,
+					"enrichment": enrich,
+				}, nil
+			},
+		},
+		"codebase_rti_delete": {
+			Definition: toolDefinition{Name: "codebase_rti_delete", Description: "Delete a saved RTI session by ID. Cascades to delete all associated calls, parameters, and checkpoints.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Session ID to delete")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				if db == nil {
+					return nil, fmt.Errorf("database not available")
+				}
+				sessionID, err := optionalInt64(args, "session_id")
+				if err != nil {
+					return nil, err
+				}
+				if sessionID <= 0 {
+					return nil, fmt.Errorf("session_id is required")
+				}
+				session, err := rti.GetSession(db, sessionID)
+				if err != nil {
+					return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
+				}
+				if err := rti.DeleteSession(db, sessionID); err != nil {
+					return nil, err
+				}
+				return map[string]interface{}{
+					"deleted":    true,
+					"session_id": sessionID,
+					"file_path":  session.FilePath,
+				}, nil
+			},
+		},
+		"codebase_rti_prune": {
+			Definition: toolDefinition{Name: "codebase_rti_prune", Description: "Delete old RTI sessions, keeping only the most recent N. Returns the number of deleted sessions.", InputSchema: objectSchema(map[string]interface{}{"keep_last": intProp("Number of most recent sessions to keep")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				if db == nil {
+					return nil, fmt.Errorf("database not available")
+				}
+				keepLast, err := optionalInt(args, "keep_last")
+				if err != nil {
+					return nil, err
+				}
+				if keepLast <= 0 {
+					return nil, fmt.Errorf("keep_last must be positive")
+				}
+				deleted, err := rti.PruneSessions(db, keepLast)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]interface{}{
+					"deleted_count": deleted,
+					"kept_last":      keepLast,
+				}, nil
+			},
+		},
 	}
 }
 
@@ -624,6 +844,60 @@ func optionalLimit(args map[string]interface{}) int {
 	default:
 		return defaultLimit
 	}
+}
+
+func optionalInt64(args map[string]interface{}, key string) (int64, error) {
+	value, ok := args[key]
+	if !ok || value == nil {
+		return 0, nil
+	}
+	switch v := value.(type) {
+	case float64:
+		return int64(v), nil
+	case int:
+		return int64(v), nil
+	case int64:
+		return v, nil
+	default:
+		return 0, fmt.Errorf("argument %s must be integer", key)
+	}
+}
+
+func loadRTIFromArgs(db *store.DB, args map[string]interface{}) (*rti.RTIParseResult, error) {
+	sessionID, err := optionalInt64(args, "session_id")
+	if err != nil {
+		return nil, err
+	}
+	if sessionID > 0 {
+		if db == nil {
+			return nil, fmt.Errorf("database not available")
+		}
+		session, err := rti.GetSession(db, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
+		}
+		calls, err := rti.LoadCalls(db, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load calls: %w", err)
+		}
+		return &rti.RTIParseResult{
+			Calls: calls,
+			Summary: rti.RTISummary{
+				FilePath:    session.FilePath,
+				FileSize:    session.FileSize,
+				TotalCalls:  session.TotalCalls,
+				ErrorsCount: session.ErrorsCount,
+			},
+		}, nil
+	}
+	filePath, err := optionalString(args, "file_path")
+	if err != nil {
+		return nil, err
+	}
+	if filePath == "" {
+		return nil, fmt.Errorf("either session_id or file_path is required")
+	}
+	return rti.ParseFile(filePath)
 }
 
 func toJSONText(value interface{}) (string, error) {

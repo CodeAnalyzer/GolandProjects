@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
+	"github.com/codebase/internal/encoding"
 	"github.com/codebase/internal/model"
 	sqlparser "github.com/codebase/internal/parser/sql"
 )
@@ -1929,43 +1929,19 @@ func isWordCharByte(c byte) bool {
 }
 
 // detectFileEncoding определяет кодировку файла: "ASCII", "CP866", "UTF-8", "CP1251" или "UNKNOWN".
-// Алгоритм:
-//  1. Нет байт > 0x7F → ASCII (совместим с CP866)
-//  2. Валидный UTF-8 → UTF-8
-//  3. Эвристика по маркерным диапазонам:
-//     cp866Score  = кол-во байт 0x80–0x9F (А-Я в CP866, редкие спецсимволы в CP1251)
-//     cp1251Score = кол-во байт 0xC0–0xDF (А-Я в CP1251, псевдографика в CP866 — редка в тексте)
-//     Побеждает бо́льший счёт.
+// Делегирует в encoding.DetectFromBytes, возвращая строковое представление для совместимости.
 func detectFileEncoding(data []byte) string {
-	hasHigh := false
-	for _, b := range data {
-		if b > 0x7F {
-			hasHigh = true
-			break
-		}
-	}
-	if !hasHigh {
-		return "ASCII"
-	}
-
-	if utf8.Valid(data) {
-		return "UTF-8"
-	}
-
-	var cp866Score, cp1251Score int
-	for _, b := range data {
-		switch {
-		case b >= 0x80 && b <= 0x9F:
-			cp866Score++
-		case b >= 0xC0 && b <= 0xDF:
-			cp1251Score++
-		}
-	}
-
-	if cp1251Score > cp866Score {
+	enc := encoding.DetectFromBytes(data)
+	switch enc {
+	case encoding.CP866:
+		return "CP866"
+	case encoding.WIN1251:
 		return "CP1251"
+	case encoding.UTF8:
+		return "UTF-8"
+	default:
+		return "UNKNOWN"
 	}
-	return "CP866"
 }
 
 // isIndexedColumn проверяет, входит ли столбец в набор полей индекса.

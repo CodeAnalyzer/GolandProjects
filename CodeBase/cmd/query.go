@@ -87,6 +87,9 @@ func init() {
 	queryVBFunctionCmd.Flags().BoolVar(&vbFunctionLikeSearch, "like", false, "use partial match search for VB function name")
 	cobra.CheckErr(queryVBFunctionCmd.MarkFlagRequired("name"))
 
+	queryRetCodeCmd.Flags().Int64Var(&retCode, "code", 0, "return code to look up (exact match)")
+	queryRetCodeCmd.Flags().StringVar(&retCodeMessage, "message", "", "message text fragment to search (case-insensitive partial match)")
+
 	queryCmd.AddCommand(querySymbolCmd)
 	queryCmd.AddCommand(queryTableCmd)
 	queryCmd.AddCommand(queryTableSchemaCmd)
@@ -107,6 +110,7 @@ func init() {
 	queryCmd.AddCommand(queryReportFieldCmd)
 	queryCmd.AddCommand(queryReportParamCmd)
 	queryCmd.AddCommand(queryVBFunctionCmd)
+	queryCmd.AddCommand(queryRetCodeCmd)
 
 	rootCmd.AddCommand(queryCmd)
 }
