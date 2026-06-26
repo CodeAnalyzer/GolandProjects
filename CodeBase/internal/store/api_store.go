@@ -218,6 +218,63 @@ func (db *DB) FindLatestAPIContractIDByNameAndKind(name string, kind string) (in
 	return id, nil
 }
 
+// APIContractNameKind — пара (name, kind) для batch-resolve.
+type APIContractNameKind struct {
+	Name string
+	Kind string
+}
+
+// FindLatestAPIContractIDsByNamesAndKinds загружает API контракты одним запросом
+// и строит in-memory map для batch-resolve. Заменяет N+1 вызовов
+// FindLatestAPIContractIDByNameAndKind.
+func (db *DB) FindLatestAPIContractIDsByNamesAndKinds(pairs []APIContractNameKind) (map[string]int64, error) {
+	type nkKey struct{ name, kind string }
+	unique := make(map[nkKey]struct{})
+	names := make([]string, 0)
+	kinds := make([]string, 0)
+	for _, p := range pairs {
+		n := strings.ToLower(strings.TrimSpace(p.Name))
+		k := strings.ToLower(strings.TrimSpace(p.Kind))
+		if n == "" || k == "" {
+			continue
+		}
+		key := nkKey{n, k}
+		if _, exists := unique[key]; exists {
+			continue
+		}
+		unique[key] = struct{}{}
+		names = append(names, n)
+		kinds = append(kinds, k)
+	}
+	result := make(map[string]int64, len(unique))
+	if len(names) == 0 {
+		return result, nil
+	}
+	rows, err := db.Query(`
+		SELECT id, LOWER(TRIM(contract_name)) AS name_key, LOWER(TRIM(contract_kind)) AS kind_key
+		FROM api_contracts
+		WHERE LOWER(TRIM(contract_name)) = ANY($1)
+		  AND LOWER(TRIM(contract_kind)) = ANY($2)
+		ORDER BY id DESC
+	`, pq.Array(names), pq.Array(kinds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var nameKey, kindKey string
+		if err := rows.Scan(&id, &nameKey, &kindKey); err != nil {
+			return nil, err
+		}
+		mapKey := nameKey + "|" + kindKey
+		if _, exists := result[mapKey]; !exists {
+			result[mapKey] = id
+		}
+	}
+	return result, rows.Err()
+}
+
 func (db *DB) FindLatestAPIContractIDByNameKindAndOwnerModule(name string, kind string, ownerModule string) (int64, error) {
 	trimmedName := strings.TrimSpace(name)
 	trimmedKind := strings.TrimSpace(kind)
@@ -256,6 +313,72 @@ func (db *DB) FindAPIContractsByKind(kind string) ([]*model.APIContract, error) 
 		result = append(result, item)
 	}
 	return result, rows.Err()
+}
+
+// EventContractLookupKey — ключ для in-memory map event-контрактов.
+// Формат: lower(name) + "|" + lower(module), или lower(name) + "|" для fallback без module.
+type EventContractLookup struct {
+	ByNameAndModule map[string]int64 // key: lower(name)|lower(module) -> id
+	ByName          map[string]int64 // key: lower(name) -> id (fallback)
+}
+
+// FindLatestEventContractIDsByNames загружает event-контракты одним запросом
+// и строит in-memory map для batch-resolve. Заменяет N+1 вызовов
+// FindLatestAPIContractIDByNameKindAndOwnerModule.
+func (db *DB) FindLatestEventContractIDsByNames(names []string) (*EventContractLookup, error) {
+	normalizedNames := make([]string, 0, len(names))
+	seenNames := make(map[string]struct{})
+	for _, n := range names {
+		key := strings.ToLower(strings.TrimSpace(n))
+		if key == "" {
+			continue
+		}
+		if _, exists := seenNames[key]; exists {
+			continue
+		}
+		seenNames[key] = struct{}{}
+		normalizedNames = append(normalizedNames, key)
+	}
+
+	lookup := &EventContractLookup{
+		ByNameAndModule: make(map[string]int64),
+		ByName:          make(map[string]int64),
+	}
+	if len(normalizedNames) == 0 {
+		return lookup, nil
+	}
+
+	// Загружаем все event-контракты, у которых contract_name входит в names.
+	// owner_module может быть любым (включая пустой), поэтому не фильтруем по modules.
+	rows, err := db.Query(`
+		SELECT id, LOWER(TRIM(contract_name)) AS name_key, COALESCE(LOWER(TRIM(owner_module)), '') AS module_key
+		FROM api_contracts
+		WHERE LOWER(contract_kind) = 'event'
+		  AND LOWER(TRIM(contract_name)) = ANY($1)
+		ORDER BY id DESC
+	`, pq.Array(normalizedNames))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int64
+		var nameKey, moduleKey string
+		if err := rows.Scan(&id, &nameKey, &moduleKey); err != nil {
+			return nil, err
+		}
+		// ByNameAndModule: первый (latest) id для name+module
+		nmKey := nameKey + "|" + moduleKey
+		if _, exists := lookup.ByNameAndModule[nmKey]; !exists {
+			lookup.ByNameAndModule[nmKey] = id
+		}
+		// ByName: первый (latest) id для name (fallback)
+		if _, exists := lookup.ByName[nameKey]; !exists {
+			lookup.ByName[nameKey] = id
+		}
+	}
+	return lookup, rows.Err()
 }
 
 func (db *DB) DeleteSubscribesToEventRelations() error {

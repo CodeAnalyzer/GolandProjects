@@ -99,9 +99,7 @@ func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error
 	}
 
 	workersWG.Wait()
-	idx.postProcessPASPending(collector)
-	idx.postProcessSQLProcedureCallRelations(collector, parallel)
-	idx.postProcessCallbackEventRelations(collector)
+	idx.runPostProcessingParallel(collector, parallel)
 	stats := collector.Snapshot()
 	status := "completed"
 	if stats.Errors > 0 {
@@ -178,9 +176,7 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 	}
 
 	workersWG.Wait()
-	idx.postProcessPASPending(collector)
-	idx.postProcessSQLProcedureCallRelations(collector, parallel)
-	idx.postProcessCallbackEventRelations(collector)
+	idx.runPostProcessingParallel(collector, parallel)
 
 	for path := range existing {
 		if _, ok := seen[path]; ok {
@@ -203,4 +199,24 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 		return nil, fmt.Errorf("failed to finalize scan run: %w", err)
 	}
 	return &stats, nil
+}
+
+// runPostProcessingParallel запускает все независимые пост-обработки параллельно.
+// Каждая пост-обработка работает с разными типами relations и не конфликтует с другими.
+func (idx *Indexer) runPostProcessingParallel(collector *statsCollector, parallel int) {
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		idx.postProcessPASPending(collector)
+	}()
+	go func() {
+		defer wg.Done()
+		idx.postProcessSQLProcedureCallRelations(collector, parallel)
+	}()
+	go func() {
+		defer wg.Done()
+		idx.postProcessCallbackEventRelations(collector)
+	}()
+	wg.Wait()
 }
