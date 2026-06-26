@@ -10,6 +10,15 @@ import (
 	"github.com/codebase/internal/model"
 )
 
+var (
+	createProcRe = regexp.MustCompile(`(?i)API_CREATE_PROC\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)`)
+	initEventRe  = regexp.MustCompile(`(?i)API_INIT_EVENT\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	execAPIRe    = regexp.MustCompile(`(?i)API_EXEC\s*\((?:\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*)?\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	execProcRe   = regexp.MustCompile(`(?i)exec\s+(?:@RetVal\s*=\s*)?([A-Za-z_][A-Za-z0-9_]*)`)
+	dispatchRe   = regexp.MustCompile(`(?i)exec\s+(?:@RetVal\s*=\s*)?([A-Za-z_][A-Za-z0-9_]*)[\s\S]*@ProcessID\s*=\s*@GlobalProcessID`)
+	procNameRe   = regexp.MustCompile(`(?i)(?:__BEGIN_PROCEDURE__\s*\(|create\s+(?:procedure|proc)\s+)([A-Za-z_][A-Za-z0-9_]*)`)
+)
+
 type Parser struct {
 	createProcRe *regexp.Regexp
 	initEventRe  *regexp.Regexp
@@ -26,12 +35,12 @@ type ParseResult struct {
 
 func NewParser() *Parser {
 	return &Parser{
-		createProcRe: regexp.MustCompile(`(?i)API_CREATE_PROC\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)`),
-		initEventRe:  regexp.MustCompile(`(?i)API_INIT_EVENT\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)`),
-		execAPIRe:    regexp.MustCompile(`(?i)API_EXEC\s*\((?:\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*)?\s*([A-Za-z_][A-Za-z0-9_]*)`),
-		execProcRe:   regexp.MustCompile(`(?i)exec\s+(?:@RetVal\s*=\s*)?([A-Za-z_][A-Za-z0-9_]*)`),
-		dispatchRe:   regexp.MustCompile(`(?i)exec\s+(?:@RetVal\s*=\s*)?([A-Za-z_][A-Za-z0-9_]*)[\s\S]*@ProcessID\s*=\s*@GlobalProcessID`),
-		procNameRe:   regexp.MustCompile(`(?i)(?:__BEGIN_PROCEDURE__\s*\(|create\s+(?:procedure|proc)\s+)([A-Za-z_][A-Za-z0-9_]*)`),
+		createProcRe: createProcRe,
+		initEventRe:  initEventRe,
+		execAPIRe:    execAPIRe,
+		execProcRe:   execProcRe,
+		dispatchRe:   dispatchRe,
+		procNameRe:   procNameRe,
 	}
 }
 

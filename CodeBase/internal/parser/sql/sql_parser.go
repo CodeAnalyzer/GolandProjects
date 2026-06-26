@@ -12,6 +12,50 @@ import (
 	"github.com/codebase/internal/model"
 )
 
+var (
+	procBeginRe        = regexp.MustCompile(`(?i)(?:DCL_PROC_BEGIN\s*[\(]?|__BEGIN_PROCEDURE__\s*\()([A-Za-z_][A-Za-z0-9_]*)[\)]?`)
+	procEndRe          = regexp.MustCompile(`(?i)(?:__END_PROCEDURE__|X_ANYMODE)\s*\(([A-Za-z_][A-Za-z0-9_]*)\)`)
+	procDeclRe         = regexp.MustCompile(`(?i)create\s+(?:procedure|proc)\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	procCreateRe       = regexp.MustCompile(`(?i)API_CREATE_PROC\s*\(([A-Za-z_][A-Za-z0-9_]*)\)`)
+	createTableRe      = regexp.MustCompile(`(?i)\bcreate\s+table\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
+	alterTableAddRe    = regexp.MustCompile(`(?i)^\s*alter\s+table\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+add\s+(.+?)\s*$`)
+	createIndexRe      = regexp.MustCompile(`(?i)^\s*create\s+(unique\s+)?index\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+on\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*\(([^\)]*)\)`)
+	createIndexStartRe = regexp.MustCompile(`(?i)^\s*create\s+(unique\s+)?index\s+([A-Za-z_#][A-Za-z0-9_#]*)\b(.*)$`)
+	createIndexOnRe    = regexp.MustCompile(`(?i)^\s*on\s+([A-Za-z_#][A-Za-z0-9_#]*)\b(.*)$`)
+	mAddFieldRe        = regexp.MustCompile(`(?i)\bM_ADD_FIELD\s*\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)`)
+	mCreateIndexRe     = regexp.MustCompile(`(?i)\bM_CRT_INDEX\s*\(\s*'([^']*)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']*)'\s*\)`)
+	selectIntoRe       = regexp.MustCompile(`(?i)\bselect\b.*\binto\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
+	selectIntoTableRe  = regexp.MustCompile(`(?i)\binto\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
+	insertTableRe      = regexp.MustCompile(`(?i)^\s*insert\s+(?:into\s+)?([A-Za-z_#][A-Za-z0-9_#]*)\b`)
+	deleteTableRe      = regexp.MustCompile(`(?i)^\s*delete\s+([A-Za-z_#][A-Za-z0-9_#]*)\b`)
+	deletePTableRe     = regexp.MustCompile(`(?i)\bM_DELETE_PTABLE(?:_INDEX)?\s*\(\s*([A-Za-z_#][A-Za-z0-9_#]*)\s*(?:,\s*[A-Za-z_#][A-Za-z0-9_#]*)?\)`)
+	logTableRe         = regexp.MustCompile(`(?i)\bM_LOG_TABLE\s*\(\s*([A-Za-z_#][A-Za-z0-9_#]*)\s*\)`)
+	selectTempRe       = regexp.MustCompile(`(?i)\bSELECT_TEMP\s*\(\s*([A-Za-z_#][A-Za-z0-9_#]*)\s*\)`)
+	tableNameRe        = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
+	continuedTableRe   = regexp.MustCompile(`^\s*,?\s*([A-Za-z_#][A-Za-z0-9_#]*)\b`)
+	tableAliasRe       = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|UPDATE)\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b`)
+	columnNameRe       = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)`)
+	insertColumnsRe    = regexp.MustCompile(`(?i)^\s*insert\s+(?:into\s+)?[A-Za-z_#][A-Za-z0-9_#]*\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*\s*\)`)
+	updateColumnsRe    = regexp.MustCompile(`(?i)^\s*update\s+[A-Za-z_#][A-Za-z0-9_#]*\s+set\s+([A-Za-z_][A-Za-z0-9_]*\s*=\s*[^,]+(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*[^,]+)*)`)
+	varDeclRe          = regexp.MustCompile(`(?i)@([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	procParamRe        = regexp.MustCompile(`@([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?)\s*(?:=\s*([^,\s]+))?`)
+	execRe             = regexp.MustCompile(`(?i)\bexec(?:ute)?\s+(?:@\w+\s*=\s*)?(?:\[?[A-Za-z_][A-Za-z0-9_]*\]?\.)?(\[?[A-Za-z_][A-Za-z0-9_]*\]?)`)
+	selectRe           = regexp.MustCompile(`(?i)^\s*select\b`)
+	insertRe           = regexp.MustCompile(`(?i)^\s*insert\b`)
+	updateRe           = regexp.MustCompile(`(?i)^\s*update\b`)
+	deleteRe           = regexp.MustCompile(`(?i)^\s*delete\b`)
+	includeRe          = regexp.MustCompile(`(?i)#include\s*[<"]([^>"]+)[>"]`)
+	defineRe           = regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.*)$`)
+	emptyDefineRe      = regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*$`)
+	macroDefineRe      = regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s+(.+)$`)
+	emptyMacroDefineRe = regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*$`)
+	constDefineRe      = regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+([+-]?\d+)$`)
+	constCommentRe     = regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+([+-]?\d+)\s*(/\*.*\*/|--.*)$`)
+	commentRe          = regexp.MustCompile(`^\s*--.*$`)
+	pTableRe           = regexp.MustCompile(`(?i)\b(pAPI_[A-Za-z_][A-Za-z0-9_]*)`)
+	tempTableRe        = regexp.MustCompile(`(?i)\b#[A-Za-z_][A-Za-z0-9_]*`)
+)
+
 // Parser SQL-парсер
 type Parser struct {
 	// Регулярки для парсинга
@@ -372,87 +416,47 @@ type pendingSQLColumn struct {
 // NewParser создаёт новый SQL-парсер
 func NewParser() *Parser {
 	return &Parser{
-		// DCL_PROC_BEGIN(proc_name) или DCL_PROC_BEGIN proc_name
-		procBeginRe: regexp.MustCompile(`(?i)(?:DCL_PROC_BEGIN\s*[\(]?|__BEGIN_PROCEDURE__\s*\()([A-Za-z_][A-Za-z0-9_]*)[\)]?`),
-		// __END_PROCEDURE__(proc_name)
-		procEndRe: regexp.MustCompile(`(?i)(?:__END_PROCEDURE__|X_ANYMODE)\s*\(([A-Za-z_][A-Za-z0-9_]*)\)`),
-		// create procedure proc_name или create proc proc_name
-		procDeclRe:   regexp.MustCompile(`(?i)create\s+(?:procedure|proc)\s+([A-Za-z_][A-Za-z0-9_]*)`),
-		procCreateRe: regexp.MustCompile(`(?i)API_CREATE_PROC\s*\(([A-Za-z_][A-Za-z0-9_]*)\)`),
-		// create table table_name
-		createTableRe: regexp.MustCompile(`(?i)\bcreate\s+table\s+([A-Za-z_#][A-Za-z0-9_#]*)`),
-		// alter table table_name add column_definition
-		alterTableAddRe: regexp.MustCompile(`(?i)^\s*alter\s+table\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+add\s+(.+?)\s*$`),
-		// create [unique] index index_name on table_name(field1, field2)
-		createIndexRe: regexp.MustCompile(`(?i)^\s*create\s+(unique\s+)?index\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+on\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*\(([^\)]*)\)`),
-		// start of multiline create [unique] index definition
-		createIndexStartRe: regexp.MustCompile(`(?i)^\s*create\s+(unique\s+)?index\s+([A-Za-z_#][A-Za-z0-9_#]*)\b(.*)$`),
-		// ON table_name part (can be placed on the same or next lines)
-		createIndexOnRe: regexp.MustCompile(`(?i)^\s*on\s+([A-Za-z_#][A-Za-z0-9_#]*)\b(.*)$`),
-		// M_ADD_FIELD('table','column_definition')
-		mAddFieldRe: regexp.MustCompile(`(?i)\bM_ADD_FIELD\s*\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)`),
-		// M_CRT_INDEX('UNIQUE','index','table','field1,field2')
-		mCreateIndexRe: regexp.MustCompile(`(?i)\bM_CRT_INDEX\s*\(\s*'([^']*)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']*)'\s*\)`),
-		// select ... into table_name
-		selectIntoRe: regexp.MustCompile(`(?i)\bselect\b.*\binto\s+([A-Za-z_#][A-Za-z0-9_#]*)`),
-		// into table_name (for multiline SELECT ... INTO)
-		selectIntoTableRe: regexp.MustCompile(`(?i)\binto\s+([A-Za-z_#][A-Za-z0-9_#]*)`),
-		// insert [into] table_name [hint] - поддерживаем оба формата
-		insertTableRe: regexp.MustCompile(`(?i)^\s*insert\s+(?:into\s+)?([A-Za-z_#][A-Za-z0-9_#]*)\b`),
-		// delete table_name
-		deleteTableRe: regexp.MustCompile(`(?i)^\s*delete\s+([A-Za-z_#][A-Za-z0-9_#]*)\b`),
-		// M_DELETE_PTABLE(table_name) / M_DELETE_PTABLE_INDEX(table_name, index_name)
-		deletePTableRe: regexp.MustCompile(`(?i)\bM_DELETE_PTABLE(?:_INDEX)?\s*\(\s*([A-Za-z_#][A-Za-z0-9_#]*)\s*(?:,\s*[A-Za-z_#][A-Za-z0-9_#]*)?\)`),
-		// M_LOG_TABLE(table_name)
-		logTableRe: regexp.MustCompile(`(?i)\bM_LOG_TABLE\s*\(\s*([A-Za-z_#][A-Za-z0-9_#]*)\s*\)`),
-		// SELECT_TEMP(table_name)
-		selectTempRe: regexp.MustCompile(`(?i)\bSELECT_TEMP\s*\(\s*([A-Za-z_#][A-Za-z0-9_#]*)\s*\)`),
-		// Имена таблиц: from table, join table, into table, update table
-		tableNameRe: regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+([A-Za-z_#][A-Za-z0-9_#]*)`),
-		// Продолжение многострочного списка таблиц после FROM/JOIN
-		continuedTableRe: regexp.MustCompile(`^\s*,?\s*([A-Za-z_#][A-Za-z0-9_#]*)\b`),
-		// Алиасы таблиц: from table t, from table as t, join table t, update table t
-		tableAliasRe: regexp.MustCompile(`(?i)\b(?:FROM|JOIN|UPDATE)\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b`),
-		// Имена полей: table.column или просто column в контексте
-		columnNameRe: regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)`),
-		// Поля в INSERT: INSERT INTO table (field1, field2, ...)
-		insertColumnsRe: regexp.MustCompile(`(?i)^\s*insert\s+(?:into\s+)?[A-Za-z_#][A-Za-z0-9_#]*\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*\s*\)`),
-		// Поля в UPDATE: UPDATE table SET field1 = value1, field2 = value2
-		updateColumnsRe: regexp.MustCompile(`(?i)^\s*update\s+[A-Za-z_#][A-Za-z0-9_#]*\s+set\s+([A-Za-z_][A-Za-z0-9_]*\s*=\s*[^,]+(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*[^,]+)*)`),
-		// Объявление переменных: declare @var type, @var2 type2
-		varDeclRe: regexp.MustCompile(`(?i)@([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)`),
-		// Параметры процедуры: @ParamName Type [(size)] [= default] [output]
-		procParamRe: regexp.MustCompile(`@([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?)\s*(?:=\s*([^,\s]+))?`),
-		// Exec procedure
-		execRe: regexp.MustCompile(`(?i)\bexec(?:ute)?\s+(?:@\w+\s*=\s*)?(?:\[?[A-Za-z_][A-Za-z0-9_]*\]?\.)?(\[?[A-Za-z_][A-Za-z0-9_]*\]?)`),
-		// Select
-		selectRe: regexp.MustCompile(`(?i)^\s*select\b`),
-		// Insert
-		insertRe: regexp.MustCompile(`(?i)^\s*insert\b`),
-		// Update
-		updateRe: regexp.MustCompile(`(?i)^\s*update\b`),
-		// Delete
-		deleteRe: regexp.MustCompile(`(?i)^\s*delete\b`),
-		// #include <file.h> или #include "file.h"
-		includeRe: regexp.MustCompile(`(?i)#include\s*[<"]([^>"]+)[>"]`),
-		// #define NAME value
-		defineRe: regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.*)$`),
-		// #define NAME
-		emptyDefineRe: regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*$`),
-		// #define MACRO(a,b) body
-		macroDefineRe: regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s+(.+)$`),
-		// #define MACRO(a,b)
-		emptyMacroDefineRe: regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*$`),
-		// #define NAME number
-		constDefineRe: regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+([+-]?\d+)$`),
-		// #define NAME number -- comment
-		constCommentRe: regexp.MustCompile(`(?i)^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+([+-]?\d+)\s*(/\*.*\*/|--.*)$`),
-		// Комментарии --
-		commentRe: regexp.MustCompile(`^\s*--.*$`),
-		// Временные таблицы: pAPI_*, #temp
-		pTableRe: regexp.MustCompile(`(?i)\b(pAPI_[A-Za-z_][A-Za-z0-9_]*)`),
-		// Temp tables
-		tempTableRe: regexp.MustCompile(`(?i)\b#[A-Za-z_][A-Za-z0-9_]*`),
+		procBeginRe:        procBeginRe,
+		procEndRe:          procEndRe,
+		procDeclRe:         procDeclRe,
+		procCreateRe:       procCreateRe,
+		createTableRe:      createTableRe,
+		alterTableAddRe:    alterTableAddRe,
+		createIndexRe:      createIndexRe,
+		createIndexStartRe: createIndexStartRe,
+		createIndexOnRe:    createIndexOnRe,
+		mAddFieldRe:        mAddFieldRe,
+		mCreateIndexRe:     mCreateIndexRe,
+		selectIntoRe:       selectIntoRe,
+		selectIntoTableRe:  selectIntoTableRe,
+		insertTableRe:      insertTableRe,
+		deleteTableRe:      deleteTableRe,
+		deletePTableRe:     deletePTableRe,
+		logTableRe:         logTableRe,
+		selectTempRe:       selectTempRe,
+		tableNameRe:        tableNameRe,
+		continuedTableRe:   continuedTableRe,
+		tableAliasRe:       tableAliasRe,
+		columnNameRe:       columnNameRe,
+		insertColumnsRe:    insertColumnsRe,
+		updateColumnsRe:    updateColumnsRe,
+		varDeclRe:          varDeclRe,
+		procParamRe:        procParamRe,
+		execRe:             execRe,
+		selectRe:           selectRe,
+		insertRe:           insertRe,
+		updateRe:           updateRe,
+		deleteRe:           deleteRe,
+		includeRe:          includeRe,
+		defineRe:           defineRe,
+		emptyDefineRe:      emptyDefineRe,
+		macroDefineRe:      macroDefineRe,
+		emptyMacroDefineRe: emptyMacroDefineRe,
+		constDefineRe:      constDefineRe,
+		constCommentRe:     constCommentRe,
+		commentRe:          commentRe,
+		pTableRe:           pTableRe,
+		tempTableRe:        tempTableRe,
 	}
 }
 

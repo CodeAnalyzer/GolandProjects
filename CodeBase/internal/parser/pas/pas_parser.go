@@ -11,6 +11,74 @@ import (
 	"github.com/codebase/internal/model"
 )
 
+var (
+	interfaceRe      = regexp.MustCompile(`(?i)^\s*interface\s*$`)
+	implementationRe = regexp.MustCompile(`(?i)^\s*implementation\s*$`)
+	initializationRe = regexp.MustCompile(`(?i)^\s*initialization\s*$`)
+	finalizationRe   = regexp.MustCompile(`(?i)^\s*finalization\s*$`)
+
+	interfaceUsesRe      = regexp.MustCompile(`(?i)^\s*interface\s+uses\s+(.+?)(?:;|$)`)
+	implementationUsesRe = regexp.MustCompile(`(?i)^\s*implementation\s+uses\s+(.+?)(?:;|$)`)
+
+	typeSectionRe = regexp.MustCompile(`(?i)^\s*type\s*$`)
+
+	classDeclRe   = regexp.MustCompile(`(?i)^\s*(?:type\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:class|object|record)(?:\s*\(|\s*(?:\{[^}]*\})?\s*(?:;|$))`)
+	classParentRe = regexp.MustCompile(`(?i)^\s*(?:type\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:class|object)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\{[^}]*\})?\s*(?:,|\))`)
+
+	methodDeclRe      = regexp.MustCompile(`(?i)^\s*(function|procedure)\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][A-Za-z0-9_]*))?\s*;`)
+	functionDeclRe    = regexp.MustCompile(`(?i)^\s*function\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][A-Za-z0-9_]*))?\s*;`)
+	procedureDeclRe   = regexp.MustCompile(`(?i)^\s*procedure\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(?:\(([^)]*)\))?\s*;`)
+	constructorRe     = regexp.MustCompile(`(?i)^\s*constructor\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(?:\(([^)]*)\))?\s*;`)
+	destructorRe      = regexp.MustCompile(`(?i)^\s*destructor\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(?:\(([^)]*)\))?\s*;`)
+	qualifiedMethodRe = regexp.MustCompile(`(?i)^\s*(function|procedure|constructor|destructor)\s+([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)`)
+	propertyRe        = regexp.MustCompile(`(?i)^\s*property\s+([A-Za-z_][A-Za-z0-9_]*)\s*:`)
+
+	visibilityPublicRe    = regexp.MustCompile(`(?i)^\s*public\s*$`)
+	visibilityPrivateRe   = regexp.MustCompile(`(?i)^\s*private\s*$`)
+	visibilityProtectedRe = regexp.MustCompile(`(?i)^\s*protected\s*$`)
+	visibilityPublishedRe = regexp.MustCompile(`(?i)^\s*published\s*$`)
+
+	varSectionRe   = regexp.MustCompile(`(?i)^\s*var\s*$`)
+	fieldDeclRe    = regexp.MustCompile(`(?i)^\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_<>(),:\s]*)\s*;?`)
+	localVarDeclRe = regexp.MustCompile(`(?i)^\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_<>(),\s]*);`)
+	constSectionRe = regexp.MustCompile(`(?i)^\s*const\s*$`)
+
+	apiExecRe        = regexp.MustCompile(`(?i)\bAPI_EXEC\s*\(\s*['"]([^'"]+)['"]`)
+	execSQLRe        = regexp.MustCompile(`(?i)\bExecSQL\s*\(\s*['"]([^'"]+)['"]`)
+	openSQLRe        = regexp.MustCompile(`(?i)\bOpen\s*\(\s*['"]([^'"]+)['"]`)
+	prepareSQLRe     = regexp.MustCompile(`(?i)\bPrepare\s*\(\s*['"]([^'"]+)['"]`)
+	sqlClearRe       = regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*SQL\s*\.\s*Clear\s*\(`)
+	sqlAddOwnerRe    = regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*SQL\s*\.\s*Add\s*\(`)
+	sqlOpenCallRe    = regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Open\s*(?:\(|;)`)
+	sqlExecCallRe    = regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*ExecSQL\s*(?:\(|;)`)
+	sqlPrepareCallRe = regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Prepare\s*(?:\(|;)`)
+	sqlPropertyRe    = regexp.MustCompile(`(?i)\.SQL\s*:=\s*['"]([^'"]+)['"]`)
+	sqlTextRe        = regexp.MustCompile(`(?i)\.SQL\.Text\s*:=\s*['"]([^'"]+)['"]`)
+	sqlQueryRe       = regexp.MustCompile(`(?i)\.Query\s*:=\s*['"]([^'"]+)['"]`)
+	addSQLRe         = regexp.MustCompile(`(?i)\.Add\s*\(\s*['"]([^'"]+)['"]`)
+
+	getQueryRe      = regexp.MustCompile(`(?i)([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*GetQuery\s*\(`)
+	getQueryLinesRe = regexp.MustCompile(`(?i)\bGetQueryLines\s*\(`)
+	dfmQueryRefRe   = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*['"]([^'"]+)['"]\s*\]`)
+
+	stringLiteralRe = regexp.MustCompile(`'([^']*(?:''[^']*)*)'`)
+	concatStringRe  = regexp.MustCompile(`'[^']*'\s*\+\s*'[^']*'`)
+
+	tableInSQLRe = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE|DELETE\s+FROM|INSERT\s+INTO)\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
+
+	commentLineRe       = regexp.MustCompile(`^\s*//.*$`)
+	blockCommentStartRe = regexp.MustCompile(`\{`)
+	blockCommentEndRe   = regexp.MustCompile(`\}`)
+	parenCommentStartRe = regexp.MustCompile(`\(\*`)
+	parenCommentEndRe   = regexp.MustCompile(`\*\)`)
+	sqlKeywordDetectRe  = regexp.MustCompile(`(?i)\b(SELECT\b.*\bFROM|INSERT\s+INTO|UPDATE\s+[A-Za-z_#][A-Za-z0-9_#]*\s+SET|DELETE\s+FROM|FROM\s+[A-Za-z_#][A-Za-z0-9_#]*|JOIN\s+[A-Za-z_#][A-Za-z0-9_#]*|WHERE\b|GROUP\s+BY|ORDER\s+BY|HAVING\b|UNION\b|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE|EXEC(?:UTE)?\s+[A-Za-z_#][A-Za-z0-9_#]*)`)
+
+	directiveRe = regexp.MustCompile(`(?i)^\s*\{\$.*\}\s*$`)
+	asmRe       = regexp.MustCompile(`(?i)^\s*asm\s*$`)
+	endRe       = regexp.MustCompile(`(?i)^\s*end\s*;?\s*$`)
+	beginRe     = regexp.MustCompile(`(?i)^\s*begin\s*$`)
+)
+
 // Parser PAS-парсер
 type Parser struct {
 	// Разделители секций
@@ -240,87 +308,59 @@ func getMethodSafe(method *model.PASMethod) string {
 // NewParser создаёт новый PAS-парсер
 func NewParser() *Parser {
 	return &Parser{
-		// Секции
-		interfaceRe:      regexp.MustCompile(`(?i)^\s*interface\s*$`),
-		implementationRe: regexp.MustCompile(`(?i)^\s*implementation\s*$`),
-		initializationRe: regexp.MustCompile(`(?i)^\s*initialization\s*$`),
-		finalizationRe:   regexp.MustCompile(`(?i)^\s*finalization\s*$`),
-
-		// Uses-клаузулы
-		interfaceUsesRe:      regexp.MustCompile(`(?i)^\s*interface\s+uses\s+(.+?)(?:;|$)`),
-		implementationUsesRe: regexp.MustCompile(`(?i)^\s*implementation\s+uses\s+(.+?)(?:;|$)`),
-
-		// Секция типов
-		typeSectionRe: regexp.MustCompile(`(?i)^\s*type\s*$`),
-
-		// Объявление owner type: class/object/record, в том числе с наследованием
-		classDeclRe:   regexp.MustCompile(`(?i)^\s*(?:type\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:class|object|record)(?:\s*\(|\s*(?:\{[^}]*\})?\s*(?:;|$))`),
-		classParentRe: regexp.MustCompile(`(?i)^\s*(?:type\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:class|object)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\{[^}]*\})?\s*(?:,|\))`),
-
-		// Методы: function/procedure/constructor/destructor
-		methodDeclRe:      regexp.MustCompile(`(?i)^\s*(function|procedure)\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][A-Za-z0-9_]*))?\s*;`),
-		functionDeclRe:    regexp.MustCompile(`(?i)^\s*function\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][A-Za-z0-9_]*))?\s*;`),
-		procedureDeclRe:   regexp.MustCompile(`(?i)^\s*procedure\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(?:\(([^)]*)\))?\s*;`),
-		constructorRe:     regexp.MustCompile(`(?i)^\s*constructor\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(?:\(([^)]*)\))?\s*;`),
-		destructorRe:      regexp.MustCompile(`(?i)^\s*destructor\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(?:\(([^)]*)\))?\s*;`),
-		qualifiedMethodRe: regexp.MustCompile(`(?i)^\s*(function|procedure|constructor|destructor)\s+([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)`),
-		propertyRe:        regexp.MustCompile(`(?i)^\s*property\s+([A-Za-z_][A-Za-z0-9_]*)\s*:`),
-
-		// Видимость
-		visibilityPublicRe:    regexp.MustCompile(`(?i)^\s*public\s*$`),
-		visibilityPrivateRe:   regexp.MustCompile(`(?i)^\s*private\s*$`),
-		visibilityProtectedRe: regexp.MustCompile(`(?i)^\s*protected\s*$`),
-		visibilityPublishedRe: regexp.MustCompile(`(?i)^\s*published\s*$`),
-
-		// Переменные
-		varSectionRe:   regexp.MustCompile(`(?i)^\s*var\s*$`),
-		fieldDeclRe:    regexp.MustCompile(`(?i)^\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_<>(),:\s]*)\s*;?`),
-		localVarDeclRe: regexp.MustCompile(`(?i)^\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_<>(),\s]*);`),
-		constSectionRe: regexp.MustCompile(`(?i)^\s*const\s*$`),
-
-		// SQL-вызовы
-		apiExecRe:        regexp.MustCompile(`(?i)\bAPI_EXEC\s*\(\s*['"]([^'"]+)['"]`),
-		execSQLRe:        regexp.MustCompile(`(?i)\bExecSQL\s*\(\s*['"]([^'"]+)['"]`),
-		openSQLRe:        regexp.MustCompile(`(?i)\bOpen\s*\(\s*['"]([^'"]+)['"]`),
-		prepareSQLRe:     regexp.MustCompile(`(?i)\bPrepare\s*\(\s*['"]([^'"]+)['"]`),
-		sqlClearRe:       regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*SQL\s*\.\s*Clear\s*\(`),
-		sqlAddOwnerRe:    regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*SQL\s*\.\s*Add\s*\(`),
-		sqlOpenCallRe:    regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Open\s*(?:\(|;)`),
-		sqlExecCallRe:    regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*ExecSQL\s*(?:\(|;)`),
-		sqlPrepareCallRe: regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Prepare\s*(?:\(|;)`),
-		sqlPropertyRe:    regexp.MustCompile(`(?i)\.SQL\s*:=\s*['"]([^'"]+)['"]`),
-		sqlTextRe:        regexp.MustCompile(`(?i)\.SQL\.Text\s*:=\s*['"]([^'"]+)['"]`),
-		sqlQueryRe:       regexp.MustCompile(`(?i)\.Query\s*:=\s*['"]([^'"]+)['"]`),
-		addSQLRe:         regexp.MustCompile(`(?i)\.Add\s*\(\s*['"]([^'"]+)['"]`),
-
-		// SQL-вызовы Diasoft 5NT
-		// tbSelect.GetQuery([params], [args]) или GetQuery([params], [args])
-		getQueryRe: regexp.MustCompile(`(?i)([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*GetQuery\s*\(`),
-		// GetQueryLines([params], hbText['name'], [args])
-		getQueryLinesRe: regexp.MustCompile(`(?i)\bGetQueryLines\s*\(`),
-		// Ссылки на DFM-объекты: hbText['name'], tbSelect
-		dfmQueryRefRe: regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*['"]([^'"]+)['"]\s*\]`),
-
-		// Строковые литералы
-		stringLiteralRe: regexp.MustCompile(`'([^']*(?:''[^']*)*)'`),
-		concatStringRe:  regexp.MustCompile(`'[^']*'\s*\+\s*'[^']*'`),
-
-		// Таблицы в SQL
-		tableInSQLRe: regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE|DELETE\s+FROM|INSERT\s+INTO)\s+([A-Za-z_#][A-Za-z0-9_#]*)`),
-
-		// Комментарии
-		commentLineRe:       regexp.MustCompile(`^\s*//.*$`),
-		blockCommentStartRe: regexp.MustCompile(`\{`),
-		blockCommentEndRe:   regexp.MustCompile(`\}`),
-		parenCommentStartRe: regexp.MustCompile(`\(\*`),
-		parenCommentEndRe:   regexp.MustCompile(`\*\)`),
-		sqlKeywordDetectRe:  regexp.MustCompile(`(?i)\b(SELECT\b.*\bFROM|INSERT\s+INTO|UPDATE\s+[A-Za-z_#][A-Za-z0-9_#]*\s+SET|DELETE\s+FROM|FROM\s+[A-Za-z_#][A-Za-z0-9_#]*|JOIN\s+[A-Za-z_#][A-Za-z0-9_#]*|WHERE\b|GROUP\s+BY|ORDER\s+BY|HAVING\b|UNION\b|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE|EXEC(?:UTE)?\s+[A-Za-z_#][A-Za-z0-9_#]*)`),
-
-		// Директивы
-		directiveRe: regexp.MustCompile(`(?i)^\s*\{\$.*\}\s*$`),
-		asmRe:       regexp.MustCompile(`(?i)^\s*asm\s*$`),
-		endRe:       regexp.MustCompile(`(?i)^\s*end\s*;?\s*$`),
-		beginRe:     regexp.MustCompile(`(?i)^\s*begin\s*$`),
+		interfaceRe:           interfaceRe,
+		implementationRe:      implementationRe,
+		initializationRe:      initializationRe,
+		finalizationRe:        finalizationRe,
+		interfaceUsesRe:       interfaceUsesRe,
+		implementationUsesRe:  implementationUsesRe,
+		typeSectionRe:         typeSectionRe,
+		classDeclRe:           classDeclRe,
+		classParentRe:         classParentRe,
+		methodDeclRe:          methodDeclRe,
+		functionDeclRe:        functionDeclRe,
+		procedureDeclRe:       procedureDeclRe,
+		constructorRe:         constructorRe,
+		destructorRe:          destructorRe,
+		qualifiedMethodRe:     qualifiedMethodRe,
+		propertyRe:            propertyRe,
+		visibilityPublicRe:    visibilityPublicRe,
+		visibilityPrivateRe:   visibilityPrivateRe,
+		visibilityProtectedRe: visibilityProtectedRe,
+		visibilityPublishedRe: visibilityPublishedRe,
+		varSectionRe:          varSectionRe,
+		fieldDeclRe:           fieldDeclRe,
+		localVarDeclRe:        localVarDeclRe,
+		constSectionRe:        constSectionRe,
+		apiExecRe:             apiExecRe,
+		execSQLRe:             execSQLRe,
+		openSQLRe:             openSQLRe,
+		prepareSQLRe:          prepareSQLRe,
+		sqlClearRe:            sqlClearRe,
+		sqlAddOwnerRe:         sqlAddOwnerRe,
+		sqlOpenCallRe:         sqlOpenCallRe,
+		sqlExecCallRe:         sqlExecCallRe,
+		sqlPrepareCallRe:      sqlPrepareCallRe,
+		sqlPropertyRe:         sqlPropertyRe,
+		sqlTextRe:             sqlTextRe,
+		sqlQueryRe:            sqlQueryRe,
+		addSQLRe:              addSQLRe,
+		getQueryRe:            getQueryRe,
+		getQueryLinesRe:       getQueryLinesRe,
+		dfmQueryRefRe:         dfmQueryRefRe,
+		stringLiteralRe:       stringLiteralRe,
+		concatStringRe:        concatStringRe,
+		tableInSQLRe:          tableInSQLRe,
+		commentLineRe:         commentLineRe,
+		blockCommentStartRe:   blockCommentStartRe,
+		blockCommentEndRe:     blockCommentEndRe,
+		parenCommentStartRe:   parenCommentStartRe,
+		parenCommentEndRe:     parenCommentEndRe,
+		sqlKeywordDetectRe:    sqlKeywordDetectRe,
+		directiveRe:           directiveRe,
+		asmRe:                 asmRe,
+		endRe:                 endRe,
+		beginRe:               beginRe,
 	}
 }
 
@@ -1410,9 +1450,10 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 						LineStart: lineNum,
 					}
 				}
-				if usesTargetSection == "interface" {
+				switch usesTargetSection {
+				case "interface":
 					currentUnit.InterfaceUses = parseUsesList(usesBuffer.String())
-				} else if usesTargetSection == "implementation" {
+				case "implementation":
 					currentUnit.ImplementationUses = parseUsesList(usesBuffer.String())
 				}
 				inUsesSection = false

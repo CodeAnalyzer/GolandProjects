@@ -10,6 +10,17 @@ import (
 	"github.com/codebase/internal/model"
 )
 
+var (
+	defineRe           = regexp.MustCompile(`^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.*)$`)
+	emptyDefineRe      = regexp.MustCompile(`^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*$`)
+	includeRe          = regexp.MustCompile(`^\s*#include\s*[<"]([^>"]+)[>"]`)
+	commentRe          = regexp.MustCompile(`^\s*(--|/\*|\*)`)
+	macroRe            = regexp.MustCompile(`^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s+(.+)$`)
+	emptyMacroRe       = regexp.MustCompile(`^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*$`)
+	constRe            = regexp.MustCompile(`^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+(\d+)$`)
+	constWithCommentRe = regexp.MustCompile(`^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+([+-]?\d+)\s*(/\*.*\*/|--.*)$`)
+)
+
 // Parser H-файлов парсер
 type Parser struct {
 	defineRe    *regexp.Regexp
@@ -40,22 +51,14 @@ type ParseError struct {
 // NewParser создаёт новый H-парсер
 func NewParser() *Parser {
 	return &Parser{
-		// #define NAME value
-		defineRe: regexp.MustCompile(`^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.*)$`),
-		// #define NAME
-		emptyDefineRe: regexp.MustCompile(`^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*$`),
-		// #include <file> или #include "file"
-		includeRe: regexp.MustCompile(`^\s*#include\s*[<"]([^>"]+)[>"]`),
-		// Комментарии -- или /* */
-		commentRe: regexp.MustCompile(`^\s*(--|/\*|\*)`),
-		// Макросы с параметрами: #define MACRO(a,b) body
-		macroRe: regexp.MustCompile(`^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s+(.+)$`),
-		// Макросы с параметрами без body: #define MACRO(a,b)
-		emptyMacroRe: regexp.MustCompile(`^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*$`),
-		// Константы: #define NAME number
-		constRe: regexp.MustCompile(`^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+(\d+)$`),
-		// Константы с inline comment: #define NAME 1 /* comment */
-		constWithCommentRe: regexp.MustCompile(`^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+([+-]?\d+)\s*(/\*.*\*/|--.*)$`),
+		defineRe:           defineRe,
+		emptyDefineRe:      emptyDefineRe,
+		includeRe:          includeRe,
+		commentRe:          commentRe,
+		macroRe:            macroRe,
+		emptyMacroRe:       emptyMacroRe,
+		constRe:            constRe,
+		constWithCommentRe: constWithCommentRe,
 	}
 }
 

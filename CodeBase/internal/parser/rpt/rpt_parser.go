@@ -10,6 +10,14 @@ import (
 	"github.com/codebase/internal/model"
 )
 
+var (
+	objectRe      = regexp.MustCompile(`(?i)^\s*object\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	componentKVRe = regexp.MustCompile(`(?i)^\s*([A-Za-z0-9_.]+)\s*=\s*(.*)$`)
+	quotedValueRe = regexp.MustCompile(`'([^']*(?:''[^']*)*)'`)
+	functionStart = regexp.MustCompile(`(?i)^\s*(Sub|Function)\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	hugeBoxNameRe = regexp.MustCompile(`(?i)^\s*Name\s*=\s*'([^']+)'`)
+)
+
 type Parser struct {
 	objectRe       *regexp.Regexp
 	componentKVRe  *regexp.Regexp
@@ -35,11 +43,11 @@ type ParseError struct {
 
 func NewParser() *Parser {
 	return &Parser{
-		objectRe:      regexp.MustCompile(`(?i)^\s*object\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)`),
-		componentKVRe: regexp.MustCompile(`(?i)^\s*([A-Za-z0-9_.]+)\s*=\s*(.*)$`),
-		quotedValueRe: regexp.MustCompile(`'([^']*(?:''[^']*)*)'`),
-		functionStart: regexp.MustCompile(`(?i)^\s*(Sub|Function)\s+([A-Za-z_][A-Za-z0-9_]*)`),
-		hugeBoxNameRe: regexp.MustCompile(`(?i)^\s*Name\s*=\s*'([^']+)'`),
+		objectRe:      objectRe,
+		componentKVRe: componentKVRe,
+		quotedValueRe: quotedValueRe,
+		functionStart: functionStart,
+		hugeBoxNameRe: hugeBoxNameRe,
 	}
 }
 

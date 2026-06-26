@@ -10,6 +10,27 @@ import (
 	"github.com/codebase/internal/model"
 )
 
+var (
+	objectRe     = regexp.MustCompile(`(?i)^\s*object\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	inheritedRe  = regexp.MustCompile(`(?i)^\s*inherited\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	itemRe       = regexp.MustCompile(`(?i)^\s*item\s*$`)
+	strArrayRe   = regexp.MustCompile(`(?i)^\s*StrArray\s*=\s*<\s*$`)
+	collectionRe = regexp.MustCompile(`(?i)^\s*[A-Za-z_][A-Za-z0-9_.]*\s*=\s*<\s*$`)
+	angleEndRe   = regexp.MustCompile(`^\s*>\s*$`)
+	endRe        = regexp.MustCompile(`(?i)^\s*end\s*$`)
+
+	nameRe     = regexp.MustCompile(`(?i)^\s*Name\s*=\s*['"]([^'"]+)['"]`)
+	captionRe  = regexp.MustCompile(`(?i)^\s*Caption\s*=\s*(.+)$`)
+	linesRe    = regexp.MustCompile(`(?i)^\s*Lines\.Strings\s*=\s*\(`)
+	linesOldRe = regexp.MustCompile(`(?i)^\s*Lines\s*=\s*\(`)
+	sqlRe      = regexp.MustCompile(`(?i)^\s*SQL\.Strings\s*=\s*\(`)
+	propertyRe = regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(.+)$`)
+
+	stringRe = regexp.MustCompile(`'([^']*(?:''[^']*)*)'`)
+
+	commentRe = regexp.MustCompile(`\{[^}]*\}`)
+)
+
 // Parser DFM-парсер
 type Parser struct {
 	// DFM-объекты
@@ -56,28 +77,21 @@ type ParseError struct {
 // NewParser создаёт новый DFM-парсер
 func NewParser() *Parser {
 	return &Parser{
-		// DFM-объекты
-		objectRe:     regexp.MustCompile(`(?i)^\s*object\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)`),
-		inheritedRe:  regexp.MustCompile(`(?i)^\s*inherited\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)`),
-		itemRe:       regexp.MustCompile(`(?i)^\s*item\s*$`),
-		strArrayRe:   regexp.MustCompile(`(?i)^\s*StrArray\s*=\s*<\s*$`),
-		collectionRe: regexp.MustCompile(`(?i)^\s*[A-Za-z_][A-Za-z0-9_.]*\s*=\s*<\s*$`),
-		angleEndRe:   regexp.MustCompile(`^\s*>\s*$`),
-		endRe:        regexp.MustCompile(`(?i)^\s*end\s*$`),
-
-		// Свойства объектов
-		nameRe:     regexp.MustCompile(`(?i)^\s*Name\s*=\s*['"]([^'"]+)['"]`),
-		captionRe:  regexp.MustCompile(`(?i)^\s*Caption\s*=\s*(.+)$`),
-		linesRe:    regexp.MustCompile(`(?i)^\s*Lines\.Strings\s*=\s*\(`),
-		linesOldRe: regexp.MustCompile(`(?i)^\s*Lines\s*=\s*\(`),
-		sqlRe:      regexp.MustCompile(`(?i)^\s*SQL\.Strings\s*=\s*\(`),
-		propertyRe: regexp.MustCompile(`(?i)^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(.+)$`),
-
-		// Строки
-		stringRe: regexp.MustCompile(`'([^']*(?:''[^']*)*)'`),
-
-		// Комментарии
-		commentRe: regexp.MustCompile(`\{[^}]*\}`),
+		objectRe:     objectRe,
+		inheritedRe:  inheritedRe,
+		itemRe:       itemRe,
+		strArrayRe:   strArrayRe,
+		collectionRe: collectionRe,
+		angleEndRe:   angleEndRe,
+		endRe:        endRe,
+		nameRe:       nameRe,
+		captionRe:    captionRe,
+		linesRe:      linesRe,
+		linesOldRe:   linesOldRe,
+		sqlRe:        sqlRe,
+		propertyRe:   propertyRe,
+		stringRe:     stringRe,
+		commentRe:    commentRe,
 	}
 }
 

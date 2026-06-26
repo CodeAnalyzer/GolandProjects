@@ -10,6 +10,13 @@ import (
 	"github.com/codebase/internal/model"
 )
 
+var (
+	sqlBlockStartRe = regexp.MustCompile(`^\s*@([A-Za-z0-9_]+)@\s*=\s*SQL\s*\{\s*$`)
+	fieldRe         = regexp.MustCompile(`^\s*@([^@]+)@\s*=\s*Field\{(.*)\}\s*$`)
+	paramRe         = regexp.MustCompile(`^\s*%([^!]+)!=Param\{(.*)\}\s*$`)
+	includeRe       = regexp.MustCompile(`(?i)#include\s*[<"]([^>"]+)[>"]`)
+)
+
 type Parser struct {
 	sqlBlockStartRe *regexp.Regexp
 	fieldRe         *regexp.Regexp
@@ -35,10 +42,10 @@ type ParseError struct {
 
 func NewParser() *Parser {
 	return &Parser{
-		sqlBlockStartRe: regexp.MustCompile(`^\s*@([A-Za-z0-9_]+)@\s*=\s*SQL\s*\{\s*$`),
-		fieldRe:         regexp.MustCompile(`^\s*@([^@]+)@\s*=\s*Field\{(.*)\}\s*$`),
-		paramRe:         regexp.MustCompile(`^\s*%([^!]+)!=Param\{(.*)\}\s*$`),
-		includeRe:       regexp.MustCompile(`(?i)#include\s*[<"]([^>"]+)[>"]`),
+		sqlBlockStartRe: sqlBlockStartRe,
+		fieldRe:         fieldRe,
+		paramRe:         paramRe,
+		includeRe:       includeRe,
 	}
 }
 

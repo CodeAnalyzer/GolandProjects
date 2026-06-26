@@ -9,6 +9,17 @@ import (
 	"github.com/codebase/internal/model"
 )
 
+var (
+	functionRe     = regexp.MustCompile(`function\s+(\w+)\s*\(([^)]*)\)`)
+	varRe          = regexp.MustCompile(`var\s+(\w+)\s*=\s*`)
+	createObjectRe = regexp.MustCompile(`(\w+)\s*=\s*Sys\.CreateObject\(\s*"(\w+)"\s*\)`)
+	execProcRe     = regexp.MustCompile(`(\w+)\.ExecProc\s*\(\s*"(\w+)"`)
+	execQueryRe    = regexp.MustCompile(`(\w+)\.ExecQuery\s*\(\s*"([^"]+)"`)
+	constRe        = regexp.MustCompile(`var\s+([A-Z_][A-Z0-9_]*)\s*=\s*(\d+|"[^"]*")`)
+	commentLineRe  = regexp.MustCompile(`^\s*//.*$`)
+	commentBlockRe = regexp.MustCompile(`/\*[\s\S]*?\*/`)
+)
+
 // Parser JS-парсер
 type Parser struct {
 	// Функции
@@ -51,27 +62,14 @@ type ParseError struct {
 // NewParser создаёт новый JS-парсер
 func NewParser() *Parser {
 	return &Parser{
-		// Функции: function name(...) или function name( ...)
-		functionRe: regexp.MustCompile(`function\s+(\w+)\s*\(([^)]*)\)`),
-
-		// Переменные: var name = ...
-		varRe: regexp.MustCompile(`var\s+(\w+)\s*=\s*`),
-
-		// Sys.CreateObject("ObjectName")
-		createObjectRe: regexp.MustCompile(`(\w+)\s*=\s*Sys\.CreateObject\(\s*"(\w+)"\s*\)`),
-
-		// object.ExecProc("ProcName", ...)
-		execProcRe: regexp.MustCompile(`(\w+)\.ExecProc\s*\(\s*"(\w+)"`),
-
-		// object.ExecQuery("SQL...", ...)
-		execQueryRe: regexp.MustCompile(`(\w+)\.ExecQuery\s*\(\s*"([^"]+)"`),
-
-		// Константы: var NAME = value (верхний регистр)
-		constRe: regexp.MustCompile(`var\s+([A-Z_][A-Z0-9_]*)\s*=\s*(\d+|"[^"]*")`),
-
-		// Комментарии
-		commentLineRe:  regexp.MustCompile(`^\s*//.*$`),
-		commentBlockRe: regexp.MustCompile(`/\*[\s\S]*?\*/`),
+		functionRe:     functionRe,
+		varRe:          varRe,
+		createObjectRe: createObjectRe,
+		execProcRe:     execProcRe,
+		execQueryRe:    execQueryRe,
+		constRe:        constRe,
+		commentLineRe:  commentLineRe,
+		commentBlockRe: commentBlockRe,
 	}
 }
 
@@ -289,10 +287,11 @@ func findFunctionBounds(lines []string, startIdx int) (int, int) {
 
 		// Считаем скобки
 		for _, ch := range line {
-			if ch == '{' {
+			switch ch {
+			case '{':
 				braceCount++
 				inFunction = true
-			} else if ch == '}' {
+			case '}':
 				braceCount--
 			}
 		}

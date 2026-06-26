@@ -13,6 +13,51 @@ import (
 	"github.com/codebase/internal/parser/js"
 )
 
+var (
+	xmlDeclRe = regexp.MustCompile(`(?i)<\?xml.*\?>`)
+
+	instrumentNameRe   = regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.Name\s*=\s*"([^"]+)"`)
+	instrumentBriefRe  = regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.Brief\s*=\s*"([^"]+)"`)
+	instrumentObjIDRe  = regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.(?:InterfaceObjectID|DealObjectID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`)
+	instrumentModuleRe = regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.(?:DsModuleID|ModuleID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`)
+	instrumentStartRe  = regexp.MustCompile(`Instrument\.StartState\s*=\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))`)
+	withInstrumentRe   = regexp.MustCompile(`with\s*\(\s*Instrument\s*\)\s*\{`)
+	legacyNameRe       = regexp.MustCompile(`\bName\s*=\s*"([^"]+)"`)
+	legacyBriefRe      = regexp.MustCompile(`\bBrief\s*=\s*"([^"]+)"`)
+	legacyObjIDRe      = regexp.MustCompile(`\b(?:InterfaceObjectID|DealObjectID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`)
+	legacyModuleRe     = regexp.MustCompile(`\b(?:DsModuleID|ModuleID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`)
+	legacyStartRe      = regexp.MustCompile(`\bStartState\s*=\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))`)
+
+	smfVarDeclRe      = regexp.MustCompile(`(?im)^\s*(?:var|const)?\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)`)
+	smfConstDeclRe    = regexp.MustCompile(`(?im)^\s*const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	smfNumericConstRe = regexp.MustCompile(`(?im)^\s*const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)`)
+
+	smfAltConstRe1 = regexp.MustCompile(`(?im)^\s*var\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)`)
+	smfAltConstRe2 = regexp.MustCompile(`(?im)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)`)
+	smfAltConstRe3 = regexp.MustCompile(`(?im)^\s*const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	smfAltConstRe4 = regexp.MustCompile(`(?im)^\s*var\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)\s*;`)
+
+	createStateRe = regexp.MustCompile(`CreateStateWithSys[Nn]ame\(\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\s*,\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\s*\)`)
+	legacyStateRe = regexp.MustCompile(`CreateState\(\s*"([^"]+)"\s*\)`)
+	stateTypeRe   = regexp.MustCompile(`State\.StateType\s*=\s*(PROP_STATETYPE_\w+)`)
+
+	createTransitionRe         = regexp.MustCompile(`CreateConsumerTransitionWithSysName\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)`)
+	legacyConsumerTransitionRe = regexp.MustCompile(`CreateConsumerTransition\(\s*"([^"]+)"\s*\)`)
+	legacyTransitionRe         = regexp.MustCompile(`CreateTransition\(\s*"([^"]+)"\s*\)`)
+	intoRe                     = regexp.MustCompile(`Into\s*\(\s*"([^"]+)"\s*\)`)
+	propValRe                  = regexp.MustCompile(`(?:Tran\.|Transition\.)?PropVal\s*=\s*(CONSUMER_ACTION_\w+|\d+)`)
+	priorityRe                 = regexp.MustCompile(`(?:Tran\.|Transition\.)?Priority\s*=\s*(\d+)`)
+	checkServiceRe             = regexp.MustCompile(`(?:Tran\.|Transition\.)?CheckService\s*=\s*(CHECKSERVICE_\w+|\d+)`)
+
+	typeAccLinkRe = regexp.MustCompile(`TypeAccLinkCreate\s*\(\s*(RESDEP_\w+),\s*__ACCMASK(\w+)__`)
+
+	createInstrumentRe = regexp.MustCompile(`function\s+CreateInstrument\s*\(`)
+	stepForwardRe      = regexp.MustCompile(`function\s+StepForward\s*\(`)
+	massAccrualRe      = regexp.MustCompile(`function\s+CreateMassAccrualInstrument\s*\(`)
+
+	defaultJSParser = js.NewParser()
+)
+
 // Parser SMF-парсер
 type Parser struct {
 	// XML-элементы
@@ -131,61 +176,40 @@ type SMFJob struct {
 // NewParser создаёт новый SMF-парсер
 func NewParser() *Parser {
 	return &Parser{
-		// XML declaration
-		xmlDeclRe: regexp.MustCompile(`(?i)<\?xml.*\?>`),
-
-		// Модель Ф.О.
-		instrumentNameRe:   regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.Name\s*=\s*"([^"]+)"`),
-		instrumentBriefRe:  regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.Brief\s*=\s*"([^"]+)"`),
-		instrumentObjIDRe:  regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.(?:InterfaceObjectID|DealObjectID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`),
-		instrumentModuleRe: regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.(?:DsModuleID|ModuleID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`),
-		instrumentStartRe:  regexp.MustCompile(`Instrument\.StartState\s*=\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))`),
-		withInstrumentRe:   regexp.MustCompile(`with\s*\(\s*Instrument\s*\)\s*\{`),
-		legacyNameRe:       regexp.MustCompile(`\bName\s*=\s*"([^"]+)"`),
-		legacyBriefRe:      regexp.MustCompile(`\bBrief\s*=\s*"([^"]+)"`),
-		legacyObjIDRe:      regexp.MustCompile(`\b(?:InterfaceObjectID|DealObjectID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`),
-		legacyModuleRe:     regexp.MustCompile(`\b(?:DsModuleID|ModuleID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`),
-		legacyStartRe:      regexp.MustCompile(`\bStartState\s*=\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))`),
-
-		// Переменные: var NAME = value; или const NAME = value; или просто NAME = value;
-		smfVarDeclRe: regexp.MustCompile(`(?im)^\s*(?:var|const)?\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)`),
-
-		// Константы: const NAME = VALUE; (где VALUE может быть идентификатором)
-		smfConstDeclRe: regexp.MustCompile(`(?im)^\s*const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)`),
-
-		// Числовые константы: const NAME = 123;
-		smfNumericConstRe: regexp.MustCompile(`(?im)^\s*const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)`),
-
-		// Альтернативные форматы констант
-		smfAltConstRe1: regexp.MustCompile(`(?im)^\s*var\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)`),                      // var NAME = 123;
-		smfAltConstRe2: regexp.MustCompile(`(?im)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)`),                            // NAME = 123;
-		smfAltConstRe3: regexp.MustCompile(`(?im)^\s*const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)`), // const NAME = SOME_OTHER_CONST
-		smfAltConstRe4: regexp.MustCompile(`(?im)^\s*var\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)\s*;`),                  // var NAME = 123;
-
-		// Состояния: Instrument.CreateStateWithSysName("name", "sys_name")
-		createStateRe: regexp.MustCompile(`CreateStateWithSys[Nn]ame\(\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\s*,\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\s*\)`),
-		legacyStateRe: regexp.MustCompile(`CreateState\(\s*"([^"]+)"\s*\)`),
-		stateTypeRe:   regexp.MustCompile(`State\.StateType\s*=\s*(PROP_STATETYPE_\w+)`),
-
-		// Действия: State.CreateConsumerTransitionWithSysName("name", "sys_name")
-		createTransitionRe:         regexp.MustCompile(`CreateConsumerTransitionWithSysName\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)`),
-		legacyConsumerTransitionRe: regexp.MustCompile(`CreateConsumerTransition\(\s*"([^"]+)"\s*\)`),
-		legacyTransitionRe:         regexp.MustCompile(`CreateTransition\(\s*"([^"]+)"\s*\)`),
-		intoRe:                     regexp.MustCompile(`Into\s*\(\s*"([^"]+)"\s*\)`),
-		propValRe:                  regexp.MustCompile(`(?:Tran\.|Transition\.)?PropVal\s*=\s*(CONSUMER_ACTION_\w+|\d+)`),
-		priorityRe:                 regexp.MustCompile(`(?:Tran\.|Transition\.)?Priority\s*=\s*(\d+)`),
-		checkServiceRe:             regexp.MustCompile(`(?:Tran\.|Transition\.)?CheckService\s*=\s*(CHECKSERVICE_\w+|\d+)`),
-
-		// Счета: TypeAccLinkCreate(TYPE, __ACCMASKN__)
-		typeAccLinkRe: regexp.MustCompile(`TypeAccLinkCreate\s*\(\s*(RESDEP_\w+),\s*__ACCMASK(\w+)__`),
-
-		// Сценарии
-		createInstrumentRe: regexp.MustCompile(`function\s+CreateInstrument\s*\(`),
-		stepForwardRe:      regexp.MustCompile(`function\s+StepForward\s*\(`),
-		massAccrualRe:      regexp.MustCompile(`function\s+CreateMassAccrualInstrument\s*\(`),
-
-		// JS-парсер
-		jsParser: js.NewParser(),
+		xmlDeclRe:                 xmlDeclRe,
+		instrumentNameRe:          instrumentNameRe,
+		instrumentBriefRe:         instrumentBriefRe,
+		instrumentObjIDRe:         instrumentObjIDRe,
+		instrumentModuleRe:        instrumentModuleRe,
+		instrumentStartRe:         instrumentStartRe,
+		withInstrumentRe:          withInstrumentRe,
+		legacyNameRe:              legacyNameRe,
+		legacyBriefRe:             legacyBriefRe,
+		legacyObjIDRe:             legacyObjIDRe,
+		legacyModuleRe:            legacyModuleRe,
+		legacyStartRe:             legacyStartRe,
+		smfVarDeclRe:              smfVarDeclRe,
+		smfConstDeclRe:            smfConstDeclRe,
+		smfNumericConstRe:         smfNumericConstRe,
+		smfAltConstRe1:            smfAltConstRe1,
+		smfAltConstRe2:            smfAltConstRe2,
+		smfAltConstRe3:            smfAltConstRe3,
+		smfAltConstRe4:            smfAltConstRe4,
+		createStateRe:             createStateRe,
+		legacyStateRe:             legacyStateRe,
+		stateTypeRe:               stateTypeRe,
+		createTransitionRe:        createTransitionRe,
+		legacyConsumerTransitionRe: legacyConsumerTransitionRe,
+		legacyTransitionRe:        legacyTransitionRe,
+		intoRe:                    intoRe,
+		propValRe:                 propValRe,
+		priorityRe:                priorityRe,
+		checkServiceRe:            checkServiceRe,
+		typeAccLinkRe:             typeAccLinkRe,
+		createInstrumentRe:        createInstrumentRe,
+		stepForwardRe:             stepForwardRe,
+		massAccrualRe:             massAccrualRe,
+		jsParser:                  defaultJSParser,
 	}
 }
 
