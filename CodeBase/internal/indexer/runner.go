@@ -203,7 +203,13 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 
 // runPostProcessingParallel запускает все независимые пост-обработки параллельно.
 // Каждая пост-обработка работает с разными типами relations и не конфликтует с другими.
+// DELETE выполняется до запуска горутин, чтобы не конкурировать с параллельными COPY INTO relations.
 func (idx *Indexer) runPostProcessingParallel(collector *statsCollector, parallel int) {
+	if err := idx.db.DeleteSubscribesToEventRelations(); err != nil {
+		idx.logError("<post-processing>", "Error deleting subscribes_to_event relations: %v", err)
+		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(3)
 	go func() {

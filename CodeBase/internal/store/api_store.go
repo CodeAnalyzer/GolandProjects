@@ -251,10 +251,10 @@ func (db *DB) FindLatestAPIContractIDsByNamesAndKinds(pairs []APIContractNameKin
 		return result, nil
 	}
 	rows, err := db.Query(`
-		SELECT id, LOWER(TRIM(contract_name)) AS name_key, LOWER(TRIM(contract_kind)) AS kind_key
+		SELECT id, LOWER(contract_name) AS name_key, LOWER(contract_kind) AS kind_key
 		FROM api_contracts
-		WHERE LOWER(TRIM(contract_name)) = ANY($1)
-		  AND LOWER(TRIM(contract_kind)) = ANY($2)
+		WHERE LOWER(contract_name) = ANY($1)
+		  AND LOWER(contract_kind) = ANY($2)
 		ORDER BY id DESC
 	`, pq.Array(names), pq.Array(kinds))
 	if err != nil {
@@ -351,10 +351,10 @@ func (db *DB) FindLatestEventContractIDsByNames(names []string) (*EventContractL
 	// Загружаем все event-контракты, у которых contract_name входит в names.
 	// owner_module может быть любым (включая пустой), поэтому не фильтруем по modules.
 	rows, err := db.Query(`
-		SELECT id, LOWER(TRIM(contract_name)) AS name_key, COALESCE(LOWER(TRIM(owner_module)), '') AS module_key
+		SELECT id, LOWER(contract_name) AS name_key, COALESCE(LOWER(owner_module), '') AS module_key
 		FROM api_contracts
 		WHERE LOWER(contract_kind) = 'event'
-		  AND LOWER(TRIM(contract_name)) = ANY($1)
+		  AND LOWER(contract_name) = ANY($1)
 		ORDER BY id DESC
 	`, pq.Array(normalizedNames))
 	if err != nil {

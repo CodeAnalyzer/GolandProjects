@@ -45,9 +45,9 @@ func (db *DB) FindLatestSQLProcedureIDsByNames(procNames []string) (map[string]i
 	rows, err := db.Query(`
 		SELECT DISTINCT ON (proc_key) proc_key, id
 		FROM (
-			SELECT LOWER(TRIM(proc_name)) AS proc_key, id
+			SELECT LOWER(proc_name) AS proc_key, id
 			FROM sql_procedures
-			WHERE LOWER(TRIM(proc_name)) = ANY($1)
+			WHERE LOWER(proc_name) = ANY($1)
 		) AS procedures
 		ORDER BY proc_key, id DESC
 	`, pq.Array(normalized))
@@ -146,9 +146,9 @@ func (db *DB) FindLatestSQLTableIDsByNames(tableNames []string) (map[string]int6
 	rows, err := db.Query(`
 		SELECT DISTINCT ON (table_key) table_key, id
 		FROM (
-			SELECT LOWER(TRIM(table_name)) AS table_key, id
+			SELECT LOWER(table_name) AS table_key, id
 			FROM sql_tables
-			WHERE LOWER(TRIM(table_name)) = ANY($1)
+			WHERE LOWER(table_name) = ANY($1)
 		) AS tables
 		ORDER BY table_key, id DESC
 	`, pq.Array(normalized))

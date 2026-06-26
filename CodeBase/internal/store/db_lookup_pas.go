@@ -47,9 +47,9 @@ func (db *DB) FindLatestPASClassIDsByNames(classNames []string) (map[string]int6
 	rows, err := db.Query(`
 		SELECT DISTINCT ON (class_key) class_key, id
 		FROM (
-			SELECT LOWER(TRIM(class_name)) AS class_key, id
+			SELECT LOWER(class_name) AS class_key, id
 			FROM pas_classes
-			WHERE LOWER(TRIM(class_name)) = ANY($1)
+			WHERE LOWER(class_name) = ANY($1)
 		) AS classes
 		ORDER BY class_key, id DESC
 	`, pq.Array(normalized))

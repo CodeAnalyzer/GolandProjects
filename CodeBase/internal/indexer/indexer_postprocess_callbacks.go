@@ -8,14 +8,6 @@ import (
 )
 
 func (idx *Indexer) postProcessCallbackEventRelations(collector *statsCollector) {
-	if err := idx.db.DeleteSubscribesToEventRelations(); err != nil {
-		idx.logError("<post-processing>", "Error deleting subscribes_to_event relations: %v", err)
-		collector.Add(func(stats *model.ScanStats) {
-			stats.Errors++
-		})
-		return
-	}
-
 	callbacks, err := idx.db.FindAPIContractsByKind("callback_event")
 	if err != nil {
 		idx.logError("<post-processing>", "Error loading callback_event contracts: %v", err)

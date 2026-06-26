@@ -64,9 +64,9 @@ func (db *DB) FindLatestDFMFormIDsByClassNames(classNames []string) (map[string]
 	rows, err := db.Query(`
 		SELECT DISTINCT ON (class_key) class_key, id
 		FROM (
-			SELECT LOWER(TRIM(form_class)) AS class_key, id
+			SELECT LOWER(form_class) AS class_key, id
 			FROM dfm_forms
-			WHERE LOWER(TRIM(form_class)) = ANY($1)
+			WHERE LOWER(form_class) = ANY($1)
 		) AS forms
 		ORDER BY class_key, id DESC
 	`, pq.Array(normalized))
@@ -108,10 +108,10 @@ func (db *DB) FindLatestDFMComponentIDsByFormAndNames(formID int64, componentNam
 	rows, err := db.Query(`
 		SELECT DISTINCT ON (comp_key) comp_key, id
 		FROM (
-			SELECT LOWER(TRIM(component_name)) AS comp_key, id
+			SELECT LOWER(component_name) AS comp_key, id
 			FROM dfm_components
 			WHERE form_id = $1
-			  AND LOWER(TRIM(component_name)) = ANY($2)
+			  AND LOWER(component_name) = ANY($2)
 		) AS components
 		ORDER BY comp_key, id DESC
 	`, formID, pq.Array(normalized))
