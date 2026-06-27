@@ -171,6 +171,211 @@ func TestParseContent_ErrorCount(t *testing.T) {
 	}
 }
 
+func TestParseContent_BLogBlock(t *testing.T) {
+	content := "04.03.2026 16:59:08.940\tINFO\tTrace.Server.Proc\t\tMyProc\t349\t100\t\t0\t10\n" +
+		"Enter MyProc @@TranCount = 0 @@NestLevel = 1 @@DsSysModuleID = 10\n" +
+		"Elapsed, ms: 0\n" +
+		"04.03.2026 16:59:08.957\tINFO\tTrace.Server.BusinessLog\t\t\t349\t101\t\t0\t117\n" +
+		"Enter @@TranCount = 0 @@NestLevel = 1 @@DsSysModuleID = 10\n" +
+		"\n" +
+		"RetVal = 0#Основной блок\n" +
+		"04.03.2026 16:59:09.100\tINFO\tTrace.Server.BusinessLog\t\t\t349\t200\t\t0\t200\n" +
+		"Exit @@TranCount = 0 @@NestLevel = 1 @@DsSysModuleID = 10\n" +
+		"\n" +
+		"RetVal = 0#Основной блок\n" +
+		"04.03.2026 16:59:09.110\tINFO\tTrace.Server.Proc\t\tMyProc\t349\t201\t\t0\t50\n" +
+		"Exit MyProc @@TranCount = 0 @@NestLevel = 1@BeginCnt = 0 @@DsSysModuleID = 10\n" +
+		"Elapsed, ms: 170\n" +
+		"Return 0\n"
+
+	result, err := parseContent(content, "test.rti", 200)
+	if err != nil {
+		t.Fatalf("parseContent error: %v", err)
+	}
+	if len(result.Calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(result.Calls))
+	}
+	c := result.Calls[0]
+	if len(c.BLogBlocks) != 1 {
+		t.Fatalf("expected 1 BLogBlock, got %d", len(c.BLogBlocks))
+	}
+	b := c.BLogBlocks[0]
+	if b.BlockName != "Основной блок" {
+		t.Errorf("BlockName = %q, want %q", b.BlockName, "Основной блок")
+	}
+	if b.EnterTime.IsZero() {
+		t.Error("EnterTime should not be zero")
+	}
+	if b.ExitTime.IsZero() {
+		t.Error("ExitTime should not be zero")
+	}
+	if b.ElapsedMs <= 0 {
+		t.Errorf("ElapsedMs = %d, should be > 0", b.ElapsedMs)
+	}
+	// Return 0 в конце процедуры легитимно ставит RetVal=0, но это не должен быть BLog RetVal
+	if c.RetValContext != "" {
+		t.Errorf("RetValContext should be empty (not set from BLog RetVal), got %q", c.RetValContext)
+	}
+}
+
+func TestParseContent_BLogBlock_NoInterferenceWithCallRetVal(t *testing.T) {
+	content := "04.03.2026 16:59:08.940\tINFO\tTrace.Server.Proc\t\tMyProc\t349\t100\t\t0\t10\n" +
+		"Enter MyProc @@TranCount = 0 @@NestLevel = 1 @@DsSysModuleID = 10\n" +
+		"Elapsed, ms: 0\n" +
+		"04.03.2026 16:59:08.957\tINFO\tTrace.Server.BusinessLog\t\t\t349\t101\t\t0\t117\n" +
+		"Enter @@TranCount = 0 @@NestLevel = 1 @@DsSysModuleID = 10\n" +
+		"\n" +
+		"RetVal = 0#Мой блок\n" +
+		"04.03.2026 16:59:09.000\tINFO\tTrace.Server.Proc\t\tMyProc\t349\t200\t\t0\t50\n" +
+		"Exit MyProc @@TranCount = 0 @@NestLevel = 1@BeginCnt = 0 @@DsSysModuleID = 10\n" +
+		"Elapsed, ms: 60\n" +
+		"Return 42\n"
+
+	result, err := parseContent(content, "test.rti", 100)
+	if err != nil {
+		t.Fatalf("parseContent error: %v", err)
+	}
+	if len(result.Calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(result.Calls))
+	}
+	c := result.Calls[0]
+	if len(c.BLogBlocks) != 1 {
+		t.Fatalf("expected 1 BLogBlock, got %d", len(c.BLogBlocks))
+	}
+	if c.BLogBlocks[0].BlockName != "Мой блок" {
+		t.Errorf("BlockName = %q", c.BLogBlocks[0].BlockName)
+	}
+	if c.RetVal == nil || *c.RetVal != 42 {
+		t.Errorf("RetVal = %v, want 42", c.RetVal)
+	}
+}
+
+func TestParseContent_CheckpointTimestamp(t *testing.T) {
+	content := "04.03.2026 16:59:03.237\tINFO\tTrace.Server.Proc\t\tMyProc\t349\t1\t\t0\t10\n" +
+		"Enter MyProc @@TranCount = 0 @@NestLevel = 1 @@DsSysModuleID = 10\n" +
+		"Elapsed, ms: 0\n" +
+		"04.03.2026 16:59:03.500\tINFO\tTrace.Server.Trace\t\tMyProc\t349\t2\t\t0\t100\n" +
+		"MyProc @@TranCount = 0 @@NestLevel = 1 @@DsSysModuleID = 10\n" +
+		"Elapsed, ms: 263\n" +
+		"MyProc_Begin_1\n" +
+		"04.03.2026 16:59:03.600\tINFO\tTrace.Server.Proc\t\tMyProc\t349\t3\t\t0\t50\n" +
+		"Exit MyProc @@TranCount = 0 @@NestLevel = 1@BeginCnt = 0 @@DsSysModuleID = 10\n" +
+		"Elapsed, ms: 363\n" +
+		"Return 0\n"
+
+	result, err := parseContent(content, "test.rti", 200)
+	if err != nil {
+		t.Fatalf("parseContent error: %v", err)
+	}
+	if len(result.Calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(result.Calls))
+	}
+	c := result.Calls[0]
+	if len(c.Checkpoints) != 1 {
+		t.Fatalf("expected 1 checkpoint, got %d", len(c.Checkpoints))
+	}
+	cp := c.Checkpoints[0]
+	if cp.Label != "MyProc_Begin_1" {
+		t.Errorf("Label = %q", cp.Label)
+	}
+	if cp.Timestamp.IsZero() {
+		t.Error("Timestamp should not be zero after Trace.Server.Trace header")
+	}
+	if cp.ElapsedMs != 263 {
+		t.Errorf("ElapsedMs = %d, want 263", cp.ElapsedMs)
+	}
+}
+
+func TestParseContent_BLogTable(t *testing.T) {
+	content := "04.03.2026 16:59:08.940\tINFO\tTrace.Server.Proc\t\tMyProc\t349\t100\t\t0\t10\n" +
+		"Enter MyProc @@TranCount = 0 @@NestLevel = 1 @@DsSysModuleID = 10\n" +
+		"Elapsed, ms: 0\n" +
+		"BusinessLog: Data from tMyTable begin\n" +
+		"Table header ColA:int_|_ColB:varchar\n" +
+		"_|_1_|_hello\n" +
+		"_|_2_|_world\n" +
+		"BusinessLog: Data from tMyTable end\n" +
+		"04.03.2026 16:59:09.000\tINFO\tTrace.Server.Proc\t\tMyProc\t349\t200\t\t0\t50\n" +
+		"Exit MyProc @@TranCount = 0 @@NestLevel = 1@BeginCnt = 0 @@DsSysModuleID = 10\n" +
+		"Elapsed, ms: 60\n" +
+		"Return 0\n"
+
+	result, err := parseContent(content, "test.rti", 200)
+	if err != nil {
+		t.Fatalf("parseContent error: %v", err)
+	}
+	if len(result.Calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(result.Calls))
+	}
+	c := result.Calls[0]
+	if len(c.BLogTables) != 1 {
+		t.Fatalf("expected 1 BLogTable, got %d", len(c.BLogTables))
+	}
+	tbl := c.BLogTables[0]
+	if tbl.TableName != "tMyTable" {
+		t.Errorf("TableName = %q, want %q", tbl.TableName, "tMyTable")
+	}
+	if len(tbl.Columns) != 2 {
+		t.Errorf("Columns len = %d, want 2", len(tbl.Columns))
+	} else {
+		if tbl.Columns[0] != "ColA:int" {
+			t.Errorf("Columns[0] = %q", tbl.Columns[0])
+		}
+		if tbl.Columns[1] != "ColB:varchar" {
+			t.Errorf("Columns[1] = %q", tbl.Columns[1])
+		}
+	}
+	if tbl.RowCount != 2 {
+		t.Errorf("RowCount = %d, want 2", tbl.RowCount)
+	}
+	if len(tbl.Rows) != 2 {
+		t.Errorf("Rows len = %d, want 2", len(tbl.Rows))
+	}
+}
+
+func TestParseContent_BLogTable_MultipleTables(t *testing.T) {
+	content := "04.03.2026 16:59:08.940\tINFO\tTrace.Server.Proc\t\tMyProc\t349\t100\t\t0\t10\n" +
+		"Enter MyProc @@TranCount = 0 @@NestLevel = 1 @@DsSysModuleID = 10\n" +
+		"Elapsed, ms: 0\n" +
+		"BusinessLog: Data from tAlpha begin\n" +
+		"Table header ID:int\n" +
+		"_|_1\n" +
+		"BusinessLog: Data from tAlpha end\n" +
+		"BusinessLog: Data from tBeta begin\n" +
+		"Table header Name:varchar\n" +
+		"_|_foo\n" +
+		"_|_bar\n" +
+		"BusinessLog: Data from tBeta end\n" +
+		"04.03.2026 16:59:09.000\tINFO\tTrace.Server.Proc\t\tMyProc\t349\t200\t\t0\t50\n" +
+		"Exit MyProc @@TranCount = 0 @@NestLevel = 1@BeginCnt = 0 @@DsSysModuleID = 10\n" +
+		"Elapsed, ms: 60\n" +
+		"Return 0\n"
+
+	result, err := parseContent(content, "test.rti", 200)
+	if err != nil {
+		t.Fatalf("parseContent error: %v", err)
+	}
+	if len(result.Calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(result.Calls))
+	}
+	c := result.Calls[0]
+	if len(c.BLogTables) != 2 {
+		t.Fatalf("expected 2 BLogTables, got %d", len(c.BLogTables))
+	}
+	if c.BLogTables[0].TableName != "tAlpha" {
+		t.Errorf("BLogTables[0].TableName = %q", c.BLogTables[0].TableName)
+	}
+	if c.BLogTables[0].RowCount != 1 {
+		t.Errorf("tAlpha RowCount = %d, want 1", c.BLogTables[0].RowCount)
+	}
+	if c.BLogTables[1].TableName != "tBeta" {
+		t.Errorf("BLogTables[1].TableName = %q", c.BLogTables[1].TableName)
+	}
+	if c.BLogTables[1].RowCount != 2 {
+		t.Errorf("tBeta RowCount = %d, want 2", c.BLogTables[1].RowCount)
+	}
+}
+
 func TestModuleNameByID(t *testing.T) {
 	if ModuleNameByID(10) != "Core" {
 		t.Errorf("ModuleNameByID(10) = %q, want %q", ModuleNameByID(10), "Core")

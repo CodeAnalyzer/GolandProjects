@@ -473,6 +473,27 @@ func (db *DB) InitSchema() error {
 			elapsed_ms INTEGER NOT NULL DEFAULT 0,
 			line_no INTEGER NOT NULL DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS rti_blog_blocks (
+			id         BIGSERIAL PRIMARY KEY,
+			session_id BIGINT NOT NULL REFERENCES rti_sessions(id) ON DELETE CASCADE,
+			call_id    BIGINT REFERENCES rti_calls(id) ON DELETE CASCADE,
+			block_name TEXT NOT NULL,
+			enter_time TIMESTAMPTZ,
+			exit_time  TIMESTAMPTZ,
+			elapsed_ms INTEGER NOT NULL DEFAULT 0,
+			enter_line INTEGER NOT NULL DEFAULT 0,
+			exit_line  INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE TABLE IF NOT EXISTS rti_blog_tables (
+			id             BIGSERIAL PRIMARY KEY,
+			session_id     BIGINT NOT NULL REFERENCES rti_sessions(id) ON DELETE CASCADE,
+			call_id        BIGINT REFERENCES rti_calls(id) ON DELETE CASCADE,
+			table_name     TEXT NOT NULL,
+			columns_header TEXT,
+			row_count      INTEGER NOT NULL DEFAULT 0,
+			rows_data      TEXT,
+			enter_line     INTEGER NOT NULL DEFAULT 0
+		)`,
 		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ds_products_product_name ON ds_products(product_name)`,
 		`CREATE INDEX IF NOT EXISTS idx_files_scan_run_id ON files(scan_run_id)`,
@@ -563,6 +584,8 @@ func (db *DB) InitSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_rti_calls_parent_id ON rti_calls(parent_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_params_call_id ON rti_params(call_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_checkpoints_call_id ON rti_checkpoints(call_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_rti_blog_blocks_call_id ON rti_blog_blocks(call_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_rti_blog_tables_call_id ON rti_blog_tables(call_id)`,
 	}
 
 	for _, stmt := range statements {

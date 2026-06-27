@@ -19,6 +19,8 @@ type RTICall struct {
 	RetValContext string          `json:"ret_val_context,omitempty"`
 	Params        []RTIParam      `json:"params,omitempty"`
 	Checkpoints   []RTICheckpoint `json:"checkpoints,omitempty"`
+	BLogBlocks    []RTIBLogBlock  `json:"blog_blocks,omitempty"`
+	BLogTables    []RTIBLogTable  `json:"blog_tables,omitempty"`
 	Children      []int64         `json:"children,omitempty"`
 	ParentID      *int64          `json:"parent_id,omitempty"`
 	SPID          int             `json:"spid"`
@@ -39,20 +41,39 @@ type RTIParam struct {
 // RTICheckpoint — контрольная точка в логе
 type RTICheckpoint struct {
 	Label     string    `json:"label"`
-	Timestamp time.Time `json:"timestamp"`
+	Timestamp time.Time `json:"timestamp,omitempty"`
 	ElapsedMs int       `json:"elapsed_ms"`
 	LineNo    int       `json:"line_no"`
 }
 
+// RTIBLogBlock — блок бизнес-логирования (M_BUSINESSLOG_BLOCK_BEGIN/END)
+type RTIBLogBlock struct {
+	BlockName string    `json:"block_name"`
+	EnterTime time.Time `json:"enter_time,omitempty"`
+	ExitTime  time.Time `json:"exit_time,omitempty"`
+	ElapsedMs int       `json:"elapsed_ms,omitempty"`
+	EnterLine int       `json:"enter_line"`
+	ExitLine  int       `json:"exit_line,omitempty"`
+}
+
+// RTIBLogTable — дамп таблицы из M_LOG_TABLE / M_LOG_TABLE_LISTID
+type RTIBLogTable struct {
+	TableName string   `json:"table_name"`
+	Columns   []string `json:"columns,omitempty"`
+	Rows      []string `json:"rows,omitempty"`
+	RowCount  int      `json:"row_count"`
+	EnterLine int      `json:"enter_line"`
+}
+
 // RTISummary — сводка по RTI-логу
 type RTISummary struct {
-	FilePath       string `json:"file_path"`
-	FileSize       int64  `json:"file_size"`
-	TotalCalls     int    `json:"total_calls"`
-	ErrorsCount    int    `json:"errors_count"`
-	SlowCallsCount int    `json:"slow_calls_count"`
-	MaxNestLevel   int    `json:"max_nest_level"`
-	UnparsedLines  int    `json:"unparsed_lines"`
+	FilePath       string    `json:"file_path"`
+	FileSize       int64     `json:"file_size"`
+	TotalCalls     int       `json:"total_calls"`
+	ErrorsCount    int       `json:"errors_count"`
+	SlowCallsCount int       `json:"slow_calls_count"`
+	MaxNestLevel   int       `json:"max_nest_level"`
+	UnparsedLines  int       `json:"unparsed_lines"`
 	TopSlow        []RTICall `json:"top_slow,omitempty"`
 }
 

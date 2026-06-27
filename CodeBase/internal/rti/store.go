@@ -3,6 +3,7 @@ package rti
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/codebase/internal/store"
@@ -40,6 +41,16 @@ func SaveSession(db *store.DB, result *RTIParseResult, filePath string) (int64, 
 		return 0, fmt.Errorf("failed to insert rti_checkpoints: %w", err)
 	}
 
+	// 5. Batch insert rti_blog_blocks
+	if err := insertRTIBLogBlocks(db, result.Calls, callIDs, sessionID); err != nil {
+		return 0, fmt.Errorf("failed to insert rti_blog_blocks: %w", err)
+	}
+
+	// 6. Batch insert rti_blog_tables
+	if err := insertRTIBLogTables(db, result.Calls, callIDs, sessionID); err != nil {
+		return 0, fmt.Errorf("failed to insert rti_blog_tables: %w", err)
+	}
+
 	return sessionID, nil
 }
 
@@ -53,7 +64,7 @@ func insertRTICalls(db *store.DB, calls []*RTICall, sessionID int64) (map[int64]
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.Prepare(pq.CopyIn("rti_calls",
 		"session_id", "procedure", "enter_line", "exit_line",
@@ -192,7 +203,7 @@ func insertRTIParams(db *store.DB, calls []*RTICall, callIDs map[int64]int64) er
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.Prepare(pq.CopyIn("rti_params", "call_id", "name", "type", "value"))
 	if err != nil {
@@ -246,7 +257,7 @@ func insertRTICheckpoints(db *store.DB, calls []*RTICall, callIDs map[int64]int6
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.Prepare(pq.CopyIn("rti_checkpoints", "call_id", "label", "timestamp", "elapsed_ms", "line_no"))
 	if err != nil {
@@ -267,6 +278,172 @@ func insertRTICheckpoints(db *store.DB, calls []*RTICall, callIDs map[int64]int6
 	}
 
 	return tx.Commit()
+}
+
+func insertRTIBLogBlocks(db *store.DB, calls []*RTICall, callIDs map[int64]int64, sessionID int64) error {
+	type row struct {
+		callID    int64
+		blockName string
+		enterTime time.Time
+		exitTime  time.Time
+		elapsedMs int
+		enterLine int
+		exitLine  int
+	}
+	var rows []row
+	for _, c := range calls {
+		dbID, ok := callIDs[c.ID]
+		if !ok {
+			continue
+		}
+		for _, b := range c.BLogBlocks {
+			rows = append(rows, row{dbID, b.BlockName, b.EnterTime, b.ExitTime, b.ElapsedMs, b.EnterLine, b.ExitLine})
+		}
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.Prepare(pq.CopyIn("rti_blog_blocks",
+		"session_id", "call_id", "block_name", "enter_time", "exit_time", "elapsed_ms", "enter_line", "exit_line"))
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, r := range rows {
+		var enterTime, exitTime interface{}
+		if !r.enterTime.IsZero() {
+			enterTime = r.enterTime
+		}
+		if !r.exitTime.IsZero() {
+			exitTime = r.exitTime
+		}
+		if _, err := stmt.Exec(sessionID, r.callID, r.blockName, enterTime, exitTime, r.elapsedMs, r.enterLine, r.exitLine); err != nil {
+			return err
+		}
+	}
+	if _, err := stmt.Exec(); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func insertRTIBLogTables(db *store.DB, calls []*RTICall, callIDs map[int64]int64, sessionID int64) error {
+	type row struct {
+		callID    int64
+		tableName string
+		columns   string
+		rowCount  int
+		rowsData  string
+		enterLine int
+	}
+	var rows []row
+	for _, c := range calls {
+		dbID, ok := callIDs[c.ID]
+		if !ok {
+			continue
+		}
+		for _, t := range c.BLogTables {
+			rows = append(rows, row{
+				dbID, t.TableName,
+				strings.Join(t.Columns, "_|_"),
+				t.RowCount,
+				strings.Join(t.Rows, "\n"),
+				t.EnterLine,
+			})
+		}
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.Prepare(pq.CopyIn("rti_blog_tables",
+		"session_id", "call_id", "table_name", "columns_header", "row_count", "rows_data", "enter_line"))
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, r := range rows {
+		if _, err := stmt.Exec(sessionID, r.callID, r.tableName, r.columns, r.rowCount, r.rowsData, r.enterLine); err != nil {
+			return err
+		}
+	}
+	if _, err := stmt.Exec(); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// LoadBLogBlocks загружает BLog-блоки вызова из БД.
+func LoadBLogBlocks(db *store.DB, sessionID int64, callID int64) ([]RTIBLogBlock, error) {
+	rows, err := db.Query(
+		`SELECT block_name, enter_time, exit_time, elapsed_ms, enter_line, exit_line
+		 FROM rti_blog_blocks WHERE session_id = $1 AND call_id = $2 ORDER BY id`,
+		sessionID, callID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var blocks []RTIBLogBlock
+	for rows.Next() {
+		var b RTIBLogBlock
+		var enterTime, exitTime sql.NullTime
+		if err := rows.Scan(&b.BlockName, &enterTime, &exitTime, &b.ElapsedMs, &b.EnterLine, &b.ExitLine); err != nil {
+			return nil, err
+		}
+		if enterTime.Valid {
+			b.EnterTime = enterTime.Time
+		}
+		if exitTime.Valid {
+			b.ExitTime = exitTime.Time
+		}
+		blocks = append(blocks, b)
+	}
+	return blocks, rows.Err()
+}
+
+// LoadBLogTables загружает BLog-дампы таблиц вызова из БД.
+func LoadBLogTables(db *store.DB, sessionID int64, callID int64) ([]RTIBLogTable, error) {
+	rows, err := db.Query(
+		`SELECT table_name, columns_header, row_count, rows_data, enter_line
+		 FROM rti_blog_tables WHERE session_id = $1 AND call_id = $2 ORDER BY id`,
+		sessionID, callID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tables []RTIBLogTable
+	for rows.Next() {
+		var t RTIBLogTable
+		var columnsHeader, rowsData sql.NullString
+		if err := rows.Scan(&t.TableName, &columnsHeader, &t.RowCount, &rowsData, &t.EnterLine); err != nil {
+			return nil, err
+		}
+		if columnsHeader.Valid && columnsHeader.String != "" {
+			t.Columns = strings.Split(columnsHeader.String, "_|_")
+		}
+		if rowsData.Valid && rowsData.String != "" {
+			t.Rows = strings.Split(rowsData.String, "\n")
+		}
+		tables = append(tables, t)
+	}
+	return tables, rows.Err()
 }
 
 // ListSessions возвращает список сессий из БД.

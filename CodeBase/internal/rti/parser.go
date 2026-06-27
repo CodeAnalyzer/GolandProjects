@@ -33,6 +33,12 @@ var (
 	reParam      = regexp.MustCompile(`^@(\w+)\s*:\s*(\w+)\s+=\s*(.*)$`)
 	reBLogParam  = regexp.MustCompile(`^BLogParam:@(\w+)\s*:\s*(\w+)\s+=\s*(.*)$`)
 	reCheckpoint = regexp.MustCompile(`^(\w+)_Begin_(\d+)$`)
+
+	reBLogHeader      = regexp.MustCompile(`^(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}:\d{2}\.\d{3})\tINFO\tTrace\.Server\.BusinessLog\t\t\t(\d+)\t(\d+)\t\t(\d+)\t(\d+)`)
+	reBLogEnter       = regexp.MustCompile(`^Enter\s+@@TranCount`)
+	reBLogExit        = regexp.MustCompile(`^Exit\s+@@TranCount`)
+	reBLogTableBound  = regexp.MustCompile(`^BusinessLog:\s+Data\s+from\s+(\S+)\s+(begin|end)`)
+	reBLogTableHeader = regexp.MustCompile(`^Table\s+header\s+(.+)`)
 )
 
 type stackEntry struct {
@@ -75,6 +81,27 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 	currentSPID := 0
 	var lastExited *RTICall
 
+	// BusinessLog block state
+	var (
+		pendingBLog        bool
+		pendingBLogTS      time.Time
+		pendingBLogSPID    int
+		pendingBLogSrcLine int
+		pendingBLogIsEnter *bool
+	)
+
+	// Checkpoint timestamp state
+	var (
+		pendingTraceTS  time.Time
+		hasPendingTrace bool
+	)
+
+	// Table capture state
+	var (
+		captureTable bool
+		currentTable *RTIBLogTable
+	)
+
 	scanner := bufio.NewScanner(bytes.NewReader([]byte(content)))
 	buf := make([]byte, 0, 1<<20)
 	scanner.Buffer(buf, 1<<20)
@@ -83,6 +110,41 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Text()
+
+		// BusinessLog table boundary (begin / end)
+		if m := reBLogTableBound.FindStringSubmatch(line); m != nil {
+			tableName := m[1]
+			kind := strings.ToLower(m[2])
+			if kind == "begin" {
+				captureTable = true
+				currentTable = &RTIBLogTable{
+					TableName: tableName,
+					EnterLine: lineNum,
+				}
+			} else {
+				if captureTable && currentTable != nil {
+					currentTable.RowCount = len(currentTable.Rows)
+					stack := stacks[currentSPID]
+					if len(stack) > 0 {
+						stack[len(stack)-1].call.BLogTables = append(
+							stack[len(stack)-1].call.BLogTables, *currentTable)
+					}
+				}
+				captureTable = false
+				currentTable = nil
+			}
+			continue
+		}
+
+		// Table header / row capture
+		if captureTable && currentTable != nil {
+			if m := reBLogTableHeader.FindStringSubmatch(line); m != nil {
+				currentTable.Columns = strings.Split(m[1], "_|_")
+			} else if strings.TrimSpace(line) != "" {
+				currentTable.Rows = append(currentTable.Rows, line)
+			}
+			continue
+		}
 
 		// Enter
 		if m := reEnter.FindStringSubmatch(line); m != nil {
@@ -138,9 +200,26 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 			continue
 		}
 
-		// Trace line
+		// BusinessLog header (Trace.Server.BusinessLog)
+		if m := reBLogHeader.FindStringSubmatch(line); m != nil {
+			tsStr := m[1]
+			spid, _ := strconv.Atoi(m[2])
+			srcLine, _ := strconv.Atoi(m[5])
+			if ts, err := time.ParseInLocation("02.01.2006 15:04:05.000", tsStr, time.Local); err == nil {
+				pendingBLogTS = ts
+			}
+			pendingBLogSPID = spid
+			pendingBLogSrcLine = srcLine
+			pendingBLog = true
+			pendingBLogIsEnter = nil
+			currentSPID = spid
+			continue
+		}
+
+		// Trace line (Trace.Server.Proc or Trace.Server.Trace)
 		if m := reTrace.FindStringSubmatch(line); m != nil {
 			tsStr := m[1]
+			traceKind := m[2]
 			spid, _ := strconv.Atoi(m[4])
 
 			if ts, err := time.ParseInLocation("02.01.2006 15:04:05.000", tsStr, time.Local); err == nil {
@@ -151,15 +230,64 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 						top.call.EnterTime = ts
 					}
 				}
+				if traceKind == "Trace" {
+					pendingTraceTS = ts
+					hasPendingTrace = true
+				}
 			}
 			currentSPID = spid
 			continue
 		}
 
-		// RetVal
+		// BusinessLog Enter/Exit (only when pendingBLog is active)
+		if pendingBLog {
+			if reBLogEnter.MatchString(line) {
+				t := true
+				pendingBLogIsEnter = &t
+				continue
+			}
+			if reBLogExit.MatchString(line) {
+				f := false
+				pendingBLogIsEnter = &f
+				continue
+			}
+		}
+
+		// RetVal — intercept for BusinessLog blocks, otherwise normal handling
 		if m := reRetVal.FindStringSubmatch(line); m != nil {
 			val, _ := strconv.Atoi(m[1])
 			ctx := strings.TrimSpace(m[2])
+
+			if pendingBLog && pendingBLogIsEnter != nil {
+				stack := stacks[pendingBLogSPID]
+				if len(stack) > 0 {
+					top := stack[len(stack)-1]
+					if *pendingBLogIsEnter {
+						top.call.BLogBlocks = append(top.call.BLogBlocks, RTIBLogBlock{
+							BlockName: ctx,
+							EnterTime: pendingBLogTS,
+							EnterLine: pendingBLogSrcLine,
+						})
+					} else {
+						for i := len(top.call.BLogBlocks) - 1; i >= 0; i-- {
+							b := &top.call.BLogBlocks[i]
+							if b.BlockName == ctx && b.ExitTime.IsZero() {
+								b.ExitTime = pendingBLogTS
+								b.ExitLine = pendingBLogSrcLine
+								if !b.EnterTime.IsZero() {
+									b.ElapsedMs = int(pendingBLogTS.Sub(b.EnterTime).Milliseconds())
+								}
+								break
+							}
+						}
+					}
+				}
+				_ = val
+				pendingBLog = false
+				pendingBLogIsEnter = nil
+				continue
+			}
+
 			stack := stacks[currentSPID]
 			if len(stack) > 0 {
 				top := stack[len(stack)-1]
@@ -229,18 +357,23 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 			continue
 		}
 
-		// Checkpoint
+		// Checkpoint — with timestamp from preceding Trace.Server.Trace header
 		if m := reCheckpoint.FindStringSubmatch(line); m != nil {
 			procName := m[1]
 			checkpointNum, _ := strconv.Atoi(m[2])
 			stack := stacks[currentSPID]
 			if len(stack) > 0 {
 				top := stack[len(stack)-1]
-				top.call.Checkpoints = append(top.call.Checkpoints, RTICheckpoint{
+				cp := RTICheckpoint{
 					Label:     fmt.Sprintf("%s_Begin_%d", procName, checkpointNum),
 					LineNo:    lineNum,
 					ElapsedMs: top.call.ElapsedMs,
-				})
+				}
+				if hasPendingTrace {
+					cp.Timestamp = pendingTraceTS
+					hasPendingTrace = false
+				}
+				top.call.Checkpoints = append(top.call.Checkpoints, cp)
 			}
 			continue
 		}
@@ -292,7 +425,10 @@ func topSlowCalls(calls []*RTICall, n int) []RTICall {
 	}
 	result := make([]RTICall, 0, n)
 	for i := 0; i < n; i++ {
-		result = append(result, *sorted[i])
+		c := *sorted[i]
+		c.BLogTables = nil
+		c.BLogBlocks = nil
+		result = append(result, c)
 	}
 	return result
 }

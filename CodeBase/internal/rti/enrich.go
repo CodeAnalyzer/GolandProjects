@@ -6,20 +6,26 @@ import (
 	"github.com/codebase/internal/query"
 )
 
+// ProcedureLookup — узкий интерфейс для получения данных о процедуре из CodeBase.
+// Реализуется *query.Query.
+type ProcedureLookup interface {
+	GetProcedureResult(name string) (*query.SQLProcedureResult, error)
+}
+
 // ProcedureEnrichment — результат обогащения процедуры данными из CodeBase
 type ProcedureEnrichment struct {
-	Procedure   string                       `json:"procedure"`
-	SourceFile  string                       `json:"source_file,omitempty"`
-	LineNumber  int                          `json:"line_number,omitempty"`
-	LineStart   int                          `json:"line_start,omitempty"`
-	LineEnd     int                          `json:"line_end,omitempty"`
-	Params      []query.SQLParamResult       `json:"params,omitempty"`
-	Found       bool                         `json:"found"`
+	Procedure  string               `json:"procedure"`
+	SourceFile string               `json:"source_file,omitempty"`
+	LineNumber int                  `json:"line_number,omitempty"`
+	LineStart  int                  `json:"line_start,omitempty"`
+	LineEnd    int                  `json:"line_end,omitempty"`
+	Params     []query.SQLParamResult `json:"params,omitempty"`
+	Found      bool                 `json:"found"`
 }
 
 // EnrichCalls обогащает вызовы данными из CodeBase DB.
 // Возвращает map: procedure name → enrichment.
-func EnrichCalls(q *query.Query, calls []*RTICall) map[string]*ProcedureEnrichment {
+func EnrichCalls(q ProcedureLookup, calls []*RTICall) map[string]*ProcedureEnrichment {
 	result := make(map[string]*ProcedureEnrichment)
 	for _, c := range calls {
 		if _, ok := result[c.Procedure]; ok {
@@ -40,7 +46,7 @@ func EnrichCalls(q *query.Query, calls []*RTICall) map[string]*ProcedureEnrichme
 }
 
 // EnrichProcedure ищет процедуру в CodeBase DB и возвращает enrichment.
-func EnrichProcedure(q *query.Query, procName string) (*ProcedureEnrichment, error) {
+func EnrichProcedure(q ProcedureLookup, procName string) (*ProcedureEnrichment, error) {
 	proc, err := q.GetProcedureResult(procName)
 	if err != nil {
 		return nil, fmt.Errorf("procedure %q not found: %w", procName, err)

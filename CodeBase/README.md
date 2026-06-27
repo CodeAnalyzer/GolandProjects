@@ -47,6 +47,7 @@
   - Поиск API contracts (контрактов API), API tables (таблиц API), API table indexes (индексов API-таблиц), API params (параметров API), implementations (реализаций), publishers (публикаторов событий), consumers (потребителей контрактов)
   - Unified `query symbol` для SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects и XML/API symbols
 - **Review (проверка SQL перед деплоем)**: статический анализ SQL-файлов с детекцией deploy stoppers (использование внешних таблиц/процедур, небезопасные конструкции IF/EXISTS, отсутствие required hints, и т.д.)
+- **RTI-анализатор** (`codebase rti`): парсинг и анализ RTI-трейс логов Diasoft 5NT; извлечение вызовов процедур, параметров, контрольных точек, кодов ошибок, бизнес-лог блоков (`M_BUSINESSLOG_BLOCK_BEGIN/END`), checkpoint-временных меток, дампов таблиц (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`); сохранение в БД для повторного анализа
 - **Кодировки**: CP866/WIN1251/UTF8 с эвристическим выбором для legacy-форматов, включая TPR и препроцессированные `.t01`
 
 ## Требования
@@ -459,6 +460,65 @@ Health status: ok
 - index: ok
 ```
 
+### RTI-анализатор
+
+Анализ RTI-трейс логов (`.rti`) Diasoft 5NT:
+
+```bash
+# Парсинг файла и сохранение в БД
+codebase rti parse path/to/file.rti
+
+# Сводка по логу
+codebase rti summary path/to/file.rti
+codebase rti summary --session 42
+codebase rti summary --json
+
+# Дерево вызовов
+codebase rti tree path/to/file.rti
+codebase rti tree --session 42 --proc MyProc --max-depth 3
+
+# Ошибочные вызовы (ret_val ≠ 0)
+codebase rti errors path/to/file.rti
+codebase rti errors --session 42 --json
+
+# Медленные вызовы
+codebase rti slow path/to/file.rti
+codebase rti slow --session 42 --threshold 500
+
+# Детали конкретной процедуры (параметры, checkpoints, enrichment)
+codebase rti details path/to/file.rti --proc MyProc
+codebase rti details --session 42 --proc MyProc --json
+
+# Бизнес-лог процедуры: блоки, checkpoints с timestamp, дампы таблиц
+codebase rti blog path/to/file.rti --proc FCD_CORE_MassAccrual_Start
+codebase rti blog --session 42 --proc FCD_CORE_MassAccrual_Start --json
+
+# Список сохранённых сессий
+codebase rti list
+codebase rti list --limit 10
+
+# Управление сессиями
+codebase rti delete --session 42
+codebase rti prune --keep-last 5
+```
+
+Подкоманды:
+- **`parse`** — распарсить `.rti` файл и сохранить результат в БД; выводит сводку + session ID
+- **`summary`** — общая сводка: total_calls, errors_count, max_nest_level, top_slow
+- **`tree`** — дерево вызовов с временами и кодами возврата
+- **`errors`** — вызовы с ненулевым ret_val + расшифровка кода из `ds_return_codes`
+- **`slow`** — вызовы медленнее порога (по умолчанию 100 мс)
+- **`details`** — параметры, checkpoints, enrichment (путь к файлу и строки из индекса) для конкретной процедуры
+- **`blog`** — бизнес-лог процедуры: блоки с Enter/Exit и elapsed_ms, контрольные точки с timestamp, дампы таблиц с заголовками и строками
+- **`list`** — список сохранённых сессий
+- **`delete`** — удалить сессию (CASCADE удаляет все связанные записи)
+- **`prune`** — удалить старые сессии, оставить последние N
+
+Общие флаги для большинства подкоманд:
+- `--session` — загрузить данные из сохранённой сессии вместо файла
+- `--proc` — имя процедуры (для `details`, `blog`, `tree`)
+- `--json` — вывод в JSON
+
 ### Review (проверка SQL перед деплоем)
 
 Статический анализ SQL-файлов для выявления проблем перед деплоем:
@@ -576,6 +636,42 @@ codebase mcp
 - `codebase.stats`
 - `codebase.query.*` для всех query-подкоманд CLI
 
+**RTI tools:**
+
+| Tool | Описание | Обязательные параметры |
+|------|----------|------------------------|
+| `codebase_rti_parse` | Парсинг `.rti` файла и сохранение в БД | `file_path` |
+| `codebase_rti_list` | Список сохранённых сессий | — |
+| `codebase_rti_summary` | Сводка сессии | `session_id` или `file_path` |
+| `codebase_rti_tree` | Дерево вызовов | `session_id` или `file_path` |
+| `codebase_rti_errors` | Вызовы с ошибками (ret_val ≠ 0) | `session_id` или `file_path` |
+| `codebase_rti_slow` | Медленные вызовы | `session_id` или `file_path` |
+| `codebase_rti_details` | Детали процедуры с enrichment из индекса | `session_id` или `file_path`, `procedure` |
+| `codebase_rti_blog` | Бизнес-лог процедуры: блоки/checkpoints/таблицы | `session_id` или `file_path`, `procedure` |
+| `codebase_rti_delete` | Удалить сессию | `session_id` |
+| `codebase_rti_prune` | Удалить старые сессии, оставить N | `keep_last` |
+
+Пример вывода `codebase_rti_blog`:
+```json
+{
+  "procedure": "FCD_CORE_MassAccrual_Start",
+  "count": 1,
+  "calls": [{
+    "enter_line": 42,
+    "elapsed_ms": 1430,
+    "blog_blocks": [
+      { "block_name": "Основной блок", "enter_time": "...", "exit_time": "...", "elapsed_ms": 143 }
+    ],
+    "checkpoints": [
+      { "label": "FCD_CORE_MassAccrual_Start_Begin_1", "timestamp": "16:59:03.500", "elapsed_ms": 263 }
+    ],
+    "blog_tables": [
+      { "table_name": "tAccrualData", "columns": ["ID:int", "Amount:numeric"], "row_count": 42, "rows": ["..."] }
+    ]
+  }]
+}
+```
+
 Контракт формата:
 
 - **MCP**: tools возвращают чистые доменные данные (например `{ "count": N, "items": [...] }`)
@@ -595,6 +691,7 @@ CodeBase/
 │   ├── query_execution.go         # Выполнение query и форматирование вывода
 │   ├── query_api.go               # API query-команды
 │   ├── review.go                  # Review команда (проверка SQL перед деплоем)
+│   ├── rti.go                     # RTI-анализатор: parse/summary/tree/errors/slow/details/blog/list/delete/prune
 │   ├── stats.go                   # Команда stats
 │   ├── health.go                  # Команда health
 │   └── mcp.go                     # Команда запуска MCP сервера
@@ -633,6 +730,14 @@ CodeBase/
 │   │   ├── review_helpers.go      # Вспомогательные функции
 │   │   ├── runner.go              # Review runner и execution pipeline
 │   │   └── runner_test.go         # Тесты для review rules
+│   ├── rti/                       # RTI-анализатор
+│   │   ├── model.go               # RTICall, RTIParam, RTICheckpoint, RTIBLogBlock, RTIBLogTable, RTISummary
+│   │   ├── parser.go              # ParseFile, parseContent (regex state machine, CP866/UTF8)
+│   │   ├── parser_test.go         # Тесты парсера
+│   │   ├── tree.go                # BuildTree, FormatTree, RTITreeNode
+│   │   ├── symbols.go             # moduleIDMap (94 записи), ModuleNameByID
+│   │   ├── enrich.go              # ProcedureLookup, EnrichCalls (enrichment из индекса)
+│   │   └── store.go               # SaveSession, LoadCalls, LoadBLogBlocks, LoadBLogTables, ListSessions, ...
 │   ├── mcp/                       # MCP stdio JSON-RPC transport, tools registry, handlers
 │   └── store/
 │       ├── db.go                  # Основной persistence layer и batch insert helpers
@@ -679,6 +784,13 @@ CodeBase/
 - `api_contract_return_values` - return values (возвращаемые значения) контрактов
 - `api_contract_contexts` - contexts (контексты) контрактов
 - `api_macro_invocations` - извлечённые API macros (макросы API) из исходных `.sql`
+- `rti_sessions` — сессии парсинга RTI-логов
+- `rti_calls` — вызовы процедур из RTI-лога (Enter/Exit, elapsed_ms, ret_val, nest_level)
+- `rti_params` — параметры вызовов
+- `rti_checkpoints` — контрольные точки (`M_BUSINESSLOG_CHECKPOINT`) с timestamp
+- `rti_blog_blocks` — бизнес-лог блоки (`M_BUSINESSLOG_BLOCK_BEGIN/END`) с Enter/Exit временами и elapsed_ms
+- `rti_blog_tables` — дампы таблиц из бизнес-лога (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`) с заголовками и строками
+- `ds_return_codes` — справочник кодов возврата процедур
 - `relations` - Связи между сущностями
 - `query_fragments` - SQL-фрагменты в коде, включая отдельные SQL statements из `.sql` и препроцессированных `.t01` procedures/scripts, пригодные для текстового поиска
 - `include_directives` - include-директивы и их разрешение
@@ -762,6 +874,8 @@ CodeBase/
 - [x] Query mode (режим query) для `api-impl` / `api-publishers` / `api-consumers`
 - [x] SQL schema patches (ALTER TABLE ... ADD, M_ADD_FIELD, CREATE INDEX, M_CRT_INDEX) для обычных SQL-таблиц
 - [x] Query mode (режим query) для `table-schema` и `table-index` обычных SQL-таблиц
+- [x] RTI-анализатор: парсинг трейс-логов, сохранение в БД, CLI и MCP tools
+- [x] RTI бизнес-лог: блоки `M_BUSINESSLOG_BLOCK_BEGIN/END`, checkpoint timestamps, дампы `M_LOG_TABLE`
 
 ## Лицензия
 

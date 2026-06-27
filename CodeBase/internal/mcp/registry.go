@@ -542,8 +542,8 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					}
 				}
 				return map[string]interface{}{
-					"summary":     result.Summary,
-					"session_id":  sessionID,
+					"summary":    result.Summary,
+					"session_id": sessionID,
 				}, nil
 			},
 		},
@@ -594,10 +594,15 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if err != nil {
 					return nil, err
 				}
-				var errors []*rti.RTICall
+				type callSlim struct {
+					*rti.RTICall
+					BLogTables interface{} `json:"blog_tables,omitempty"`
+					BLogBlocks  interface{} `json:"blog_blocks,omitempty"`
+				}
+				var errors []callSlim
 				for _, c := range result.Calls {
 					if c.RetVal != nil && *c.RetVal != 0 {
-						errors = append(errors, c)
+						errors = append(errors, callSlim{RTICall: c})
 					}
 				}
 				return map[string]interface{}{
@@ -617,16 +622,21 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if threshold <= 0 {
 					threshold = 100
 				}
-				var slow []*rti.RTICall
+				type callSlim struct {
+					*rti.RTICall
+					BLogTables interface{} `json:"blog_tables,omitempty"`
+					BLogBlocks  interface{} `json:"blog_blocks,omitempty"`
+				}
+				var slow []callSlim
 				for _, c := range result.Calls {
 					if c.ElapsedMs >= threshold {
-						slow = append(slow, c)
+						slow = append(slow, callSlim{RTICall: c})
 					}
 				}
 				return map[string]interface{}{
-					"count":    len(slow),
+					"count":     len(slow),
 					"threshold": threshold,
-					"calls":    slow,
+					"calls":     slow,
 				}, nil
 			},
 		},
@@ -708,7 +718,51 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				return map[string]interface{}{
 					"deleted_count": deleted,
-					"kept_last":      keepLast,
+					"kept_last":     keepLast,
+				}, nil
+			},
+		},
+		"codebase_rti_blog": {
+			Definition: toolDefinition{Name: "codebase_rti_blog", Description: "Get business log data for a specific procedure in an RTI session: business log blocks (BLOCK_BEGIN/END with names and timing), checkpoints with timestamps, and table dumps (M_LOG_TABLE/M_LOG_TABLE_LISTID). Requires either a saved session ID or a file path.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "procedure": stringProp("Procedure name")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				procName, err := requiredString(args, "procedure")
+				if err != nil {
+					return nil, err
+				}
+				result, err := loadRTIFromArgs(db, args)
+				if err != nil {
+					return nil, err
+				}
+				var calls []*rti.RTICall
+				for _, c := range result.Calls {
+					if c.Procedure == procName {
+						calls = append(calls, c)
+					}
+				}
+				if len(calls) == 0 {
+					return nil, fmt.Errorf("procedure %q not found in RTI log", procName)
+				}
+				type callBLog struct {
+					EnterLine   int                 `json:"enter_line"`
+					ElapsedMs   int                 `json:"elapsed_ms,omitempty"`
+					BLogBlocks  []rti.RTIBLogBlock  `json:"blog_blocks,omitempty"`
+					Checkpoints []rti.RTICheckpoint `json:"checkpoints,omitempty"`
+					BLogTables  []rti.RTIBLogTable  `json:"blog_tables,omitempty"`
+				}
+				var items []callBLog
+				for _, c := range calls {
+					items = append(items, callBLog{
+						EnterLine:   c.EnterLine,
+						ElapsedMs:   c.ElapsedMs,
+						BLogBlocks:  c.BLogBlocks,
+						Checkpoints: c.Checkpoints,
+						BLogTables:  c.BLogTables,
+					})
+				}
+				return map[string]interface{}{
+					"procedure": procName,
+					"count":     len(calls),
+					"calls":     items,
 				}, nil
 			},
 		},
