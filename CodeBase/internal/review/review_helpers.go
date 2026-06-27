@@ -445,18 +445,16 @@ func containsForceOrderMacro(lowerText string) bool {
 }
 
 func extractWherePartForIndexWrong(fullText string) string {
-	lower := strings.ToLower(fullText)
-	whereIdx := strings.Index(lower, " where ")
-	if whereIdx == -1 {
+	whereIdx := findSubstringAtDepthZero(fullText, " where ")
+	if whereIdx < 0 {
 		return ""
 	}
 
 	part := fullText[whereIdx+7:]
-	lowerPart := strings.ToLower(part)
 	endMarkers := []string{" order by ", " group by ", " having ", " union ", " except ", " intersect "}
 	endIdx := len(part)
 	for _, marker := range endMarkers {
-		if idx := strings.Index(lowerPart, marker); idx > 0 && idx < endIdx {
+		if idx := findSubstringAtDepthZero(part, marker); idx > 0 && idx < endIdx {
 			endIdx = idx
 		}
 	}
@@ -473,11 +471,10 @@ func extractOnPartsForIndexWrong(fullText string) []string {
 	}
 
 	for _, part := range parts[1:] {
-		lowerPart := strings.ToLower(part)
 		endMarkers := []string{" join ", " where ", " order by ", " group by ", " having "}
 		endIdx := len(part)
 		for _, marker := range endMarkers {
-			if idx := strings.Index(lowerPart, marker); idx > 0 && idx < endIdx {
+			if idx := findSubstringAtDepthZero(part, marker); idx > 0 && idx < endIdx {
 				endIdx = idx
 			}
 		}
@@ -485,6 +482,37 @@ func extractOnPartsForIndexWrong(fullText string) []string {
 	}
 
 	return result
+}
+
+func findSubstringAtDepthZero(text, substr string) int {
+	lower := strings.ToLower(text)
+	substr = strings.ToLower(substr)
+	depth := 0
+	for i := 0; i <= len(lower)-len(substr); i++ {
+		ch := lower[i]
+		if ch == '(' {
+			depth++
+			continue
+		}
+		if ch == ')' && depth > 0 {
+			depth--
+			continue
+		}
+		if depth > 0 {
+			continue
+		}
+		if ch == '\'' {
+			i++
+			for i < len(lower) && lower[i] != '\'' {
+				i++
+			}
+			continue
+		}
+		if lower[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
 }
 
 func collectColumnsFromConditionExpression(expr string, tables []tableFromClause) map[string]map[string]struct{} {

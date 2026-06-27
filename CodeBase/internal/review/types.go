@@ -343,6 +343,7 @@ type statementRange struct {
 type funcColumnRef struct {
 	funcName string
 	column   string
+	alias    string
 }
 
 // comparisonExpr — пара операндов и оператор сравнения.

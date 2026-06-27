@@ -238,6 +238,18 @@ func TestDetectFromBytes_CP866(t *testing.T) {
 	}
 }
 
+func TestDetectFromBytes_CP866LowercaseNotMisdetected(t *testing.T) {
+	// "Получение счета" in CP866 — uppercase П (0x8F) + lowercase letters in 0xA0-0xAF/0xE0-0xEF.
+	// Must NOT be misdetected as CP1251 (regression for real Diasoft SQL files).
+	cp866Data, err := charmap.CodePage866.NewEncoder().Bytes([]byte("Получение счета"))
+	if err != nil {
+		t.Fatalf("encode CP866: %v", err)
+	}
+	if got := DetectFromBytes(cp866Data); got != CP866 {
+		t.Fatalf("DetectFromBytes(CP866 lowercase) = %q, want %q", got, CP866)
+	}
+}
+
 func TestDetectFromBytes_Empty(t *testing.T) {
 	if got := DetectFromBytes([]byte{}); got != CP866 {
 		t.Fatalf("DetectFromBytes(empty) = %q, want %q (CP866 as ASCII-compatible)", got, CP866)

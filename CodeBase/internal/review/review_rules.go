@@ -5170,6 +5170,13 @@ func (r *Runner) analyzeStatementForUseFuncInIndCol(lines []string, startLine in
 		if wherePart != "" {
 			funcRefs := extractFuncColumnRefs(wherePart)
 			for _, fr := range funcRefs {
+				// Если в ссылке есть алиас (oa.SPID) и он не совпадает с алиасом таблицы — пропускаем
+				if fr.alias != "" {
+					frAlias := normalizeIdentifier(fr.alias)
+					if alias != "" && frAlias != alias {
+						continue
+					}
+				}
 				if isIndexedColumn(fr.column, alias, indexFieldSet) {
 					findings = append(findings, Finding{
 						Rule:             RuleUseFuncInIndCol,
@@ -5188,6 +5195,13 @@ func (r *Runner) analyzeStatementForUseFuncInIndCol(lines []string, startLine in
 		for _, onPart := range onParts {
 			funcRefs := extractFuncColumnRefs(onPart)
 			for _, fr := range funcRefs {
+				// Если в ссылке есть алиас (oa.SPID) и он не совпадает с алиасом таблицы — пропускаем
+				if fr.alias != "" {
+					frAlias := normalizeIdentifier(fr.alias)
+					if alias != "" && frAlias != alias {
+						continue
+					}
+				}
 				if isIndexedColumn(fr.column, alias, indexFieldSet) {
 					findings = append(findings, Finding{
 						Rule:             RuleUseFuncInIndCol,
@@ -5282,8 +5296,10 @@ func extractFuncColumnRefs(expr string) []funcColumnRef {
 			}
 			// Если есть alias.column, берём column; иначе берём просто column
 			var colName string
+			var colAlias string
 			if colMatch[2] != "" {
 				colName = colMatch[2]
+				colAlias = colMatch[1]
 			} else {
 				colName = colMatch[1]
 			}
@@ -5295,6 +5311,7 @@ func extractFuncColumnRefs(expr string) []funcColumnRef {
 			result = append(result, funcColumnRef{
 				funcName: funcName,
 				column:   colName,
+				alias:    colAlias,
 			})
 		}
 	}

@@ -18,21 +18,23 @@ import (
 type Parser struct{}
 
 type ParseResult struct {
-	BusinessObjects      []*model.APIBusinessObject
-	Contracts            []*model.APIContract
-	Params               []*model.APIContractParam
-	Tables               []*model.APIContractTable
-	TableFields          []*model.APIContractTableField
-	BusinessObjectParams []*model.APIBusinessObjectParam
-	BusinessObjectTables []*model.APIBusinessObjectTable
-	BusinessTableFields  []*model.APIBusinessObjectTableField
-	BusinessTableIndexes []*model.APIBusinessObjectTableIndex
-	BusinessIndexFields  []*model.APIBusinessObjectTableIndexField
-	ReturnValues         []*model.APIContractReturnValue
-	Contexts             []*model.APIContractContext
-	Symbols              []*model.Symbol
-	InternalPTables      []*model.SQLTable
-	InternalPTableColumns []*model.SQLColumnDefinition
+	BusinessObjects           []*model.APIBusinessObject
+	Contracts                 []*model.APIContract
+	Params                    []*model.APIContractParam
+	Tables                    []*model.APIContractTable
+	TableFields               []*model.APIContractTableField
+	BusinessObjectParams      []*model.APIBusinessObjectParam
+	BusinessObjectTables      []*model.APIBusinessObjectTable
+	BusinessTableFields       []*model.APIBusinessObjectTableField
+	BusinessTableIndexes      []*model.APIBusinessObjectTableIndex
+	BusinessIndexFields       []*model.APIBusinessObjectTableIndexField
+	ReturnValues              []*model.APIContractReturnValue
+	Contexts                  []*model.APIContractContext
+	Symbols                   []*model.Symbol
+	InternalPTables           []*model.SQLTable
+	InternalPTableColumns     []*model.SQLColumnDefinition
+	InternalPTableIndexes     []*model.SQLIndexDefinition
+	InternalPTableIndexFields []*model.SQLIndexDefinitionField
 }
 
 type objectXML struct {
@@ -186,21 +188,23 @@ func (p *Parser) ParseFile(path string) (*ParseResult, error) {
 
 func (p *Parser) ParseContent(path string, content string) (*ParseResult, error) {
 	res := &ParseResult{
-		BusinessObjects:      make([]*model.APIBusinessObject, 0),
-		Contracts:            make([]*model.APIContract, 0),
-		Params:               make([]*model.APIContractParam, 0),
-		Tables:               make([]*model.APIContractTable, 0),
-		TableFields:          make([]*model.APIContractTableField, 0),
-		BusinessObjectParams: make([]*model.APIBusinessObjectParam, 0),
-		BusinessObjectTables: make([]*model.APIBusinessObjectTable, 0),
-		BusinessTableFields:  make([]*model.APIBusinessObjectTableField, 0),
-		BusinessTableIndexes: make([]*model.APIBusinessObjectTableIndex, 0),
-		BusinessIndexFields:  make([]*model.APIBusinessObjectTableIndexField, 0),
-		ReturnValues:         make([]*model.APIContractReturnValue, 0),
-		Contexts:             make([]*model.APIContractContext, 0),
-		Symbols:              make([]*model.Symbol, 0),
-		InternalPTables:      make([]*model.SQLTable, 0),
-		InternalPTableColumns: make([]*model.SQLColumnDefinition, 0),
+		BusinessObjects:           make([]*model.APIBusinessObject, 0),
+		Contracts:                 make([]*model.APIContract, 0),
+		Params:                    make([]*model.APIContractParam, 0),
+		Tables:                    make([]*model.APIContractTable, 0),
+		TableFields:               make([]*model.APIContractTableField, 0),
+		BusinessObjectParams:      make([]*model.APIBusinessObjectParam, 0),
+		BusinessObjectTables:      make([]*model.APIBusinessObjectTable, 0),
+		BusinessTableFields:       make([]*model.APIBusinessObjectTableField, 0),
+		BusinessTableIndexes:      make([]*model.APIBusinessObjectTableIndex, 0),
+		BusinessIndexFields:       make([]*model.APIBusinessObjectTableIndexField, 0),
+		ReturnValues:              make([]*model.APIContractReturnValue, 0),
+		Contexts:                  make([]*model.APIContractContext, 0),
+		Symbols:                   make([]*model.Symbol, 0),
+		InternalPTables:           make([]*model.SQLTable, 0),
+		InternalPTableColumns:     make([]*model.SQLColumnDefinition, 0),
+		InternalPTableIndexes:     make([]*model.SQLIndexDefinition, 0),
+		InternalPTableIndexFields: make([]*model.SQLIndexDefinitionField, 0),
 	}
 	if strings.TrimSpace(content) == "" {
 		return res, nil
@@ -295,6 +299,37 @@ func (p *Parser) ParseContent(path string, content string) (*ParseResult, error)
 					LineNumber:     1,
 					ColumnOrder:    field.ParamOrder,
 				})
+			}
+			tableName := strings.TrimSpace(table.ParamName)
+			for _, index := range table.Indexes {
+				indexName := strings.TrimSpace(index.IndexName)
+				indexTypeStr := "nonclustered"
+				isUnique := false
+				switch index.IndexType {
+				case 1:
+					indexTypeStr = "clustered"
+				case 2:
+					indexTypeStr = "unique nonclustered"
+					isUnique = true
+				}
+				res.InternalPTableIndexes = append(res.InternalPTableIndexes, &model.SQLIndexDefinition{
+					TableName:      tableName,
+					IndexName:      indexName,
+					IndexFields:    strings.TrimSpace(index.IndexFields),
+					IndexType:      indexTypeStr,
+					IsUnique:       isUnique,
+					DefinitionKind: "create",
+					LineNumber:     1,
+				})
+				for fieldOrder, field := range index.Fields {
+					res.InternalPTableIndexFields = append(res.InternalPTableIndexFields, &model.SQLIndexDefinitionField{
+						ParentIndexName: indexName,
+						ParentTableName: tableName,
+						FieldName:       strings.TrimSpace(field.FieldName),
+						FieldOrder:      fieldOrder,
+						LineNumber:      1,
+					})
+				}
 			}
 		}
 		return res, nil

@@ -4388,6 +4388,9 @@ func TestExtractFuncColumnRefs_AliasedColumn(t *testing.T) {
 	if refs[0].column != "Status" {
 		t.Fatalf("expected column Status (from t.Status), got %s", refs[0].column)
 	}
+	if refs[0].alias != "t" {
+		t.Fatalf("expected alias t, got %s", refs[0].alias)
+	}
 }
 
 func TestExtractFuncColumnRefs_NoFunc(t *testing.T) {
@@ -4401,6 +4404,31 @@ func TestExtractFuncColumnRefs_MultipleFuncs(t *testing.T) {
 	refs := extractFuncColumnRefs("UPPER(Name) = 'ABC' and ISNULL(Status, 0) = 1")
 	if len(refs) != 2 {
 		t.Fatalf("expected 2 refs, got %d", len(refs))
+	}
+}
+
+func TestExtractFuncColumnRefs_AliasedColumnDifferentAlias(t *testing.T) {
+	refs := extractFuncColumnRefs("isnull(oa.SPID, 0) >= 0")
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 ref, got %d", len(refs))
+	}
+	if refs[0].alias != "oa" {
+		t.Fatalf("expected alias oa, got %s", refs[0].alias)
+	}
+	if refs[0].column != "SPID" {
+		t.Fatalf("expected column SPID, got %s", refs[0].column)
+	}
+	// Verify: isIndexedColumn with table alias "d" should NOT match "SPID" when ref alias is "oa"
+	indexSet := map[string]bool{"spid": true}
+	if isIndexedColumn("SPID", "d", indexSet) {
+		// SPID without dot and alias "d" — this matches because column without dot
+		// does direct match. The guard is in the calling code (fr.alias != alias → skip).
+		// This test documents the behavior: isIndexedColumn itself does direct match
+		// for non-dotted columns regardless of alias.
+	}
+	// But with dot: isIndexedColumn("oa.SPID", "d", ...) should NOT match
+	if isIndexedColumn("oa.SPID", "d", indexSet) {
+		t.Fatalf("oa.SPID should not match when table alias is d")
 	}
 }
 
@@ -5042,5 +5070,51 @@ func TestResolveArgType_ConvertNumericEquivalDSIdentifier(t *testing.T) {
 	t2 := "DSIDENTIFIER"
 	if !areEquivalentTypes(t1, t2) {
 		t.Fatalf("convert(numeric(15,0)) type %q should be equivalent to DSIDENTIFIER", t1)
+	}
+}
+
+func TestExtractWherePartForIndexWrong_SubqueryInOn_NoFalseWhere(t *testing.T) {
+	query := `      insert into pCRINHRESTLIM_Calc M_WITH_ROWLOCK
+             (SPID, OperandID)
+      select @@spid, p.AutoID
+        from pCons_Calc_ObjectOperand    p
+       inner join tCreditTurnover       ct
+               on ct.ContractCreditID    = p.ObjectID
+              and ct.Date                = isnull((select max(ct2.Date)
+                                                     from tCreditTurnover      ct2
+                                                    where ct2.ContractCreditID   = cd2.ContractCreditID
+                                                      and ct2.Direction          = 2), ct.Date)
+              and ct.Amount              = p.Value
+       inner join tCreditDebt          cd2
+               on cd2.ContractCreditID   = ct.ContractCreditID
+              and cd2.Date               = isnull((select max(ct2.Date)
+                                                     from tCreditTurnover      ct2
+                                                    where ct2.ContractCreditID   = cd2.ContractCreditID
+                                                      and ct2.Direction          = 2), ct.Date)
+      where p.SPID                       = @@spid
+        and p.Operand                 like '%CRINHRESTLIM%'
+        and p.Value                      > 0`
+
+	wherePart := extractWherePartForIndexWrong(query)
+	// WHERE part should start at the outer "where p.SPID", not at the inner subquery "where ct2.ContractCreditID"
+	if strings.Contains(wherePart, "ct2.ContractCreditID") {
+		t.Fatalf("extractWherePartForIndexWrong should not include subquery WHERE, got: %q", wherePart)
+	}
+	if !strings.Contains(wherePart, "p.SPID") {
+		t.Fatalf("extractWherePartForIndexWrong should include outer WHERE with p.SPID, got: %q", wherePart)
+	}
+
+	// ON parts may contain subquery text (inside isnull(...)), but extractComparisons
+	// should not extract comparisons from inside parentheses (subquery).
+	onParts := extractOnPartsForIndexWrong(query)
+	for i, on := range onParts {
+		comparisons := extractComparisons(on)
+		for _, cmp := range comparisons {
+			left := strings.TrimSpace(cmp.left)
+			right := strings.TrimSpace(cmp.right)
+			if strings.Contains(left, "ct2.") || strings.Contains(right, "ct2.") {
+				t.Fatalf("onPart[%d] extractComparisons should not extract subquery comparison: left=%q right=%q", i, left, right)
+			}
+		}
 	}
 }

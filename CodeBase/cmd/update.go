@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/codebase/internal/config"
@@ -12,6 +13,7 @@ import (
 
 var (
 	onlyModified bool
+	updatePath   string
 )
 
 var updateCmd = &cobra.Command{
@@ -25,6 +27,14 @@ Uses file hashes to detect changes.`,
 		cfg := config.Get()
 		if cfg == nil || cfg.RootPath == "" {
 			return fmt.Errorf("root path not configured")
+		}
+
+		rootPath := cfg.RootPath
+		if updatePath != "" {
+			rootPath = updatePath
+			if _, err := os.Stat(rootPath); os.IsNotExist(err) {
+				return fmt.Errorf("path does not exist: %s", rootPath)
+			}
 		}
 
 		effectiveParallel := parallel
@@ -47,8 +57,8 @@ Uses file hashes to detect changes.`,
 		idx := indexer.New(db, cfg)
 		startedAt := time.Now()
 		fmt.Printf("\nUpdating started: %s\n", startedAt.Format("2006-01-02 15:04:05"))
-		fmt.Printf("rootPath=%s parallel=%d\n", cfg.RootPath, effectiveParallel)
-		stats, err := idx.Update(cfg.RootPath, onlyModified, effectiveParallel)
+		fmt.Printf("rootPath=%s parallel=%d\n", rootPath, effectiveParallel)
+		stats, err := idx.Update(rootPath, onlyModified, effectiveParallel)
 		if err != nil {
 			return fmt.Errorf("update failed: %w", err)
 		}
@@ -106,6 +116,7 @@ Uses file hashes to detect changes.`,
 
 func init() {
 	updateCmd.Flags().BoolVar(&onlyModified, "modified", true, "scan only modified files")
+	updateCmd.Flags().StringVarP(&updatePath, "path", "p", "", "override root_path from config; scan only this directory")
 	updateCmd.Flags().IntVarP(&parallel, "parallel", "j", 4, "number of parallel workers")
 	rootCmd.AddCommand(updateCmd)
 }

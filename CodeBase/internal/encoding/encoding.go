@@ -139,8 +139,8 @@ var xmlEncodingRegexp = regexp.MustCompile(`<?xml[^>]*encoding=["']([^"']+)["'][
 // DetectXMLEncoding определяет кодировку XML по declaration или содержимому
 // 1. Ищет encoding в XML declaration
 // 2. Если declaration нет или encoding не указан:
-//    - Проверяет валидность UTF-8
-//    - Если невалидно -> предполагает WIN1251 (Diasoft heuristic)
+//   - Проверяет валидность UTF-8
+//   - Если невалидно -> предполагает WIN1251 (Diasoft heuristic)
 func DetectXMLEncoding(data []byte) Encoding {
 	// Ищем XML declaration в начале файла (первые 200 байт достаточно)
 	prefix := data
@@ -174,10 +174,11 @@ func DetectXMLEncoding(data []byte) Encoding {
 // Алгоритм:
 //  1. Нет байт > 0x7F → ASCII (совместим с CP866)
 //  2. Валидный UTF-8 → UTF-8
-//  3. Эвристика по маркерным диапазонам:
-//     cp866Score  = кол-во байт 0x80–0x9F (А-Я в CP866, редкие спецсимволы в CP1251)
-//     cp1251Score = кол-во байт 0xC0–0xDF (А-Я в CP1251, псевдографика в CP866 — редка в тексте)
-//     Побеждает бо́льший счёт.
+//  3. Эвристика по неоднозначным маркерным диапазонам:
+//     cp866Score  = байты 0x80–0x9F (заглавные А-Я в CP866, редкие спецсимволы в CP1251)
+//     cp1251Score = байты 0xC0–0xDF (заглавные А-Я в CP1251, псевдографика в CP866 — редка в тексте)
+//     Диапазоны 0xA0–0xBF и 0xE0–0xFF — строчные русские в обеих кодировках, не учитываются.
+//     Побеждает бо́льший счёт; при равенстве — CP866 (по умолчанию для Diasoft SQL).
 func DetectFromBytes(data []byte) Encoding {
 	hasHigh := false
 	for _, b := range data {
@@ -199,7 +200,7 @@ func DetectFromBytes(data []byte) Encoding {
 		switch {
 		case b >= 0x80 && b <= 0x9F:
 			cp866Score++
-		case b >= 0xC0:
+		case b >= 0xC0 && b <= 0xDF:
 			cp1251Score++
 		}
 	}

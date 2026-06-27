@@ -389,7 +389,28 @@ func TestParseContent_InternalTableGoesToInternalPTables(t *testing.T) {
       <ParamName>Field1</ParamName>
       <TypeName>Integer</TypeName>
     </Field>
+    <Field>
+      <ParamOrder>2</ParamOrder>
+      <ParamName>SPID</ParamName>
+      <TypeName>DSSPID</TypeName>
+    </Field>
   </Fields>
+  <Indexses>
+    <Index>
+      <IndexName>XPKpPortObject</IndexName>
+      <IndexFields>SPID, Field1</IndexFields>
+      <IndexType>2</IndexType>
+      <IsClustered>0</IsClustered>
+      <FieldList>
+        <Field>
+          <FieldName>SPID</FieldName>
+        </Field>
+        <Field>
+          <FieldName>Field1</FieldName>
+        </Field>
+      </FieldList>
+    </Index>
+  </Indexses>
 </Table>`
 
 	parser := NewParser()
@@ -422,8 +443,8 @@ func TestParseContent_InternalTableGoesToInternalPTables(t *testing.T) {
 	if !hasInternalSymbol {
 		t.Fatalf("Symbols should contain table symbol with EntityType=sql for pPortObject")
 	}
-	if len(result.InternalPTableColumns) != 1 {
-		t.Fatalf("InternalPTableColumns count = %d, want 1", len(result.InternalPTableColumns))
+	if len(result.InternalPTableColumns) != 2 {
+		t.Fatalf("InternalPTableColumns count = %d, want 2", len(result.InternalPTableColumns))
 	}
 	col := result.InternalPTableColumns[0]
 	if col.TableName != "pPortObject" || col.ColumnName != "Field1" || col.DataType != "Integer" {
@@ -431,5 +452,27 @@ func TestParseContent_InternalTableGoesToInternalPTables(t *testing.T) {
 	}
 	if col.DefinitionKind != "create" {
 		t.Fatalf("InternalPTableColumns[0].DefinitionKind = %q, want %q", col.DefinitionKind, "create")
+	}
+	if len(result.InternalPTableIndexes) != 1 {
+		t.Fatalf("InternalPTableIndexes count = %d, want 1", len(result.InternalPTableIndexes))
+	}
+	idx := result.InternalPTableIndexes[0]
+	if idx.TableName != "pPortObject" || idx.IndexName != "XPKpPortObject" {
+		t.Fatalf("InternalPTableIndexes[0] = %+v, want {pPortObject, XPKpPortObject}", idx)
+	}
+	if idx.IndexFields != "SPID, Field1" {
+		t.Fatalf("InternalPTableIndexes[0].IndexFields = %q, want %q", idx.IndexFields, "SPID, Field1")
+	}
+	if !idx.IsUnique {
+		t.Fatalf("InternalPTableIndexes[0].IsUnique = false, want true (IndexType=2)")
+	}
+	if idx.DefinitionKind != "create" {
+		t.Fatalf("InternalPTableIndexes[0].DefinitionKind = %q, want %q", idx.DefinitionKind, "create")
+	}
+	if len(result.InternalPTableIndexFields) != 2 {
+		t.Fatalf("InternalPTableIndexFields count = %d, want 2", len(result.InternalPTableIndexFields))
+	}
+	if result.InternalPTableIndexFields[0].FieldName != "SPID" || result.InternalPTableIndexFields[1].FieldName != "Field1" {
+		t.Fatalf("InternalPTableIndexFields = %+v, want [{SPID}, {Field1}]", result.InternalPTableIndexFields)
 	}
 }

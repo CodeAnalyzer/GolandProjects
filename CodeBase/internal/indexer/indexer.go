@@ -1157,6 +1157,35 @@ func (idx *Indexer) parseXMLFile(path string, fileID int64, stats *model.ScanSta
 	if err := idx.db.BatchInsertSQLColumnDefinitions(result.InternalPTableColumns, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
+	for _, idxDef := range result.InternalPTableIndexes {
+		idxDef.FileID = fileID
+	}
+	if err := idx.db.BatchInsertSQLIndexDefinitions(result.InternalPTableIndexes, idx.config.Indexer.BatchSize); err != nil {
+		return err
+	}
+	if len(result.InternalPTableIndexFields) > 0 {
+		indexIDs, err := idx.db.FindSQLIndexDefinitionIDsByFile(fileID)
+		if err != nil {
+			return fmt.Errorf("failed to resolve SQL index definition ids for internal p-table indexes: %w", err)
+		}
+		fieldsToPersist := make([]*model.SQLIndexDefinitionField, 0, len(result.InternalPTableIndexFields))
+		for _, field := range result.InternalPTableIndexFields {
+			if field == nil {
+				continue
+			}
+			key := store.BuildSQLIndexDefinitionLookupKey(field.ParentTableName, field.ParentIndexName, field.LineNumber)
+			field.TableIndexID = indexIDs[key]
+			if field.TableIndexID == 0 {
+				continue
+			}
+			fieldsToPersist = append(fieldsToPersist, field)
+		}
+		if len(fieldsToPersist) > 0 {
+			if err := idx.db.BatchInsertSQLIndexDefinitionFields(fieldsToPersist, idx.config.Indexer.BatchSize); err != nil {
+				return err
+			}
+		}
+	}
 	stats.APIContracts += len(result.Contracts)
 	stats.APIParams += len(result.Params) + len(result.BusinessObjectParams)
 	stats.APITables += len(result.Tables) + len(result.BusinessObjectTables)
