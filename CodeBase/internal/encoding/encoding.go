@@ -174,7 +174,9 @@ func DetectXMLEncoding(data []byte) Encoding {
 // Алгоритм:
 //  1. Нет байт > 0x7F → ASCII (совместим с CP866)
 //  2. Валидный UTF-8 → UTF-8
-//  3. Эвристика по неоднозначным маркерным диапазонам:
+//  3. «Почти UTF-8»: ≥80% высоких байт входят в валидные многобайтные UTF-8
+//     последовательности — файл считается UTF-8 с единичными артефактами кодировки.
+//  4. Эвристика по неоднозначным маркерным диапазонам:
 //     cp866Score  = байты 0x80–0x9F (заглавные А-Я в CP866, редкие спецсимволы в CP1251)
 //     cp1251Score = байты 0xC0–0xDF (заглавные А-Я в CP1251, псевдографика в CP866 — редка в тексте)
 //     Диапазоны 0xA0–0xBF и 0xE0–0xFF — строчные русские в обеих кодировках, не учитываются.
@@ -195,6 +197,13 @@ func DetectFromBytes(data []byte) Encoding {
 		return UTF8
 	}
 
+	// Файл не полностью валидный UTF-8, но может быть «почти UTF-8» —
+	// например, RTI-логи с единичными байтами CP866 или некорректно закодированными
+	// символами ё/Ё среди преимущественно UTF-8 контента.
+	if isLikelyUTF8(data) {
+		return UTF8
+	}
+
 	var cp866Score, cp1251Score int
 	for _, b := range data {
 		switch {
@@ -209,6 +218,34 @@ func DetectFromBytes(data []byte) Encoding {
 		return WIN1251
 	}
 	return CP866
+}
+
+// isLikelyUTF8 возвращает true если ≥80% байт со значением >0x7F входят
+// в валидные многобайтные UTF-8 последовательности.
+// Это позволяет корректно определить файлы, которые преимущественно в UTF-8,
+// но содержат единичные «чужие» байты (артефакты смешанной кодировки).
+func isLikelyUTF8(data []byte) bool {
+	var validBytes, invalidBytes int
+	for i := 0; i < len(data); {
+		b := data[i]
+		if b < 0x80 {
+			i++
+			continue // ASCII — не учитываем
+		}
+		r, size := utf8.DecodeRune(data[i:])
+		if r == utf8.RuneError && size == 1 {
+			invalidBytes++
+			i++
+		} else {
+			validBytes += size
+			i += size
+		}
+	}
+	total := validBytes + invalidBytes
+	if total == 0 {
+		return false
+	}
+	return validBytes*100/total >= 80
 }
 
 // DecodeBytes декодирует байты из указанной кодировки в UTF-8 строку

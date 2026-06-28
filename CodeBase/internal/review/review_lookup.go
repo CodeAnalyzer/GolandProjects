@@ -148,49 +148,52 @@ func (r *Runner) lookupProcedureCreateFiles(procName string) ([]int64, error) {
 }
 
 func (r *Runner) lookupIndexExists(tableName, indexName string) (bool, error) {
-	normalizedTable := strings.TrimSpace(tableName)
-	normalizedIndex := strings.TrimSpace(indexName)
+	normalizedTable := strings.ToLower(strings.TrimSpace(tableName))
+	normalizedIndex := strings.ToLower(strings.TrimSpace(normalizeIdentifier(indexName)))
 	if normalizedTable == "" || normalizedIndex == "" {
 		return false, nil
 	}
 
-	var exists bool
-	err := r.db.QueryRow(`
-		SELECT EXISTS(
-			SELECT 1
-			FROM sql_index_definitions i
-			WHERE LOWER(i.table_name) = LOWER($1)
-			  AND LOWER(i.index_name) = LOWER($2)
-		)
-	`, normalizedTable, normalizedIndex).Scan(&exists)
-	if err != nil {
+	// Если таблица есть в кэше — вычисляем из кандидатов без DB
+	r.indexCandMu.Lock()
+	if cands, ok := r.indexCandCache[normalizedTable]; ok {
+		r.indexCandMu.Unlock()
+		for _, c := range cands {
+			if strings.ToLower(normalizeIdentifier(c.Name)) == normalizedIndex {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	r.indexCandMu.Unlock()
+
+	// Cache miss: грузим и кэшируем
+	if err := r.batchLoadIndexCandidates([]string{normalizedTable}); err != nil {
 		return false, err
 	}
-	if exists {
-		return true, nil
+	r.indexCandMu.Lock()
+	cands := r.indexCandCache[normalizedTable]
+	r.indexCandMu.Unlock()
+	for _, c := range cands {
+		if strings.ToLower(normalizeIdentifier(c.Name)) == normalizedIndex {
+			return true, nil
+		}
 	}
-
-	err = r.db.QueryRow(`
-		SELECT EXISTS(
-			SELECT 1
-			FROM api_business_object_table_indexes i
-			JOIN api_business_object_tables t ON t.id = i.business_table_id
-			WHERE LOWER(t.table_name) = LOWER($1)
-			  AND LOWER(i.index_name) = LOWER($2)
-		)
-	`, normalizedTable, normalizedIndex).Scan(&exists)
-	if err != nil {
-		return false, err
-	}
-
-	return exists, nil
+	return false, nil
 }
 
 func (r *Runner) lookupIndexFieldsByName(indexName string) ([]string, error) {
-	normalized := strings.TrimSpace(indexName)
+	normalized := strings.ToLower(strings.TrimSpace(normalizeIdentifier(indexName)))
 	if normalized == "" {
 		return nil, nil
 	}
+
+	r.indexCandMu.Lock()
+	if fields, ok := r.indexFieldsCache[normalized]; ok {
+		r.indexCandMu.Unlock()
+		return fields, nil
+	}
+	r.indexCandMu.Unlock()
 
 	rows, err := r.db.Query(`
 		SELECT f.field_name
@@ -250,47 +253,77 @@ func (r *Runner) lookupIndexFieldsByName(indexName string) ([]string, error) {
 		}
 	}
 
-	return fields, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	r.indexCandMu.Lock()
+	r.indexFieldsCache[normalized] = fields
+	r.indexCandMu.Unlock()
+	return fields, nil
 }
 
-func (r *Runner) lookupTableIndexCandidates(tableName string) ([]tableIndexCandidate, error) {
-	normalizedTable := strings.TrimSpace(tableName)
-	if normalizedTable == "" {
-		return nil, nil
+// prewarmIndexCache сканирует файл на наличие index-хинтов (WITH (INDEX=...)),
+// собирает уникальные имена таблиц и batch-загружает все их индексы в indexCandCache
+// и indexFieldsCache до запуска правил.
+func (r *Runner) prewarmIndexCache(fileLines []string) error {
+	tableSet := make(map[string]struct{})
+	for _, line := range fileLines {
+		ll := strings.ToLower(line)
+		if !strings.Contains(ll, "index") && !strings.Contains(ll, "tablock") && !strings.Contains(ll, "with") {
+			continue
+		}
+		// Ищем таблицы с хинтами вида: tablename (WITH (...)) alias
+		for _, m := range reFromJoinTable.FindAllStringSubmatch(line, -1) {
+			if len(m) == 2 {
+				tableSet[strings.ToLower(strings.TrimSpace(m[1]))] = struct{}{}
+			}
+		}
+	}
+	if len(tableSet) == 0 {
+		return nil
+	}
+	tableNames := make([]string, 0, len(tableSet))
+	for t := range tableSet {
+		tableNames = append(tableNames, t)
+	}
+	return r.batchLoadIndexCandidates(tableNames)
+}
+
+// batchLoadIndexCandidates загружает все индексы (из sql_index_definitions и API)
+// для переданного набора таблиц и заполняет indexCandCache и indexFieldsCache.
+func (r *Runner) batchLoadIndexCandidates(tableNames []string) error {
+	if len(tableNames) == 0 {
+		return nil
 	}
 
 	type aggregate struct {
+		tableLower string
 		name       string
 		fieldsByNo map[int]string
 	}
 
-	items := make(map[string]*aggregate)
+	items := make(map[string]*aggregate) // key: tableLower|indexID:normName
 	order := make([]string, 0)
 
-	consumeRows := func(query string) error {
-		rows, err := r.db.Query(query, normalizedTable)
-		if err != nil {
-			return err
-		}
+	scanRows := func(rows *sql.Rows) error {
 		defer rows.Close()
-
 		for rows.Next() {
+			var tableLower string
 			var indexID int64
 			var indexName string
 			var fieldName sql.NullString
 			var fieldOrder sql.NullInt64
-			if err := rows.Scan(&indexID, &indexName, &fieldName, &fieldOrder); err != nil {
+			if err := rows.Scan(&tableLower, &indexID, &indexName, &fieldName, &fieldOrder); err != nil {
 				return err
 			}
-
-			key := fmt.Sprintf("%d:%s", indexID, normalizeIdentifier(indexName))
-			agg, exists := items[key]
+			k := fmt.Sprintf("%s|%d:%s", tableLower, indexID, normalizeIdentifier(indexName))
+			agg, exists := items[k]
 			if !exists {
-				agg = &aggregate{name: strings.TrimSpace(indexName), fieldsByNo: map[int]string{}}
-				items[key] = agg
-				order = append(order, key)
+				agg = &aggregate{tableLower: tableLower, name: strings.TrimSpace(indexName), fieldsByNo: map[int]string{}}
+				items[k] = agg
+				order = append(order, k)
 			}
-
 			if fieldName.Valid {
 				field := normalizeIdentifier(fieldName.String)
 				if field != "" {
@@ -305,43 +338,92 @@ func (r *Runner) lookupTableIndexCandidates(tableName string) ([]tableIndexCandi
 		return rows.Err()
 	}
 
-	if err := consumeRows(`
-		SELECT i.id, i.index_name, f.field_name, f.field_order
+	rows, err := r.db.Query(`
+		SELECT LOWER(i.table_name), i.id, i.index_name, f.field_name, f.field_order
 		FROM sql_index_definitions i
 		LEFT JOIN sql_index_definition_fields f ON f.table_index_id = i.id
-		WHERE LOWER(i.table_name) = LOWER($1)
-		ORDER BY i.id, f.field_order, f.id
-	`); err != nil {
-		return nil, err
+		WHERE LOWER(i.table_name) = ANY($1)
+		ORDER BY i.table_name, i.id, f.field_order, f.id
+	`, pq.Array(tableNames))
+	if err != nil {
+		return err
+	}
+	if err := scanRows(rows); err != nil {
+		return err
 	}
 
-	if err := consumeRows(`
-		SELECT i.id, i.index_name, f.field_name, f.field_order
+	rows2, err := r.db.Query(`
+		SELECT LOWER(t.table_name), i.id, i.index_name, f.field_name, f.field_order
 		FROM api_business_object_table_indexes i
 		JOIN api_business_object_tables t ON t.id = i.business_table_id
 		LEFT JOIN api_business_object_table_index_fields f ON f.table_index_id = i.id
-		WHERE LOWER(t.table_name) = LOWER($1)
-		ORDER BY i.id, f.field_order, f.id
-	`); err != nil {
-		return nil, err
+		WHERE LOWER(t.table_name) = ANY($1)
+		ORDER BY t.table_name, i.id, f.field_order, f.id
+	`, pq.Array(tableNames))
+	if err != nil {
+		return err
+	}
+	if err := scanRows(rows2); err != nil {
+		return err
 	}
 
-	result := make([]tableIndexCandidate, 0, len(order))
-	for _, key := range order {
-		agg := items[key]
-		if agg == nil {
-			continue
-		}
+	// Строим candidatesByTable и indexFieldsByName
+	candidatesByTable := make(map[string][]tableIndexCandidate)
+	indexFieldsByName := make(map[string][]string)
+	for _, k := range order {
+		agg := items[k]
 		fields := make([]string, 0, len(agg.fieldsByNo))
 		for i := 1; i <= len(agg.fieldsByNo); i++ {
-			if field, exists := agg.fieldsByNo[i]; exists {
-				fields = append(fields, field)
+			if f, ok := agg.fieldsByNo[i]; ok {
+				fields = append(fields, f)
 			}
 		}
-		result = append(result, tableIndexCandidate{Name: agg.name, Fields: fields})
+		candidatesByTable[agg.tableLower] = append(candidatesByTable[agg.tableLower], tableIndexCandidate{Name: agg.name, Fields: fields})
+		indexLower := strings.ToLower(normalizeIdentifier(agg.name))
+		if _, exists := indexFieldsByName[indexLower]; !exists {
+			indexFieldsByName[indexLower] = fields
+		}
 	}
 
-	return result, nil
+	// Записываем пустые списки для таблиц без индексов (negative cache)
+	for _, t := range tableNames {
+		if _, ok := candidatesByTable[t]; !ok {
+			candidatesByTable[t] = []tableIndexCandidate{}
+		}
+	}
+
+	r.indexCandMu.Lock()
+	for t, cands := range candidatesByTable {
+		r.indexCandCache[t] = cands
+	}
+	for idx, fields := range indexFieldsByName {
+		r.indexFieldsCache[idx] = fields
+	}
+	r.indexCandMu.Unlock()
+	return nil
+}
+
+func (r *Runner) lookupTableIndexCandidates(tableName string) ([]tableIndexCandidate, error) {
+	normalizedTable := strings.ToLower(strings.TrimSpace(tableName))
+	if normalizedTable == "" {
+		return nil, nil
+	}
+
+	r.indexCandMu.Lock()
+	if cands, ok := r.indexCandCache[normalizedTable]; ok {
+		r.indexCandMu.Unlock()
+		return cands, nil
+	}
+	r.indexCandMu.Unlock()
+
+	// Cache miss: загружаем для этой таблицы
+	if err := r.batchLoadIndexCandidates([]string{normalizedTable}); err != nil {
+		return nil, err
+	}
+	r.indexCandMu.Lock()
+	cands := r.indexCandCache[normalizedTable]
+	r.indexCandMu.Unlock()
+	return cands, nil
 }
 
 func (r *Runner) findAPITableNames(names []string) (map[string]struct{}, error) {

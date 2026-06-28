@@ -515,6 +515,7 @@ func (db *DB) InitSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_sql_columns_table_name ON sql_columns(table_name)`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_column_definitions_file_id ON sql_column_definitions(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_column_definitions_table_name ON sql_column_definitions(table_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_sql_column_definitions_lower_table_col ON sql_column_definitions(LOWER(table_name), LOWER(column_name))`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_index_definitions_file_id ON sql_index_definitions(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_index_definitions_table_name ON sql_index_definitions(table_name)`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_index_definitions_name ON sql_index_definitions(index_name)`,

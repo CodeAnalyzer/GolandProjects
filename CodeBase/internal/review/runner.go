@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -17,14 +18,17 @@ import (
 )
 
 type Runner struct {
-	db             *store.DB
-	parser         *sqlparser.Parser
-	exec           *reviewExecContext
-	colTypeCache   map[string]string
-	colTypeMu      sync.Mutex
-	macroTypeCache map[string]string
-	macroTypeMu    sync.Mutex
-	onProgress     func(completed, total int)
+	db              *store.DB
+	parser          *sqlparser.Parser
+	exec            *reviewExecContext
+	colTypeCache    map[string]string
+	colTypeMu       sync.Mutex
+	macroTypeCache  map[string]string
+	macroTypeMu     sync.Mutex
+	indexCandCache  map[string][]tableIndexCandidate
+	indexCandMu     sync.Mutex
+	indexFieldsCache map[string][]string
+	onProgress      func(completed, total int)
 }
 
 type reviewExecContext struct {
@@ -40,7 +44,7 @@ type ruleTask struct {
 }
 
 func NewRunner(db *store.DB) *Runner {
-	return &Runner{db: db, parser: sqlparser.NewParser(), colTypeCache: make(map[string]string), macroTypeCache: make(map[string]string)}
+	return &Runner{db: db, parser: sqlparser.NewParser(), colTypeCache: make(map[string]string), macroTypeCache: make(map[string]string), indexCandCache: make(map[string][]tableIndexCandidate), indexFieldsCache: make(map[string][]string)}
 }
 
 func (r *Runner) SetOnProgress(fn func(completed, total int)) {
@@ -62,6 +66,11 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 	r.macroTypeMu.Lock()
 	r.macroTypeCache = make(map[string]string)
 	r.macroTypeMu.Unlock()
+
+	r.indexCandMu.Lock()
+	r.indexCandCache = make(map[string][]tableIndexCandidate)
+	r.indexFieldsCache = make(map[string][]string)
+	r.indexCandMu.Unlock()
 
 	normalizedPath := normalizePath(path)
 	file, err := r.getIndexedFile(normalizedPath)
@@ -101,6 +110,14 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 	defer func() {
 		r.exec = nil
 	}()
+
+	// Предзагружаем кэши типов колонок и индексов одним batch-запросом каждый.
+	if err := r.prewarmColTypeCache(parsed, r.exec.lines); err != nil {
+		return nil, err
+	}
+	if err := r.prewarmIndexCache(r.exec.lines); err != nil {
+		return nil, err
+	}
 
 	ruleSet := enabledRuleSet(opts.Rules)
 	tasks := r.buildRuleTasks(ruleSet, parsed, file)
@@ -534,6 +551,74 @@ func (r *Runner) fileContent(path string) ([]byte, error) {
 		}
 	}
 	return os.ReadFile(path)
+}
+
+// reUpdateTable, reInsertTable, reFromJoinTable — лёгкие regex для извлечения имён
+// таблиц из SQL-фрагментов при предзагрузке кэша типов колонок.
+var (
+	reUpdateTable  = regexp.MustCompile(`(?i)^\s*update\s+(#?[a-z_][a-z0-9_#]*)`)
+	reInsertTable  = regexp.MustCompile(`(?i)^\s*insert\s+(?:into\s+)?(#?[a-z_][a-z0-9_#]*)`)
+	reFromJoinTable = regexp.MustCompile(`(?i)\b(?:from|join)\s+(#?[a-z_][a-z0-9_#]*)`)
+)
+
+// prewarmColTypeCache собирает все имена таблиц из фрагментов файла и загружает
+// типы всех их колонок одним batch-запросом к БД, заполняя colTypeCache.
+// Это позволяет избежать тысяч отдельных DB-запросов при параллельном запуске правил.
+func (r *Runner) prewarmColTypeCache(parsed *sqlparser.ParseResult, fileLines []string) error {
+	tableSet := make(map[string]struct{})
+
+	for _, frag := range parsed.Fragments {
+		if frag == nil {
+			continue
+		}
+		qt := frag.QueryText
+		if len(qt) == 0 {
+			continue
+		}
+		// Собираем UPDATE/INSERT целевые таблицы
+		if m := reUpdateTable.FindStringSubmatch(qt); len(m) == 2 {
+			tableSet[strings.ToLower(strings.TrimSpace(m[1]))] = struct{}{}
+		} else if m := reInsertTable.FindStringSubmatch(qt); len(m) == 2 {
+			tableSet[strings.ToLower(strings.TrimSpace(m[1]))] = struct{}{}
+		}
+		// Собираем таблицы из FROM/JOIN (для diffTypesComparison и indexWrong)
+		for _, m := range reFromJoinTable.FindAllStringSubmatch(qt, -1) {
+			if len(m) == 2 {
+				tableSet[strings.ToLower(strings.TrimSpace(m[1]))] = struct{}{}
+			}
+		}
+	}
+
+	// INSERT ... VALUES разбросаны по строкам файла
+	for _, line := range fileLines {
+		if !strings.Contains(strings.ToLower(line), "insert") {
+			continue
+		}
+		if m := reInsertTable.FindStringSubmatch(line); len(m) == 2 {
+			tableSet[strings.ToLower(strings.TrimSpace(m[1]))] = struct{}{}
+		}
+	}
+
+	if len(tableSet) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(tableSet))
+	for t := range tableSet {
+		names = append(names, t)
+	}
+
+	batch, err := r.db.BatchFindColumnDefinitionTypes(names)
+	if err != nil {
+		return err
+	}
+
+	r.colTypeMu.Lock()
+	for k, v := range batch {
+		r.colTypeCache[k] = v
+	}
+	r.colTypeMu.Unlock()
+	return nil
 }
 
 func (r *Runner) cachedFindColumnDefinitionType(tableName, columnName string) (string, error) {

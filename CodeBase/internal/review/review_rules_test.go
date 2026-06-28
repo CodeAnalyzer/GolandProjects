@@ -2505,6 +2505,10 @@ func TestCheckNullComparison_NoFalsePositive(t *testing.T) {
 		{name: "proc param default null output indented", content: "                 @AmountMain        DSMONEY   = null output,"},
 		{name: "select assign null continuation", content: "         @UserAnnual   = NULL"},
 		{name: "select assign null continuation comma", content: "         @UserAnnual   = NULL,"},
+		{name: "proc param varchar default null", content: "             @DocNumber          varchar(20)   = Null ,"},
+		{name: "proc param varchar250 default null", content: "             @AComment           varchar(250)  = Null ,"},
+		{name: "proc param numeric default null", content: "             @Amount             numeric(15,2) = Null ,"},
+		{name: "proc param decimal default null", content: "             @Rate               decimal(10,4) = Null"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -4420,12 +4424,11 @@ func TestExtractFuncColumnRefs_AliasedColumnDifferentAlias(t *testing.T) {
 	}
 	// Verify: isIndexedColumn with table alias "d" should NOT match "SPID" when ref alias is "oa"
 	indexSet := map[string]bool{"spid": true}
-	if isIndexedColumn("SPID", "d", indexSet) {
-		// SPID without dot and alias "d" — this matches because column without dot
-		// does direct match. The guard is in the calling code (fr.alias != alias → skip).
-		// This test documents the behavior: isIndexedColumn itself does direct match
-		// for non-dotted columns regardless of alias.
-	}
+	// SPID without dot and alias "d" — this matches because column without dot
+	// does direct match. The guard is in the calling code (fr.alias != alias → skip).
+	// This test documents the behavior: isIndexedColumn itself does direct match
+	// for non-dotted columns regardless of alias.
+	_ = isIndexedColumn("SPID", "d", indexSet)
 	// But with dot: isIndexedColumn("oa.SPID", "d", ...) should NOT match
 	if isIndexedColumn("oa.SPID", "d", indexSet) {
 		t.Fatalf("oa.SPID should not match when table alias is d")
@@ -5116,5 +5119,89 @@ func TestExtractWherePartForIndexWrong_SubqueryInOn_NoFalseWhere(t *testing.T) {
 				t.Fatalf("onPart[%d] extractComparisons should not extract subquery comparison: left=%q right=%q", i, left, right)
 			}
 		}
+	}
+}
+
+func TestHasPrecisionLoss(t *testing.T) {
+	cases := []struct {
+		name     string
+		source   string
+		target   string
+		wantKind string
+		wantOk   bool
+	}{
+		{name: "same type", source: "DSOPERDAY", target: "DSOPERDAY", wantKind: "", wantOk: false},
+		{name: "datetime to date", source: "datetime", target: "DSOPERDAY", wantKind: "loss", wantOk: true},
+		{name: "datetime to smalldatetime", source: "datetime", target: "smalldatetime", wantKind: "loss", wantOk: true},
+		{name: "numeric narrowing", source: "numeric(15,2)", target: "numeric(10,0)", wantKind: "loss", wantOk: true},
+		{name: "numeric same precision", source: "numeric(15,2)", target: "numeric(15,2)", wantKind: "", wantOk: false},
+		{name: "varchar narrowing", source: "varchar(250)", target: "varchar(20)", wantKind: "loss", wantOk: true},
+		{name: "varchar same length", source: "varchar(20)", target: "varchar(20)", wantKind: "", wantOk: false},
+		{name: "varchar no size", source: "varchar", target: "varchar(20)", wantKind: "", wantOk: false},
+		{name: "incompatible varchar to int", source: "varchar", target: "int", wantKind: "incompatible", wantOk: true},
+		{name: "incompatible float to varchar", source: "float", target: "varchar", wantKind: "incompatible", wantOk: true},
+		{name: "incompatible datetime to int", source: "datetime", target: "int", wantKind: "incompatible", wantOk: true},
+		{name: "empty source", source: "", target: "int", wantKind: "", wantOk: false},
+		{name: "empty target", source: "int", target: "", wantKind: "", wantOk: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			kind, ok := hasPrecisionLoss(tc.source, tc.target)
+			if kind != tc.wantKind || ok != tc.wantOk {
+				t.Errorf("hasPrecisionLoss(%q, %q) = (%q, %v), want (%q, %v)", tc.source, tc.target, kind, ok, tc.wantKind, tc.wantOk)
+			}
+		})
+	}
+}
+
+func TestVarcharLength(t *testing.T) {
+	cases := []struct {
+		input   string
+		wantLen int
+		wantOk  bool
+	}{
+		{input: "varchar(20)", wantLen: 20, wantOk: true},
+		{input: "varchar(250)", wantLen: 250, wantOk: true},
+		{input: "char(10)", wantLen: 10, wantOk: true},
+		{input: "nvarchar(100)", wantLen: 100, wantOk: true},
+		{input: "varchar", wantLen: 0, wantOk: false},
+		{input: "int", wantLen: 0, wantOk: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			n, ok := varcharLength(tc.input)
+			if n != tc.wantLen || ok != tc.wantOk {
+				t.Errorf("varcharLength(%q) = (%d, %v), want (%d, %v)", tc.input, n, ok, tc.wantLen, tc.wantOk)
+			}
+		})
+	}
+}
+
+func TestCheckDatatypeExecParams_NoDB_NoPanic(t *testing.T) {
+	runner := &Runner{}
+	content := "exec my_proc @Date = @OperDay\n"
+	f, err := os.CreateTemp("", "dtxec*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	file := &indexedFile{Path: f.Name(), DsProductID: 1}
+	runner.exec = &reviewExecContext{
+		filePath: normalizePath(f.Name()),
+		content:  []byte(content),
+		lines:    strings.Split(content, "\n"),
+	}
+	parsed := &sqlparser.ParseResult{}
+	findings, err := runner.checkDatatypeExecParams(parsed, file)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings without DB, got %d", len(findings))
 	}
 }

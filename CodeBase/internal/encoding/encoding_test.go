@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"unicode/utf8"
 
 	"golang.org/x/text/encoding/charmap"
 )
@@ -253,5 +254,43 @@ func TestDetectFromBytes_CP866LowercaseNotMisdetected(t *testing.T) {
 func TestDetectFromBytes_Empty(t *testing.T) {
 	if got := DetectFromBytes([]byte{}); got != CP866 {
 		t.Fatalf("DetectFromBytes(empty) = %q, want %q (CP866 as ASCII-compatible)", got, CP866)
+	}
+}
+
+func TestDetectFromBytes_MostlyUTF8WithFewInvalidBytes(t *testing.T) {
+	// RTI-лог: преимущественно ASCII + UTF-8 кириллица в RetValContext,
+	// но с единичными невалидными байтами (0x98 — CP866 Ш, 0xC2 0xE8 — некорректная
+	// UTF-8 пара для "ё"). utf8.Valid вернёт false, но isLikelyUTF8 должна вернуть true.
+	utf8Text := []byte("Отбор объектов старт")                   // валидный UTF-8
+	invalidByte := []byte{0x98}                                   // CP866 Ш, невалидный UTF-8
+	invalidPair := []byte{0xC2, 0xE8}                             // C2+non-continuation, невалидный UTF-8
+	ascii := []byte("RetVal = 0#Enter proc @@NestLevel = 1\n")    // ASCII структура RTI
+
+	// Строим данные как в реальном RTI-файле: много ASCII, немного UTF-8, единичные артефакты
+	var data []byte
+	for i := 0; i < 50; i++ {
+		data = append(data, ascii...)
+		data = append(data, utf8Text...)
+	}
+	data = append(data, invalidByte...)
+	data = append(data, invalidPair...)
+
+	if utf8.Valid(data) {
+		t.Fatal("test data must NOT be valid UTF-8 (precondition)")
+	}
+	if got := DetectFromBytes(data); got != UTF8 {
+		t.Fatalf("DetectFromBytes(mostly UTF-8 with few invalid bytes) = %q, want %q", got, UTF8)
+	}
+}
+
+func TestDetectFromBytes_PureCP866NotMistakenForUTF8(t *testing.T) {
+	// Чистый CP866 файл: все высокие байты — одиночные CP866 символы,
+	// не образующие валидных UTF-8 последовательностей → должен вернуть CP866.
+	cp866Data, err := charmap.CodePage866.NewEncoder().Bytes([]byte("Расчёт приоритетов начисления"))
+	if err != nil {
+		t.Fatalf("encode CP866: %v", err)
+	}
+	if got := DetectFromBytes(cp866Data); got == UTF8 {
+		t.Fatalf("DetectFromBytes(pure CP866) = UTF8, must not return UTF8")
 	}
 }

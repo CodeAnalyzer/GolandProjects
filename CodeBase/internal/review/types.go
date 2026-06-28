@@ -132,8 +132,8 @@ var truncateTblRe = regexp.MustCompile(`(?i)\btruncate\s+table\s+(\S+)`)
 var nullComparisonBinaryRe = regexp.MustCompile(`(?i)(?:^|[^a-zA-Z_])((?:=|<>|!=|<=|>=|<|>)\s*null\b|\bnull\s*(?:=|<>|!=|<=|>=|<|>))`)
 
 // nullParamDefaultRe соответствует строкам объявления параметра или переменной с дефолтом = null:
-// @Name   DSTYPE = null,   или   @Name DSTYPE = null
-var nullParamDefaultRe = regexp.MustCompile(`(?i)@\w+\s+\w+\s*=\s*null\s*(?:output\s*)?,?\s*$`)
+// @Name   DSTYPE = null,   или   @Name DSTYPE = null,   или   @Name varchar(20) = null,
+var nullParamDefaultRe = regexp.MustCompile(`(?i)@\w+\s+\w+(?:\s*\([^)]*\))?\s*=\s*null\s*(?:output\s*)?,?\s*$`)
 
 // nullSelectAssignRe соответствует строкам присвоения в SELECT: @Var = null  или  @Var = null,
 // (без объявления типа — это continuation-строка многострочного SELECT @var = ...)

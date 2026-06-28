@@ -24,6 +24,26 @@ var (
 	reColumnRef      = regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)(?:\.([a-z_][a-z0-9_]*))?\b`)
 	reTableColumnRef = regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b`)
 	reNumericSigned  = regexp.MustCompile(`^-?\d+(\.\d+)?$`)
+
+	// Precompiled regexes for slow-path rules (dateIntoString, emptyStringDate, floatToStringConvert, etc.)
+	reInsertValues       = regexp.MustCompile(`(?is)insert\s+(?:into\s+)?([a-z_#][a-z0-9_#]*)[^\(]*\((.*?)\)\s*values\s*\((.*?)\)`)
+	reConvertTypedCall   = regexp.MustCompile(`(?is)\bconvert\s*\(\s*([a-z_][a-z0-9_]*(?:\s*\([^)]*\))?)\s*,\s*(.+?)\s*\)`)
+	reCastTypedCall      = regexp.MustCompile(`(?is)\bcast\s*\(\s*(.+?)\s+as\s+([a-z_][a-z0-9_]*(?:\s*\([^)]*\))?)\s*\)`)
+	reConvertStart       = regexp.MustCompile(`(?i)\bconvert\s*\(`)
+	reCastStart          = regexp.MustCompile(`(?i)\bcast\s*\(`)
+	reSetRowcount        = regexp.MustCompile(`(?is)\bset\s+rowcount\s+(\d+)`)
+	reDeclareCursor      = regexp.MustCompile(`(?i)\bDECLARE\s+(#?\w+)\s+(?:INSENSITIVE\s+)?CURSOR\s+FOR\b`)
+	reDeclareCursorMacro = regexp.MustCompile(`(?i)\b__DECLARE_CURSOR__\s*\(\s*(#?\w+)\s*\)`)
+	reOpenCursor         = regexp.MustCompile(`(?i)\bOPEN\s+(#?\w+)`)
+	reFetchCursorFrom    = regexp.MustCompile(`(?i)\bFETCH\s+(?:\w+\s+)*?FROM\s+(#?\w+)`)
+	reFetchCursorDirect  = regexp.MustCompile(`(?i)\b(?:FETCH|__FETCH_NEXT__)\s+(?:NEXT\s+|PRIOR\s+|FIRST\s+|LAST\s+)?(#?\w+)\s+INTO\b`)
+	reCloseCursor        = regexp.MustCompile(`(?i)\bCLOSE\s+(#?\w+)`)
+	reDeallocCursor      = regexp.MustCompile(`(?i)\bDEALLOCATE\s+(?:CURSOR\s+)?(#?\w+)`)
+	reDeallocCursorMacro = regexp.MustCompile(`(?i)\b__DEALLOCATE_CURSOR__\s*\(\s*(#?\w+)\s*\)`)
+	reSystemCursor       = regexp.MustCompile(`^@@`)
+	reVarAssignInSelect  = regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	reEqOperands         = regexp.MustCompile(`(?i)(@?\w+(?:\.\w+)?)\s*=\s*(@?\w+(?:\.\w+)?)`)
+	reWhitespace         = regexp.MustCompile(`\s+`)
 )
 
 func (r *Runner) checkForeignTables(parsed *sqlparser.ParseResult, file *indexedFile, prefix string) ([]Finding, error) {
@@ -1228,7 +1248,7 @@ func (r *Runner) checkExistsWithAndInIf(file *indexedFile) ([]Finding, error) {
 				objText = objText[:loc[0]]
 			}
 			// Нормализуем пробелы и переносы строк
-			objText = regexp.MustCompile(`\s+`).ReplaceAllString(strings.TrimSpace(objText), " ")
+			objText = reWhitespace.ReplaceAllString(strings.TrimSpace(objText), " ")
 			// Ограничиваем длину
 			if len(objText) > 80 {
 				objText = objText[:80] + "..."
@@ -1893,6 +1913,115 @@ func (r *Runner) checkDatatype(parsed *sqlparser.ParseResult, file *indexedFile)
 	}
 	findings = append(findings, fetchIntoFindings...)
 
+	execParamsFindings, err := r.checkDatatypeExecParams(parsed, file)
+	if err != nil {
+		return nil, err
+	}
+	findings = append(findings, execParamsFindings...)
+
+	return findings, nil
+}
+
+func (r *Runner) checkDatatypeExecParams(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	seen := make(map[string]struct{})
+
+	if r.db == nil {
+		return findings, nil
+	}
+
+	content, err := r.fileContent(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	variableTypes := collectVariableTypes(parsed, string(content))
+
+	calls := dedupeProcedureCalls(parsed.Calls)
+	for _, call := range calls {
+		params, err := r.lookupProcedureParams(call.Name)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				continue
+			}
+			return nil, err
+		}
+		if len(params) == 0 {
+			continue
+		}
+
+		if call.Line < 1 || call.Line > len(r.exec.lines) {
+			continue
+		}
+		callText := collectExecCallLines(r.exec.lines, call.Line)
+		args := parseExecArguments(callText, call.Name)
+		if len(args) == 0 {
+			continue
+		}
+
+		paramMap := make(map[string]model.SQLParam)
+		for _, p := range params {
+			paramMap[normalizeIdentifier(p.Name)] = p
+		}
+
+		for i, arg := range args {
+			// Пропускаем NULL — совместим с любым типом
+			if strings.EqualFold(strings.TrimSpace(arg.Value), "null") {
+				continue
+			}
+
+			// Сопоставляем аргумент с параметром
+			var param model.SQLParam
+			found := false
+			if arg.IsNamed {
+				param, found = paramMap[arg.Name]
+			} else if i < len(params) {
+				param = params[i]
+				found = true
+			}
+			if !found {
+				continue
+			}
+
+			paramType := normalizeDataType(param.Type)
+			if paramType == "" || paramType == "dsunknown" {
+				continue
+			}
+
+			argType := r.resolveArgType(arg.Value, variableTypes, nil)
+			if argType == "" {
+				continue
+			}
+
+			kind, loss := hasPrecisionLoss(argType, paramType)
+			if !loss {
+				continue
+			}
+
+			key := fmt.Sprintf("%d|%s|%s|%s", call.Line, normalizeIdentifier(param.Name), normalizeDataType(argType), normalizeDataType(paramType))
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+
+			var message string
+			if kind == "incompatible" {
+				message = fmt.Sprintf("Несовместимые типы при передаче в параметр @%s: %s -> %s", param.Name, argType, paramType)
+			} else {
+				message = fmt.Sprintf("Потеря точности при передаче в параметр @%s: %s -> %s", param.Name, argType, paramType)
+			}
+
+			findings = append(findings, Finding{
+				Rule:             RuleDatatype,
+				Severity:         SeverityFineCode,
+				Message:          message,
+				File:             file.Path,
+				Line:             call.Line,
+				Object:           call.Name,
+				CurrentProductID: file.DsProductID,
+			})
+		}
+	}
+
 	return findings, nil
 }
 
@@ -2492,8 +2621,7 @@ func analyzeConditionForEqColumn(lines []string, startLine int, file *indexedFil
 	}
 
 	// Захватываем опциональный @ для переменных T-SQL
-	eqRe := regexp.MustCompile(`(?i)(@?\w+(?:\.\w+)?)\s*=\s*(@?\w+(?:\.\w+)?)`)
-	matches := eqRe.FindAllStringSubmatch(fullText, -1)
+	matches := reEqOperands.FindAllStringSubmatch(fullText, -1)
 
 	for _, m := range matches {
 		if len(m) < 3 {
@@ -3731,34 +3859,31 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 	text := string(content)
 	variableTypes := collectVariableTypes(parsed, text)
 
-	// 1. SELECT @var = expr
+	// 1+4+5. Единый проход по фрагментам: SELECT @var=, UPDATE SET, INSERT SELECT
 	assignRe := reSelectAssign
 	for _, fragment := range parsed.Fragments {
 		if fragment == nil {
 			continue
 		}
+
+		// 1. SELECT @var = expr
 		var assignments []selectAssignment
-		stmt, ok := parseSelectAssignStatement(fragment.QueryText)
-		if ok {
-			assignments = stmt.Assignments
+		if selStmt, ok := parseSelectAssignStatement(fragment.QueryText); ok {
+			assignments = selStmt.Assignments
 		} else {
-			// fallback: SELECT @var = expr без FROM
-			text := strings.TrimSpace(fragment.QueryText)
-			lower := strings.ToLower(text)
-			if !strings.HasPrefix(lower, "select") {
-				continue
-			}
-			selectPart := strings.TrimSpace(text[len("select"):])
-			parts := splitTopLevelCSV(selectPart)
-			for _, part := range parts {
-				m := assignRe.FindStringSubmatch(strings.TrimSpace(part))
-				if len(m) != 3 {
-					continue
+			ftext := strings.TrimSpace(fragment.QueryText)
+			flower := strings.ToLower(ftext)
+			if strings.HasPrefix(flower, "select") {
+				selectPart := strings.TrimSpace(ftext[len("select"):])
+				for _, part := range splitTopLevelCSV(selectPart) {
+					m := assignRe.FindStringSubmatch(strings.TrimSpace(part))
+					if len(m) == 3 {
+						assignments = append(assignments, selectAssignment{
+							TargetVariable: strings.TrimSpace(m[1]),
+							Expression:     strings.TrimSpace(m[2]),
+						})
+					}
 				}
-				assignments = append(assignments, selectAssignment{
-					TargetVariable: strings.TrimSpace(m[1]),
-					Expression:     strings.TrimSpace(m[2]),
-				})
 			}
 		}
 		for _, a := range assignments {
@@ -3782,12 +3907,88 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 				})
 			}
 		}
+
+		// 4. UPDATE ... SET col = expr
+		if updStmt, ok := parseUpdateSetStatement(fragment.QueryText); ok {
+			for _, a := range updStmt.Assignments {
+				col := normalizeAssignmentTargetColumn(a.Target, updStmt)
+				if col == "" || a.Expression == "" {
+					continue
+				}
+				targetType, err := r.cachedFindColumnDefinitionType(updStmt.TargetTable, col)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						continue
+					}
+					return nil, err
+				}
+				if typeGroup(targetType) != "string" {
+					continue
+				}
+				if hasExplicitConversion(a.Expression, targetType) {
+					continue
+				}
+				if isDateExpression(a.Expression, variableTypes) {
+					findings = append(findings, Finding{
+						Rule:             RuleDateIntoString,
+						Severity:         SeverityPostgreReq,
+						Message:          fmt.Sprintf("Вставка значения типа datetime в строковый столбец: %s -> %s.%s", a.Expression, updStmt.TargetTable, col),
+						File:             file.Path,
+						Line:             fragment.LineNumber,
+						Object:           fmt.Sprintf("%s.%s", updStmt.TargetTable, col),
+						CurrentProductID: file.DsProductID,
+					})
+				}
+			}
+		}
+
+		// 5. INSERT ... SELECT
+		if insStmt, ok := parseInsertSelectStatement(fragment.QueryText); ok {
+			count := len(insStmt.TargetColumns)
+			if len(insStmt.SelectExpressions) < count {
+				count = len(insStmt.SelectExpressions)
+			}
+			for i := 0; i < count; i++ {
+				col := normalizeIdentifier(insStmt.TargetColumns[i])
+				expr := strings.TrimSpace(insStmt.SelectExpressions[i])
+				if col == "" || expr == "" {
+					continue
+				}
+				targetType, err := r.cachedFindColumnDefinitionType(insStmt.TargetTable, col)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						continue
+					}
+					return nil, err
+				}
+				if typeGroup(targetType) != "string" {
+					continue
+				}
+				if hasExplicitConversion(expr, targetType) {
+					continue
+				}
+				if isDateExpression(expr, variableTypes) {
+					findings = append(findings, Finding{
+						Rule:             RuleDateIntoString,
+						Severity:         SeverityPostgreReq,
+						Message:          fmt.Sprintf("Вставка значения типа datetime в строковый столбец: %s -> %s.%s", expr, insStmt.TargetTable, col),
+						File:             file.Path,
+						Line:             fragment.LineNumber,
+						Object:           fmt.Sprintf("%s.%s", insStmt.TargetTable, col),
+						CurrentProductID: file.DsProductID,
+					})
+				}
+			}
+		}
 	}
 
 	// 2. SET @var = expr
 	setRe := reSetAssign
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
+		if !strings.Contains(line, "@") {
+			continue
+		}
 		m := setRe.FindStringSubmatch(line)
 		if len(m) != 3 {
 			continue
@@ -3817,6 +4018,9 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 	// 3. DECLARE @var TYPE = expr
 	declRe := reDeclareAssign
 	for i, line := range lines {
+		if !strings.Contains(line, "@") {
+			continue
+		}
 		m := declRe.FindStringSubmatch(line)
 		if len(m) != 4 {
 			continue
@@ -3843,97 +4047,12 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 		}
 	}
 
-	// 4. UPDATE ... SET col = expr
-	for _, fragment := range parsed.Fragments {
-		if fragment == nil {
-			continue
-		}
-		stmt, ok := parseUpdateSetStatement(fragment.QueryText)
-		if !ok {
-			continue
-		}
-		for _, a := range stmt.Assignments {
-			col := normalizeAssignmentTargetColumn(a.Target, stmt)
-			if col == "" || a.Expression == "" {
-				continue
-			}
-			targetType, err := r.cachedFindColumnDefinitionType(stmt.TargetTable, col)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					continue
-				}
-				return nil, err
-			}
-			if typeGroup(targetType) != "string" {
-				continue
-			}
-			if hasExplicitConversion(a.Expression, targetType) {
-				continue
-			}
-			if isDateExpression(a.Expression, variableTypes) {
-				findings = append(findings, Finding{
-					Rule:             RuleDateIntoString,
-					Severity:         SeverityPostgreReq,
-					Message:          fmt.Sprintf("Вставка значения типа datetime в строковый столбец: %s -> %s.%s", a.Expression, stmt.TargetTable, col),
-					File:             file.Path,
-					Line:             fragment.LineNumber,
-					Object:           fmt.Sprintf("%s.%s", stmt.TargetTable, col),
-					CurrentProductID: file.DsProductID,
-				})
-			}
-		}
-	}
-
-	// 5. INSERT ... SELECT
-	for _, fragment := range parsed.Fragments {
-		if fragment == nil {
-			continue
-		}
-		stmt, ok := parseInsertSelectStatement(fragment.QueryText)
-		if !ok {
-			continue
-		}
-		count := len(stmt.TargetColumns)
-		if len(stmt.SelectExpressions) < count {
-			count = len(stmt.SelectExpressions)
-		}
-		for i := 0; i < count; i++ {
-			col := normalizeIdentifier(stmt.TargetColumns[i])
-			expr := strings.TrimSpace(stmt.SelectExpressions[i])
-			if col == "" || expr == "" {
-				continue
-			}
-			targetType, err := r.cachedFindColumnDefinitionType(stmt.TargetTable, col)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					continue
-				}
-				return nil, err
-			}
-			if typeGroup(targetType) != "string" {
-				continue
-			}
-			if hasExplicitConversion(expr, targetType) {
-				continue
-			}
-			if isDateExpression(expr, variableTypes) {
-				findings = append(findings, Finding{
-					Rule:             RuleDateIntoString,
-					Severity:         SeverityPostgreReq,
-					Message:          fmt.Sprintf("Вставка значения типа datetime в строковый столбец: %s -> %s.%s", expr, stmt.TargetTable, col),
-					File:             file.Path,
-					Line:             fragment.LineNumber,
-					Object:           fmt.Sprintf("%s.%s", stmt.TargetTable, col),
-					CurrentProductID: file.DsProductID,
-				})
-			}
-		}
-	}
-
 	// 6. INSERT ... VALUES
-	valuesRe := regexp.MustCompile(`(?is)insert\s+(?:into\s+)?([a-z_#][a-z0-9_#]*)[^\(]*\((.*?)\)\s*values\s*\((.*?)\)`)
 	for i, line := range lines {
-		m := valuesRe.FindStringSubmatch(line)
+		if !strings.Contains(strings.ToLower(line), "insert") {
+			continue
+		}
+		m := reInsertValues.FindStringSubmatch(line)
 		if len(m) != 4 {
 			continue
 		}
@@ -4101,33 +4220,31 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 		}
 	}
 
-	// 2. SELECT @var = ''
+	// 2+5+6. Единый проход по фрагментам: SELECT @var=, UPDATE SET, INSERT SELECT
 	assignRe := reSelectAssign
 	for _, fragment := range parsed.Fragments {
 		if fragment == nil {
 			continue
 		}
+
+		// 2. SELECT @var = ''
 		var assignments []selectAssignment
-		stmt, ok := parseSelectAssignStatement(fragment.QueryText)
-		if ok {
-			assignments = stmt.Assignments
+		if selStmt, ok := parseSelectAssignStatement(fragment.QueryText); ok {
+			assignments = selStmt.Assignments
 		} else {
-			text := strings.TrimSpace(fragment.QueryText)
-			lower := strings.ToLower(text)
-			if !strings.HasPrefix(lower, "select") {
-				continue
-			}
-			selectPart := strings.TrimSpace(text[len("select"):])
-			parts := splitTopLevelCSV(selectPart)
-			for _, part := range parts {
-				m := assignRe.FindStringSubmatch(strings.TrimSpace(part))
-				if len(m) != 3 {
-					continue
+			ftext := strings.TrimSpace(fragment.QueryText)
+			flower := strings.ToLower(ftext)
+			if strings.HasPrefix(flower, "select") {
+				selectPart := strings.TrimSpace(ftext[len("select"):])
+				for _, part := range splitTopLevelCSV(selectPart) {
+					m := assignRe.FindStringSubmatch(strings.TrimSpace(part))
+					if len(m) == 3 {
+						assignments = append(assignments, selectAssignment{
+							TargetVariable: strings.TrimSpace(m[1]),
+							Expression:     strings.TrimSpace(m[2]),
+						})
+					}
 				}
-				assignments = append(assignments, selectAssignment{
-					TargetVariable: strings.TrimSpace(m[1]),
-					Expression:     strings.TrimSpace(m[2]),
-				})
 			}
 		}
 		for _, a := range assignments {
@@ -4148,11 +4265,81 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 				})
 			}
 		}
+
+		// 5. UPDATE ... SET dateCol = ''
+		if updStmt, ok := parseUpdateSetStatement(fragment.QueryText); ok {
+			for _, a := range updStmt.Assignments {
+				col := normalizeAssignmentTargetColumn(a.Target, updStmt)
+				if col == "" || a.Expression == "" {
+					continue
+				}
+				targetType, err := r.cachedFindColumnDefinitionType(updStmt.TargetTable, col)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						continue
+					}
+					return nil, err
+				}
+				if typeGroup(targetType) != "datetime" {
+					continue
+				}
+				if isEmptyStringLiteral(a.Expression) {
+					findings = append(findings, Finding{
+						Rule:             RuleEmptyStringDate,
+						Severity:         SeverityPostgreReq,
+						Message:          fmt.Sprintf("Присваивание пустой строки столбцу %s.%s типа %s", updStmt.TargetTable, col, targetType),
+						File:             file.Path,
+						Line:             fragment.LineNumber,
+						Object:           fmt.Sprintf("%s.%s", updStmt.TargetTable, col),
+						CurrentProductID: file.DsProductID,
+					})
+				}
+			}
+		}
+
+		// 6. INSERT ... SELECT
+		if insStmt, ok := parseInsertSelectStatement(fragment.QueryText); ok {
+			count := len(insStmt.TargetColumns)
+			if len(insStmt.SelectExpressions) < count {
+				count = len(insStmt.SelectExpressions)
+			}
+			for i := 0; i < count; i++ {
+				col := normalizeIdentifier(insStmt.TargetColumns[i])
+				expr := strings.TrimSpace(insStmt.SelectExpressions[i])
+				if col == "" || expr == "" {
+					continue
+				}
+				targetType, err := r.cachedFindColumnDefinitionType(insStmt.TargetTable, col)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						continue
+					}
+					return nil, err
+				}
+				if typeGroup(targetType) != "datetime" {
+					continue
+				}
+				if isEmptyStringLiteral(expr) {
+					findings = append(findings, Finding{
+						Rule:             RuleEmptyStringDate,
+						Severity:         SeverityPostgreReq,
+						Message:          fmt.Sprintf("Присваивание пустой строки столбцу %s.%s типа %s", insStmt.TargetTable, col, targetType),
+						File:             file.Path,
+						Line:             fragment.LineNumber,
+						Object:           fmt.Sprintf("%s.%s", insStmt.TargetTable, col),
+						CurrentProductID: file.DsProductID,
+					})
+				}
+			}
+		}
 	}
 
 	// 3. SET @var = ''
 	setRe := reSetAssign
 	for i, line := range lines {
+		if !strings.Contains(line, "@") {
+			continue
+		}
 		m := setRe.FindStringSubmatch(line)
 		if len(m) != 3 {
 			continue
@@ -4179,6 +4366,9 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 	// 4. DECLARE @var datetime = ''
 	declRe := reDeclareAssign
 	for i, line := range lines {
+		if !strings.Contains(line, "@") {
+			continue
+		}
 		m := declRe.FindStringSubmatch(line)
 		if len(m) != 4 {
 			continue
@@ -4202,91 +4392,12 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 		}
 	}
 
-	// 5. UPDATE ... SET dateCol = ''
-	for _, fragment := range parsed.Fragments {
-		if fragment == nil {
-			continue
-		}
-		stmt, ok := parseUpdateSetStatement(fragment.QueryText)
-		if !ok {
-			continue
-		}
-		for _, a := range stmt.Assignments {
-			col := normalizeAssignmentTargetColumn(a.Target, stmt)
-			if col == "" || a.Expression == "" {
-				continue
-			}
-			targetType, err := r.cachedFindColumnDefinitionType(stmt.TargetTable, col)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					continue
-				}
-				return nil, err
-			}
-			if typeGroup(targetType) != "datetime" {
-				continue
-			}
-			if isEmptyStringLiteral(a.Expression) {
-				findings = append(findings, Finding{
-					Rule:             RuleEmptyStringDate,
-					Severity:         SeverityPostgreReq,
-					Message:          fmt.Sprintf("Присваивание пустой строки столбцу %s.%s типа %s", stmt.TargetTable, col, targetType),
-					File:             file.Path,
-					Line:             fragment.LineNumber,
-					Object:           fmt.Sprintf("%s.%s", stmt.TargetTable, col),
-					CurrentProductID: file.DsProductID,
-				})
-			}
-		}
-	}
-
-	// 6. INSERT ... SELECT
-	for _, fragment := range parsed.Fragments {
-		if fragment == nil {
-			continue
-		}
-		stmt, ok := parseInsertSelectStatement(fragment.QueryText)
-		if !ok {
-			continue
-		}
-		count := len(stmt.TargetColumns)
-		if len(stmt.SelectExpressions) < count {
-			count = len(stmt.SelectExpressions)
-		}
-		for i := 0; i < count; i++ {
-			col := normalizeIdentifier(stmt.TargetColumns[i])
-			expr := strings.TrimSpace(stmt.SelectExpressions[i])
-			if col == "" || expr == "" {
-				continue
-			}
-			targetType, err := r.cachedFindColumnDefinitionType(stmt.TargetTable, col)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					continue
-				}
-				return nil, err
-			}
-			if typeGroup(targetType) != "datetime" {
-				continue
-			}
-			if isEmptyStringLiteral(expr) {
-				findings = append(findings, Finding{
-					Rule:             RuleEmptyStringDate,
-					Severity:         SeverityPostgreReq,
-					Message:          fmt.Sprintf("Присваивание пустой строки столбцу %s.%s типа %s", stmt.TargetTable, col, targetType),
-					File:             file.Path,
-					Line:             fragment.LineNumber,
-					Object:           fmt.Sprintf("%s.%s", stmt.TargetTable, col),
-					CurrentProductID: file.DsProductID,
-				})
-			}
-		}
-	}
-
 	// 7. INSERT ... VALUES
-	valuesRe := regexp.MustCompile(`(?is)insert\s+(?:into\s+)?([a-z_#][a-z0-9_#]*)[^\(]*\((.*?)\)\s*values\s*\((.*?)\)`)
 	for i, line := range lines {
-		m := valuesRe.FindStringSubmatch(line)
+		if !strings.Contains(strings.ToLower(line), "insert") {
+			continue
+		}
+		m := reInsertValues.FindStringSubmatch(line)
 		if len(m) != 4 {
 			continue
 		}
@@ -4328,10 +4439,8 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 	}
 
 	// 8. convert(datetime, '') / cast('' as datetime)
-	convertRe := regexp.MustCompile(`(?is)\bconvert\s*\(\s*([a-z_][a-z0-9_]*(?:\s*\([^)]*\))?)\s*,\s*(.+?)\s*\)`)
-	castRe := regexp.MustCompile(`(?is)\bcast\s*\(\s*(.+?)\s+as\s+([a-z_][a-z0-9_]*(?:\s*\([^)]*\))?)\s*\)`)
 	for i, line := range lines {
-		for _, m := range convertRe.FindAllStringSubmatch(line, -1) {
+		for _, m := range reConvertTypedCall.FindAllStringSubmatch(line, -1) {
 			if len(m) >= 3 {
 				convType := strings.TrimSpace(m[1])
 				expr := strings.TrimSpace(m[2])
@@ -4348,7 +4457,7 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 				}
 			}
 		}
-		for _, m := range castRe.FindAllStringSubmatch(line, -1) {
+		for _, m := range reCastTypedCall.FindAllStringSubmatch(line, -1) {
 			if len(m) >= 3 {
 				expr := strings.TrimSpace(m[1])
 				castType := strings.TrimSpace(m[2])
@@ -4486,25 +4595,16 @@ func (r *Runner) checkUseOnlyDeclaredCursors(parsed *sqlparser.ParseResult, file
 	}
 	lines := strings.Split(string(content), "\n")
 
-	// Регулярки для поиска объявлений и использований курсоров
-	// DECLARE name CURSOR FOR или declare name insensitive cursor for
-	declareCursorRe := regexp.MustCompile(`(?i)\bDECLARE\s+(#?\w+)\s+(?:INSENSITIVE\s+)?CURSOR\s+FOR\b`)
-	// __DECLARE_CURSOR__(NAME)
-	declareMacroRe := regexp.MustCompile(`(?i)\b__DECLARE_CURSOR__\s*\(\s*(#?\w+)\s*\)`)
-
-	// OPEN name, FETCH ... FROM name, FETCH name INTO, CLOSE name, DEALLOCATE name
-	openCursorRe := regexp.MustCompile(`(?i)\bOPEN\s+(#?\w+)`)
-	fetchCursorRe := regexp.MustCompile(`(?i)\bFETCH\s+(?:\w+\s+)*?FROM\s+(#?\w+)`)
-	// FETCH без FROM: fetch cursor_name into ... или __FETCH_NEXT__ cursor_name into ...
-	// Ищем имя сразу после FETCH/__FETCH_NEXT__ (или NEXT/PRIOR) перед INTO - без FROM
-	fetchCursorDirectRe := regexp.MustCompile(`(?i)\b(?:FETCH|__FETCH_NEXT__)\s+(?:NEXT\s+|PRIOR\s+|FIRST\s+|LAST\s+)?(#?\w+)\s+INTO\b`)
-	closeCursorRe := regexp.MustCompile(`(?i)\bCLOSE\s+(#?\w+)`)
-	deallocCursorRe := regexp.MustCompile(`(?i)\bDEALLOCATE\s+(?:CURSOR\s+)?(#?\w+)`)
-	// Макрос для DEALLOCATE
-	deallocMacroRe := regexp.MustCompile(`(?i)\b__DEALLOCATE_CURSOR__\s*\(\s*(#?\w+)\s*\)`)
-
-	// Системные курсоры начинаются с @@ - исключаем их
-	systemCursorRe := regexp.MustCompile(`^@@`)
+	// Регулярки для поиска объявлений и использований курсоров (используем package-level vars)
+	declareCursorRe := reDeclareCursor
+	declareMacroRe := reDeclareCursorMacro
+	openCursorRe := reOpenCursor
+	fetchCursorRe := reFetchCursorFrom
+	fetchCursorDirectRe := reFetchCursorDirect
+	closeCursorRe := reCloseCursor
+	deallocCursorRe := reDeallocCursor
+	deallocMacroRe := reDeallocCursorMacro
+	systemCursorRe := reSystemCursor
 
 	// Проверяем курсоры для каждой процедуры
 	for _, proc := range parsed.Procedures {
@@ -4726,8 +4826,6 @@ func (r *Runner) checkCursorFetchArguments(parsed *sqlparser.ParseResult, file *
 func (r *Runner) checkUsageVarInSameSelect(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	assignRe := regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
-
 	for _, fragment := range parsed.Fragments {
 		if fragment == nil {
 			continue
@@ -4748,7 +4846,7 @@ func (r *Runner) checkUsageVarInSameSelect(parsed *sqlparser.ParseResult, file *
 			selectPart := strings.TrimSpace(queryText[len("select"):])
 			parts := splitTopLevelCSV(selectPart)
 			for _, part := range parts {
-				m := assignRe.FindStringSubmatch(strings.TrimSpace(part))
+				m := reVarAssignInSelect.FindStringSubmatch(strings.TrimSpace(part))
 				if len(m) != 3 {
 					continue
 				}
@@ -5652,13 +5750,22 @@ func (r *Runner) checkDiffTypesComparison(parsed *sqlparser.ParseResult, file *i
 	}
 	variableTypes := collectVariableTypes(parsed, string(content))
 
+	// Кэш aliasMap по содержимому FROM-части: большинство фрагментов в одной
+	// процедуре имеют одинаковую FROM-часть, parseAliasMap вызывается один раз.
+	aliasCache := make(map[string]map[string]string)
+
 	for _, fragment := range parsed.Fragments {
 		if fragment == nil {
 			continue
 		}
 		queryText := removeComments(fragment.QueryText)
 
-		aliasMap := parseAliasMap(extractFromClause(queryText))
+		fromClause := extractFromClause(queryText)
+		aliasMap, ok := aliasCache[fromClause]
+		if !ok {
+			aliasMap = parseAliasMap(fromClause)
+			aliasCache[fromClause] = aliasMap
+		}
 
 		// Собираем все выражения для проверки: WHERE, ON, CASE WHEN
 		exprParts := make([]string, 0)
@@ -5681,6 +5788,30 @@ func (r *Runner) checkDiffTypesComparison(parsed *sqlparser.ParseResult, file *i
 				// Пропускаем сравнения с литералами: SQL неявно приводит литерал
 				// к типу колонки/переменной
 				if isLiteralArg(cmp.left) || isLiteralArg(cmp.right) {
+					continue
+				}
+
+				// Fast-path: оба операнда — переменные (@), DB не нужен
+				if strings.HasPrefix(cmp.left, "@") && strings.HasPrefix(cmp.right, "@") {
+					t1 := variableTypes[strings.ToLower(strings.TrimPrefix(cmp.left, "@"))]
+					t2 := variableTypes[strings.ToLower(strings.TrimPrefix(cmp.right, "@"))]
+					if t1 == "" || t2 == "" || areEquivalentTypes(t1, t2) {
+						continue
+					}
+					key := fmt.Sprintf("%d|%s|%s|%s", fragment.LineNumber, cmp.left, cmp.right, cmp.op)
+					if _, exists := seen[key]; exists {
+						continue
+					}
+					seen[key] = struct{}{}
+					findings = append(findings, Finding{
+						Rule:             RuleDiffTypesComparison,
+						Severity:         SeverityPostgreReq,
+						Message:          fmt.Sprintf("Сравнение переменных разных типов: %s (%s) %s %s (%s)", cmp.left, t1, cmp.op, cmp.right, t2),
+						File:             file.Path,
+						Line:             fragment.LineNumber,
+						Object:           fmt.Sprintf("%s %s %s", cmp.left, cmp.op, cmp.right),
+						CurrentProductID: file.DsProductID,
+					})
 					continue
 				}
 
@@ -5794,8 +5925,7 @@ func (r *Runner) checkFloatToStringConvert(parsed *sqlparser.ParseResult, file *
 		aliasMap := parseAliasMap(extractFromClause(queryText))
 
 		// Ищем CONVERT(targetType, floatExpr, ...)
-		convertRe := regexp.MustCompile(`(?i)\bconvert\s*\(`)
-		convertMatches := convertRe.FindAllStringIndex(queryText, -1)
+		convertMatches := reConvertStart.FindAllStringIndex(queryText, -1)
 		for _, m := range convertMatches {
 			start := m[0]
 			parenStart := strings.Index(queryText[start:], "(")
@@ -5843,8 +5973,7 @@ func (r *Runner) checkFloatToStringConvert(parsed *sqlparser.ParseResult, file *
 		}
 
 		// Ищем CAST(floatExpr AS targetType)
-		castRe := regexp.MustCompile(`(?i)\bcast\s*\(`)
-		castMatches := castRe.FindAllStringIndex(queryText, -1)
+		castMatches := reCastStart.FindAllStringIndex(queryText, -1)
 		for _, m := range castMatches {
 			start := m[0]
 			parenStart := strings.Index(queryText[start:], "(")
@@ -5912,8 +6041,7 @@ func (r *Runner) checkSelectAfterSetRowcount(parsed *sqlparser.ParseResult, file
 		lower := strings.ToLower(queryText)
 
 		// Отслеживаем SET ROWCOUNT
-		rowcountRe := regexp.MustCompile(`(?is)\bset\s+rowcount\s+(\d+)`)
-		rowcountMatches := rowcountRe.FindAllStringSubmatch(lower, -1)
+		rowcountMatches := reSetRowcount.FindAllStringSubmatch(lower, -1)
 		for _, m := range rowcountMatches {
 			if len(m) < 2 {
 				continue

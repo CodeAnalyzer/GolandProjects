@@ -185,6 +185,44 @@ func (db *DB) FindLatestSQLColumnDefinitionType(tableName string, columnName str
 	return strings.TrimSpace(dataType), nil
 }
 
+// BatchFindColumnDefinitionTypes возвращает карту "table|col" -> data_type для всех
+// колонок указанных таблиц одним запросом. Используется для предзагрузки кэша типов
+// перед запуском правил review, чтобы избежать тысяч отдельных DB-запросов.
+func (db *DB) BatchFindColumnDefinitionTypes(tableNames []string) (map[string]string, error) {
+	if len(tableNames) == 0 {
+		return map[string]string{}, nil
+	}
+	lowerNames := make([]string, len(tableNames))
+	for i, t := range tableNames {
+		lowerNames[i] = strings.ToLower(strings.TrimSpace(t))
+	}
+	rows, err := db.Query(`
+		SELECT LOWER(table_name), LOWER(column_name), data_type
+		FROM sql_column_definitions
+		WHERE LOWER(table_name) = ANY($1)
+		  AND TRIM(COALESCE(data_type, '')) <> ''
+		  AND data_type <> 'DSUNKNOWN'
+		ORDER BY id DESC
+	`, pq.Array(lowerNames))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]string)
+	for rows.Next() {
+		var tbl, col, dtype string
+		if err := rows.Scan(&tbl, &col, &dtype); err != nil {
+			return nil, err
+		}
+		key := tbl + "|" + col
+		if _, exists := result[key]; !exists {
+			result[key] = strings.TrimSpace(dtype)
+		}
+	}
+	return result, rows.Err()
+}
+
 // FindSQLTableIDsByFileAndLine возвращает id таблиц файла по имени, контексту и строке.
 func (db *DB) FindSQLTableIDsByFileAndLine(fileID int64) (map[string]int64, error) {
 	rows, err := db.Query(`

@@ -1272,13 +1272,65 @@ func datetimePrecisionRank(dataType string) int {
 	switch {
 	case strings.Contains(v, "datetime") && !strings.Contains(v, "smalldatetime"):
 		return 3
-	case strings.Contains(v, "smalldatetime"):
+	case strings.Contains(v, "smalldatetime") || strings.HasPrefix(v, "dsoperday"):
 		return 2
-	case strings.Contains(v, "date") || strings.HasPrefix(v, "dsoperday"):
+	case strings.Contains(v, "date"):
 		return 1
 	default:
 		return 0
 	}
+}
+
+// hasPrecisionLoss классифицирует отношение между sourceType и targetType.
+// Возвращает ("loss", true) при сужении точности, ("incompatible", true) при несовместимых типах,
+// ("", false) если типы совместимы или сужения нет.
+func hasPrecisionLoss(sourceType, targetType string) (kind string, ok bool) {
+	source := normalizeDataType(sourceType)
+	target := normalizeDataType(targetType)
+	if source == "" || target == "" || source == target {
+		return "", false
+	}
+
+	sg := typeGroup(source)
+	tg := typeGroup(target)
+	if sg == "" || tg == "" {
+		return "", false
+	}
+
+	// Разные группы типов — несовместимые
+	if sg != tg {
+		return "incompatible", true
+	}
+
+	// Одна группа — проверяем сужение
+	if isPotentialPrecisionLoss(source, target) {
+		return "loss", true
+	}
+
+	// Проверка сужения varchar/char по длине
+	if sg == "string" {
+		srcLen, srcOk := varcharLength(source)
+		tgtLen, tgtOk := varcharLength(target)
+		if srcOk && tgtOk && srcLen > tgtLen {
+			return "loss", true
+		}
+	}
+
+	return "", false
+}
+
+// varcharLength извлекает длину из типа varchar(N) / char(N) / nvarchar(N).
+// Возвращает (0, false) если длина не указана.
+func varcharLength(dataType string) (int, bool) {
+	v := normalizeDataType(dataType)
+	re := regexp.MustCompile(`(?i)\b(?:nvarchar|nchar|varchar|char)\s*\(\s*(\d+)\s*\)`)
+	if m := re.FindStringSubmatch(v); len(m) == 2 {
+		n, err := strconv.Atoi(m[1])
+		if err == nil {
+			return n, true
+		}
+	}
+	return 0, false
 }
 
 // isDataOrPatchPath возвращает true, если путь содержит каталог data или patch (case-insensitive).
