@@ -3676,6 +3676,52 @@ as
 	}
 }
 
+func TestCheckCursorFetchArguments_CommentWithComma_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  __DECLARE_CURSOR__(cur1)
+  select c.ContractID,
+         c.InstrumentID,
+         p.ContractCredPayStatus,
+         convert(smalldatetime, cc.CreditDateFrom), --1239761 именно так, а не p.Date
+         p.Comment
+    from tContract c
+   inner join tContractCredit cc on cc.ContractCreditID = c.ContractID
+  open cur1
+  __FETCH_NEXT__ cur1 into @ContractID,
+                           @InstrumentID,
+                           @Status,
+                           @Date,
+                           @Comment
+  close cur1
+  __DEALLOCATE_CURSOR__(cur1)
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_cursor_fetch_args_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings with comment containing comma, got %d: %v", len(findings), findings)
+	}
+}
+
 func TestCheckCursorFetchArguments_MoreFetchThanDeclare_Finding(t *testing.T) {
 	content := `create proc TestProc
 as

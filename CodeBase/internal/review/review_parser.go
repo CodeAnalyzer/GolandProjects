@@ -269,12 +269,15 @@ func parseCursorDeclarations(content string) map[string]cursorDeclaration {
 		}
 
 		j := i + 1
+		inBlock := false
 		for ; j < len(lines); j++ {
 			nextLine := strings.TrimSpace(lines[j])
 			if isCursorDeclarationBoundary(nextLine) {
 				break
 			}
-			statementLines = append(statementLines, lines[j])
+			stripped, newInBlock := stripLineComments(lines[j], inBlock)
+			inBlock = newInBlock
+			statementLines = append(statementLines, stripped)
 		}
 		i = j - 1
 
@@ -859,12 +862,20 @@ func findMacroCall(line string, macro macroDefinition) (macroCall, bool) {
 			continue
 		}
 
+		// Обработка ## (token paste operator): если перед именем макроса
+		// стоит ##, включаем его в диапазон замены, чтобы sp.##M_LOGINTIME
+		// раскрывалось в sp.loggedindatetime, а не в sp.##loggedindatetime.
+		startIdx := idx
+		if startIdx >= 2 && line[startIdx-1] == '#' && line[startIdx-2] == '#' {
+			startIdx -= 2
+		}
+
 		if len(macro.Params) == 0 {
 			if afterName < len(line) && isWordChar(line[afterName]) {
 				searchPos = idx + 1
 				continue
 			}
-			return macroCall{Macro: macro, Start: idx, End: afterName}, true
+			return macroCall{Macro: macro, Start: startIdx, End: afterName}, true
 		}
 
 		openPos := afterName
@@ -887,7 +898,7 @@ func findMacroCall(line string, macro macroDefinition) (macroCall, bool) {
 			args[i] = strings.TrimSpace(args[i])
 		}
 
-		return macroCall{Macro: macro, Start: idx, End: closePos + 1, Args: args}, true
+		return macroCall{Macro: macro, Start: startIdx, End: closePos + 1, Args: args}, true
 	}
 }
 

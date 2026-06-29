@@ -381,6 +381,21 @@ func TestMaskSingleQuotedStringContent(t *testing.T) {
 	}
 }
 
+func TestReplaceMacros_TokenPasteOperator(t *testing.T) {
+	content := "#define M_LOGINTIME loggedindatetime\nselect sp.##M_LOGINTIME from t"
+	result := replaceMacros(content)
+
+	if strings.Contains(result.Content, "##M_LOGINTIME") {
+		t.Fatalf("##M_LOGINTIME should be expanded, got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "sp.loggedindatetime") {
+		t.Fatalf("expected sp.loggedindatetime after token paste expansion, got: %s", result.Content)
+	}
+	if strings.Contains(result.Content, "##") {
+		t.Fatalf("## should be consumed during expansion, got: %s", result.Content)
+	}
+}
+
 func TestHasStatementEnded_SemicolonInsideStringLiteral_DoesNotEnd(t *testing.T) {
 	stmtBuffer := []string{
 		"update pCNENP_LoanExt_CollateralInfo",

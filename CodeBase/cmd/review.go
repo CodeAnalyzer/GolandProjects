@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -226,10 +227,11 @@ func (p *reviewProgress) start() {
 				completed, total := p.completed, p.total
 				p.mu.Unlock()
 				frame := spinnerFrames[i%len(spinnerFrames)]
+				displayName := filepath.Base(p.filePath)
 				if total > 0 {
-					fmt.Fprintf(os.Stderr, "\rreview %s %s checked=%d/%d", frame, p.filePath, completed, total)
+					fmt.Fprintf(os.Stderr, "\r\033[Kreview %s %s checked=%d/%d", frame, displayName, completed, total)
 				} else {
-					fmt.Fprintf(os.Stderr, "\rreview %s %s %s", frame, p.filePath, spinnerFrames[0])
+					fmt.Fprintf(os.Stderr, "\r\033[Kreview %s %s", frame, displayName)
 				}
 				i++
 			}
