@@ -134,13 +134,15 @@ func parseSelectAssignStatement(queryText string) (selectAssignStatement, bool) 
 	}
 
 	fromPos := findTopLevelKeywordPosition(text, "from")
+	var selectPart, fromClause string
 	if fromPos < 0 {
-		return selectAssignStatement{}, false
+		selectPart = strings.TrimSpace(text[len("select"):])
+		fromClause = ""
+	} else {
+		selectPart = strings.TrimSpace(text[len("select"):fromPos])
+		fromClause = strings.TrimSpace(text[fromPos:])
 	}
-
-	selectPart := strings.TrimSpace(text[len("select"):fromPos])
-	fromClause := strings.TrimSpace(text[fromPos:])
-	if selectPart == "" || fromClause == "" {
+	if selectPart == "" {
 		return selectAssignStatement{}, false
 	}
 
@@ -2431,6 +2433,139 @@ func extractCaseWhenConditions(queryText string) []string {
 			whenCond := caseBody[pos+4 : thenIdx]
 			result = append(result, strings.TrimSpace(whenCond))
 			whenIdx = thenIdx + 4
+		}
+
+		searchFrom = endIdx + 3
+		if searchFrom >= len(lower) {
+			break
+		}
+	}
+
+	return result
+}
+
+// extractCaseThenElseExpressions извлекает THEN/ELSE результатные выражения из CASE ... END.
+// Возвращает список выражений (THEN-результаты + ELSE-результат), без WHEN-условий.
+func extractCaseThenElseExpressions(queryText string) []string {
+	result := make([]string, 0)
+	lower := strings.ToLower(queryText)
+
+	searchFrom := 0
+	for {
+		caseIdx := findKeywordPosition(lower[searchFrom:], "case")
+		if caseIdx < 0 {
+			break
+		}
+		caseIdx += searchFrom
+
+		// Находим соответствующий END
+		depth := 1
+		endIdx := caseIdx + 4
+		for endIdx < len(lower) {
+			if isWordBoundary(lower, endIdx-1) && strings.HasPrefix(lower[endIdx:], "case") && isWordBoundary(lower, endIdx+4) {
+				depth++
+				endIdx += 4
+				continue
+			}
+			if isWordBoundary(lower, endIdx-1) && strings.HasPrefix(lower[endIdx:], "end") && isWordBoundary(lower, endIdx+3) {
+				depth--
+				if depth == 0 {
+					break
+				}
+				endIdx += 3
+				continue
+			}
+			endIdx++
+		}
+		if endIdx >= len(lower) {
+			endIdx = len(lower)
+		}
+
+		caseBody := queryText[caseIdx+4 : endIdx]
+		caseBodyLower := lower[caseIdx+4 : endIdx]
+
+		// Проходим по WHEN...THEN парам и ELSE, извлекая результатные выражения
+		pos := 0
+		for {
+			whenIdx := findKeywordPosition(caseBodyLower[pos:], "when")
+			if whenIdx < 0 {
+				break
+			}
+			whenIdx += pos
+
+			// Находим THEN на top-level
+			thenIdx := whenIdx + 4
+			depth2 := 0
+			for thenIdx < len(caseBodyLower) {
+				ch := caseBodyLower[thenIdx]
+				if ch == '(' {
+					depth2++
+				} else if ch == ')' && depth2 > 0 {
+					depth2--
+				}
+				if depth2 == 0 && isWordBoundary(caseBodyLower, thenIdx-1) && strings.HasPrefix(caseBodyLower[thenIdx:], "then") && isWordBoundary(caseBodyLower, thenIdx+4) {
+					break
+				}
+				thenIdx++
+			}
+			if thenIdx >= len(caseBodyLower) {
+				break
+			}
+
+			// Результат THEN — от thenIdx+4 до следующего WHEN/ELSE/END на top-level
+			resultStart := thenIdx + 4
+			resultEnd := resultStart
+			depth3 := 0
+			for resultEnd < len(caseBodyLower) {
+				ch := caseBodyLower[resultEnd]
+				if ch == '(' {
+					depth3++
+				} else if ch == ')' && depth3 > 0 {
+					depth3--
+				}
+				if depth3 == 0 {
+					if isWordBoundary(caseBodyLower, resultEnd-1) && strings.HasPrefix(caseBodyLower[resultEnd:], "when") && isWordBoundary(caseBodyLower, resultEnd+4) {
+						break
+					}
+					if isWordBoundary(caseBodyLower, resultEnd-1) && strings.HasPrefix(caseBodyLower[resultEnd:], "else") && isWordBoundary(caseBodyLower, resultEnd+4) {
+						break
+					}
+					if isWordBoundary(caseBodyLower, resultEnd-1) && strings.HasPrefix(caseBodyLower[resultEnd:], "end") && isWordBoundary(caseBodyLower, resultEnd+3) {
+						break
+					}
+				}
+				resultEnd++
+			}
+			thenExpr := strings.TrimSpace(caseBody[resultStart:resultEnd])
+			if thenExpr != "" {
+				result = append(result, thenExpr)
+			}
+			pos = resultEnd
+		}
+
+		// Извлекаем ELSE-результат
+		elseIdx := findKeywordPosition(caseBodyLower[pos:], "else")
+		if elseIdx >= 0 {
+			elseIdx += pos
+			elseStart := elseIdx + 4
+			elseEnd := elseStart
+			depth4 := 0
+			for elseEnd < len(caseBodyLower) {
+				ch := caseBodyLower[elseEnd]
+				if ch == '(' {
+					depth4++
+				} else if ch == ')' && depth4 > 0 {
+					depth4--
+				}
+				if depth4 == 0 && isWordBoundary(caseBodyLower, elseEnd-1) && strings.HasPrefix(caseBodyLower[elseEnd:], "end") && isWordBoundary(caseBodyLower, elseEnd+3) {
+					break
+				}
+				elseEnd++
+			}
+			elseExpr := strings.TrimSpace(caseBody[elseStart:elseEnd])
+			if elseExpr != "" {
+				result = append(result, elseExpr)
+			}
 		}
 
 		searchFrom = endIdx + 3

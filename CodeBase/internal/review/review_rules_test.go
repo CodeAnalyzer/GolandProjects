@@ -4644,6 +4644,55 @@ func TestExtractCaseWhenConditions_MultilineSelect(t *testing.T) {
 	}
 }
 
+func TestExtractCaseThenElseExpressions_Simple(t *testing.T) {
+	parts := extractCaseThenElseExpressions("case when x = 1 then 'a' else 'b' end")
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d: %v", len(parts), parts)
+	}
+	if parts[0] != "'a'" || parts[1] != "'b'" {
+		t.Fatalf("expected ['a','b'], got %v", parts)
+	}
+}
+
+func TestExtractCaseThenElseExpressions_MultipleWhen(t *testing.T) {
+	parts := extractCaseThenElseExpressions("case when a = 1 then 10 when b = 2 then 20 else 0 end")
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 parts, got %d: %v", len(parts), parts)
+	}
+	if parts[0] != "10" || parts[1] != "20" || parts[2] != "0" {
+		t.Fatalf("expected [10,20,0], got %v", parts)
+	}
+}
+
+func TestExtractCaseThenElseExpressions_Multiline(t *testing.T) {
+	text := "case\n  when fo.InterfaceObjectID = 1 then INSP_POLICY_LINK\n  when fo.InterfaceObjectID = 2 then INSP_POLICY_LINK_COM\n  else 0\nend"
+	parts := extractCaseThenElseExpressions(text)
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 parts, got %d: %v", len(parts), parts)
+	}
+	if parts[0] != "INSP_POLICY_LINK" || parts[1] != "INSP_POLICY_LINK_COM" || parts[2] != "0" {
+		t.Fatalf("expected [INSP_POLICY_LINK, INSP_POLICY_LINK_COM, 0], got %v", parts)
+	}
+}
+
+func TestExtractCaseThenElseExpressions_ColumnRefsInThen(t *testing.T) {
+	text := "case when cc.Flag2 > 0 then cc.CreditDateFrom else cr.DateFrom end"
+	parts := extractCaseThenElseExpressions(text)
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d: %v", len(parts), parts)
+	}
+	if parts[0] != "cc.CreditDateFrom" || parts[1] != "cr.DateFrom" {
+		t.Fatalf("expected [cc.CreditDateFrom, cr.DateFrom], got %v", parts)
+	}
+}
+
+func TestExtractCaseThenElseExpressions_NoCase(t *testing.T) {
+	parts := extractCaseThenElseExpressions("select 1 from t")
+	if len(parts) != 0 {
+		t.Fatalf("expected 0 parts, got %d: %v", len(parts), parts)
+	}
+}
+
 func TestExtractParenContent_Simple(t *testing.T) {
 	inner, end := extractParenContent("convert(varchar, @x)", 7)
 	if inner != "varchar, @x" {
@@ -5249,5 +5298,60 @@ func TestCheckDatatypeExecParams_NoDB_NoPanic(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Fatalf("expected 0 findings without DB, got %d", len(findings))
+	}
+}
+
+func TestResolveArithmeticExprType_DSIDentifierMinusInt(t *testing.T) {
+	r := &Runner{macroTypeCache: make(map[string]string)}
+	varTypes := map[string]string{
+		"maxid": "DSIDENTIFIER",
+		"minid": "DSIDENTIFIER",
+	}
+	got := r.resolveArgType("@MaxID - @MinID + 1", varTypes, map[string]string{})
+	if got != "DSIDENTIFIER" {
+		t.Fatalf("expected DSIDENTIFIER, got %q", got)
+	}
+}
+
+func TestResolveArithmeticExprType_DSIntKeyPlusInt(t *testing.T) {
+	r := &Runner{macroTypeCache: make(map[string]string)}
+	varTypes := map[string]string{
+		"delta": "DSINT_KEY",
+	}
+	got := r.resolveArgType("@Delta + 1", varTypes, map[string]string{})
+	if got != "DSINT_KEY" {
+		t.Fatalf("expected DSINT_KEY, got %q", got)
+	}
+}
+
+func TestParseSelectAssignStatement_NoFrom(t *testing.T) {
+	stmt, ok := parseSelectAssignStatement("select @Delta = @MaxID - @MinID + 1")
+	if !ok {
+		t.Fatalf("expected parse success")
+	}
+	if len(stmt.Assignments) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(stmt.Assignments))
+	}
+	if stmt.Assignments[0].TargetVariable != "@Delta" {
+		t.Fatalf("expected @Delta, got %q", stmt.Assignments[0].TargetVariable)
+	}
+	if stmt.Assignments[0].Expression != "@MaxID - @MinID + 1" {
+		t.Fatalf("expected expression @MaxID - @MinID + 1, got %q", stmt.Assignments[0].Expression)
+	}
+	if stmt.FromClause != "" {
+		t.Fatalf("expected empty FromClause, got %q", stmt.FromClause)
+	}
+}
+
+func TestParseSelectAssignStatement_WithFrom(t *testing.T) {
+	stmt, ok := parseSelectAssignStatement("select @x = a.col from t a")
+	if !ok {
+		t.Fatalf("expected parse success")
+	}
+	if len(stmt.Assignments) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(stmt.Assignments))
+	}
+	if stmt.FromClause == "" {
+		t.Fatalf("expected non-empty FromClause")
 	}
 }

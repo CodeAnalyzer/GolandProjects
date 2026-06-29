@@ -24,6 +24,7 @@ var (
 	reColumnRef      = regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)(?:\.([a-z_][a-z0-9_]*))?\b`)
 	reTableColumnRef = regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b`)
 	reNumericSigned  = regexp.MustCompile(`^-?\d+(\.\d+)?$`)
+	reArithOp        = regexp.MustCompile(`(?i)\s[+\-*/]\s`)
 
 	// Precompiled regexes for slow-path rules (dateIntoString, emptyStringDate, floatToStringConvert, etc.)
 	reInsertValues       = regexp.MustCompile(`(?is)insert\s+(?:into\s+)?([a-z_#][a-z0-9_#]*)[^\(]*\((.*?)\)\s*values\s*\((.*?)\)`)
@@ -202,6 +203,13 @@ func (r *Runner) checkDatatypeSelectAssign(parsed *sqlparser.ParseResult, file *
 			}
 
 			sourceTypes := r.resolveExpressionTypes(assignment.Expression, aliasMap)
+			// Fallback: если resolveExpressionTypes не нашёл table.column ссылок,
+			// пробуем resolveArgType (он умеет разбирать переменные и арифметику)
+			if len(sourceTypes) == 0 {
+				if argType := r.resolveArgType(assignment.Expression, variableTypes, aliasMap); argType != "" {
+					sourceTypes = []string{argType}
+				}
+			}
 			for _, sourceType := range sourceTypes {
 				if !isPotentialPrecisionLoss(sourceType, targetType) {
 					continue
@@ -2207,6 +2215,32 @@ func (r *Runner) checkDatatypeInsertSelect(parsed *sqlparser.ParseResult, file *
 }
 
 func (r *Runner) resolveExpressionTypes(expression string, aliasMap map[string]string) []string {
+	// Для CASE-выражений извлекаем типы только из THEN/ELSE-результатов,
+	// а не из WHEN-условий, чтобы избежать ложных срабатываний.
+	lowerExpr := strings.ToLower(expression)
+	if strings.Contains(lowerExpr, "case") {
+		thenElseParts := extractCaseThenElseExpressions(expression)
+		if len(thenElseParts) > 0 {
+			result := make([]string, 0)
+			seen := make(map[string]struct{})
+			for _, part := range thenElseParts {
+				partTypes := r.resolveExpressionTypes(part, aliasMap)
+				for _, t := range partTypes {
+					normalized := normalizeDataType(t)
+					if normalized == "" {
+						continue
+					}
+					if _, exists := seen[normalized]; exists {
+						continue
+					}
+					seen[normalized] = struct{}{}
+					result = append(result, t)
+				}
+			}
+			return result
+		}
+	}
+
 	candidates := extractColumnRefsFromExpression(expression)
 	result := make([]string, 0, len(candidates))
 	seen := make(map[string]struct{})
@@ -5562,6 +5596,12 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 		return r.resolveCaseType(trimmed, variableTypes, aliasMap)
 	}
 
+	// Арифметическое выражение: разбиваем по операторам +, -, *, /
+	// (до проверки @var, чтобы @MaxID - @MinID + 1 не трактовалось как имя переменной)
+	if reArithOp.MatchString(trimmed) {
+		return r.resolveArithmeticExprType(trimmed, variableTypes, aliasMap)
+	}
+
 	// Переменная @var
 	if strings.HasPrefix(trimmed, "@") {
 		varName := normalizeVariableName(trimmed)
@@ -5648,6 +5688,40 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 	}
 
 	return ""
+}
+
+// resolveArithmeticExprType разбирает арифметическое выражение по операторам +, -, *, /
+// и возвращает тип операнда с максимальной numeric precision.
+func (r *Runner) resolveArithmeticExprType(expr string, variableTypes map[string]string, aliasMap map[string]string) string {
+	// Разбиваем по операторам +, -, *, / (с пробелами вокруг)
+	parts := reArithOp.Split(expr, -1)
+	bestType := ""
+	bestP, bestS := 0, 0
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		t := r.resolveArgType(trimmed, variableTypes, aliasMap)
+		if t == "" {
+			continue
+		}
+		normalized := normalizeDataType(t)
+		if normalized == "" {
+			continue
+		}
+		p, s, ok := numericPrecisionScale(normalized)
+		if !ok {
+			// Не числовой тип — пропускаем
+			continue
+		}
+		if p > bestP || (p == bestP && s > bestS) {
+			bestP = p
+			bestS = s
+			bestType = t
+		}
+	}
+	return bestType
 }
 
 // resolveCaseType определяет тип результата CASE ... END по THEN-выражениям.

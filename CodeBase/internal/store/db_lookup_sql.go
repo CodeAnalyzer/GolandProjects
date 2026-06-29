@@ -185,6 +185,35 @@ func (db *DB) FindLatestSQLColumnDefinitionType(tableName string, columnName str
 	return strings.TrimSpace(dataType), nil
 }
 
+// FindAPIColumnDefinitionType ищет тип колонки в API-контрактах и business objects.
+// Используется как fallback, когда тип не найден в sql_column_definitions (например, для ptable).
+func (db *DB) FindAPIColumnDefinitionType(tableName string, columnName string) (string, error) {
+	var dataType string
+	err := db.QueryRow(`
+		SELECT type_name FROM (
+			SELECT f.type_name AS type_name, f.id AS id
+			FROM api_contract_table_fields f
+			JOIN api_contract_tables t ON t.id = f.contract_table_id
+			WHERE LOWER(t.table_name) = LOWER($1)
+			  AND LOWER(f.field_name) = LOWER($2)
+			  AND TRIM(COALESCE(f.type_name, '')) <> ''
+			UNION ALL
+			SELECT f.type_name AS type_name, f.id AS id
+			FROM api_business_object_table_fields f
+			JOIN api_business_object_tables t ON t.id = f.business_table_id
+			WHERE LOWER(t.table_name) = LOWER($1)
+			  AND LOWER(f.field_name) = LOWER($2)
+			  AND TRIM(COALESCE(f.type_name, '')) <> ''
+		) combined
+		ORDER BY id DESC
+		LIMIT 1
+	`, strings.TrimSpace(tableName), strings.TrimSpace(columnName)).Scan(&dataType)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(dataType), nil
+}
+
 // BatchFindColumnDefinitionTypes возвращает карту "table|col" -> data_type для всех
 // колонок указанных таблиц одним запросом. Используется для предзагрузки кэша типов
 // перед запуском правил review, чтобы избежать тысяч отдельных DB-запросов.

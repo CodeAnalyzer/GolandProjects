@@ -632,6 +632,14 @@ func (r *Runner) cachedFindColumnDefinitionType(tableName, columnName string) (s
 	typeName, err := r.db.FindLatestSQLColumnDefinitionType(tableName, columnName)
 	if err != nil {
 		if err == sql.ErrNoRows {
+			// Fallback: ищем тип в API-контрактах и business objects
+			apiType, apiErr := r.db.FindAPIColumnDefinitionType(tableName, columnName)
+			if apiErr == nil && apiType != "" {
+				r.colTypeMu.Lock()
+				r.colTypeCache[key] = apiType
+				r.colTypeMu.Unlock()
+				return apiType, nil
+			}
 			r.colTypeMu.Lock()
 			r.colTypeCache[key] = ""
 			r.colTypeMu.Unlock()
