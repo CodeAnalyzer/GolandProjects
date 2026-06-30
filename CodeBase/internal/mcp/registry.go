@@ -62,6 +62,33 @@ var toolRegistry = buildToolRegistry(nil)
 
 func buildToolRegistry(db *store.DB) map[string]registeredTool {
 	return map[string]registeredTool{
+		"codebase_read_more": {
+			Definition: toolDefinition{
+				Name: "codebase_read_more",
+				Description: "Read the next chunk of a paginated MCP response. " +
+					"Use this when a previous tool response starts with '⚠️ PAGINATED RESPONSE'. " +
+					"Copy the continuation_id and chunk number from the '👉 Call' hint. " +
+					"Repeat until you see '✅ FINAL CHUNK'.",
+				InputSchema: objectSchema(map[string]interface{}{
+					"continuation_id": stringProp("Continuation ID from the paginated response header"),
+					"chunk":           intProp("Chunk number to read (as shown in the 👉 hint)"),
+				}),
+			},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				id, err := requiredString(args, "continuation_id")
+				if err != nil {
+					return nil, err
+				}
+				chunk, err := optionalInt(args, "chunk")
+				if err != nil {
+					return nil, err
+				}
+				if chunk < 2 {
+					chunk = 2
+				}
+				return globalPages.readChunk(id, chunk)
+			},
+		},
 		"codebase_ping": {
 			Definition: toolDefinition{
 				Name:        "codebase_ping",

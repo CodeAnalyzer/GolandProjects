@@ -171,3 +171,44 @@ func TestRetCodeHandlerRequiresArg(t *testing.T) {
 		t.Fatal("expected error for no args without DB")
 	}
 }
+
+func TestReadMoreToolInRegistry(t *testing.T) {
+	if _, ok := toolRegistry["codebase_read_more"]; !ok {
+		t.Fatal("codebase_read_more not in toolRegistry")
+	}
+}
+
+func TestReadMoreInToolsList(t *testing.T) {
+	list := tools()
+	for _, tool := range list {
+		if tool.Name == "codebase_read_more" {
+			return
+		}
+	}
+	t.Fatal("codebase_read_more not in tools()")
+}
+
+func TestReadMoreHandlerRequiresContinuationID(t *testing.T) {
+	tool, ok := toolRegistry["codebase_read_more"]
+	if !ok {
+		t.Fatal("codebase_read_more not in toolRegistry")
+	}
+	_, err := tool.Handler(map[string]interface{}{})
+	if err == nil {
+		t.Fatal("expected error for missing continuation_id")
+	}
+}
+
+func TestReadMoreHandlerUnknownID(t *testing.T) {
+	tool, ok := toolRegistry["codebase_read_more"]
+	if !ok {
+		t.Fatal("codebase_read_more not in toolRegistry")
+	}
+	_, err := tool.Handler(map[string]interface{}{
+		"continuation_id": "does-not-exist",
+		"chunk":           float64(2),
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown continuation_id")
+	}
+}

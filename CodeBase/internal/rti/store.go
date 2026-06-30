@@ -573,7 +573,89 @@ func LoadCalls(db *store.DB, sessionID int64) ([]*RTICall, error) {
 		}
 	}
 
+	// Load BLogBlocks for all calls in one query
+	if err := loadAllBLogBlocks(db, sessionID, calls); err != nil {
+		return nil, fmt.Errorf("failed to load blog blocks: %w", err)
+	}
+
+	// Load BLogTables for all calls in one query
+	if err := loadAllBLogTables(db, sessionID, calls); err != nil {
+		return nil, fmt.Errorf("failed to load blog tables: %w", err)
+	}
+
 	return calls, rows.Err()
+}
+
+// loadAllBLogBlocks загружает BLog-блоки для всех вызовов сессии одним запросом.
+func loadAllBLogBlocks(db *store.DB, sessionID int64, calls []*RTICall) error {
+	rows, err := db.Query(
+		`SELECT call_id, block_name, enter_time, exit_time, elapsed_ms, enter_line, exit_line
+		 FROM rti_blog_blocks WHERE session_id = $1 ORDER BY id`,
+		sessionID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	callMap := make(map[int64]*RTICall, len(calls))
+	for _, c := range calls {
+		callMap[c.ID] = c
+	}
+
+	for rows.Next() {
+		var callID int64
+		var b RTIBLogBlock
+		var enterTime, exitTime sql.NullTime
+		if err := rows.Scan(&callID, &b.BlockName, &enterTime, &exitTime, &b.ElapsedMs, &b.EnterLine, &b.ExitLine); err != nil {
+			return err
+		}
+		if enterTime.Valid {
+			b.EnterTime = enterTime.Time
+		}
+		if exitTime.Valid {
+			b.ExitTime = exitTime.Time
+		}
+		if c, ok := callMap[callID]; ok {
+			c.BLogBlocks = append(c.BLogBlocks, b)
+		}
+	}
+	return rows.Err()
+}
+
+// loadAllBLogTables загружает BLog-дампы таблиц для всех вызовов сессии одним запросом.
+func loadAllBLogTables(db *store.DB, sessionID int64, calls []*RTICall) error {
+	rows, err := db.Query(
+		`SELECT call_id, table_name, columns_header, row_count, rows_data, enter_line
+		 FROM rti_blog_tables WHERE session_id = $1 ORDER BY id`,
+		sessionID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	callMap := make(map[int64]*RTICall, len(calls))
+	for _, c := range calls {
+		callMap[c.ID] = c
+	}
+
+	for rows.Next() {
+		var callID int64
+		var t RTIBLogTable
+		var columnsHeader, rowsData sql.NullString
+		if err := rows.Scan(&callID, &t.TableName, &columnsHeader, &t.RowCount, &rowsData, &t.EnterLine); err != nil {
+			return err
+		}
+		if columnsHeader.Valid && columnsHeader.String != "" {
+			t.Columns = strings.Split(columnsHeader.String, "_|_")
+		}
+		if rowsData.Valid && rowsData.String != "" {
+			t.Rows = strings.Split(rowsData.String, "\n")
+		}
+		if c, ok := callMap[callID]; ok {
+			c.BLogTables = append(c.BLogTables, t)
+		}
+	}
+	return rows.Err()
 }
 
 // GetLatestSessionID возвращает ID последней сессии.

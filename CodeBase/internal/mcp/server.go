@@ -23,6 +23,10 @@ func RunStdio(serverVersion string, logger *log.Logger) error {
 		return fmt.Errorf("config not loaded")
 	}
 
+	if cfg.MCP.PaginationChunkSize > 0 {
+		globalPages = newPageStore(cfg.MCP.PaginationChunkSize)
+	}
+
 	db, err := store.NewDB(cfg.DB)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
@@ -65,7 +69,7 @@ func registerSDKCoreTools(server *mcpsdk.Server, registry map[string]registeredT
 			if err != nil {
 				return sdkToolErrorResult(err), nil
 			}
-			return sdkToolJSONResult(result)
+			return sdkToolPagedResult(result)
 		})
 	}
 
@@ -98,11 +102,19 @@ func decodeSDKToolArgs(req *mcpsdk.CallToolRequest) (map[string]interface{}, err
 	return args, nil
 }
 
-func sdkToolJSONResult(value interface{}) (*mcpsdk.CallToolResult, error) {
+// sdkToolPagedResult сериализует value в JSON и применяет пагинацию если ответ превышает лимит.
+// rawMCPText возвращается verbatim без маршалинга и без повторной пагинации.
+func sdkToolPagedResult(value interface{}) (*mcpsdk.CallToolResult, error) {
+	if raw, ok := value.(rawMCPText); ok {
+		return &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: string(raw)}},
+		}, nil
+	}
 	text, err := toJSONText(value)
 	if err != nil {
 		return nil, err
 	}
+	text = globalPages.maybePaginate(text)
 	return &mcpsdk.CallToolResult{
 		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: text}},
 	}, nil

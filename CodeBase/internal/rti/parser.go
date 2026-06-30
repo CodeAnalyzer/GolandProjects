@@ -258,6 +258,15 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 			val, _ := strconv.Atoi(m[1])
 			ctx := strings.TrimSpace(m[2])
 
+			// M_LOG entry: pendingBLog active but no Enter/Exit prefix seen.
+			// This is a plain log message (not a block begin/end) — skip it.
+			if pendingBLog && pendingBLogIsEnter == nil {
+				_ = val
+				_ = ctx
+				pendingBLog = false
+				continue
+			}
+
 			if pendingBLog && pendingBLogIsEnter != nil {
 				stack := stacks[pendingBLogSPID]
 				if len(stack) > 0 {

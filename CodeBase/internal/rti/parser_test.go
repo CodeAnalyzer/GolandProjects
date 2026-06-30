@@ -428,3 +428,71 @@ func TestBuildTree(t *testing.T) {
 		t.Error("FormatTree returned empty string")
 	}
 }
+
+func TestParseContent_MLogWithoutEnterExit_DoesNotSetCallRetVal(t *testing.T) {
+	// M_LOG record: Trace.Server.BusinessLog header followed by @@TranCount (no Enter/Exit prefix),
+	// then RetVal = 0#Вернули флаги договора — this should NOT set RetValContext on the procedure.
+	content := "10.06.2026 15:21:05.730\tINFO\tTrace.Server.Proc\t\tUndoConsSale_PurchPortfolio\t58\t692548\t\t0\t177\n" +
+		"Enter UndoConsSale_PurchPortfolio @@TranCount = 0 @@NestLevel = 1 @@DsSysModuleID = 39\n" +
+		"Elapsed, ms: 0\n" +
+		"\n" +
+		"@ConsSalePortfolioID : DSIDENTIFIER                   = 20000000165\n" +
+		"\n" +
+		"10.06.2026 15:21:05.730\tINFO\tTrace.Server.BusinessLog\t\t\t58\t692550\t\t0\t183\n" +
+		"Enter @@TranCount = 0 @@NestLevel = 1 @@DsSysModuleID = 39\n" +
+		"\n" +
+		"RetVal = 0#UndoConsSale_PurchPortfolio\n" +
+		"BLogParam:@ConsSalePortfolioID : DSIDENTIFIER                   = 20000000165\n" +
+		"\n" +
+		"10.06.2026 15:21:05.803\tINFO\tTrace.Server.BusinessLog\t\t\t58\t692575\t\t0\t164\n" +
+		"@@TranCount = 0 @@NestLevel = 1 @@DsSysModuleID = 39\n" +
+		"\n" +
+		"RetVal = 0#Вернули флаги договора\n" +
+		"BLogParam:@ContractFlag : DSINT_KEY                      = 1073741824\n" +
+		"\n" +
+		"10.06.2026 15:21:05.820\tINFO\tTrace.Server.BusinessLog\t\t\t58\t692592\t\t0\t105\n" +
+		"Exit @@TranCount = 0 @@NestLevel = 1 @@DsSysModuleID = 39\n" +
+		"\n" +
+		"RetVal = 28545#UndoConsSale_PurchPortfolio\n" +
+		"10.06.2026 15:21:05.820\tINFO\tTrace.Server.Proc\t\tUndoConsSale_PurchPortfolio\t58\t692593\t\t0\t131\n" +
+		"Exit UndoConsSale_PurchPortfolio @@TranCount = 0 @@NestLevel = 1@BeginCnt = 0 @@DsSysModuleID = 39\n" +
+		"Elapsed, ms: 90\n" +
+		"Return 28545\n"
+
+	result, err := parseContent(content, "test.rti", 100)
+	if err != nil {
+		t.Fatalf("parseContent error: %v", err)
+	}
+	if len(result.Calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(result.Calls))
+	}
+	c := result.Calls[0]
+
+	// RetVal should come from Return 28545, not from M_LOG RetVal = 0
+	if c.RetVal == nil || *c.RetVal != 28545 {
+		t.Errorf("RetVal = %v, want 28545 (from Return, not from M_LOG)", c.RetVal)
+	}
+
+	// RetValContext should be empty — M_LOG "Вернули флаги договора" must not leak
+	if c.RetValContext != "" {
+		t.Errorf("RetValContext = %q, want empty (M_LOG must not set RetValContext)", c.RetValContext)
+	}
+
+	// Should have 2 BLogBlocks: "UndoConsSale_PurchPortfolio" (Enter) and "UndoConsSale_PurchPortfolio" (Exit)
+	if len(c.BLogBlocks) != 1 {
+		t.Errorf("expected 1 BLogBlock (Enter/Exit pair), got %d", len(c.BLogBlocks))
+	} else {
+		b := c.BLogBlocks[0]
+		if b.BlockName != "UndoConsSale_PurchPortfolio" {
+			t.Errorf("BLogBlock name = %q, want %q", b.BlockName, "UndoConsSale_PurchPortfolio")
+		}
+		if b.ExitTime.IsZero() {
+			t.Error("BLogBlock ExitTime should not be zero")
+		}
+	}
+
+	// Should have 1 BLogParam: ContractFlag from M_LOG section
+	if len(c.Params) < 2 {
+		t.Errorf("expected at least 2 params (1 input + 1 BLogParam), got %d", len(c.Params))
+	}
+}

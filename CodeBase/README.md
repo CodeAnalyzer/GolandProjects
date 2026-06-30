@@ -102,6 +102,13 @@ command_enabled = true
 
 `.sql` остаётся первичным дистрибутивным источником, а `.t01` рассматривается как опциональный временный артефакт препроцессора: он может отсутствовать и может лежать в отдельном рабочем каталоге препроцессора.
 
+Секция `[mcp]` (опционально):
+
+```toml
+[mcp]
+pagination_chunk_size = 8000
+```
+
 Если флаг `--config` не передан, CLI ищет `codebase.toml` **рядом с executable (исполняемым файлом)**. Файл в текущем рабочем каталоге автоматически не подхватывается, если это не каталог самого executable.
 
 ## Использование
@@ -677,6 +684,37 @@ codebase mcp
 - **MCP**: tools возвращают чистые доменные данные (например `{ "count": N, "items": [...] }`)
 - **CLI**: сохраняет текущий JSON envelope (`success`, `format_version`, `command`, `meta`, ...)
 
+### Пагинация MCP-ответов
+
+Если сериализованный JSON-ответ MCP-инструмента превышает лимит (по умолчанию 8 000 байт), он автоматически разбивается на чанки. Первый чанк возвращается с заголовком-подсказкой, остальные запрашиваются через инструмент `codebase_read_more`.
+
+Особенности:
+
+- Размер чанка по умолчанию — 8 000 байт (≈ 6 600–8 000 символов Unicode, безопасно под IDE-лимит ~10 000 символов)
+- Чанки выравниваются по границе UTF-8 руны — не режут посередине многобайтовых символов (кириллица и т.п.)
+- Чанки хранятся в памяти (TTL 15 минут), после чего автоматически удаляются
+- Конфигурация через `[mcp]` секцию в `codebase.toml`
+
+Формат ответа при пагинации:
+
+```
+⚠️ PAGINATED RESPONSE: chunk 1/N | continuation_id="abc123"
+👉 Call codebase_read_more(...) for next part.
+
+<данные чанка>
+```
+
+Последний чанк помечается `✅ FINAL CHUNK: chunk N/N`.
+
+Инструмент `codebase_read_more` принимает параметры `continuation_id` и `chunk` (номер чанка, начиная с 1) и возвращает следующий чанк. Для последнего чанка повторный вызов вернёт ошибку (сессия пагинации завершена).
+
+Конфигурация:
+
+```toml
+[mcp]
+pagination_chunk_size = 8000
+```
+
 ## Архитектура
 
 ```
@@ -738,7 +776,7 @@ CodeBase/
 │   │   ├── symbols.go             # moduleIDMap (94 записи), ModuleNameByID
 │   │   ├── enrich.go              # ProcedureLookup, EnrichCalls (enrichment из индекса)
 │   │   └── store.go               # SaveSession, LoadCalls, LoadBLogBlocks, LoadBLogTables, ListSessions, ...
-│   ├── mcp/                       # MCP stdio JSON-RPC transport, tools registry, handlers
+│   ├── mcp/                       # MCP stdio JSON-RPC transport, tools registry, handlers, пагинация
 │   └── store/
 │       ├── db.go                  # Основной persistence layer и batch insert helpers
 │       └── api_store.go           # Persistence для API/DSArchitect сущностей

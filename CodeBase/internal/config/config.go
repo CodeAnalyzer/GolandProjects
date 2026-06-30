@@ -24,6 +24,7 @@ type Config struct {
 	DB       DBConfig      `toml:"database"`
 	Indexer  IndexerConfig `toml:"indexer"`
 	Logging  LoggingConfig `toml:"logging"`
+	MCP      MCPConfig     `toml:"mcp"`
 }
 
 // IndexerConfig конфигурация индексатора
@@ -38,8 +39,13 @@ type LoggingConfig struct {
 	CommandEnabled *bool `toml:"command_enabled"`
 }
 
+// MCPConfig конфигурация MCP-сервера
+type MCPConfig struct {
+	PaginationChunkSize int `toml:"pagination_chunk_size"`
+}
+
 var (
-	cfg       *Config
+	cfg        *Config
 	configFile string
 )
 
@@ -115,6 +121,9 @@ func Load() error {
 		enabled := true
 		cfg.Logging.CommandEnabled = &enabled
 	}
+	if cfg.MCP.PaginationChunkSize == 0 {
+		cfg.MCP.PaginationChunkSize = 8_000
+	}
 
 	return nil
 }
@@ -176,6 +185,9 @@ func CreateDefault(rootPath string) *Config {
 		},
 		Logging: LoggingConfig{
 			CommandEnabled: boolPtr(true),
+		},
+		MCP: MCPConfig{
+			PaginationChunkSize: 8_000,
 		},
 	}
 	return cfg

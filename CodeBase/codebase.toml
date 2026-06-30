@@ -45,3 +45,7 @@ exclude_patterns = [
 # Логирование CLI-команд
 [logging]
 command_enabled = true
+
+# Настройки MCP-сервера
+[mcp]
+pagination_chunk_size = 8000  # Максимальный размер чанка (байт) для пагинации больших ответов
