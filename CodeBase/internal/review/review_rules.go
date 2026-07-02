@@ -1375,6 +1375,13 @@ func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
 		findings = append(findings, items...)
 	}
 
+	// Проверка индексов для макросов M_DELETE_PTABLE*
+	ptableFindings, err := r.checkDeletePtableMacros(lines, macroResult.SourceMap, file)
+	if err != nil {
+		return nil, err
+	}
+	findings = append(findings, ptableFindings...)
+
 	return findings, nil
 }
 
@@ -1433,6 +1440,151 @@ func (r *Runner) analyzeStatementForIndexExists(lines []string, startLine int, f
 			Message:          fmt.Sprintf("Для таблицы %s не найден индекс %s, указанный в %s", tableName, indexName, table.Hint),
 			File:             file.Path,
 			Line:             findingLine,
+			Object:           fmt.Sprintf("%s.%s", tableName, indexName),
+			CurrentProductID: file.DsProductID,
+		})
+	}
+
+	return findings, nil
+}
+
+// deletePtableCall представляет вызов макроса M_DELETE_PTABLE*.
+type deletePtableCall struct {
+	TableName string
+	IndexName string
+	MacroName string
+	Line      int
+}
+
+// reDeletePtableMacro ищет вызовы M_DELETE_PTABLE* макросов в тексте.
+var reDeletePtableMacro = regexp.MustCompile(`(?i)\b(M_DELETE_PTABLE(?:_INMEM|_PARALLEL|_INDEX|_SPID_INDEX|_SPID_UNIQUE)?)\s*\(`)
+
+// extractDeletePtableCalls сканирует строки текста на наличие вызовов
+// макросов семейства M_DELETE_PTABLE* и извлекает имя таблицы и индекса.
+func extractDeletePtableCalls(lines []string) []deletePtableCall {
+	result := make([]deletePtableCall, 0)
+
+	for i, line := range lines {
+		lineNum := i + 1
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+
+		matches := reDeletePtableMacro.FindAllStringSubmatchIndex(line, -1)
+		for _, m := range matches {
+			macroName := line[m[2]:m[3]]
+			argsStart := m[1] - 1 // позиция '('
+			argsText, _, ok := parseMacroCallArguments(line, argsStart)
+			if !ok {
+				continue
+			}
+			args := splitTopLevelCSV(argsText)
+			for j := range args {
+				args[j] = strings.TrimSpace(args[j])
+			}
+
+			lowerMacro := strings.ToLower(macroName)
+
+			// M_DELETE_PTABLE_RUN — не вызов удаления, пропускаем
+			if lowerMacro == "m_delete_ptable_run" {
+				continue
+			}
+
+			var tableName, indexName string
+
+			switch lowerMacro {
+			case "m_delete_ptable", "m_delete_ptable_inmem":
+				if len(args) >= 1 {
+					tableName = args[0]
+					indexName = "XPK" + tableName
+				}
+			case "m_delete_ptable_parallel":
+				// M_DELETE_PTABLE_PARALLEL(table, spid, col, batch, parallel)
+				if len(args) >= 1 {
+					tableName = args[0]
+					indexName = "XPK" + tableName
+				}
+			case "m_delete_ptable_index":
+				// M_DELETE_PTABLE_INDEX(table, index)
+				if len(args) >= 2 {
+					tableName = args[0]
+					indexName = args[1]
+				}
+			case "m_delete_ptable_spid_index":
+				// M_DELETE_PTABLE_SPID_INDEX(table, index, spid)
+				if len(args) >= 2 {
+					tableName = args[0]
+					indexName = args[1]
+				}
+			case "m_delete_ptable_spid_unique":
+				// M_DELETE_PTABLE_SPID_UNIQUE(table, index, spid, unique)
+				if len(args) >= 2 {
+					tableName = args[0]
+					indexName = args[1]
+				}
+			default:
+				continue
+			}
+
+			if tableName == "" || indexName == "" {
+				continue
+			}
+
+			result = append(result, deletePtableCall{
+				TableName: tableName,
+				IndexName: indexName,
+				MacroName: macroName,
+				Line:      lineNum,
+			})
+		}
+	}
+
+	return result
+}
+
+// checkDeletePtableMacros проверяет существование индексов, используемых
+// макросами M_DELETE_PTABLE*, в БД.
+func (r *Runner) checkDeletePtableMacros(lines []string, sourceMap []int, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	calls := extractDeletePtableCalls(lines)
+	if len(calls) == 0 {
+		return findings, nil
+	}
+
+	seen := make(map[string]struct{})
+	for _, call := range calls {
+		tableName := normalizeIdentifier(call.TableName)
+		indexName := normalizeIdentifier(call.IndexName)
+		if tableName == "" || indexName == "" {
+			continue
+		}
+		if isNumericIndex(indexName) {
+			continue
+		}
+
+		key := tableName + "|" + indexName
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		exists, err := r.lookupIndexExists(tableName, indexName)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			continue
+		}
+
+		origLine := mapExpandedLineToOriginal(call.Line, sourceMap)
+
+		findings = append(findings, Finding{
+			Rule:             RuleIndexExistsInDB,
+			Severity:         SeverityDeployStopper,
+			Message:          fmt.Sprintf("Для таблицы %s не найден индекс %s, используемый макросом %s", tableName, indexName, call.MacroName),
+			File:             file.Path,
+			Line:             origLine,
 			Object:           fmt.Sprintf("%s.%s", tableName, indexName),
 			CurrentProductID: file.DsProductID,
 		})
@@ -1998,6 +2150,14 @@ func (r *Runner) checkDatatypeExecParams(parsed *sqlparser.ParseResult, file *in
 			argType := r.resolveArgType(arg.Value, variableTypes, nil)
 			if argType == "" {
 				continue
+			}
+
+			// Числовые литералы неявно приводятся сервером к типу параметра.
+			// Если значение литерала помещается в целевой тип — потери точности нет.
+			if reNumericLiteral.MatchString(strings.TrimSpace(arg.Value)) {
+				if literalFitsType(strings.TrimSpace(arg.Value), paramType) {
+					continue
+				}
 			}
 
 			kind, loss := hasPrecisionLoss(argType, paramType)

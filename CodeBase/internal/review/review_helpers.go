@@ -1267,6 +1267,93 @@ func numericPrecisionScale(dataType string) (int, int, bool) {
 	}
 }
 
+// literalFitsType проверяет, помещается ли числовой литерал в целевой тип.
+// Возвращает true, если литерал fits в диапазон/точность targetType.
+func literalFitsType(literal string, targetType string) bool {
+	v := strings.TrimSpace(literal)
+	if v == "" {
+		return false
+	}
+	target := normalizeDataType(targetType)
+
+	// Целочисленные типы — проверяем диапазон
+	if p, s, ok := numericPrecisionScale(target); ok && s == 0 {
+		// Если литерал имеет дробную часть, а цель — целый тип, проверяем отдельно
+		hasDecimal := strings.Contains(v, ".")
+		if hasDecimal {
+			// Для целочисленного target литерал с дробной частью не помещается
+			// только если есть ненулевая дробная часть
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				return false
+			}
+			// Если дробная часть ненулевая — не помещается в целый тип
+			if f != float64(int64(f)) {
+				return false
+			}
+			v = strconv.FormatInt(int64(f), 10)
+		}
+
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			// Может быть слишком большое число — не помещается
+			return false
+		}
+
+		switch {
+		case strings.HasPrefix(target, "dstinyint"), strings.Contains(target, "tinyint"):
+			return n >= 0 && n <= 255
+		case strings.HasPrefix(target, "dssmallint"), strings.Contains(target, "smallint"):
+			return n >= -32768 && n <= 32767
+		case strings.HasPrefix(target, "dsint_key_one"), strings.HasPrefix(target, "dsint_key"),
+			target == "int", target == "integer", strings.Contains(target, " int"):
+			return n >= -2147483648 && n <= 2147483647
+		case strings.HasPrefix(target, "dsbigint"), strings.Contains(target, "bigint"),
+			strings.HasPrefix(target, "dsidentifier19"):
+			return true
+		case strings.HasPrefix(target, "dsidentifier"):
+			return n >= 0 && n <= 999999999999999
+		case p > 0:
+			// numeric(p, 0) — проверяем что помещается в p цифр
+			return n >= 0 && len(strings.TrimLeft(v, "-0")) <= p
+		}
+	}
+
+	// numeric(p, s) / decimal(p, s) — проверяем точность и масштаб
+	numericRe := regexp.MustCompile(`(?i)\b(?:numeric|decimal)\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)`)
+	if m := numericRe.FindStringSubmatch(target); len(m) == 3 {
+		precision, _ := strconv.Atoi(m[1])
+		scale, _ := strconv.Atoi(m[2])
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return false
+		}
+		_ = f
+		// Проверяем количество цифр
+		absStr := strings.TrimLeft(v, "-+")
+		dotIdx := strings.Index(absStr, ".")
+		intDigits := absStr
+		fracDigits := ""
+		if dotIdx >= 0 {
+			intDigits = absStr[:dotIdx]
+			fracDigits = absStr[dotIdx+1:]
+		}
+		intDigits = strings.TrimLeft(intDigits, "0")
+		if intDigits == "" {
+			intDigits = "0"
+		}
+		if len(intDigits) > precision-scale {
+			return false
+		}
+		if len(fracDigits) > scale {
+			return false
+		}
+		return true
+	}
+
+	return false
+}
+
 func datetimePrecisionRank(dataType string) int {
 	v := normalizeDataType(dataType)
 	switch {

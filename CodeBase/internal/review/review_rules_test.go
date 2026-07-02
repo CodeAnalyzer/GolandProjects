@@ -5355,3 +5355,163 @@ func TestParseSelectAssignStatement_WithFrom(t *testing.T) {
 		t.Fatalf("expected non-empty FromClause")
 	}
 }
+
+func TestLiteralFitsType(t *testing.T) {
+	cases := []struct {
+		name     string
+		literal  string
+		target   string
+		want     bool
+	}{
+		{name: "8 fits tinyint", literal: "8", target: "DSTINYINT", want: true},
+		{name: "255 fits tinyint", literal: "255", target: "dstinyint", want: true},
+		{name: "256 not fits tinyint", literal: "256", target: "dstinyint", want: false},
+		{name: "0 fits tinyint", literal: "0", target: "dstinyint", want: true},
+		{name: "negative not fits tinyint", literal: "-1", target: "dstinyint", want: false},
+		{name: "2 fits tinyint", literal: "2", target: "DSTINYINT", want: true},
+		{name: "100 fits smallint", literal: "100", target: "DSSMALLINT", want: true},
+		{name: "40000 not fits smallint", literal: "40000", target: "dssmallint", want: false},
+		{name: "100000 fits int", literal: "100000", target: "DSINT_KEY", want: true},
+		{name: "999999999999999 fits dsidentifier", literal: "999999999999999", target: "DSIDENTIFIER", want: true},
+		{name: "1000000000000000 not fits dsidentifier", literal: "1000000000000000", target: "DSIDENTIFIER", want: false},
+		{name: "3.14 fits numeric(10,2)", literal: "3.14", target: "numeric(10,2)", want: true},
+		{name: "3.141 not fits numeric(10,2)", literal: "3.141", target: "numeric(10,2)", want: false},
+		{name: "8.0 fits tinyint", literal: "8.0", target: "dstinyint", want: true},
+		{name: "8.5 not fits tinyint", literal: "8.5", target: "dstinyint", want: false},
+		{name: "empty literal", literal: "", target: "int", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := literalFitsType(tc.literal, tc.target)
+			if got != tc.want {
+				t.Errorf("literalFitsType(%q, %q) = %v, want %v", tc.literal, tc.target, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExtractDeletePtableCalls_BasicMacro(t *testing.T) {
+	lines := []string{"  M_DELETE_PTABLE(pMyTable)"}
+	calls := extractDeletePtableCalls(lines)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].TableName != "pMyTable" {
+		t.Errorf("TableName = %q, want pMyTable", calls[0].TableName)
+	}
+	if calls[0].IndexName != "XPKpMyTable" {
+		t.Errorf("IndexName = %q, want XPKpMyTable", calls[0].IndexName)
+	}
+	if calls[0].MacroName != "M_DELETE_PTABLE" {
+		t.Errorf("MacroName = %q, want M_DELETE_PTABLE", calls[0].MacroName)
+	}
+}
+
+func TestExtractDeletePtableCalls_Inmem(t *testing.T) {
+	lines := []string{"  M_DELETE_PTABLE_INMEM(pMyTable)"}
+	calls := extractDeletePtableCalls(lines)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].TableName != "pMyTable" {
+		t.Errorf("TableName = %q, want pMyTable", calls[0].TableName)
+	}
+	if calls[0].IndexName != "XPKpMyTable" {
+		t.Errorf("IndexName = %q, want XPKpMyTable", calls[0].IndexName)
+	}
+}
+
+func TestExtractDeletePtableCalls_Parallel(t *testing.T) {
+	lines := []string{"  M_DELETE_PTABLE_PARALLEL(pMyTable, @@spid, ID, 1000, 4)"}
+	calls := extractDeletePtableCalls(lines)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].TableName != "pMyTable" {
+		t.Errorf("TableName = %q, want pMyTable", calls[0].TableName)
+	}
+	if calls[0].IndexName != "XPKpMyTable" {
+		t.Errorf("IndexName = %q, want XPKpMyTable", calls[0].IndexName)
+	}
+}
+
+func TestExtractDeletePtableCalls_ExplicitIndex(t *testing.T) {
+	lines := []string{"  M_DELETE_PTABLE_INDEX(pMyTable, XPKpMyOtherIndex)"}
+	calls := extractDeletePtableCalls(lines)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].TableName != "pMyTable" {
+		t.Errorf("TableName = %q, want pMyTable", calls[0].TableName)
+	}
+	if calls[0].IndexName != "XPKpMyOtherIndex" {
+		t.Errorf("IndexName = %q, want XPKpMyOtherIndex", calls[0].IndexName)
+	}
+}
+
+func TestExtractDeletePtableCalls_SpidIndex(t *testing.T) {
+	lines := []string{"  M_DELETE_PTABLE_SPID_INDEX(pMyTable, XPKpMyTable, @@spid)"}
+	calls := extractDeletePtableCalls(lines)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].TableName != "pMyTable" {
+		t.Errorf("TableName = %q, want pMyTable", calls[0].TableName)
+	}
+	if calls[0].IndexName != "XPKpMyTable" {
+		t.Errorf("IndexName = %q, want XPKpMyTable", calls[0].IndexName)
+	}
+}
+
+func TestExtractDeletePtableCalls_SpidUnique(t *testing.T) {
+	lines := []string{"  M_DELETE_PTABLE_SPID_UNIQUE(pMyTable, XPKpMyTable, @@spid, ID)"}
+	calls := extractDeletePtableCalls(lines)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].TableName != "pMyTable" {
+		t.Errorf("TableName = %q, want pMyTable", calls[0].TableName)
+	}
+	if calls[0].IndexName != "XPKpMyTable" {
+		t.Errorf("IndexName = %q, want XPKpMyTable", calls[0].IndexName)
+	}
+}
+
+func TestExtractDeletePtableCalls_MultipleCalls(t *testing.T) {
+	lines := []string{
+		"  M_DELETE_PTABLE(pTable1)",
+		"  M_DELETE_PTABLE_INDEX(pTable2, XPKpTable2)",
+	}
+	calls := extractDeletePtableCalls(lines)
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 calls, got %d", len(calls))
+	}
+	if calls[0].TableName != "pTable1" || calls[0].IndexName != "XPKpTable1" {
+		t.Errorf("call[0] = {%s, %s}, want {pTable1, XPKpTable1}", calls[0].TableName, calls[0].IndexName)
+	}
+	if calls[1].TableName != "pTable2" || calls[1].IndexName != "XPKpTable2" {
+		t.Errorf("call[1] = {%s, %s}, want {pTable2, XPKpTable2}", calls[1].TableName, calls[1].IndexName)
+	}
+}
+
+func TestExtractDeletePtableCalls_SkipsRun(t *testing.T) {
+	lines := []string{"  M_DELETE_PTABLE_RUN(4)"}
+	calls := extractDeletePtableCalls(lines)
+	if len(calls) != 0 {
+		t.Fatalf("expected 0 calls for M_DELETE_PTABLE_RUN, got %d", len(calls))
+	}
+}
+
+func TestExtractDeletePtableCalls_CaseInsensitive(t *testing.T) {
+	lines := []string{"  m_delete_ptable(pMyTable)"}
+	calls := extractDeletePtableCalls(lines)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].TableName != "pMyTable" {
+		t.Errorf("TableName = %q, want pMyTable", calls[0].TableName)
+	}
+	if calls[0].IndexName != "XPKpMyTable" {
+		t.Errorf("IndexName = %q, want XPKpMyTable", calls[0].IndexName)
+	}
+}
