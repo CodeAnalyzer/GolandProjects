@@ -55,6 +55,19 @@ var (
 	stepForwardRe      = regexp.MustCompile(`function\s+StepForward\s*\(`)
 	massAccrualRe      = regexp.MustCompile(`function\s+CreateMassAccrualInstrument\s*\(`)
 
+	// xmlExtractRegexes используются для извлечения блоков из SMF-XML.
+	descriptionRe = regexp.MustCompile(`<description>([^<]+)</description>`)
+	prequeryRe    = regexp.MustCompile(`<prequery>([\s\S]*?)</prequery>`)
+	incFileRe     = regexp.MustCompile(`<inc-file>([^<]+)</inc-file>`)
+
+	// encodingCheckRegexes используются при проверке корректности кодировки.
+	russianLetterRe = regexp.MustCompile(`[а-яА-Я]`)
+	garbageCharRe   = regexp.MustCompile(`[ЎўЈ¤ҐЁЄЇІѕљњћќўџ]`)
+
+	// stateActionRegexes используются при парсинге состояний и действий.
+	stateTypeInlineRe = regexp.MustCompile(`(?:State\.)?StateType\s*=\s*(PROP_STATETYPE_\w+)`)
+	helperActionRe    = regexp.MustCompile(`(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\s*\)\s*;`)
+
 	defaultJSParser = js.NewParser()
 )
 
@@ -176,40 +189,40 @@ type SMFJob struct {
 // NewParser создаёт новый SMF-парсер
 func NewParser() *Parser {
 	return &Parser{
-		xmlDeclRe:                 xmlDeclRe,
-		instrumentNameRe:          instrumentNameRe,
-		instrumentBriefRe:         instrumentBriefRe,
-		instrumentObjIDRe:         instrumentObjIDRe,
-		instrumentModuleRe:        instrumentModuleRe,
-		instrumentStartRe:         instrumentStartRe,
-		withInstrumentRe:          withInstrumentRe,
-		legacyNameRe:              legacyNameRe,
-		legacyBriefRe:             legacyBriefRe,
-		legacyObjIDRe:             legacyObjIDRe,
-		legacyModuleRe:            legacyModuleRe,
-		legacyStartRe:             legacyStartRe,
-		smfVarDeclRe:              smfVarDeclRe,
-		smfConstDeclRe:            smfConstDeclRe,
-		smfNumericConstRe:         smfNumericConstRe,
-		smfAltConstRe1:            smfAltConstRe1,
-		smfAltConstRe2:            smfAltConstRe2,
-		smfAltConstRe3:            smfAltConstRe3,
-		smfAltConstRe4:            smfAltConstRe4,
-		createStateRe:             createStateRe,
-		legacyStateRe:             legacyStateRe,
-		stateTypeRe:               stateTypeRe,
-		createTransitionRe:        createTransitionRe,
+		xmlDeclRe:                  xmlDeclRe,
+		instrumentNameRe:           instrumentNameRe,
+		instrumentBriefRe:          instrumentBriefRe,
+		instrumentObjIDRe:          instrumentObjIDRe,
+		instrumentModuleRe:         instrumentModuleRe,
+		instrumentStartRe:          instrumentStartRe,
+		withInstrumentRe:           withInstrumentRe,
+		legacyNameRe:               legacyNameRe,
+		legacyBriefRe:              legacyBriefRe,
+		legacyObjIDRe:              legacyObjIDRe,
+		legacyModuleRe:             legacyModuleRe,
+		legacyStartRe:              legacyStartRe,
+		smfVarDeclRe:               smfVarDeclRe,
+		smfConstDeclRe:             smfConstDeclRe,
+		smfNumericConstRe:          smfNumericConstRe,
+		smfAltConstRe1:             smfAltConstRe1,
+		smfAltConstRe2:             smfAltConstRe2,
+		smfAltConstRe3:             smfAltConstRe3,
+		smfAltConstRe4:             smfAltConstRe4,
+		createStateRe:              createStateRe,
+		legacyStateRe:              legacyStateRe,
+		stateTypeRe:                stateTypeRe,
+		createTransitionRe:         createTransitionRe,
 		legacyConsumerTransitionRe: legacyConsumerTransitionRe,
-		legacyTransitionRe:        legacyTransitionRe,
-		intoRe:                    intoRe,
-		propValRe:                 propValRe,
-		priorityRe:                priorityRe,
-		checkServiceRe:            checkServiceRe,
-		typeAccLinkRe:             typeAccLinkRe,
-		createInstrumentRe:        createInstrumentRe,
-		stepForwardRe:             stepForwardRe,
-		massAccrualRe:             massAccrualRe,
-		jsParser:                  defaultJSParser,
+		legacyTransitionRe:         legacyTransitionRe,
+		intoRe:                     intoRe,
+		propValRe:                  propValRe,
+		priorityRe:                 priorityRe,
+		checkServiceRe:             checkServiceRe,
+		typeAccLinkRe:              typeAccLinkRe,
+		createInstrumentRe:         createInstrumentRe,
+		stepForwardRe:              stepForwardRe,
+		massAccrualRe:              massAccrualRe,
+		jsParser:                   defaultJSParser,
 	}
 }
 
@@ -315,8 +328,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 
 // extractDescription извлекает описание из не-XML контента
 func (p *Parser) extractDescription(content string) string {
-	re := regexp.MustCompile(`<description>([^<]+)</description>`)
-	if matches := re.FindStringSubmatch(content); matches != nil {
+	if matches := descriptionRe.FindStringSubmatch(content); matches != nil {
 		return strings.TrimSpace(matches[1])
 	}
 	return ""
@@ -324,8 +336,7 @@ func (p *Parser) extractDescription(content string) string {
 
 // extractPrequery извлекает SQL из <prequery>
 func (p *Parser) extractPrequery(content string) string {
-	re := regexp.MustCompile(`<prequery>([\s\S]*?)</prequery>`)
-	if matches := re.FindStringSubmatch(content); matches != nil {
+	if matches := prequeryRe.FindStringSubmatch(content); matches != nil {
 		return strings.TrimSpace(matches[1])
 	}
 	return ""
@@ -335,8 +346,7 @@ func (p *Parser) extractPrequery(content string) string {
 func (p *Parser) extractIncludes(content string) []string {
 	includes := make([]string, 0)
 	seen := make(map[string]bool)
-	re := regexp.MustCompile(`<inc-file>([^<]+)</inc-file>`)
-	matches := re.FindAllStringSubmatch(content, -1)
+	matches := incFileRe.FindAllStringSubmatch(content, -1)
 	for _, m := range matches {
 		includeFile := strings.TrimSpace(m[1])
 		// Извлекаем только имя файла без пути
@@ -512,11 +522,10 @@ func (p *Parser) fileExists(path string) bool {
 // isValidEncoding проверяет что текст прочитан с корректной кодировкой
 func (p *Parser) isValidEncoding(content string) bool {
 	// Если в тексте есть русские буквы, проверяем что они не превратились в кракозябры
-	hasRussian := regexp.MustCompile(`[а-яА-Я]`).MatchString(content)
+	hasRussian := russianLetterRe.MatchString(content)
 	if hasRussian {
 		// Проверяем что нет характерных кракозябр из неправильной кодировки
-		hasGarbage := regexp.MustCompile(`[ЎўЈ¤ҐЁЄЇІѕљњћќўџ]`).MatchString(content)
-		if hasGarbage {
+		if garbageCharRe.MatchString(content) {
 			return false
 		}
 	}
@@ -707,7 +716,7 @@ func (p *Parser) extractStates(script string) []map[string]interface{} {
 			if strings.Contains(line, m[0]) {
 				// Ищем в следующих строках
 				for j := i; j < len(lines) && j < i+10; j++ {
-					if typeMatches := regexp.MustCompile(`(?:State\.)?StateType\s*=\s*(PROP_STATETYPE_\w+)`).FindStringSubmatch(lines[j]); typeMatches != nil {
+					if typeMatches := stateTypeInlineRe.FindStringSubmatch(lines[j]); typeMatches != nil {
 						state["state_type"] = typeMatches[1]
 						break
 					}
@@ -812,8 +821,7 @@ func (p *Parser) extractActions(script string, includeFiles []string, basePath s
 		}
 	}
 
-	helperRe := regexp.MustCompile(`(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\s*\)\s*;`)
-	helperMatches := helperRe.FindAllStringSubmatch(script, -1)
+	helperMatches := helperActionRe.FindAllStringSubmatch(script, -1)
 	if helperMatches == nil {
 		return actions
 	}

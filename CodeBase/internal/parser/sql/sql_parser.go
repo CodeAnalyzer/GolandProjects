@@ -54,6 +54,10 @@ var (
 	commentRe          = regexp.MustCompile(`^\s*--.*$`)
 	pTableRe           = regexp.MustCompile(`(?i)\b(pAPI_[A-Za-z_][A-Za-z0-9_]*)`)
 	tempTableRe        = regexp.MustCompile(`(?i)\b#[A-Za-z_][A-Za-z0-9_]*`)
+
+	// helperRegexes используются при извлечении имен столбцов и SET-колонок UPDATE.
+	asAliasRe   = regexp.MustCompile(`(?i)\bas\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*$`)
+	setClauseRe = regexp.MustCompile(`(?i)^\s*update\s+[A-Za-z_#][A-Za-z0-9_#]*\s+set\s+(.+)`)
 )
 
 // Parser SQL-парсер
@@ -209,7 +213,6 @@ func inferSelectColumnName(expr string) string {
 		return ""
 	}
 
-	asAliasRe := regexp.MustCompile(`(?i)\bas\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*$`)
 	if matches := asAliasRe.FindStringSubmatch(expr); matches != nil {
 		return strings.TrimSpace(matches[1])
 	}
@@ -1377,8 +1380,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 				if realContext == "update" {
 					if updateColsMatches := p.updateColumnsRe.FindStringSubmatch(line); updateColsMatches != nil {
 						// Находим часть после SET
-						setRe := regexp.MustCompile(`(?i)^\s*update\s+[A-Za-z_#][A-Za-z0-9_#]*\s+set\s+(.+)`)
-						if setMatch := setRe.FindStringSubmatch(line); setMatch != nil {
+						if setMatch := setClauseRe.FindStringSubmatch(line); setMatch != nil {
 							setClause := setMatch[1]
 							// Разделяем по запятым, но учитываем что значения могут содержать запятые
 							assignments := strings.Split(setClause, ",")

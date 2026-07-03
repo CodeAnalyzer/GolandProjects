@@ -12,6 +12,23 @@ import (
 	"github.com/lib/pq"
 )
 
+var (
+	// commentRegexes используются для удаления SQL-комментариев.
+	reLookupCommentBlock = regexp.MustCompile(`(?s)/\*.*?\*/`)
+	reLookupCommentLine    = regexp.MustCompile(`(?m)--.*$`)
+
+	// indexHintRegexes используются при парсинге from/join частей.
+	reLookupIndexHintExtract = regexp.MustCompile(`(?i)\s+(M_\w+_INDEX)\s*\(\s*([^\s,)]+)`)
+	reLookupIndexHintRemove  = regexp.MustCompile(`(?i)\s+M_\w+_INDEX\s*\([^)]+\)`)
+	reLookupNolock           = regexp.MustCompile(`(?i)\s+NOLOCK`)
+	reLookupWithHint         = regexp.MustCompile(`(?i)\s+WITH\s*\([^)]+\)`)
+
+	// conditionParseRegexes используются при извлечении условий WHERE/ON.
+	reLookupQualifiedRef = regexp.MustCompile(`(?i)(\w+)\.(\w+)`)
+	reLookupCondition    = regexp.MustCompile(`(?i)\b(\w+)\s*(=|<>|!=|<|>|<=|>=|like|in|between)`)
+	reLookupOn           = regexp.MustCompile(`(?i)\s+on\s+`)
+)
+
 func (r *Runner) getIndexedFile(path string) (*indexedFile, error) {
 	variants := []string{path, filepath.ToSlash(path), strings.ReplaceAll(path, "/", `\`)}
 	for _, candidate := range variants {
@@ -473,12 +490,10 @@ func (r *Runner) findAPITableNames(names []string) (map[string]struct{}, error) 
 // removeComments удаляет SQL комментарии (-- ... и /* ... */)
 func removeComments(text string) string {
 	// Удаляем многострочные комментарии /* ... */
-	blockCommentRe := regexp.MustCompile(`(?s)/\*.*?\*/`)
-	text = blockCommentRe.ReplaceAllString(text, "")
+	text = reLookupCommentBlock.ReplaceAllString(text, "")
 
 	// Удаляем однострочные комментарии -- ...
-	lineCommentRe := regexp.MustCompile(`(?m)--.*$`)
-	text = lineCommentRe.ReplaceAllString(text, "")
+	text = reLookupCommentLine.ReplaceAllString(text, "")
 
 	return text
 }
@@ -733,8 +748,7 @@ func parseTableWithAlias(part string) tableFromClause {
 	result := tableFromClause{}
 
 	// Извлекаем подсказку индекса типа M_ROWLOCK_INDEX(XPK...)
-	idxHintExtractRe := regexp.MustCompile(`(?i)\s+(M_\w+_INDEX)\s*\(\s*([^\s,)]+)`)
-	matches := idxHintExtractRe.FindStringSubmatch(part)
+	matches := reLookupIndexHintExtract.FindStringSubmatch(part)
 	if len(matches) > 1 {
 		result.Hint = matches[1]
 	}
@@ -743,16 +757,13 @@ func parseTableWithAlias(part string) tableFromClause {
 	}
 
 	// Убираем подсказки индексов типа M_ROWLOCK_INDEX(...)
-	idxHintRemoveRe := regexp.MustCompile(`(?i)\s+M_\w+_INDEX\s*\([^)]+\)`)
-	part = idxHintRemoveRe.ReplaceAllString(part, "")
+	part = reLookupIndexHintRemove.ReplaceAllString(part, "")
 
 	// Убираем подсказки NOLOCK
-	nolockRe := regexp.MustCompile(`(?i)\s+NOLOCK`)
-	part = nolockRe.ReplaceAllString(part, "")
+	part = reLookupNolock.ReplaceAllString(part, "")
 
 	// Убираем подсказки WITH (...)
-	withHintRe := regexp.MustCompile(`(?i)\s+WITH\s*\([^)]+\)`)
-	part = withHintRe.ReplaceAllString(part, "")
+	part = reLookupWithHint.ReplaceAllString(part, "")
 
 	part = strings.TrimSpace(part)
 	if part == "" {
@@ -880,8 +891,7 @@ func extractColumnRefsFromWhere(lower string) whereAnalysisResult {
 	wherePart = wherePart[:endIdx]
 
 	// Извлекаем alias.column ссылки
-	reQualified := regexp.MustCompile(`(?i)(\w+)\.(\w+)`)
-	matches := reQualified.FindAllStringSubmatch(wherePart, -1)
+	matches := reLookupQualifiedRef.FindAllStringSubmatch(wherePart, -1)
 	for _, m := range matches {
 		if len(m) >= 2 {
 			result.Aliases = append(result.Aliases, strings.ToLower(m[1]))
@@ -890,9 +900,8 @@ func extractColumnRefsFromWhere(lower string) whereAnalysisResult {
 
 	// Проверяем наличие неквалифицированных условий (column = value без alias)
 	// Удаляем все квалифицированные ссылки и проверяем оставшиеся условия
-	cleaned := reQualified.ReplaceAllString(wherePart, "")
-	reCondition := regexp.MustCompile(`(?i)\b(\w+)\s*(=|<>|!=|<|>|<=|>=|like|in|between)`)
-	if reCondition.MatchString(cleaned) {
+	cleaned := reLookupQualifiedRef.ReplaceAllString(wherePart, "")
+	if reLookupCondition.MatchString(cleaned) {
 		result.HasUnqualifiedConditions = true
 	}
 
@@ -903,8 +912,7 @@ func extractColumnRefsFromOn(lower string) []string {
 	result := make([]string, 0)
 
 	// Находим все ON условия
-	onRe := regexp.MustCompile(`(?i)\s+on\s+`)
-	parts := onRe.Split(lower, -1)
+	parts := reLookupOn.Split(lower, -1)
 
 	for _, part := range parts[1:] { // пропускаем первую часть (до первого ON)
 		// Обрезаем до JOIN или другого ключевого слова
@@ -918,8 +926,7 @@ func extractColumnRefsFromOn(lower string) []string {
 		onPart := part[:endIdx]
 
 		// Извлекаем alias.column ссылки
-		re := regexp.MustCompile(`(?i)(\w+)\.(\w+)`)
-		matches := re.FindAllStringSubmatch(onPart, -1)
+		matches := reLookupQualifiedRef.FindAllStringSubmatch(onPart, -1)
 		for _, m := range matches {
 			if len(m) >= 2 {
 				result = append(result, strings.ToLower(m[1]))

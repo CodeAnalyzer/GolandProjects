@@ -15,6 +15,10 @@ var (
 	fieldRe         = regexp.MustCompile(`^\s*@([^@]+)@\s*=\s*Field\{(.*)\}\s*$`)
 	paramRe         = regexp.MustCompile(`^\s*%([^!]+)!=Param\{(.*)\}\s*$`)
 	includeRe       = regexp.MustCompile(`(?i)#include\s*[<"]([^>"]+)[>"]`)
+
+	// encodingCheckRegexes используются при проверке корректности кодировки.
+	garbledRe1 = regexp.MustCompile(`[╚╩╘╟╤╥╦╧╨╩╪╫╬═│└┘├┤]{3,}`)
+	garbledRe2 = regexp.MustCompile(`[ÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞß]{3,}`)
 )
 
 type Parser struct {
@@ -228,14 +232,8 @@ func reportNameFromPath(path string) string {
 }
 
 func (p *Parser) isValidEncoding(content string) bool {
-	garbledPatterns := []*regexp.Regexp{
-		regexp.MustCompile(`[╚╩╘╟╤╥╦╧╨╩╪╫╬═│└┘├┤]{3,}`),
-		regexp.MustCompile(`[ÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞß]{3,}`),
-	}
-	for _, pattern := range garbledPatterns {
-		if pattern.MatchString(content) {
-			return false
-		}
+	if garbledRe1.MatchString(content) || garbledRe2.MatchString(content) {
+		return false
 	}
 	return true
 }

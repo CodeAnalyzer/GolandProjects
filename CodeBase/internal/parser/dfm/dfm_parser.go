@@ -29,6 +29,10 @@ var (
 	stringRe = regexp.MustCompile(`'([^']*(?:''[^']*)*)'`)
 
 	commentRe = regexp.MustCompile(`\{[^}]*\}`)
+
+	// sqlDetectRegexes используются для определения SQL-текста и извлечения таблиц.
+	sqlKeywordDetectRe = regexp.MustCompile(`(?is)\b(SELECT\b.*\bFROM|INSERT\s+INTO|UPDATE\s+[A-Za-z_#][A-Za-z0-9_#]*\s+SET|DELETE\s+FROM|DECLARE\s+@[A-Za-z_#][A-Za-z0-9_#]*|FROM\s+[A-Za-z_#][A-Za-z0-9_#]*|JOIN\s+[A-Za-z_#][A-Za-z0-9_#]*|WHERE\b|GROUP\s+BY|ORDER\s+BY|HAVING\b|UNION\b|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE|EXEC(?:UTE)?\s+[A-Za-z_#][A-Za-z0-9_#]*)`)
+	tableRe            = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE|DELETE\s+FROM|INSERT\s+INTO)\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
 )
 
 // Parser DFM-парсер
@@ -494,7 +498,6 @@ func isLikelySQLText(s string) bool {
 	if trimmed == "" {
 		return false
 	}
-	sqlKeywordDetectRe := regexp.MustCompile(`(?is)\b(SELECT\b.*\bFROM|INSERT\s+INTO|UPDATE\s+[A-Za-z_#][A-Za-z0-9_#]*\s+SET|DELETE\s+FROM|DECLARE\s+@[A-Za-z_#][A-Za-z0-9_#]*|FROM\s+[A-Za-z_#][A-Za-z0-9_#]*|JOIN\s+[A-Za-z_#][A-Za-z0-9_#]*|WHERE\b|GROUP\s+BY|ORDER\s+BY|HAVING\b|UNION\b|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE|EXEC(?:UTE)?\s+[A-Za-z_#][A-Za-z0-9_#]*)`)
 	return sqlKeywordDetectRe.MatchString(trimmed)
 }
 
@@ -502,9 +505,6 @@ func isLikelySQLText(s string) bool {
 func (p *Parser) extractTablesFromSQL(sqlText string, lineNum int, result *ParseResult) {
 	// Нормализуем SQL
 	sqlText = strings.ReplaceAll(sqlText, "''", "'")
-
-	// Регулярка для таблиц
-	tableRe := regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE|DELETE\s+FROM|INSERT\s+INTO)\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
 
 	matchIndexes := tableRe.FindAllStringSubmatchIndex(sqlText, -1)
 	if matches := tableRe.FindAllStringSubmatch(sqlText, -1); matches != nil {

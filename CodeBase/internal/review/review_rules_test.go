@@ -161,6 +161,70 @@ func TestAnalyzeConditionForEqColumn_DetectsSelfComparison(t *testing.T) {
 	}
 }
 
+func TestAnalyzeConditionForEqColumn_SelectAlias_NoFinding(t *testing.T) {
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+
+	cases := []struct {
+		name  string
+		lines []string
+	}{
+		{
+			name: "select alias same name",
+			lines: []string{
+				"select TownName = TownName",
+			},
+		},
+		{
+			name: "select alias same name qualified",
+			lines: []string{
+				"select a.TownName = a.TownName",
+			},
+		},
+		{
+			name: "insert select aliases",
+			lines: []string{
+				"select SPID        = SPID",
+				"      ,ClientID    = LegalID",
+				"      ,AddressID   = AddressID",
+				"      ,TownName    = TownName",
+			},
+		},
+		{
+			name: "subquery select alias",
+			lines: []string{
+				"where col = (select Alias = Alias from t)",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := analyzeConditionForEqColumn(tc.lines, 1, file)
+			if len(findings) != 0 {
+				t.Fatalf("expected no finding for SELECT alias, got %v", findings)
+			}
+		})
+	}
+}
+
+func TestAnalyzeConditionForEqColumn_LineNumber(t *testing.T) {
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+	lines := []string{
+		"where col1 = :param",
+		"  and col2 = col2",
+	}
+	findings := analyzeConditionForEqColumn(lines, 10, file)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].Object != "col2" {
+		t.Fatalf("object = %q, want col2", findings[0].Object)
+	}
+	if findings[0].Line != 11 {
+		t.Fatalf("line = %d, want 11", findings[0].Line)
+	}
+}
+
 func TestAnalyzeStatementForFullScan_DetectsFullScan(t *testing.T) {
 	file := &indexedFile{Path: "test.sql", DsProductID: 1}
 
@@ -4380,6 +4444,35 @@ as
 	}
 	if len(findings) != 0 {
 		t.Fatalf("expected 0 findings (SET columns + @vars), got %d: %v", len(findings), findings)
+	}
+}
+
+func TestCheckStatementsWithJoinsRequireAliases_UpdateSetWithComment_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  update pLB_Legal_FindList
+     set Name1 = convert(varchar(160),isnull(pl.Name,'')) -- Делаем, потому что в банке, по какой то причине, перестало заполняться поле tInstitution.Name1. Разбираться с ГК - долго и не продуктивно. Поле Name1 заполняется на основании альтернативного имени - "АнглНаим"
+    from pLB_Legal_FindList      p  M_UPDLOCK_INDEX(XPKpLB_Legal_FindList)
+   inner join pAPI_Legal_AlterName pl  M_NOLOCK_INDEX(XIE1pAPI_Legal_AlterName)
+           on pl.SPID      = @@spid
+          and pl.LegalID   = p.LegalID
+          and M_CONVERT_NCHAR(pl.AlterNameType) = 'АнглНаим'
+  where p.SPID    = @@spid
+    and p.Name1 = ''
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: "test.sql", DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings (SET column + comment with same name), got %d: %v", len(findings), findings)
 	}
 }
 

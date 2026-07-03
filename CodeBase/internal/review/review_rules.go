@@ -2815,19 +2815,24 @@ func analyzeConditionForEqColumn(lines []string, startLine int, file *indexedFil
 	}
 
 	// Захватываем опциональный @ для переменных T-SQL
-	matches := reEqOperands.FindAllStringSubmatch(fullText, -1)
+	matches := reEqOperands.FindAllStringSubmatchIndex(fullText, -1)
 
 	for _, m := range matches {
-		if len(m) < 3 {
+		if len(m) < 6 {
 			continue
 		}
+		leftStart, leftEnd := m[2], m[3]
+		rightStart, rightEnd := m[4], m[5]
+		leftRaw := fullText[leftStart:leftEnd]
+		rightRaw := fullText[rightStart:rightEnd]
+
 		// Пропускаем присваивание в SELECT: @var = column или column = @var
 		// @var — переменная, не колонка, это не сравнение столбца с самим собой
-		if strings.HasPrefix(m[1], "@") || strings.HasPrefix(m[2], "@") {
+		if strings.HasPrefix(leftRaw, "@") || strings.HasPrefix(rightRaw, "@") {
 			continue
 		}
-		left := normalizeIdentifier(m[1])
-		right := normalizeIdentifier(m[2])
+		left := normalizeIdentifier(leftRaw)
+		right := normalizeIdentifier(rightRaw)
 		if left == "" || right == "" {
 			continue
 		}
@@ -2835,25 +2840,99 @@ func analyzeConditionForEqColumn(lines []string, startLine int, file *indexedFil
 		if isNumericLiteral(left) || isNumericLiteral(right) {
 			continue
 		}
-		if left == right {
-			key := left
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			seen[key] = struct{}{}
-			findings = append(findings, Finding{
-				Rule:             RuleUseEqColumn,
-				Severity:         SeverityDeployStopper,
-				Message:          "Нельзя сравнивать столбец с самим собой",
-				File:             file.Path,
-				Line:             startLine,
-				Object:           left,
-				CurrentProductID: file.DsProductID,
-			})
+		if left != right {
+			continue
 		}
+		// Пропускаем алиасы в SELECT: select Alias = Column
+		if isInSelectClause(lines, leftStart) {
+			continue
+		}
+		key := left
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		matchLine := startLine
+		if posLine := positionToLine(lines, leftStart); posLine > 0 {
+			matchLine = startLine + posLine - 1
+		}
+
+		findings = append(findings, Finding{
+			Rule:             RuleUseEqColumn,
+			Severity:         SeverityDeployStopper,
+			Message:          "Нельзя сравнивать столбец с самим собой",
+			File:             file.Path,
+			Line:             matchLine,
+			Object:           left,
+			CurrentProductID: file.DsProductID,
+		})
 	}
 
 	return findings
+}
+
+// isInSelectClause проверяет, что позиция в объединённом тексте условия
+// находится внутри SELECT-list (между SELECT и FROM/INTO/WHERE/UNION на нулевой глубине).
+func isInSelectClause(lines []string, pos int) bool {
+	text := strings.Join(lines, " ")
+	if pos < 0 || pos >= len(text) {
+		return false
+	}
+
+	selectIdx := -1
+	for i := 0; i < len(text); i++ {
+		if isWordBoundary(text, i-1) && hasPrefixFold(text[i:], "select") && isWordBoundary(text, i+6) {
+			selectIdx = i
+			break
+		}
+	}
+	if selectIdx < 0 || pos < selectIdx {
+		return false
+	}
+
+	parenDepth := 0
+	caseDepth := 0
+	for i := selectIdx; i < len(text) && i <= pos; i++ {
+		ch := text[i]
+		if ch == '(' {
+			parenDepth++
+		} else if ch == ')' && parenDepth > 0 {
+			parenDepth--
+		}
+		if isWordBoundary(text, i-1) && hasPrefixFold(text[i:], "case") && isWordBoundary(text, i+4) {
+			caseDepth++
+		}
+		if isWordBoundary(text, i-1) && hasPrefixFold(text[i:], "end") && isWordBoundary(text, i+3) && caseDepth > 0 {
+			caseDepth--
+		}
+		if parenDepth == 0 && caseDepth == 0 && i > selectIdx && i <= pos {
+			for _, kw := range []string{" from ", " into ", " where ", " union ", " except ", " intersect ", " group by ", " order by ", " having "} {
+				kwLen := len(kw)
+				if i+kwLen-1 <= len(text) && strings.EqualFold(text[i:i+kwLen], kw) {
+					return false
+				}
+			}
+		}
+	}
+
+	return true
+}
+
+// positionToLine переводит смещение в объединённом тексте lines в номер строки (1-based).
+func positionToLine(lines []string, pos int) int {
+	if pos < 0 {
+		return 0
+	}
+	current := 0
+	for i, line := range lines {
+		lineLen := len(line)
+		if pos < current+lineLen {
+			return i + 1
+		}
+		current += lineLen + 1 // +1 for пробел-разделитель
+	}
+	return len(lines)
 }
 
 func (r *Runner) checkTableFullScan(file *indexedFile) ([]Finding, error) {
@@ -5177,7 +5256,7 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 		}
 
 		if selectPart != "" {
-			parts := splitTopLevelCSV(selectPart)
+			parts := splitTopLevelCSV(removeComments(selectPart))
 			for _, part := range parts {
 				trimmed := strings.TrimSpace(part)
 				if trimmed == "" || trimmed == "*" {
@@ -5217,7 +5296,7 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 		}
 
 		if wherePart != "" {
-			colNames := findAllUnqualifiedColumnRefs(wherePart)
+			colNames := findAllUnqualifiedColumnRefs(removeComments(wherePart))
 			colNames = r.filterKnownNames(colNames)
 			colNames = filterOutTableNames(colNames, knownTableNames)
 			for _, colName := range colNames {
@@ -5236,7 +5315,7 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 
 		// Проверяем ON-условия JOIN
 		for _, onPart := range onParts {
-			colNames := findAllUnqualifiedColumnRefs(onPart)
+			colNames := findAllUnqualifiedColumnRefs(removeComments(onPart))
 			colNames = r.filterKnownNames(colNames)
 			colNames = filterOutTableNames(colNames, knownTableNames)
 			for _, colName := range colNames {

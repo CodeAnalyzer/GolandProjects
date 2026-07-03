@@ -6,13 +6,65 @@ import (
 	"strings"
 )
 
+var (
+	// conditionNewStmtRe определяет начало нового SQL-оператора для прерывания условия WHERE/ON/HAVING.
+	conditionNewStmtRe = regexp.MustCompile(`(?i)^\s*(?:select|update|delete|insert)\b`)
+
+	// dmlParserRegexes используются парсерами DML-операторов.
+	reParserUpdateSet    = regexp.MustCompile(`(?is)^update\s+([a-z_#][a-z0-9_#]*)(?:\s+([a-z_][a-z0-9_]*))?\s+set\s+(.+)$`)
+	reParserInsertSelect = regexp.MustCompile(`(?is)insert\s+(?:into\s+)?([a-z_#][a-z0-9_#]*)[^\(]*\((.*?)\)\s*select\s+(.*?)\s+from\s+(.*)$`)
+	reParserSelectAssign = regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+
+	// cursorParserRegexes используются парсерами курсоров.
+	reParserFetchIntoPrefix     = regexp.MustCompile(`(?is)(?:__fetch_next__|fetch)(?:\s+next)?(?:\s+from)?\s+([a-z_#][a-z0-9_#]*)\s+into\s+`)
+	reParserFetchIntoVar        = regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*$`)
+	reParserFetchIntoBoundary   = regexp.MustCompile(`(?im)\n\s*(?:while|open|close|deallocate|__deallocate_cursor__|fetch|__fetch_next__|if|begin|end|return|go)\b`)
+	reParserCursorExplicitDecl  = regexp.MustCompile(`(?is)^declare\s+([a-z_#][a-z0-9_#]*)\s+(?:insensitive\s+)?cursor\s+for\s*(.*)$`)
+	reParserCursorMacroDecl     = regexp.MustCompile(`(?is)^__declare_cursor__\s*\(\s*([a-z_#][a-z0-9_#]*)\s*\)\s*(.*)$`)
+	reParserCursorDealloc       = regexp.MustCompile(`(?is)^(?:__deallocate_cursor__|deallocate(?:\s+cursor)?)\s+([a-z_#][a-z0-9_#]*)`)
+	reParserFetchNextIntoPrefix = regexp.MustCompile(`(?is)^\s*(?:__fetch_next__|fetch(?:\s+next)?(?:\s+from)?)\s+([a-z_#][a-z0-9_#]*)\s+into\s+(.*)$`)
+	reParserFetchIntoVarOnly    = regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)$`)
+
+	// aliasMapRegexes используются при построении map алиасов таблиц.
+	reParserAliasFromJoin        = regexp.MustCompile(`(?is)\b(?:from|join)\s+([a-z_#][a-z0-9_#]*)\s+([a-z_][a-z0-9_]*)`)
+	reParserAliasFromJoinNoAlias = regexp.MustCompile(`(?is)\b(?:from|join)\s+([a-z_#][a-z0-9_#]*)(?:\s|$)`)
+
+	// statementBoundaryRegexes используются в hasStatementEnded.
+	reParserStmtBoundary = regexp.MustCompile(`(?i)([;]|\b(?:go|begin|if|while|declare|exec|execute|return)\b)`)
+	reParserStmtEnd      = regexp.MustCompile(`(?i)^end(?:\s|;|$)`)
+	reParserBlockBegin   = regexp.MustCompile(`(?i)\b(begin|if|while|declare)\b`)
+	reParserSelectStart  = regexp.MustCompile(`(?i)^\s*select\b`)
+
+	// execArgRegexes используются парсером аргументов exec.
+	reParserExecOut = regexp.MustCompile(`(?i)\s+\b(out(?:put)?)\b\s*$`)
+
+	// caseAssignRegexes используются при парсинге присваиваний в CASE.
+	reParserCaseBranchAssign = regexp.MustCompile(`(?i)(?:then|else)\s+(@[A-Za-z_][A-Za-z0-9_]*)\s*=`)
+
+	// columnRefRegexes используются при извлечении ссылок на колонки/алиасы.
+	reParserCommentSingleLineC   = regexp.MustCompile(`//[^\n]*`)
+	reParserCommentSingleLineSQL = regexp.MustCompile(`--[^\n]*`)
+	reParserCommentBlock         = regexp.MustCompile(`(?s)/\*.*?\*/`)
+	reParserQualifiedRef         = regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\b`)
+	reParserAtVar                = regexp.MustCompile(`(?i)@@?[a-z_][a-z0-9_]*`)
+	reParserStringLiteral        = regexp.MustCompile(`'[^']*'`)
+	reParserNumberLiteral        = regexp.MustCompile(`\b\d+(\.\d+)?\b`)
+	reParserIndexMacro           = regexp.MustCompile(`(?i)\bM_\w+_INDEX\s*\([^)]*\)`)
+	reParserIdentifier           = regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\b`)
+	reParserTopN                 = regexp.MustCompile(`(?i)^\s*top\s+\d+\s+`)
+	reParserAsAlias              = regexp.MustCompile(`(?i)\bas\s+([a-z_][a-z0-9_]*)\s*$`)
+	reParserIdentifierOnly       = regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`)
+	reParserOrderAscDesc         = regexp.MustCompile(`(?i)\s+(asc|desc)\s*$`)
+
+	reParserMacro = regexp.MustCompile(`(?i)\bM_\w+\b`)
+)
+
 func parseUpdateSetStatement(queryText string) (updateSetStatement, bool) {
 	text := strings.TrimSpace(queryText)
 	if text == "" {
 		return updateSetStatement{}, false
 	}
-	re := regexp.MustCompile(`(?is)^update\s+([a-z_#][a-z0-9_#]*)(?:\s+([a-z_][a-z0-9_]*))?\s+set\s+(.+)$`)
-	m := re.FindStringSubmatch(text)
+	m := reParserUpdateSet.FindStringSubmatch(text)
 	if len(m) != 4 {
 		return updateSetStatement{}, false
 	}
@@ -102,8 +154,7 @@ func parseInsertSelectStatement(queryText string) (insertSelectStatement, bool) 
 	if text == "" {
 		return insertSelectStatement{}, false
 	}
-	re := regexp.MustCompile(`(?is)insert\s+(?:into\s+)?([a-z_#][a-z0-9_#]*)[^\(]*\((.*?)\)\s*select\s+(.*?)\s+from\s+(.*)$`)
-	m := re.FindStringSubmatch(text)
+	m := reParserInsertSelect.FindStringSubmatch(text)
 	if len(m) != 5 {
 		return insertSelectStatement{}, false
 	}
@@ -148,9 +199,8 @@ func parseSelectAssignStatement(queryText string) (selectAssignStatement, bool) 
 
 	parts := splitTopLevelCSV(selectPart)
 	assignments := make([]selectAssignment, 0, len(parts))
-	assignRe := regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
 	for _, part := range parts {
-		m := assignRe.FindStringSubmatch(strings.TrimSpace(part))
+		m := reParserSelectAssign.FindStringSubmatch(strings.TrimSpace(part))
 		if len(m) != 3 {
 			continue
 		}
@@ -175,8 +225,7 @@ func parseFetchIntoStatement(queryText string) (fetchIntoStatement, bool) {
 		return fetchIntoStatement{}, false
 	}
 
-	prefixRe := regexp.MustCompile(`(?is)(?:__fetch_next__|fetch)(?:\s+next)?(?:\s+from)?\s+([a-z_#][a-z0-9_#]*)\s+into\s+`)
-	loc := prefixRe.FindStringSubmatchIndex(text)
+	loc := reParserFetchIntoPrefix.FindStringSubmatchIndex(text)
 	if len(loc) < 4 {
 		return fetchIntoStatement{}, false
 	}
@@ -197,9 +246,8 @@ func parseFetchIntoStatement(queryText string) (fetchIntoStatement, bool) {
 
 	parts := splitTopLevelCSV(variablesPart)
 	variables := make([]string, 0, len(parts))
-	varRe := regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*$`)
 	for _, part := range parts {
-		match := varRe.FindStringSubmatch(strings.TrimSpace(part))
+		match := reParserFetchIntoVar.FindStringSubmatch(strings.TrimSpace(part))
 		if len(match) != 2 {
 			continue
 		}
@@ -218,8 +266,7 @@ func findFetchIntoTailBoundary(value string) int {
 		return -1
 	}
 
-	boundaryRe := regexp.MustCompile(`(?im)\n\s*(?:while|open|close|deallocate|__deallocate_cursor__|fetch|__fetch_next__|if|begin|end|return|go)\b`)
-	loc := boundaryRe.FindStringIndex(value)
+	loc := reParserFetchIntoBoundary.FindStringIndex(value)
 	if len(loc) != 2 {
 		return -1
 	}
@@ -236,9 +283,6 @@ func parseCursorDeclarations(content string) map[string]cursorDeclaration {
 	content = strings.ReplaceAll(content, "\r", "\n")
 	lines := strings.Split(content, "\n")
 
-	explicitDeclRe := regexp.MustCompile(`(?is)^declare\s+([a-z_#][a-z0-9_#]*)\s+(?:insensitive\s+)?cursor\s+for\s*(.*)$`)
-	macroDeclRe := regexp.MustCompile(`(?is)^__declare_cursor__\s*\(\s*([a-z_#][a-z0-9_#]*)\s*\)\s*(.*)$`)
-
 	for i := 0; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(lines[i])
 		if trimmed == "" {
@@ -251,11 +295,11 @@ func parseCursorDeclarations(content string) map[string]cursorDeclaration {
 			matched    bool
 		)
 
-		if m := explicitDeclRe.FindStringSubmatch(trimmed); len(m) == 3 {
+		if m := reParserCursorExplicitDecl.FindStringSubmatch(trimmed); len(m) == 3 {
 			cursorName = strings.TrimSpace(m[1])
 			remainder = strings.TrimSpace(m[2])
 			matched = true
-		} else if m := macroDeclRe.FindStringSubmatch(trimmed); len(m) == 3 {
+		} else if m := reParserCursorMacroDecl.FindStringSubmatch(trimmed); len(m) == 3 {
 			cursorName = strings.TrimSpace(m[1])
 			remainder = strings.TrimSpace(m[2])
 			matched = true
@@ -313,13 +357,12 @@ func parseDeallocateStatements(content string) []deallocateStatement {
 	content = strings.ReplaceAll(content, "\r", "\n")
 	lines := strings.Split(content, "\n")
 
-	re := regexp.MustCompile(`(?is)^(?:__deallocate_cursor__|deallocate(?:\s+cursor)?)\s+([a-z_#][a-z0-9_#]*)`)
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
 		}
-		if m := re.FindStringSubmatch(trimmed); len(m) == 2 {
+		if m := reParserCursorDealloc.FindStringSubmatch(trimmed); len(m) == 2 {
 			result = append(result, deallocateStatement{CursorName: strings.TrimSpace(m[1]), Line: i + 1})
 		}
 	}
@@ -336,14 +379,13 @@ func parseAllFetchIntoStatements(content string) map[string][]string {
 	content = strings.ReplaceAll(content, "\r", "\n")
 	lines := strings.Split(content, "\n")
 
-	prefixRe := regexp.MustCompile(`(?is)^\s*(?:__fetch_next__|fetch(?:\s+next)?(?:\s+from)?)\s+([a-z_#][a-z0-9_#]*)\s+into\s+(.*)$`)
 	for i := 0; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(lines[i])
 		if trimmed == "" {
 			continue
 		}
 
-		m := prefixRe.FindStringSubmatch(trimmed)
+		m := reParserFetchNextIntoPrefix.FindStringSubmatch(trimmed)
 		if len(m) != 3 {
 			continue
 		}
@@ -379,9 +421,8 @@ func parseAllFetchIntoStatements(content string) map[string][]string {
 		varsPart = strings.TrimSpace(varsPart)
 
 		parts := splitTopLevelCSV(varsPart)
-		varRe := regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)$`)
 		for _, part := range parts {
-			match := varRe.FindStringSubmatch(strings.TrimSpace(part))
+			match := reParserFetchIntoVarOnly.FindStringSubmatch(strings.TrimSpace(part))
 			if len(match) == 2 {
 				result[cursorName] = append(result[cursorName], strings.TrimSpace(match[1]))
 			}
@@ -489,8 +530,7 @@ func parseAliasMap(fromClause string) map[string]string {
 		return result
 	}
 	// Сначала ищем table alias (с алиасом)
-	re := regexp.MustCompile(`(?is)\b(?:from|join)\s+([a-z_#][a-z0-9_#]*)\s+([a-z_][a-z0-9_]*)`)
-	matches := re.FindAllStringSubmatch(fromClause, -1)
+	matches := reParserAliasFromJoin.FindAllStringSubmatch(fromClause, -1)
 	for _, m := range matches {
 		if len(m) < 3 {
 			continue
@@ -504,8 +544,7 @@ func parseAliasMap(fromClause string) map[string]string {
 		result[strings.ToLower(tableName)] = tableName
 	}
 	// Также ищем таблицы без алиаса: from/join table (без второго слова-алиаса)
-	reNoAlias := regexp.MustCompile(`(?is)\b(?:from|join)\s+([a-z_#][a-z0-9_#]*)(?:\s|$)`)
-	noAliasMatches := reNoAlias.FindAllStringSubmatch(fromClause, -1)
+	noAliasMatches := reParserAliasFromJoinNoAlias.FindAllStringSubmatch(fromClause, -1)
 	for _, m := range noAliasMatches {
 		if len(m) < 2 {
 			continue
@@ -1084,13 +1123,11 @@ func hasStatementEnded(lower string, stmtBuffer []string) bool {
 	// Используем regex с границами слова, чтобы избежать ложных срабатываний на подстроках
 	// Например, "dependantinfo" содержит "end", но это не ключевое слово
 	// UNION не разрывает оператор - он часть составного оператора
-	re := regexp.MustCompile(`(?i)([;]|\b(?:go|begin|if|while|declare|exec|execute|return)\b)`)
-	if re.MatchString(maskSingleQuotedStringContent(lower)) {
+	if reParserStmtBoundary.MatchString(maskSingleQuotedStringContent(lower)) {
 		return true
 	}
 	trimmed := strings.TrimSpace(lower)
-	endRe := regexp.MustCompile(`(?i)^end(?:\s|;|$)`)
-	if endRe.MatchString(trimmed) {
+	if reParserStmtEnd.MatchString(trimmed) {
 		currentStmt := strings.ToLower(strings.Join(stmtBuffer, " "))
 		if strings.Contains(currentStmt, "update") && strings.Contains(currentStmt, " set ") {
 			hasCase := strings.Contains(currentStmt, " case") || strings.Contains(currentStmt, " case ")
@@ -1110,7 +1147,7 @@ func hasStatementEnded(lower string, stmtBuffer []string) bool {
 				return false
 			}
 			// Standalone END: если в буфере нет BEGIN/IF/WHILE/DECLARE — это END CASE
-			hasBlock := regexp.MustCompile(`(?i)\b(begin|if|while|declare)\b`).MatchString(currentStmt)
+			hasBlock := reParserBlockBegin.MatchString(currentStmt)
 			if !hasBlock {
 				return false
 			}
@@ -1120,8 +1157,7 @@ func hasStatementEnded(lower string, stmtBuffer []string) bool {
 	}
 
 	// Если начинается новый DML оператор (select/update/delete/insert), проверяем нужно ли разрывать предыдущий
-	dmlRe := regexp.MustCompile(`(?i)^\s*(?:select|update|delete|insert)\b`)
-	if !dmlRe.MatchString(lower) {
+	if !conditionNewStmtRe.MatchString(lower) {
 		return false
 	}
 
@@ -1143,8 +1179,7 @@ func hasStatementEnded(lower string, stmtBuffer []string) bool {
 	// (SELECT ... UNION SELECT — это один оператор).
 	// DELETE/UPDATE/INSERT после UNION — это новый оператор.
 	if strings.Contains(currentLower, "union") {
-		newSelectRe := regexp.MustCompile(`(?i)^\s*select\b`)
-		if newSelectRe.MatchString(lower) {
+		if reParserSelectStart.MatchString(lower) {
 			return false
 		}
 	}
@@ -1176,15 +1211,38 @@ func findConditionStart(lower string) int {
 	return -1
 }
 
-// hasConditionEnded проверяет, закончилось ли условие
+// hasConditionEnded проверяет, закончилось ли условие (WHERE/ON/HAVING).
 func hasConditionEnded(lower string) bool {
+	// Классические терминаторы SQL.
 	kws := []string{"group by", "order by", "union", "except", "intersect", ";"}
 	for _, kw := range kws {
 		if strings.Contains(lower, kw) {
 			return true
 		}
 	}
-	return false
+
+	// Разделители батчей T-SQL.
+	if strings.TrimSpace(lower) == "go" {
+		return true
+	}
+
+	// Макросы завершения запроса и блоков в Diasoft 5NT.
+	for _, macro := range []string{"m_forceorder", "m_forceorder_nospool", "m_forceorder_fast", "m_forceorder_wo_loopjoin", "m_keepplan", "m_isolat"} {
+		if findKeywordPosition(lower, macro) >= 0 {
+			return true
+		}
+	}
+
+	// Блочные макросы процедур.
+	for _, macro := range []string{"__end_procedure__", "$_end"} {
+		if strings.Contains(lower, macro) {
+			return true
+		}
+	}
+
+	// Новый SQL-оператор начинается — условие закончилось.
+	// Исключение: UNION SELECT не разрывает условие (обрабатывается вызывающей стороной при необходимости).
+	return conditionNewStmtRe.MatchString(lower)
 }
 
 // hasJoinCondition проверяет наличие ON условия
@@ -1342,8 +1400,7 @@ func parseExecArguments(line string, calleeName string) []execArgument {
 				varName := ""
 				valClean := val
 
-				outRe := regexp.MustCompile(`(?i)\s+\b(out(?:put)?)\b\s*$`)
-				if m := outRe.FindStringSubmatch(valClean); m != nil {
+				if m := reParserExecOut.FindStringSubmatch(valClean); m != nil {
 					isOutput = true
 					valClean = strings.TrimSpace(valClean[:len(valClean)-len(m[0])])
 				}
@@ -1368,8 +1425,7 @@ func parseExecArguments(line string, calleeName string) []execArgument {
 		varName := ""
 		valClean := raw
 
-		outRe := regexp.MustCompile(`(?i)\s+\b(out(?:put)?)\b\s*$`)
-		if m := outRe.FindStringSubmatch(valClean); m != nil {
+		if m := reParserExecOut.FindStringSubmatch(valClean); m != nil {
 			isOutput = true
 			valClean = strings.TrimSpace(valClean[:len(valClean)-len(m[0])])
 		}
@@ -1982,8 +2038,7 @@ func parseCasePartAssignments(part string) []selectAssignment {
 	result := make([]selectAssignment, 0)
 	seen := make(map[string]bool)
 
-	branchRe := regexp.MustCompile(`(?i)(?:then|else)\s+(@[A-Za-z_][A-Za-z0-9_]*)\s*=`)
-	matches := branchRe.FindAllStringSubmatch(part, -1)
+	matches := reParserCaseBranchAssign.FindAllStringSubmatch(part, -1)
 	for _, m := range matches {
 		varName := strings.TrimSpace(m[1])
 		if !seen[varName] {
@@ -2019,24 +2074,24 @@ func findAllUnqualifiedColumnRefs(expr string) []string {
 	// не должны считаться неквалифицированными колонками
 	cleaned := stripSubqueries(expr)
 	// Удаляем однострочные комментарии //...
-	cleaned = regexp.MustCompile(`//[^\n]*`).ReplaceAllString(cleaned, "")
+	cleaned = reParserCommentSingleLineC.ReplaceAllString(cleaned, "")
 	// Удаляем однострочные комментарии --...
-	cleaned = regexp.MustCompile(`--[^\n]*`).ReplaceAllString(cleaned, "")
+	cleaned = reParserCommentSingleLineSQL.ReplaceAllString(cleaned, "")
 	// Удаляем многострочные комментарии /* ... */
-	cleaned = regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(cleaned, "")
+	cleaned = reParserCommentBlock.ReplaceAllString(cleaned, "")
 	// Удаляем qualified refs (alias.column)
-	cleaned = regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\b`).ReplaceAllString(cleaned, "")
+	cleaned = reParserQualifiedRef.ReplaceAllString(cleaned, "")
 	// Удаляем @variables и @@variables
-	cleaned = regexp.MustCompile(`(?i)@@?[a-z_][a-z0-9_]*`).ReplaceAllString(cleaned, "")
+	cleaned = reParserAtVar.ReplaceAllString(cleaned, "")
 	// Удаляем строковые литералы
-	cleaned = regexp.MustCompile(`'[^']*'`).ReplaceAllString(cleaned, "")
+	cleaned = reParserStringLiteral.ReplaceAllString(cleaned, "")
 	// Удаляем числовые литералы
-	cleaned = regexp.MustCompile(`\b\d+(\.\d+)?\b`).ReplaceAllString(cleaned, "")
+	cleaned = reParserNumberLiteral.ReplaceAllString(cleaned, "")
 	// Удаляем макросы-хинты M_*_INDEX(...) вместе с содержимым скобок
-	cleaned = regexp.MustCompile(`(?i)\bM_\w+_INDEX\s*\([^)]*\)`).ReplaceAllString(cleaned, "")
-
-	idRe := regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\b`)
-	matches := idRe.FindAllStringSubmatch(cleaned, -1)
+	cleaned = reParserIndexMacro.ReplaceAllString(cleaned, "")
+	// Удаляем Diasoft-макросы M_*
+	cleaned = reParserMacro.ReplaceAllString(cleaned, "")
+	matches := reParserIdentifier.FindAllStringSubmatch(cleaned, -1)
 	result := make([]string, 0, len(matches))
 	seen := make(map[string]bool)
 	for _, m := range matches {
@@ -2656,14 +2711,13 @@ func extractSelectColumnNames(selectStmt string) map[string]struct{} {
 // "col AS alias" → "alias", "col alias" → "alias", "col" → "col".
 func extractColumnAliasName(expr string) string {
 	// Убираем TOP N
-	expr = regexp.MustCompile(`(?i)^\s*top\s+\d+\s+`).ReplaceAllString(expr, "")
+	expr = reParserTopN.ReplaceAllString(expr, "")
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
 		return ""
 	}
 	// Проверяем "expr AS alias"
-	asRe := regexp.MustCompile(`(?i)\bas\s+([a-z_][a-z0-9_]*)\s*$`)
-	if m := asRe.FindStringSubmatch(expr); len(m) == 2 {
+	if m := reParserAsAlias.FindStringSubmatch(expr); len(m) == 2 {
 		return m[1]
 	}
 	// Проверяем "expr alias" (последний идентификатор без ключевого слова)
@@ -2680,7 +2734,7 @@ func extractColumnAliasName(expr string) string {
 			clean = clean[dotIdx+1:]
 		}
 		// Проверяем что это идентификатор
-		if regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`).MatchString(clean) {
+		if reParserIdentifierOnly.MatchString(clean) {
 			return clean
 		}
 		return ""
@@ -2688,7 +2742,7 @@ func extractColumnAliasName(expr string) string {
 	// Несколько токенов: последний может быть алиасом
 	last := tokens[len(tokens)-1]
 	// Предпоследний не должен быть ключевым словом (AS уже обработано выше)
-	if regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`).MatchString(last) {
+	if reParserIdentifierOnly.MatchString(last) {
 		// Проверяем что предпоследний токен не ключевое слово
 		prev := strings.ToLower(tokens[len(tokens)-2])
 		keywords := map[string]bool{
@@ -2707,7 +2761,7 @@ func extractColumnAliasName(expr string) string {
 	if dotIdx := strings.LastIndex(clean, "."); dotIdx >= 0 {
 		clean = clean[dotIdx+1:]
 	}
-	if regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`).MatchString(clean) {
+	if reParserIdentifierOnly.MatchString(clean) {
 		return clean
 	}
 	return ""
@@ -2756,7 +2810,7 @@ func extractOrderByColumns(queryText string) []string {
 	for _, col := range cols {
 		colTrimmed := strings.TrimSpace(col)
 		// Убираем ASC/DESC
-		colTrimmed = regexp.MustCompile(`(?i)\s+(asc|desc)\s*$`).ReplaceAllString(colTrimmed, "")
+		colTrimmed = reParserOrderAscDesc.ReplaceAllString(colTrimmed, "")
 		colTrimmed = strings.TrimSpace(colTrimmed)
 		if colTrimmed != "" {
 			result = append(result, colTrimmed)

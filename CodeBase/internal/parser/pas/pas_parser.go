@@ -77,6 +77,10 @@ var (
 	asmRe       = regexp.MustCompile(`(?i)^\s*asm\s*$`)
 	endRe       = regexp.MustCompile(`(?i)^\s*end\s*;?\s*$`)
 	beginRe     = regexp.MustCompile(`(?i)^\s*begin\s*$`)
+
+	// parserHelperRegexes используются при нормализации строк и парсинге констант.
+	directiveStripRe = regexp.MustCompile(`\{\$[^}]*\}`)
+	constDeclLineRe  = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[^=]+)?\s*=\s*(.*)$`)
 )
 
 // Parser PAS-парсер
@@ -218,7 +222,7 @@ func resolveQualifiedOwnerFallback(rawName string, classes []*model.PASClass) (s
 }
 
 func normalizeTypeDeclarationLine(line string) string {
-	line = regexp.MustCompile(`\{\$[^}]*\}`).ReplaceAllString(line, "")
+	line = directiveStripRe.ReplaceAllString(line, "")
 	replacer := strings.NewReplacer(
 		"objectrecord", "object",
 		"recordobject", "record",
@@ -820,7 +824,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		if !inConstSection {
 			return false
 		}
-		matches := regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[^=]+)?\s*=\s*(.*)$`).FindStringSubmatch(line)
+		matches := constDeclLineRe.FindStringSubmatch(line)
 		if matches == nil {
 			return false
 		}
@@ -2056,7 +2060,6 @@ func isLikelySQL(s string) bool {
 	if s == "" {
 		return false
 	}
-	sqlKeywordDetectRe := regexp.MustCompile(`(?i)\b(SELECT\b.*\bFROM|INSERT\s+INTO|UPDATE\s+[A-Za-z_#][A-Za-z0-9_#]*\s+SET|DELETE\s+FROM|FROM\s+[A-Za-z_#][A-Za-z0-9_#]*|JOIN\s+[A-Za-z_#][A-Za-z0-9_#]*|WHERE\b|GROUP\s+BY|ORDER\s+BY|HAVING\b|UNION\b|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE|EXEC(?:UTE)?\s+[A-Za-z_#][A-Za-z0-9_#]*)`)
 	return sqlKeywordDetectRe.MatchString(s)
 }
 

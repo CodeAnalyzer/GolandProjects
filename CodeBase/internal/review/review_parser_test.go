@@ -241,6 +241,41 @@ func TestMapProcessedLineNumber_OutOfBounds(t *testing.T) {
 	}
 }
 
+func TestHasConditionEnded_MacrosAndBatchSeparators(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"M_FORCEORDER ends condition", "M_FORCEORDER", true},
+		{"M_FORCEORDER_NOSPOOL ends condition", "M_FORCEORDER_NOSPOOL", true},
+		{"M_KEEPPLAN ends condition", "M_KEEPPLAN", true},
+		{"M_ISOLAT ends condition", "M_ISOLAT", true},
+		{"go ends condition", "go", true},
+		{"GO ends condition", "GO", true},
+		{"__END_PROCEDURE__ ends condition", "__END_PROCEDURE__", true},
+		{"$_END ends condition", "$_END", true},
+		{"select starts new statement", "select 1", true},
+		{"update starts new statement", "update t set", true},
+		{"insert starts new statement", "insert t", true},
+		{"delete starts new statement", "delete t", true},
+		{"group by ends condition", "group by col", true},
+		{"order by ends condition", "order by col", true},
+		{"union alone does not end condition", "union", true},
+		{"plain data line does not end", "  and col = col", false},
+		{"from clause does not end", "from t", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hasConditionEnded(strings.ToLower(tc.line))
+			if got != tc.want {
+				t.Fatalf("hasConditionEnded(%q) = %v, want %v", tc.line, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseExecArguments(t *testing.T) {
 	tests := []struct {
 		name       string

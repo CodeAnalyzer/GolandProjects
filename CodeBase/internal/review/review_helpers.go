@@ -32,6 +32,19 @@ var (
 	reSelectAssign     = regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
 	reSetAssign        = regexp.MustCompile(`(?is)^\s*set\s+(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
 	reDeclareAssign    = regexp.MustCompile(`(?is)^\s*declare\s+(@[A-Za-z_][A-Za-z0-9_]*)\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)\s*=\s*(.+)$`)
+
+	// Regexes для join/condition парсинга.
+	reHelperJoinEq               = regexp.MustCompile(`(?i)\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b\s*=\s*\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b`)
+	reHelperOnParts              = regexp.MustCompile(`(?i)\s+on\s+`)
+	reHelperUnqualifiedCondition = regexp.MustCompile(`(?i)\b([a-zA-Z_][a-zA-Z0-9_]*)\b\s*(=|<>|!=|>=|<=|>|<|\bin\b|\bbetween\b|\blike\b|\bis\b)`)
+	reHelperSpid                 = regexp.MustCompile(`(?i)\b(spid)\b`)
+
+	// Regexes для парсинга типов данных.
+	reHelperNumericType = regexp.MustCompile(`(?i)\b(?:numeric|decimal)\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)`)
+	reHelperVarcharType = regexp.MustCompile(`(?i)\b(?:nvarchar|nchar|varchar|char)\s*\(\s*(\d+)\s*\)`)
+
+	// Regexes для извлечения таблиц из FROM.
+	reHelperFromClause = regexp.MustCompile(`(?is)\bfrom\s+([a-z_#][a-z0-9_#]*)`)
 )
 
 var sharedTTables = map[string]struct{}{
@@ -330,8 +343,7 @@ func extractJoinColumnsForIndexWrong(fullText string, tables []tableFromClause) 
 }
 
 func collectJoinColumnsFromOnPart(onPart string, tables []tableFromClause, result map[string]map[string]struct{}) {
-	eqRe := regexp.MustCompile(`(?i)\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b\s*=\s*\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b`)
-	matches := eqRe.FindAllStringSubmatch(onPart, -1)
+	matches := reHelperJoinEq.FindAllStringSubmatch(onPart, -1)
 	if len(matches) == 0 {
 		return
 	}
@@ -464,8 +476,7 @@ func extractWherePartForIndexWrong(fullText string) string {
 
 func extractOnPartsForIndexWrong(fullText string) []string {
 	result := make([]string, 0)
-	onRe := regexp.MustCompile(`(?i)\s+on\s+`)
-	parts := onRe.Split(fullText, -1)
+	parts := reHelperOnParts.Split(fullText, -1)
 	if len(parts) <= 1 {
 		return result
 	}
@@ -575,8 +586,7 @@ func collectColumnsFromConditionBranch(branch string, tables []tableFromClause) 
 
 func extractUnqualifiedConditionColumns(expr string) map[string]struct{} {
 	result := make(map[string]struct{})
-	re := regexp.MustCompile(`(?i)\b([a-zA-Z_][a-zA-Z0-9_]*)\b\s*(=|<>|!=|>=|<=|>|<|\bin\b|\bbetween\b|\blike\b|\bis\b)`)
-	matches := re.FindAllStringSubmatch(expr, -1)
+	matches := reHelperUnqualifiedCondition.FindAllStringSubmatch(expr, -1)
 
 	keywords := map[string]struct{}{
 		"and": {}, "or": {}, "not": {}, "in": {}, "between": {}, "like": {}, "is": {}, "null": {},
@@ -691,13 +701,11 @@ func extractSpidConditions(fullText string) map[string]struct{} {
 	onParts := extractOnPartsForIndexWrong(fullText)
 	allParts := append([]string{wherePart}, onParts...)
 
-	spidRe := regexp.MustCompile(`(?i)\b(spid)\b`)
-
 	for _, part := range allParts {
 		partLower := strings.ToLower(part)
 
 		// Ищем все вхождения SPID
-		for _, match := range spidRe.FindAllStringIndex(partLower, -1) {
+		for _, match := range reHelperSpid.FindAllStringIndex(partLower, -1) {
 			// Определяем контекст - проверяем, относится ли к какой-либо таблице
 			contextStart := 0
 			if match[0] > 60 {
@@ -1242,8 +1250,7 @@ func isPotentialPrecisionLoss(sourceType string, targetType string) bool {
 
 func numericPrecisionScale(dataType string) (int, int, bool) {
 	v := normalizeDataType(dataType)
-	numericRe := regexp.MustCompile(`(?i)\b(?:numeric|decimal)\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)`)
-	if m := numericRe.FindStringSubmatch(v); len(m) == 3 {
+	if m := reHelperNumericType.FindStringSubmatch(v); len(m) == 3 {
 		precision, errP := strconv.Atoi(m[1])
 		scale, errS := strconv.Atoi(m[2])
 		if errP == nil && errS == nil {
@@ -1320,8 +1327,7 @@ func literalFitsType(literal string, targetType string) bool {
 	}
 
 	// numeric(p, s) / decimal(p, s) — проверяем точность и масштаб
-	numericRe := regexp.MustCompile(`(?i)\b(?:numeric|decimal)\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)`)
-	if m := numericRe.FindStringSubmatch(target); len(m) == 3 {
+	if m := reHelperNumericType.FindStringSubmatch(target); len(m) == 3 {
 		precision, _ := strconv.Atoi(m[1])
 		scale, _ := strconv.Atoi(m[2])
 		f, err := strconv.ParseFloat(v, 64)
@@ -1410,8 +1416,7 @@ func hasPrecisionLoss(sourceType, targetType string) (kind string, ok bool) {
 // Возвращает (0, false) если длина не указана.
 func varcharLength(dataType string) (int, bool) {
 	v := normalizeDataType(dataType)
-	re := regexp.MustCompile(`(?i)\b(?:nvarchar|nchar|varchar|char)\s*\(\s*(\d+)\s*\)`)
-	if m := re.FindStringSubmatch(v); len(m) == 2 {
+	if m := reHelperVarcharType.FindStringSubmatch(v); len(m) == 2 {
 		n, err := strconv.Atoi(m[1])
 		if err == nil {
 			return n, true
@@ -2325,8 +2330,7 @@ func parseFirstFromTable(fromClause string) string {
 		return ""
 	}
 
-	re := regexp.MustCompile(`(?is)\bfrom\s+([a-z_#][a-z0-9_#]*)`)
-	m := re.FindStringSubmatch(fromClause)
+	m := reHelperFromClause.FindStringSubmatch(fromClause)
 	if len(m) != 2 {
 		return ""
 	}
