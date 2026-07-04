@@ -5608,3 +5608,38 @@ func TestExtractDeletePtableCalls_CaseInsensitive(t *testing.T) {
 		t.Errorf("IndexName = %q, want XPKpMyTable", calls[0].IndexName)
 	}
 }
+
+func TestSqlMacrosMap_ContainsDeletePtableSpidIndex(t *testing.T) {
+	if !sqlMacrosMap["m_delete_ptable_spid_index"] {
+		t.Fatalf("m_delete_ptable_spid_index should be in sqlMacrosMap")
+	}
+	if !sqlMacrosMap["m_delete_ptable_index"] {
+		t.Fatalf("m_delete_ptable_index should be in sqlMacrosMap")
+	}
+}
+
+func TestExtractFuncColumnRefs_SkipsDeletePtableSpidIndex(t *testing.T) {
+	refs := extractFuncColumnRefs("M_DELETE_PTABLE_SPID_INDEX(pConsAccrObjDateInterval, XIE1pConsAccrObjDateInterval, -@@spid)")
+	for _, ref := range refs {
+		if strings.EqualFold(ref.funcName, "m_delete_ptable_spid_index") {
+			t.Fatalf("m_delete_ptable_spid_index should be skipped as a macro, but got ref: %+v", ref)
+		}
+	}
+}
+
+func TestExtractWherePartForIndexWrong_StopsAtInsert(t *testing.T) {
+	fullText := "update t set x = 1 from t M_UPDLOCK_INDEX(XIE1t) where SPID = @@spid M_FORCEORDER M_LOG_TABLE(t) M_DELETE_PTABLE_SPID_INDEX(t, XIE1t, -@@spid) insert t2 select 1"
+	wherePart := extractWherePartForIndexWrong(fullText)
+	lower := strings.ToLower(wherePart)
+	if strings.Contains(lower, "insert") {
+		t.Fatalf("WHERE part should not contain 'insert', got: %s", wherePart)
+	}
+	// M_DELETE_PTABLE_SPID_INDEX may be in WHERE part (between WHERE and next stmt),
+	// but extractFuncColumnRefs should skip it because it's in sqlMacrosMap.
+	refs := extractFuncColumnRefs(wherePart)
+	for _, ref := range refs {
+		if strings.EqualFold(ref.funcName, "m_delete_ptable_spid_index") {
+			t.Fatalf("m_delete_ptable_spid_index should be skipped by extractFuncColumnRefs, got ref: %+v", ref)
+		}
+	}
+}

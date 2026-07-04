@@ -2818,3 +2818,150 @@ func extractOrderByColumns(queryText string) []string {
 	}
 	return result
 }
+
+// extractFuncColumnRefs ищет в выражении вызовы функций вида funcName(arg1, arg2, ...)
+// и возвращает пары (funcName, column) для аргументов, являющихся именами столбцов.
+func extractFuncColumnRefs(expr string) []funcColumnRef {
+	result := make([]funcColumnRef, 0)
+
+	// Удаляем строковые литералы
+	cleaned := reStringLiteral.ReplaceAllString(expr, "")
+
+	// Ищем вызовы функций: identifier(args)
+	funcRe := reFuncName
+	matches := funcRe.FindAllStringSubmatchIndex(cleaned, -1)
+
+	for _, m := range matches {
+		funcName := cleaned[m[2]:m[3]]
+		lowerFunc := strings.ToLower(funcName)
+
+		// Пропускаем CAST/CONVERT — это не функции в классическом смысле
+		if lowerFunc == "cast" || lowerFunc == "convert" {
+			continue
+		}
+		// Пропускаем ключевые слова SQL (and, or, not, in, is, like, ...)
+		if sqlKeywordsMap[lowerFunc] {
+			continue
+		}
+		// Пропускаем макросы Diasoft (M_*)
+		if sqlMacrosMap[lowerFunc] {
+			continue
+		}
+
+		// Извлекаем содержимое скобок с учётом вложенности
+		parenStart := m[1] - 1 // позиция '('
+		depth := 0
+		end := parenStart
+		for end < len(cleaned) {
+			switch cleaned[end] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					goto foundEnd
+				}
+			}
+			end++
+		}
+	foundEnd:
+		if end <= parenStart {
+			continue
+		}
+		args := cleaned[parenStart+1 : end]
+
+		// Разбиваем аргументы по запятой (top-level)
+		argParts := splitTopLevelCSV(args)
+		for _, arg := range argParts {
+			trimmed := strings.TrimSpace(arg)
+			if trimmed == "" {
+				continue
+			}
+			// Пропускаем переменные, числа, строки
+			if strings.HasPrefix(trimmed, "@") {
+				continue
+			}
+			if reDigitStart.MatchString(trimmed) {
+				continue
+			}
+			if trimmed == "*" {
+				continue
+			}
+			// Извлекаем имя столбца: может быть alias.column или просто column
+			colRe := reColumnRef
+			colMatch := colRe.FindStringSubmatch(trimmed)
+			if colMatch == nil {
+				continue
+			}
+			// Если есть alias.column, берём column; иначе берём просто column
+			var colName string
+			var colAlias string
+			if colMatch[2] != "" {
+				colName = colMatch[2]
+				colAlias = colMatch[1]
+			} else {
+				colName = colMatch[1]
+			}
+			// Пропускаем ключевые слова и функции
+			lowerCol := strings.ToLower(colName)
+			if sqlKeywordsMap[lowerCol] || sqlFunctionsMap[lowerCol] || sqlDataTypesMap[lowerCol] {
+				continue
+			}
+			result = append(result, funcColumnRef{
+				funcName: funcName,
+				column:   colName,
+				alias:    colAlias,
+			})
+		}
+	}
+
+	return result
+}
+
+// extractFuncInnerArgs извлекает аргументы из вызова функции funcName(arg1, arg2, ...).
+func extractFuncInnerArgs(expr string) []string {
+	// Находим первую '(' и соответствующую ')'
+	start := strings.Index(expr, "(")
+	if start < 0 {
+		return nil
+	}
+	depth := 0
+	end := start
+	for end < len(expr) {
+		switch expr[end] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				goto found
+			}
+		}
+		end++
+	}
+found:
+	if end <= start {
+		return nil
+	}
+	inner := expr[start+1 : end]
+	return splitTopLevelCSV(inner)
+}
+
+// extractFromClause извлекает FROM-часть из текста запроса.
+func extractFromClause(queryText string) string {
+	fromIdx := findTopLevelKeywordPosition(queryText, "from")
+	if fromIdx < 0 {
+		return ""
+	}
+	endMarkers := []string{"where", "group", "order", "having", "union", "option"}
+	end := len(queryText)
+	for _, marker := range endMarkers {
+		if idx := findTopLevelKeywordPosition(queryText[fromIdx:], marker); idx >= 0 {
+			absIdx := fromIdx + idx
+			if absIdx < end {
+				end = absIdx
+			}
+		}
+	}
+	return queryText[fromIdx:end]
+}

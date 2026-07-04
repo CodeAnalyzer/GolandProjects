@@ -45,6 +45,9 @@ var (
 
 	// Regexes для извлечения таблиц из FROM.
 	reHelperFromClause = regexp.MustCompile(`(?is)\bfrom\s+([a-z_#][a-z0-9_#]*)`)
+
+	// reDeletePtableMacro ищет вызовы M_DELETE_PTABLE* макросов в тексте.
+	reDeletePtableMacro = regexp.MustCompile(`(?i)\b(M_DELETE_PTABLE(?:_INMEM|_PARALLEL|_INDEX|_SPID_INDEX|_SPID_UNIQUE)?)\s*\(`)
 )
 
 var sharedTTables = map[string]struct{}{
@@ -463,7 +466,8 @@ func extractWherePartForIndexWrong(fullText string) string {
 	}
 
 	part := fullText[whereIdx+7:]
-	endMarkers := []string{" order by ", " group by ", " having ", " union ", " except ", " intersect "}
+	endMarkers := []string{" order by ", " group by ", " having ", " union ", " except ", " intersect ",
+		" insert ", " select ", " update ", " delete "}
 	endIdx := len(part)
 	for _, marker := range endMarkers {
 		if idx := findSubstringAtDepthZero(part, marker); idx > 0 && idx < endIdx {
@@ -2349,4 +2353,104 @@ func extractBareColumnName(expression string) string {
 	}
 
 	return strings.TrimSpace(m[1])
+}
+
+// extractDeletePtableCalls сканирует строки текста на наличие вызовов
+// макросов семейства M_DELETE_PTABLE* и извлекает имя таблицы и индекса.
+func extractDeletePtableCalls(lines []string) []deletePtableCall {
+	result := make([]deletePtableCall, 0)
+
+	for i, line := range lines {
+		lineNum := i + 1
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+
+		matches := reDeletePtableMacro.FindAllStringSubmatchIndex(line, -1)
+		for _, m := range matches {
+			macroName := line[m[2]:m[3]]
+			argsStart := m[1] - 1 // позиция '('
+			argsText, _, ok := parseMacroCallArguments(line, argsStart)
+			if !ok {
+				continue
+			}
+			args := splitTopLevelCSV(argsText)
+			for j := range args {
+				args[j] = strings.TrimSpace(args[j])
+			}
+
+			lowerMacro := strings.ToLower(macroName)
+
+			// M_DELETE_PTABLE_RUN — не вызов удаления, пропускаем
+			if lowerMacro == "m_delete_ptable_run" {
+				continue
+			}
+
+			var tableName, indexName string
+
+			switch lowerMacro {
+			case "m_delete_ptable", "m_delete_ptable_inmem":
+				if len(args) >= 1 {
+					tableName = args[0]
+					indexName = "XPK" + tableName
+				}
+			case "m_delete_ptable_parallel":
+				// M_DELETE_PTABLE_PARALLEL(table, spid, col, batch, parallel)
+				if len(args) >= 1 {
+					tableName = args[0]
+					indexName = "XPK" + tableName
+				}
+			case "m_delete_ptable_index":
+				// M_DELETE_PTABLE_INDEX(table, index)
+				if len(args) >= 2 {
+					tableName = args[0]
+					indexName = args[1]
+				}
+			case "m_delete_ptable_spid_index":
+				// M_DELETE_PTABLE_SPID_INDEX(table, index, spid)
+				if len(args) >= 2 {
+					tableName = args[0]
+					indexName = args[1]
+				}
+			case "m_delete_ptable_spid_unique":
+				// M_DELETE_PTABLE_SPID_UNIQUE(table, index, spid, unique)
+				if len(args) >= 2 {
+					tableName = args[0]
+					indexName = args[1]
+				}
+			default:
+				continue
+			}
+
+			if tableName == "" || indexName == "" {
+				continue
+			}
+
+			result = append(result, deletePtableCall{
+				TableName: tableName,
+				IndexName: indexName,
+				MacroName: macroName,
+				Line:      lineNum,
+			})
+		}
+	}
+
+	return result
+}
+
+// positionToLine переводит смещение в объединённом тексте lines в номер строки (1-based).
+func positionToLine(lines []string, pos int) int {
+	if pos < 0 {
+		return 0
+	}
+	current := 0
+	for i, line := range lines {
+		lineLen := len(line)
+		if pos < current+lineLen {
+			return i + 1
+		}
+		current += lineLen + 1 // +1 for пробел-разделитель
+	}
+	return len(lines)
 }

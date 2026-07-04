@@ -206,10 +206,12 @@ var sqlMacrosMap = map[string]bool{
 	"m_forceorder_wo_loopjoin": true,
 	"m_keepplan":               true,
 	"m_with_rowlock":           true, "m_p_with_rowlock": true,
-	"m_delete_ptable":          true,
-	"m_businesslog_checkpoint": true,
-	"m_log_table":              true,
-	"m_index":                  true, "m_nolock_index": true, "m_readpast_index": true,
+	"m_delete_ptable":            true,
+	"m_delete_ptable_spid_index": true,
+	"m_delete_ptable_index":      true,
+	"m_businesslog_checkpoint":   true,
+	"m_log_table":                true,
+	"m_index":                    true, "m_nolock_index": true, "m_readpast_index": true,
 	"m_holdlock_index": true, "m_p_readpast_index": true, "m_p_holdlock_index": true,
 	"m_rowlock_index": true, "m_rowlock_readpast_index": true,
 	"m_p_rowlock_index": true, "m_p_rowlock_readpast_index": true,
@@ -351,4 +353,12 @@ type comparisonExpr struct {
 	left  string
 	right string
 	op    string
+}
+
+// deletePtableCall представляет вызов макроса M_DELETE_PTABLE*.
+type deletePtableCall struct {
+	TableName string
+	IndexName string
+	MacroName string
+	Line      int
 }
