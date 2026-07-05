@@ -270,3 +270,52 @@ func TestParseContent_MixedClientAndServer(t *testing.T) {
 		t.Fatalf("expected 1 BPL module, got %d", len(result.ClientEvents[0].BPL))
 	}
 }
+
+func TestFillClientSummary_FillsAllFields(t *testing.T) {
+	events := []*RTIClientEvent{
+		{Kind: "error", ErrorText: "something went wrong"},
+		{Kind: "sql_block", SQL: &RTISQLBlock{DurationSec: 0.5}},
+		{Kind: "sql_block", SQL: &RTISQLBlock{DurationSec: 0.05}},
+		{Kind: "bpl_list"},
+	}
+
+	var s RTISummary
+	FillClientSummary(&s, events)
+
+	if s.ClientEventsCount != 4 {
+		t.Fatalf("expected ClientEventsCount=4, got %d", s.ClientEventsCount)
+	}
+	if s.ClientErrorsCount != 1 {
+		t.Fatalf("expected ClientErrorsCount=1, got %d", s.ClientErrorsCount)
+	}
+	if s.ClientSlowSQLCount != 1 {
+		t.Fatalf("expected ClientSlowSQLCount=1, got %d", s.ClientSlowSQLCount)
+	}
+	if len(s.TopSlowClientSQL) != 2 {
+		t.Fatalf("expected 2 top slow client SQL (all with duration>0), got %d", len(s.TopSlowClientSQL))
+	}
+	if s.TopSlowClientSQL[0].SQL.DurationSec != 0.5 {
+		t.Fatalf("expected top slow duration 0.5, got %v", s.TopSlowClientSQL[0].SQL.DurationSec)
+	}
+	if s.TopSlowClientSQL[1].SQL.DurationSec != 0.05 {
+		t.Fatalf("expected second slow duration 0.05, got %v", s.TopSlowClientSQL[1].SQL.DurationSec)
+	}
+}
+
+func TestFillClientSummary_EmptyEvents(t *testing.T) {
+	var s RTISummary
+	FillClientSummary(&s, nil)
+
+	if s.ClientEventsCount != 0 {
+		t.Fatalf("expected ClientEventsCount=0, got %d", s.ClientEventsCount)
+	}
+	if s.ClientErrorsCount != 0 {
+		t.Fatalf("expected ClientErrorsCount=0, got %d", s.ClientErrorsCount)
+	}
+	if s.ClientSlowSQLCount != 0 {
+		t.Fatalf("expected ClientSlowSQLCount=0, got %d", s.ClientSlowSQLCount)
+	}
+	if len(s.TopSlowClientSQL) != 0 {
+		t.Fatalf("expected 0 top slow client SQL, got %d", len(s.TopSlowClientSQL))
+	}
+}

@@ -57,6 +57,9 @@ var (
 	reParserOrderAscDesc         = regexp.MustCompile(`(?i)\s+(asc|desc)\s*$`)
 
 	reParserMacro = regexp.MustCompile(`(?i)\bM_\w+\b`)
+
+	// reParserFuncCall — удаляет имя функции перед открывающей скобкой (stuff(...) -> (...))
+	reParserFuncCall = regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*\s*\(`)
 )
 
 func parseUpdateSetStatement(queryText string) (updateSetStatement, bool) {
@@ -2091,6 +2094,8 @@ func findAllUnqualifiedColumnRefs(expr string) []string {
 	cleaned = reParserIndexMacro.ReplaceAllString(cleaned, "")
 	// Удаляем Diasoft-макросы M_*
 	cleaned = reParserMacro.ReplaceAllString(cleaned, "")
+	// Удаляем имена функций (identifier перед '(') — они не являются ссылками на столбцы
+	cleaned = reParserFuncCall.ReplaceAllString(cleaned, "(")
 	matches := reParserIdentifier.FindAllStringSubmatch(cleaned, -1)
 	result := make([]string, 0, len(matches))
 	seen := make(map[string]bool)

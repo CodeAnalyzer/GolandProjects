@@ -466,10 +466,7 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 	result.Summary.ErrorsCount = countErrors(allCalls)
 	result.Summary.MaxNestLevel = maxNestLevel(allCalls)
 	result.Summary.TopSlow = topSlowCalls(allCalls, 10)
-	result.Summary.ClientEventsCount = len(allClientEvents)
-	result.Summary.ClientErrorsCount = countClientErrors(allClientEvents)
-	result.Summary.ClientSlowSQLCount = countClientSlowSQL(allClientEvents, clientSlowSQLThresholdSec)
-	result.Summary.TopSlowClientSQL = topSlowClientSQLEvents(allClientEvents, 10)
+	FillClientSummary(&result.Summary, allClientEvents)
 
 	return result, nil
 }

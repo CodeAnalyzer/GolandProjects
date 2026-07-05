@@ -4507,6 +4507,38 @@ as
 	}
 }
 
+func TestCheckStatementsWithJoinsRequireAliases_StuffFunction_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  update t1 set Comment = stuff(t1.Comment, t2.PosTag, t2.LenTag, t2.Value)
+  from t1 join t2 on t1.id = t2.id
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_joins_aliases_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings (stuff is a SQL function), got %d: %v", len(findings), findings)
+	}
+}
+
 func TestExtractFuncColumnRefs_SimpleFunc(t *testing.T) {
 	refs := extractFuncColumnRefs("UPPER(Name) = 'ABC'")
 	if len(refs) != 1 {
@@ -5261,6 +5293,14 @@ func TestResolveArgType_ConvertNumericEquivalDSIdentifier(t *testing.T) {
 	t2 := "DSIDENTIFIER"
 	if !areEquivalentTypes(t1, t2) {
 		t.Fatalf("convert(numeric(15,0)) type %q should be equivalent to DSIDENTIFIER", t1)
+	}
+}
+
+func TestResolveArgType_SubstringWithArithmetic_ReturnsVarchar(t *testing.T) {
+	r := &Runner{macroTypeCache: make(map[string]string)}
+	got := r.resolveArgType("substring(M_CONVERT_NCHAR(otc.Comment), otc.PosTag + 8, otc.LenTag - 9)", map[string]string{}, map[string]string{})
+	if got != "varchar" {
+		t.Fatalf("expected 'varchar' for substring(), got %q", got)
 	}
 }
 

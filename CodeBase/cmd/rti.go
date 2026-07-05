@@ -333,6 +333,7 @@ func runRTIErrors(cmd *cobra.Command, args []string) error {
 	// Try to enrich with ds_return_codes and source files from DB
 	var retCodeMap map[int64]*store.RetCodeLookup
 	var enrichMap map[string]*rti.ProcedureEnrichment
+	var clientEnrichMap map[string]*rti.ClientEnrichment
 	cfg := config.Get()
 	if cfg != nil {
 		if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
@@ -344,13 +345,18 @@ func runRTIErrors(cmd *cobra.Command, args []string) error {
 			retCodeMap, _ = db.LookupRetCodes(codes)
 			q := query.New(db)
 			enrichMap = rti.EnrichCalls(q, errors)
+			if len(clientErrors) > 0 {
+				clientEnrichMap = rti.EnrichClientEvents(q, clientErrors)
+			}
 		}
 	}
 
 	if rtiOutputJSON {
 		return printJSON(map[string]interface{}{
-			"server_errors": errors,
-			"client_errors": clientErrors,
+			"server_errors":      errors,
+			"server_enrichment":  enrichMap,
+			"client_errors":      clientErrors,
+			"client_enrichment":  clientEnrichMap,
 		})
 	}
 	if len(errors) == 0 && len(clientErrors) == 0 {
@@ -379,15 +385,6 @@ func runRTIErrors(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if len(clientErrors) > 0 {
-		// Enrich client errors with CodeBase data
-		var clientEnrichMap map[string]*rti.ClientEnrichment
-		if cfg != nil {
-			if db2, dbErr2 := store.NewDB(cfg.DB); dbErr2 == nil {
-				defer db2.Close()
-				q2 := query.New(db2)
-				clientEnrichMap = rti.EnrichClientEvents(q2, clientErrors)
-			}
-		}
 		fmt.Printf("\nFound %d client error(s):\n\n", len(clientErrors))
 		for _, ev := range clientErrors {
 			fmt.Printf("  [client] Line %d: %s.%s: %s\n", ev.Line, ev.ClassName, ev.MethodName, ev.ErrorText)

@@ -1029,14 +1029,21 @@ func loadRTIFromArgs(db *store.DB, args map[string]interface{}) (*rti.RTIParseRe
 		if err != nil {
 			return nil, fmt.Errorf("failed to load calls: %w", err)
 		}
+		clientEvents, err := rti.LoadClientEvents(db, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client events: %w", err)
+		}
+		summary := rti.RTISummary{
+			FilePath:    session.FilePath,
+			FileSize:    session.FileSize,
+			TotalCalls:  session.TotalCalls,
+			ErrorsCount: session.ErrorsCount,
+		}
+		rti.FillClientSummary(&summary, clientEvents)
 		return &rti.RTIParseResult{
-			Calls: calls,
-			Summary: rti.RTISummary{
-				FilePath:    session.FilePath,
-				FileSize:    session.FileSize,
-				TotalCalls:  session.TotalCalls,
-				ErrorsCount: session.ErrorsCount,
-			},
+			Calls:        calls,
+			ClientEvents: clientEvents,
+			Summary:      summary,
 		}, nil
 	}
 	filePath, err := optionalString(args, "file_path")

@@ -5625,32 +5625,8 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 		return r.resolveCaseType(trimmed, variableTypes, aliasMap)
 	}
 
-	// Арифметическое выражение: разбиваем по операторам +, -, *, /
-	// (до проверки @var, чтобы @MaxID - @MinID + 1 не трактовалось как имя переменной)
-	if reArithOp.MatchString(trimmed) {
-		return r.resolveArithmeticExprType(trimmed, variableTypes, aliasMap)
-	}
-
-	// Переменная @var
-	if strings.HasPrefix(trimmed, "@") {
-		varName := normalizeVariableName(trimmed)
-		if typeName, exists := variableTypes[varName]; exists {
-			return typeName
-		}
-		return ""
-	}
-
-	// Строковый литерал
-	if strings.HasPrefix(trimmed, "'") {
-		return "varchar"
-	}
-
-	// Числовой литерал
-	if reNumericLiteral.MatchString(trimmed) {
-		return "int"
-	}
-
-	// Вызов функции: funcName(...)
+	// Вызов функции: funcName(...) — проверяем ДО арифметики,
+	// т.к. аргументы функции могут содержать +, -, *, / (например substring(s, x + 1, y - 1))
 	funcRe := reFuncCall
 	if m := funcRe.FindStringSubmatch(trimmed); m != nil {
 		funcName := strings.ToLower(m[1])
@@ -5683,6 +5659,31 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 			return r.resolveArgType(innerArgs[0], variableTypes, aliasMap)
 		}
 		return ""
+	}
+
+	// Арифметическое выражение: разбиваем по операторам +, -, *, /
+	// (до проверки @var, чтобы @MaxID - @MinID + 1 не трактовалось как имя переменной)
+	if reArithOp.MatchString(trimmed) {
+		return r.resolveArithmeticExprType(trimmed, variableTypes, aliasMap)
+	}
+
+	// Переменная @var
+	if strings.HasPrefix(trimmed, "@") {
+		varName := normalizeVariableName(trimmed)
+		if typeName, exists := variableTypes[varName]; exists {
+			return typeName
+		}
+		return ""
+	}
+
+	// Строковый литерал
+	if strings.HasPrefix(trimmed, "'") {
+		return "varchar"
+	}
+
+	// Числовой литерал
+	if reNumericLiteral.MatchString(trimmed) {
+		return "int"
 	}
 
 	// Ссылка на столбец: alias.column или просто column
