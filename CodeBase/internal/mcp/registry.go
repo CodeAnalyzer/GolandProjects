@@ -615,7 +615,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_rti_errors": {
-			Definition: toolDefinition{Name: "codebase_rti_errors", Description: "Find all calls with non-zero RetVal in an RTI session. Returns procedure name, line number, return value, error context, elapsed time, nest level, module info, error code description (from ds_return_codes), and source file (from CodeBase index).", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file")})},
+			Definition: toolDefinition{Name: "codebase_rti_errors", Description: "Find all calls with non-zero RetVal in an RTI session. Returns server errors (procedure name, line number, return value, error context, elapsed time, nest level, module info, error code description, source file) and client errors (ClassName.MethodName, error text, source file from CodeBase enrichment).", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				result, err := loadRTIFromArgs(db, args)
 				if err != nil {
@@ -626,20 +626,34 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					BLogTables interface{} `json:"blog_tables,omitempty"`
 					BLogBlocks  interface{} `json:"blog_blocks,omitempty"`
 				}
-				var errors []callSlim
+				var serverErrors []callSlim
 				for _, c := range result.Calls {
 					if c.RetVal != nil && *c.RetVal != 0 {
-						errors = append(errors, callSlim{RTICall: c})
+						serverErrors = append(serverErrors, callSlim{RTICall: c})
 					}
 				}
+				var clientErrors []*rti.RTIClientEvent
+				for _, ev := range result.ClientEvents {
+					if ev.Kind == "error" && ev.ErrorText != "" {
+						clientErrors = append(clientErrors, ev)
+					}
+				}
+				var clientEnrich map[string]*rti.ClientEnrichment
+				if db != nil && len(clientErrors) > 0 {
+					q := query.New(db)
+					clientEnrich = rti.EnrichClientEvents(q, clientErrors)
+				}
 				return map[string]interface{}{
-					"count":  len(errors),
-					"errors": errors,
+					"server_errors":      serverErrors,
+					"server_error_count": len(serverErrors),
+					"client_errors":      clientErrors,
+					"client_error_count": len(clientErrors),
+					"client_enrichment":  clientEnrich,
 				}, nil
 			},
 		},
 		"codebase_rti_slow": {
-			Definition: toolDefinition{Name: "codebase_rti_slow", Description: "Find the slowest calls in an RTI session above a threshold. Returns calls sorted by elapsed time descending with procedure name, line, elapsed ms, return value, module info, and context.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "threshold_ms": intProp("Minimum elapsed milliseconds (default 100)")})},
+			Definition: toolDefinition{Name: "codebase_rti_slow", Description: "Find the slowest calls in an RTI session above a threshold. Returns server calls sorted by elapsed time descending, and client SQL blocks sorted by duration. Includes enrichment data (source files, SQL origin) from CodeBase index.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "threshold_ms": intProp("Minimum elapsed milliseconds (default 100)")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				result, err := loadRTIFromArgs(db, args)
 				if err != nil {
@@ -660,10 +674,25 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 						slow = append(slow, callSlim{RTICall: c})
 					}
 				}
+				thresholdSec := float64(threshold) / 1000.0
+				var slowClientSQL []*rti.RTIClientEvent
+				for _, ev := range result.ClientEvents {
+					if ev.Kind == "sql_block" && ev.SQL != nil && ev.SQL.DurationSec >= thresholdSec {
+						slowClientSQL = append(slowClientSQL, ev)
+					}
+				}
+				var clientEnrich map[string]*rti.ClientEnrichment
+				if db != nil && len(slowClientSQL) > 0 {
+					q := query.New(db)
+					clientEnrich = rti.EnrichClientEvents(q, slowClientSQL)
+				}
 				return map[string]interface{}{
-					"count":     len(slow),
-					"threshold": threshold,
-					"calls":     slow,
+					"server_calls":      slow,
+					"server_call_count": len(slow),
+					"client_sql_blocks": slowClientSQL,
+					"client_sql_count":  len(slowClientSQL),
+					"threshold":         threshold,
+					"client_enrichment": clientEnrich,
 				}, nil
 			},
 		},
@@ -790,6 +819,45 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					"procedure": procName,
 					"count":     len(calls),
 					"calls":     items,
+				}, nil
+			},
+		},
+		"codebase_rti_client_tree": {
+			Definition: toolDefinition{Name: "codebase_rti_client_tree", Description: "Build and return a tree of client-side (thick client d5nt) events from an RTI session, grouped by PID. Each event includes kind (sql_block, recordset_open, connection, bpl_list, error, memory, generic), timestamp, class/method, and enrichment data (PAS source file, DFM form, SQL query fragment origin) from CodeBase index.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "pid": intProp("Filter by client PID (0 = all)")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				result, err := loadRTIFromArgs(db, args)
+				if err != nil {
+					return nil, err
+				}
+				pid, _ := optionalInt(args, "pid")
+				nodes := rti.BuildClientTree(result.ClientEvents, pid)
+				var clientEnrich map[string]*rti.ClientEnrichment
+				if db != nil && len(result.ClientEvents) > 0 {
+					q := query.New(db)
+					clientEnrich = rti.EnrichClientEvents(q, result.ClientEvents)
+				}
+				return map[string]interface{}{
+					"nodes":      nodes,
+					"enrichment": clientEnrich,
+				}, nil
+			},
+		},
+		"codebase_rti_timeline": {
+			Definition: toolDefinition{Name: "codebase_rti_timeline", Description: "Get a unified chronological timeline of server calls and client events from an RTI session. Entries are sorted by timestamp and tagged [server] or [client]. Client events include enrichment data (source file locations) from CodeBase index. Useful for correlating client-side SQL execution with server-side procedure calls.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file")})},
+			Handler: func(args map[string]interface{}) (interface{}, error) {
+				result, err := loadRTIFromArgs(db, args)
+				if err != nil {
+					return nil, err
+				}
+				var clientEnrich map[string]*rti.ClientEnrichment
+				if db != nil && len(result.ClientEvents) > 0 {
+					q := query.New(db)
+					clientEnrich = rti.EnrichClientEvents(q, result.ClientEvents)
+				}
+				return map[string]interface{}{
+					"calls":         result.Calls,
+					"client_events": result.ClientEvents,
+					"enrichment":    clientEnrich,
 				}, nil
 			},
 		},

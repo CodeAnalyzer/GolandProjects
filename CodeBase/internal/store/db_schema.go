@@ -437,7 +437,8 @@ func (db *DB) InitSchema() error {
 			total_calls INTEGER NOT NULL DEFAULT 0,
 			errors_count INTEGER NOT NULL DEFAULT 0,
 			max_nest_level INTEGER NOT NULL DEFAULT 0,
-			unparsed_lines INTEGER NOT NULL DEFAULT 0
+			unparsed_lines INTEGER NOT NULL DEFAULT 0,
+			client_events_count INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS rti_calls (
 			id BIGSERIAL PRIMARY KEY,
@@ -493,6 +494,26 @@ func (db *DB) InitSchema() error {
 			row_count      INTEGER NOT NULL DEFAULT 0,
 			rows_data      TEXT,
 			enter_line     INTEGER NOT NULL DEFAULT 0
+		)`,
+		// ALTER для существующих БД, созданных до появления client_events_count
+		// (CREATE TABLE IF NOT EXISTS не добавляет колонки в уже существующую таблицу).
+		`ALTER TABLE rti_sessions ADD COLUMN IF NOT EXISTS client_events_count INTEGER NOT NULL DEFAULT 0`,
+		`CREATE TABLE IF NOT EXISTS rti_client_events (
+			id             BIGSERIAL PRIMARY KEY,
+			session_id     BIGINT NOT NULL REFERENCES rti_sessions(id) ON DELETE CASCADE,
+			parent_id      BIGINT,
+			timestamp      TIMESTAMPTZ,
+			level          TEXT,
+			category       TEXT,
+			class_name     TEXT,
+			method_name    TEXT,
+			pid            INTEGER NOT NULL DEFAULT 0,
+			seq_no         INTEGER NOT NULL DEFAULT 0,
+			line_no        INTEGER NOT NULL DEFAULT 0,
+			kind           TEXT NOT NULL,
+			elapsed_ms     INTEGER NOT NULL DEFAULT 0,
+			payload        JSONB,
+			server_call_id BIGINT REFERENCES rti_calls(id)
 		)`,
 		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ds_products_product_name ON ds_products(product_name)`,
@@ -587,6 +608,9 @@ func (db *DB) InitSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_rti_checkpoints_call_id ON rti_checkpoints(call_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_blog_blocks_call_id ON rti_blog_blocks(call_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_blog_tables_call_id ON rti_blog_tables(call_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_rti_client_events_session_id ON rti_client_events(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_rti_client_events_session_kind ON rti_client_events(session_id, kind)`,
+		`CREATE INDEX IF NOT EXISTS idx_rti_client_events_server_call_id ON rti_client_events(server_call_id)`,
 	}
 
 	for _, stmt := range statements {

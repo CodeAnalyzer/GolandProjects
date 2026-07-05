@@ -2,6 +2,7 @@ package rti
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -16,10 +17,11 @@ func SaveSession(db *store.DB, result *RTIParseResult, filePath string) (int64, 
 	// 1. Создать rti_sessions запись
 	var sessionID int64
 	err := db.QueryRow(
-		`INSERT INTO rti_sessions (file_path, file_size, total_calls, errors_count, max_nest_level, unparsed_lines)
-		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		`INSERT INTO rti_sessions (file_path, file_size, total_calls, errors_count, max_nest_level, unparsed_lines, client_events_count)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
 		filePath, result.Summary.FileSize, result.Summary.TotalCalls,
 		result.Summary.ErrorsCount, result.Summary.MaxNestLevel, result.Summary.UnparsedLines,
+		result.Summary.ClientEventsCount,
 	).Scan(&sessionID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert rti_sessions: %w", err)
@@ -51,7 +53,133 @@ func SaveSession(db *store.DB, result *RTIParseResult, filePath string) (int64, 
 		return 0, fmt.Errorf("failed to insert rti_blog_tables: %w", err)
 	}
 
+	// 7. Batch insert rti_client_events
+	if _, err := insertRTIClientEvents(db, result.ClientEvents, sessionID, callIDs); err != nil {
+		return 0, fmt.Errorf("failed to insert rti_client_events: %w", err)
+	}
+
 	return sessionID, nil
+}
+
+// clientEventPayload — типизированные данные клиентского события, сериализуемые
+// в колонку payload (JSONB) rti_client_events. Общие поля (timestamp, category,
+// class_name, method_name, pid, kind и т.д.) хранятся в отдельных колонках.
+type clientEventPayload struct {
+	BPL        []RTIBPLModule     `json:"bpl,omitempty"`
+	Connection *RTIConnectionInfo `json:"connection,omitempty"`
+	SQL        *RTISQLBlock       `json:"sql,omitempty"`
+	TranCount  *int               `json:"tran_count,omitempty"`
+	Memory     *RTIMemoryUsage    `json:"memory,omitempty"`
+	ErrorText  string             `json:"error_text,omitempty"`
+	RawBody    string             `json:"raw_body,omitempty"`
+}
+
+func insertRTIClientEvents(db *store.DB, events []*RTIClientEvent, sessionID int64, callIDs map[int64]int64) (map[int64]int64, error) {
+	eventIDs := make(map[int64]int64)
+	if len(events) == 0 {
+		return eventIDs, nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.Prepare(pq.CopyIn("rti_client_events",
+		"session_id", "timestamp", "level", "category", "class_name", "method_name",
+		"pid", "seq_no", "line_no", "kind", "elapsed_ms", "payload", "server_call_id",
+	))
+	if err != nil {
+		return nil, err
+	}
+	defer stmt.Close()
+
+	for _, ev := range events {
+		payload := clientEventPayload{
+			BPL:        ev.BPL,
+			Connection: ev.Connection,
+			SQL:        ev.SQL,
+			TranCount:  ev.TranCount,
+			Memory:     ev.Memory,
+			ErrorText:  ev.ErrorText,
+			RawBody:    ev.RawBody,
+		}
+		payloadBytes, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		var payloadJSON interface{}
+		if string(payloadBytes) != "{}" {
+			payloadJSON = string(payloadBytes)
+		}
+
+		var ts interface{}
+		if !ev.Timestamp.IsZero() {
+			ts = ev.Timestamp
+		}
+
+		var serverCallDBID interface{}
+		if ev.ServerCallID != nil {
+			if dbID, ok := callIDs[*ev.ServerCallID]; ok {
+				serverCallDBID = dbID
+			}
+		}
+
+		_, err = stmt.Exec(
+			sessionID, ts, ev.Level, ev.Category, ev.ClassName, ev.MethodName,
+			ev.PID, ev.SeqNo, ev.Line, ev.Kind, ev.ElapsedMs, payloadJSON, serverCallDBID,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if _, err := stmt.Exec(); err != nil {
+		return nil, err
+	}
+	stmt.Close()
+
+	// Сопоставляем оригинальные ID событий (в памяти) с ID, назначенными БД,
+	// по ключу (session_id, line_no, pid, kind) — аналогично insertRTICalls.
+	rows, err := tx.Query(
+		`SELECT id, line_no, pid, kind FROM rti_client_events WHERE session_id = $1 ORDER BY id`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type eventKey struct {
+		line int
+		pid  int
+		kind string
+	}
+	keyToDBID := make(map[eventKey]int64)
+	for rows.Next() {
+		var dbID int64
+		var line, pid int
+		var kind string
+		if err := rows.Scan(&dbID, &line, &pid, &kind); err != nil {
+			return nil, err
+		}
+		keyToDBID[eventKey{line, pid, kind}] = dbID
+	}
+	rows.Close()
+
+	for _, ev := range events {
+		key := eventKey{ev.Line, ev.PID, ev.Kind}
+		if dbID, ok := keyToDBID[key]; ok {
+			eventIDs[ev.ID] = dbID
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return eventIDs, nil
 }
 
 func insertRTICalls(db *store.DB, calls []*RTICall, sessionID int64) (map[int64]int64, error) {
@@ -452,7 +580,7 @@ func ListSessions(db *store.DB, limit int) ([]RTISession, error) {
 		limit = 20
 	}
 	rows, err := db.Query(
-		`SELECT id, file_path, file_size, parsed_at, total_calls, errors_count, max_nest_level, unparsed_lines
+		`SELECT id, file_path, file_size, parsed_at, total_calls, errors_count, max_nest_level, unparsed_lines, client_events_count
 		 FROM rti_sessions ORDER BY parsed_at DESC LIMIT $1`,
 		limit,
 	)
@@ -466,7 +594,7 @@ func ListSessions(db *store.DB, limit int) ([]RTISession, error) {
 		var s RTISession
 		var maxNestLevel, unparsedLines int
 		if err := rows.Scan(&s.ID, &s.FilePath, &s.FileSize, &s.ParsedAt,
-			&s.TotalCalls, &s.ErrorsCount, &maxNestLevel, &unparsedLines); err != nil {
+			&s.TotalCalls, &s.ErrorsCount, &maxNestLevel, &unparsedLines, &s.ClientEventsCount); err != nil {
 			return nil, err
 		}
 		sessions = append(sessions, s)
@@ -500,11 +628,11 @@ func GetSession(db *store.DB, sessionID int64) (*RTISession, error) {
 	var s RTISession
 	var maxNestLevel, unparsedLines int
 	err := db.QueryRow(
-		`SELECT id, file_path, file_size, parsed_at, total_calls, errors_count, max_nest_level, unparsed_lines
+		`SELECT id, file_path, file_size, parsed_at, total_calls, errors_count, max_nest_level, unparsed_lines, client_events_count
 		 FROM rti_sessions WHERE id = $1`,
 		sessionID,
 	).Scan(&s.ID, &s.FilePath, &s.FileSize, &s.ParsedAt,
-		&s.TotalCalls, &s.ErrorsCount, &maxNestLevel, &unparsedLines)
+		&s.TotalCalls, &s.ErrorsCount, &maxNestLevel, &unparsedLines, &s.ClientEventsCount)
 	if err != nil {
 		return nil, err
 	}
@@ -663,4 +791,63 @@ func GetLatestSessionID(db *store.DB) (int64, error) {
 	var id int64
 	err := db.QueryRow(`SELECT id FROM rti_sessions ORDER BY parsed_at DESC LIMIT 1`).Scan(&id)
 	return id, err
+}
+
+// LoadClientEvents загружает клиентские события из БД для сессии.
+func LoadClientEvents(db *store.DB, sessionID int64) ([]*RTIClientEvent, error) {
+	rows, err := db.Query(
+		`SELECT id, timestamp, level, category, class_name, method_name,
+		        pid, seq_no, line_no, kind, elapsed_ms, payload, server_call_id
+		 FROM rti_client_events WHERE session_id = $1 ORDER BY id`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []*RTIClientEvent
+	for rows.Next() {
+		var ev RTIClientEvent
+		var ts sql.NullTime
+		var level, category, className, methodName sql.NullString
+		var payloadJSON sql.NullString
+		var serverCallID sql.NullInt64
+
+		if err := rows.Scan(
+			&ev.ID, &ts, &level, &category, &className, &methodName,
+			&ev.PID, &ev.SeqNo, &ev.Line, &ev.Kind, &ev.ElapsedMs,
+			&payloadJSON, &serverCallID,
+		); err != nil {
+			return nil, err
+		}
+		if ts.Valid {
+			ev.Timestamp = ts.Time
+		}
+		ev.Level = level.String
+		ev.Category = category.String
+		ev.ClassName = className.String
+		ev.MethodName = methodName.String
+		if serverCallID.Valid {
+			id := serverCallID.Int64
+			ev.ServerCallID = &id
+		}
+
+		if payloadJSON.Valid && payloadJSON.String != "" {
+			var payload clientEventPayload
+			if err := json.Unmarshal([]byte(payloadJSON.String), &payload); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal client event payload (id=%d): %w", ev.ID, err)
+			}
+			ev.BPL = payload.BPL
+			ev.Connection = payload.Connection
+			ev.SQL = payload.SQL
+			ev.TranCount = payload.TranCount
+			ev.Memory = payload.Memory
+			ev.ErrorText = payload.ErrorText
+			ev.RawBody = payload.RawBody
+		}
+
+		events = append(events, &ev)
+	}
+	return events, rows.Err()
 }

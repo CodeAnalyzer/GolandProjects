@@ -81,6 +81,12 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 	currentSPID := 0
 	var lastExited *RTICall
 
+	// Client (толстый клиент d5nt) event parsing state
+	var pendingClient *RTIClientEvent
+	var clientBody clientBodyState
+	var allClientEvents []*RTIClientEvent
+	clientIDCounter := int64(0)
+
 	// BusinessLog block state
 	var (
 		pendingBLog        bool
@@ -110,6 +116,25 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Text()
+
+		// Клиентское событие: если сейчас накапливается тело клиентского события
+		// (pendingClient != nil), и текущая строка не похожа на начало нового
+		// события (клиентского или серверного) — это строка тела, передаём её
+		// в соответствующий обработчик и переходим к следующей строке.
+		if pendingClient != nil {
+			if !looksLikeNewRecordHeader(line) {
+				feedClientBody(pendingClient, &clientBody, line)
+				continue
+			}
+			// Текущая строка — начало нового события: завершаем накопление
+			// текущего клиентского события и даём этой строке пройти через
+			// обычную цепочку проверок ниже (она может оказаться серверным
+			// или новым клиентским заголовком).
+			finalizeClientEvent(pendingClient, &clientBody)
+			allClientEvents = append(allClientEvents, pendingClient)
+			pendingClient = nil
+			clientBody = clientBodyState{}
+		}
 
 		// BusinessLog table boundary (begin / end)
 		if m := reBLogTableBound.FindStringSubmatch(line); m != nil {
@@ -387,18 +412,64 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 			continue
 		}
 
+		// Клиентский заголовок (Debug.d5ntsys/SQL/SQL_TranCount/Error.* и т.п.) —
+		// проверяется после всех серверных паттернов, чтобы не перехватывать
+		// строки Trace.Server.*/BusinessLog, которые уже обработаны выше.
+		if m := reClientHeader.FindStringSubmatch(line); m != nil {
+			tsStr := m[1]
+			level := m[2]
+			category := m[3]
+			class := m[4]
+			method := m[5]
+			pid, _ := strconv.Atoi(m[6])
+			seq, _ := strconv.Atoi(m[7])
+
+			var ts time.Time
+			if parsed, err := time.ParseInLocation("02.01.2006 15:04:05.000", tsStr, time.Local); err == nil {
+				ts = parsed
+			}
+
+			clientIDCounter++
+			pendingClient = &RTIClientEvent{
+				ID:         clientIDCounter,
+				Timestamp:  ts,
+				Level:      level,
+				Category:   category,
+				ClassName:  class,
+				MethodName: method,
+				PID:        pid,
+				SeqNo:      seq,
+				Line:       lineNum,
+				Kind:       classifyClientKind(category, class, method),
+			}
+			clientBody = clientBodyState{}
+			continue
+		}
+
 		// Unparsed
 		if strings.TrimSpace(line) != "" {
 			result.UnparsedLines++
 		}
 	}
 
+	if pendingClient != nil {
+		finalizeClientEvent(pendingClient, &clientBody)
+		allClientEvents = append(allClientEvents, pendingClient)
+	}
+
+	LinkClientServerCalls(allCalls, allClientEvents)
+
 	result.Calls = allCalls
+	result.ClientEvents = allClientEvents
 	result.Summary.TotalCalls = len(allCalls)
 	result.Summary.UnparsedLines = result.UnparsedLines
 	result.Summary.ErrorsCount = countErrors(allCalls)
 	result.Summary.MaxNestLevel = maxNestLevel(allCalls)
 	result.Summary.TopSlow = topSlowCalls(allCalls, 10)
+	result.Summary.ClientEventsCount = len(allClientEvents)
+	result.Summary.ClientErrorsCount = countClientErrors(allClientEvents)
+	result.Summary.ClientSlowSQLCount = countClientSlowSQL(allClientEvents, clientSlowSQLThresholdSec)
+	result.Summary.TopSlowClientSQL = topSlowClientSQLEvents(allClientEvents, 10)
 
 	return result, nil
 }

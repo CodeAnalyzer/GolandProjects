@@ -2,6 +2,7 @@ package rti
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -129,6 +130,178 @@ func formatTreeNodeEnriched(sb *strings.Builder, node *RTITreeNode, depth int, e
 	for _, child := range node.Children {
 		formatTreeNodeEnriched(sb, child, depth+1, enrichMap)
 	}
+}
+
+// RTIClientTreeNode — узел дерева клиентских событий, сгруппированных по PID.
+// Примечание: полноценной вложенности вызовов (parent/child) для клиентских
+// событий в v1 нет — реальная структура клиентского лога плоская (блоки не
+// вкладываются друг в друга, как серверные Enter/Exit), поэтому дерево строится
+// как группировка "PID → события этого PID, отсортированные по времени".
+type RTIClientTreeNode struct {
+	PID    int
+	Events []*RTIClientEvent
+}
+
+// BuildClientTree группирует клиентские события по PID и сортирует каждую
+// группу по времени. Если pid > 0, возвращается единственная группа для этого PID.
+func BuildClientTree(events []*RTIClientEvent, pid int) []*RTIClientTreeNode {
+	groups := make(map[int][]*RTIClientEvent)
+	var order []int
+	for _, ev := range events {
+		if pid > 0 && ev.PID != pid {
+			continue
+		}
+		if _, ok := groups[ev.PID]; !ok {
+			order = append(order, ev.PID)
+		}
+		groups[ev.PID] = append(groups[ev.PID], ev)
+	}
+	sort.Ints(order)
+
+	nodes := make([]*RTIClientTreeNode, 0, len(order))
+	for _, p := range order {
+		evs := groups[p]
+		sort.Slice(evs, func(i, j int) bool { return evs[i].Timestamp.Before(evs[j].Timestamp) })
+		nodes = append(nodes, &RTIClientTreeNode{PID: p, Events: evs})
+	}
+	return nodes
+}
+
+// FormatClientTree форматирует дерево клиентских событий в текстовый вид.
+func FormatClientTree(nodes []*RTIClientTreeNode) string {
+	var sb strings.Builder
+	for _, node := range nodes {
+		fmt.Fprintf(&sb, "PID %d (%d event(s)):\n", node.PID, len(node.Events))
+		for _, ev := range node.Events {
+			formatClientEventLine(&sb, ev, 1, nil)
+		}
+	}
+	return sb.String()
+}
+
+// FormatClientTreeEnriched форматирует дерево клиентских событий с данными
+// обогащения из CodeBase (PAS-метод, DFM-форма, query_fragment).
+func FormatClientTreeEnriched(nodes []*RTIClientTreeNode, enrichMap map[string]*ClientEnrichment) string {
+	var sb strings.Builder
+	for _, node := range nodes {
+		fmt.Fprintf(&sb, "PID %d (%d event(s)):\n", node.PID, len(node.Events))
+		for _, ev := range node.Events {
+			formatClientEventLine(&sb, ev, 1, enrichMap)
+		}
+	}
+	return sb.String()
+}
+
+func formatClientEventLine(sb *strings.Builder, ev *RTIClientEvent, depth int, enrichMap map[string]*ClientEnrichment) {
+	indent := strings.Repeat("  ", depth)
+	desc := clientEventDescription(ev)
+	fmt.Fprintf(sb, "%s[%s] %s.%s (%s)%s\n",
+		indent, ev.Timestamp.Format("15:04:05.000"), ev.ClassName, ev.MethodName, ev.Kind, desc)
+	if ev.ServerCallID != nil {
+		fmt.Fprintf(sb, "%s  → server call #%d\n", indent, *ev.ServerCallID)
+	}
+	if enrichMap != nil {
+		key := ev.ClassName + "." + ev.MethodName
+		if enrich, ok := enrichMap[key]; ok && enrich != nil {
+			if enrich.Found {
+				fmt.Fprintf(sb, "%s  → %s:%d", indent, enrich.SourceFile, enrich.LineNumber)
+				if enrich.Unit != "" {
+					fmt.Fprintf(sb, " [%s]", enrich.Unit)
+				}
+				fmt.Fprintln(sb)
+			}
+			if enrich.DFMFormName != "" {
+				fmt.Fprintf(sb, "%s  → DFM: %s", indent, enrich.DFMFormName)
+				if enrich.DFMCaption != "" {
+					fmt.Fprintf(sb, " (%s)", enrich.DFMCaption)
+				}
+				fmt.Fprintln(sb)
+			}
+			if enrich.QueryFragmentFile != "" {
+				fmt.Fprintf(sb, "%s  → SQL origin: %s:%d", indent, enrich.QueryFragmentFile, enrich.QueryFragmentLine)
+				if enrich.OriginMethod != "" {
+					fmt.Fprintf(sb, " [%s]", enrich.OriginMethod)
+				}
+				fmt.Fprintln(sb)
+			}
+		}
+	}
+}
+
+func clientEventDescription(ev *RTIClientEvent) string {
+	switch ev.Kind {
+	case "sql_block":
+		if ev.SQL != nil {
+			if ev.SQL.ExecProcedure != "" {
+				return fmt.Sprintf(" exec %s", ev.SQL.ExecProcedure)
+			}
+			if ev.SQL.DurationSec > 0 {
+				return fmt.Sprintf(" duration=%.3fs", ev.SQL.DurationSec)
+			}
+		}
+	case "error":
+		if ev.ErrorText != "" {
+			return fmt.Sprintf(" %s", ev.ErrorText)
+		}
+	case "connection":
+		if ev.Connection != nil {
+			return fmt.Sprintf(" spid=%d server=%s db=%s", ev.Connection.SPID, ev.Connection.Server, ev.Connection.Database)
+		}
+	case "bpl_list":
+		return fmt.Sprintf(" %d module(s)", len(ev.BPL))
+	}
+	return ""
+}
+
+// FormatUnifiedTimeline объединяет серверные вызовы и клиентские события в
+// единую хронологическую ленту (сортировка по времени), с пометкой источника.
+func FormatUnifiedTimeline(calls []*RTICall, events []*RTIClientEvent) string {
+	return FormatUnifiedTimelineEnriched(calls, events, nil)
+}
+
+// FormatUnifiedTimelineEnriched — то же, но с обогащением клиентских событий.
+func FormatUnifiedTimelineEnriched(calls []*RTICall, events []*RTIClientEvent, enrichMap map[string]*ClientEnrichment) string {
+	type entry struct {
+		timestampUnixNano int64
+		line              string
+	}
+	entries := make([]entry, 0, len(calls)+len(events))
+	for _, c := range calls {
+		if c.EnterTime.IsZero() {
+			continue
+		}
+		line := fmt.Sprintf("[server] %s %s ← %s (%d)",
+			c.EnterTime.Format("15:04:05.000"), c.Procedure, c.ModuleName, c.ModuleID)
+		if c.RetVal != nil {
+			line += fmt.Sprintf(" RetVal=%d", *c.RetVal)
+		}
+		entries = append(entries, entry{c.EnterTime.UnixNano(), line})
+	}
+	for _, ev := range events {
+		if ev.Timestamp.IsZero() {
+			continue
+		}
+		line := fmt.Sprintf("[client] %s %s.%s (%s)%s",
+			ev.Timestamp.Format("15:04:05.000"), ev.ClassName, ev.MethodName, ev.Kind, clientEventDescription(ev))
+		if ev.ServerCallID != nil {
+			line += fmt.Sprintf(" → server call #%d", *ev.ServerCallID)
+		}
+		if enrichMap != nil {
+			key := ev.ClassName + "." + ev.MethodName
+			if enrich, ok := enrichMap[key]; ok && enrich != nil && enrich.Found {
+				line += fmt.Sprintf(" → %s:%d", enrich.SourceFile, enrich.LineNumber)
+			}
+		}
+		entries = append(entries, entry{ev.Timestamp.UnixNano(), line})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].timestampUnixNano < entries[j].timestampUnixNano })
+
+	var sb strings.Builder
+	for _, e := range entries {
+		sb.WriteString(e.line)
+		sb.WriteByte('\n')
+	}
+	return sb.String()
 }
 
 func formatTreeNode(sb *strings.Builder, node *RTITreeNode, depth int, prefix string) {
