@@ -32,6 +32,8 @@ var (
 	reSelectAssign     = regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
 	reSetAssign        = regexp.MustCompile(`(?is)^\s*set\s+(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
 	reDeclareAssign    = regexp.MustCompile(`(?is)^\s*declare\s+(@[A-Za-z_][A-Za-z0-9_]*)\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)\s*=\s*(.+)$`)
+	reAPICreateProc    = regexp.MustCompile(`(?i)API_CREATE_PROC\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)`)
+	reBeginProcedure   = regexp.MustCompile(`(?i)__BEGIN_PROCEDURE__\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)`)
 
 	// Regexes для join/condition парсинга.
 	reHelperJoinEq               = regexp.MustCompile(`(?i)\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b\s*=\s*\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b`)
@@ -1792,22 +1794,47 @@ func hasTableQuery(condition string) bool {
 }
 
 // hasExplicitConversion проверяет, содержит ли выражение явное преобразование
-// через convert() или cast(). Если в выражении есть convert/cast, считается,
-// что разработчик осознанно привёл тип, и проверка потери точности не нужна.
+// через convert() или cast() к целевому типу (или типу той же группы без потери точности).
+// Если разработчик осознанно привёл к целевому типу — проверка потери точности не нужна.
+// convert к другому типу (например convert(numeric, ...) при target DSOPERDAY) не считается.
 func hasExplicitConversion(expression string, targetType string) bool {
 	if expression == "" || targetType == "" {
 		return false
 	}
 	exprLower := strings.ToLower(expression)
+	target := normalizeDataType(targetType)
+	targetGroup := typeGroup(target)
 
-	// Любой convert(...) — явное преобразование
-	if reConvertCall.MatchString(exprLower) {
-		return true
+	// Проверяем все convert(type, ...) вызовы в выражении
+	for _, m := range reConvertCall.FindAllStringIndex(exprLower, -1) {
+		args := extractFuncInnerArgs(exprLower[m[0]:])
+		if len(args) >= 2 {
+			convType := normalizeDataType(strings.TrimSpace(args[0]))
+			if convType == target {
+				return true
+			}
+			if typeGroup(convType) == targetGroup && targetGroup != "" && !isPotentialPrecisionLoss(convType, targetType) {
+				return true
+			}
+		}
 	}
 
-	// Любой cast(... as ...) — явное преобразование
-	if reCastCall.MatchString(exprLower) {
-		return true
+	// Проверяем все cast(... AS type) вызовы в выражении
+	for _, m := range reCastCall.FindAllStringIndex(exprLower, -1) {
+		args := extractFuncInnerArgs(exprLower[m[0]:])
+		if len(args) >= 1 {
+			inner := args[0]
+			asIdx := findTopLevelKeywordPosition(inner, "as")
+			if asIdx >= 0 {
+				castType := normalizeDataType(strings.TrimSpace(inner[asIdx+2:]))
+				if castType == target {
+					return true
+				}
+				if typeGroup(castType) == targetGroup && targetGroup != "" && !isPotentialPrecisionLoss(castType, targetType) {
+					return true
+				}
+			}
+		}
 	}
 
 	return false
@@ -2029,6 +2056,51 @@ func collectVariableTypes(parsed *sqlparser.ParseResult, content string) map[str
 	}
 
 	return result
+}
+
+// extractCurrentProcName определяет имя текущей процедуры из parsed-результата
+// или, если парсер не извлёк имя (например, для API_CREATE_PROC), ищет в контенте
+// макросы API_CREATE_PROC(name) или __BEGIN_PROCEDURE__(name).
+func extractCurrentProcName(parsed *sqlparser.ParseResult, content string) string {
+	for _, proc := range parsed.Procedures {
+		if proc != nil && strings.TrimSpace(proc.ProcName) != "" {
+			return strings.TrimSpace(proc.ProcName)
+		}
+	}
+	if m := reAPICreateProc.FindStringSubmatch(content); len(m) >= 2 {
+		return m[1]
+	}
+	if m := reBeginProcedure.FindStringSubmatch(content); len(m) >= 2 {
+		return m[1]
+	}
+	return ""
+}
+
+// enrichVariableTypesFromAPI дополняет карту variableTypes параметрами процедуры,
+// полученными из БД индекса (включая fallback к API-контрактам).
+// Не перезаписывает типы, уже определённые через declare-блоки или параметры парсера.
+func (r *Runner) enrichVariableTypesFromAPI(variableTypes map[string]string, parsed *sqlparser.ParseResult, content string) {
+	if r == nil || r.db == nil {
+		return
+	}
+	procName := extractCurrentProcName(parsed, content)
+	if procName == "" {
+		return
+	}
+	params, err := r.lookupProcedureParams(procName)
+	if err != nil || len(params) == 0 {
+		return
+	}
+	for _, p := range params {
+		name := normalizeVariableName(p.Name)
+		typeName := strings.TrimSpace(p.Type)
+		if name == "" || typeName == "" {
+			continue
+		}
+		if _, exists := variableTypes[name]; !exists {
+			variableTypes[name] = typeName
+		}
+	}
 }
 
 // extractDeclareBlocks извлекает текст блоков declare из контента.

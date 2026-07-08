@@ -196,6 +196,7 @@ func parseSelectAssignStatement(queryText string) (selectAssignStatement, bool) 
 		selectPart = strings.TrimSpace(text[len("select"):fromPos])
 		fromClause = strings.TrimSpace(text[fromPos:])
 	}
+
 	if selectPart == "" {
 		return selectAssignStatement{}, false
 	}

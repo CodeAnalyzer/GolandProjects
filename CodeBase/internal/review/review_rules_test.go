@@ -1330,12 +1330,12 @@ func TestHasExplicitConversion_DetectsConvertAndCast(t *testing.T) {
 		{"convert(smalldatetime, cc.CreditDateFrom)", "smalldatetime", true},
 		{"convert(varchar(10), col)", "varchar", true},
 		{"CONVERT(DATE, col)", "date", true},
-		{"convert(int, col)", "smalldatetime", true}, // любой convert — явное преобразование
+		{"convert(int, col)", "smalldatetime", false}, // convert к int не относится к smalldatetime
 		{"col", "smalldatetime", false},              // нет convert
 
 		// convert() cases - эквивалентные типы (для datetime)
 		{"convert(smalldatetime, col)", "dsoperday", true}, // smalldatetime эквивалентен DSOPERDAY
-		{"convert(smalldatetime, col)", "date", true},      // smalldatetime эквивалентен date
+		{"convert(smalldatetime, col)", "date", false},     // smalldatetime -> date: потеря точности
 		{"convert(date, col)", "dsoperday", true},          // date эквивалентен DSOPERDAY
 		{"convert(datetime, col)", "dsdatetime", true},     // datetime эквивалентен DSDATETIME
 
@@ -1344,11 +1344,11 @@ func TestHasExplicitConversion_DetectsConvertAndCast(t *testing.T) {
 		{"CAST(cc.CreditDateFrom AS smalldatetime)", "smalldatetime", true},
 		{"cast(col as varchar(10))", "varchar", true},
 		{"cast(col as date)", "date", true},
-		{"cast(col as int)", "smalldatetime", true}, // любой cast — явное преобразование
+		{"cast(col as int)", "smalldatetime", false}, // cast к int не относится к smalldatetime
 
 		// cast() cases - эквивалентные типы (для datetime)
 		{"cast(col as smalldatetime)", "dsoperday", true}, // smalldatetime эквивалентен DSOPERDAY
-		{"cast(col as smalldatetime)", "date", true},      // smalldatetime эквивалентен date
+		{"cast(col as smalldatetime)", "date", false},     // smalldatetime -> date: потеря точности
 		{"cast(col as date)", "dsoperday", true},          // date эквивалентен DSOPERDAY
 
 		// case-insensitive
@@ -1358,6 +1358,11 @@ func TestHasExplicitConversion_DetectsConvertAndCast(t *testing.T) {
 		// empty cases
 		{"", "smalldatetime", false},
 		{"convert(smalldatetime, col)", "", false},
+
+		// CASE с вложенным convert к чужому типу — не должно считаться explicit conversion
+		{"case when @Tmp = 0 then dateadd(dd, convert(numeric, Val), '19000101') else convert(datetime, Val, 103) end", "dsoperday", false},
+		// CASE с convert к целевому типу — должно считаться explicit conversion
+		{"case when @Tmp = 0 then convert(dsoperday, Val) else convert(dsoperday, Val2) end", "dsoperday", true},
 	}
 
 	for _, tc := range cases {
@@ -5681,5 +5686,64 @@ func TestExtractWherePartForIndexWrong_StopsAtInsert(t *testing.T) {
 		if strings.EqualFold(ref.funcName, "m_delete_ptable_spid_index") {
 			t.Fatalf("m_delete_ptable_spid_index should be skipped by extractFuncColumnRefs, got ref: %+v", ref)
 		}
+	}
+}
+
+func TestExtractCurrentProcName_FromParsed(t *testing.T) {
+	parsed := &sqlparser.ParseResult{
+		Procedures: []*model.SQLProcedure{
+			{ProcName: "MyProc"},
+		},
+	}
+	name := extractCurrentProcName(parsed, "")
+	if name != "MyProc" {
+		t.Fatalf("expected MyProc, got %q", name)
+	}
+}
+
+func TestExtractCurrentProcName_FromAPICreateProc(t *testing.T) {
+	parsed := &sqlparser.ParseResult{}
+	content := "API_CREATE_PROC(API_COver_CreateAgreement)\n__BEGIN_PROCEDURE__(API_COver_CreateAgreement)"
+	name := extractCurrentProcName(parsed, content)
+	if name != "API_COver_CreateAgreement" {
+		t.Fatalf("expected API_COver_CreateAgreement, got %q", name)
+	}
+}
+
+func TestExtractCurrentProcName_FromBeginProcedure(t *testing.T) {
+	parsed := &sqlparser.ParseResult{}
+	content := "  __BEGIN_PROCEDURE__(MyTestProc)\n  select 1"
+	name := extractCurrentProcName(parsed, content)
+	if name != "MyTestProc" {
+		t.Fatalf("expected MyTestProc, got %q", name)
+	}
+}
+
+func TestExtractCurrentProcName_Empty(t *testing.T) {
+	parsed := &sqlparser.ParseResult{}
+	name := extractCurrentProcName(parsed, "select 1")
+	if name != "" {
+		t.Fatalf("expected empty, got %q", name)
+	}
+}
+
+func TestEnrichVariableTypesFromAPI_NilDB_NoOp(t *testing.T) {
+	r := &Runner{}
+	vt := map[string]string{"existingvar": "DSINT"}
+	content := "API_CREATE_PROC(SomeProc)"
+	r.enrichVariableTypesFromAPI(vt, &sqlparser.ParseResult{}, content)
+	if len(vt) != 1 {
+		t.Fatalf("expected 1 entry (no-op with nil db), got %d", len(vt))
+	}
+}
+
+func TestEnrichVariableTypesFromAPI_DoesNotOverwriteExisting(t *testing.T) {
+	vt := map[string]string{"agreementdate": "DSOPERDAY"}
+	// Simulate: declare says DSOPERDAY, API says DSOPERDAY too — no overwrite needed.
+	// This test just verifies the guard logic with nil db (no-op).
+	r := &Runner{}
+	r.enrichVariableTypesFromAPI(vt, &sqlparser.ParseResult{}, "API_CREATE_PROC(Test)")
+	if vt["agreementdate"] != "DSOPERDAY" {
+		t.Fatalf("existing type should not be changed, got %q", vt["agreementdate"])
 	}
 }

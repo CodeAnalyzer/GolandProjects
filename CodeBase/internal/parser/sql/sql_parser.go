@@ -664,7 +664,12 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 			return
 		}
 		lower := strings.ToLower(trimmedText)
-		if strings.EqualFold(trimmedText, "go") ||
+		// "end" пропускается только если мы НЕ внутри оператора.
+		// Если внутри оператора (statementStart > 0), то "end" — это закрытие CASE,
+		// а не control-flow (control-flow end уже вызвал flush выше).
+		if strings.EqualFold(trimmedText, "end") && statementStart > 0 {
+			// CASE end — добавляем в оператор
+		} else if strings.EqualFold(trimmedText, "go") ||
 			trimmedText == "as" ||
 			strings.EqualFold(trimmedText, "begin") ||
 			strings.EqualFold(trimmedText, "end") ||

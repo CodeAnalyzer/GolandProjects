@@ -17,7 +17,8 @@ var (
 	reNumericLiteral = regexp.MustCompile(`^\d+(\.\d+)?$`)
 	reFuncCall       = regexp.MustCompile(`(?i)^([a-z_][a-z0-9_]*)\s*\(`)
 	reColumnNameOnly = regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`)
-	reThenExpr       = regexp.MustCompile(`(?i)\bthen\b\s+(.*?)(?:\bwhen\b|\belse\b|\bend\b)`)
+	reThenExpr       = regexp.MustCompile(`(?is)\bthen\b\s+(.*?)(?:\bwhen\b|\belse\b|\bend\b)`)
+	reElseExpr       = regexp.MustCompile(`(?is)\belse\b\s+(.*?)(?:\bend\b)`)
 	reStringLiteral  = regexp.MustCompile(`'[^']*'`)
 	reFuncName       = regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\s*\(`)
 	reDigitStart     = regexp.MustCompile(`^\d`)
@@ -98,6 +99,7 @@ func (r *Runner) checkDatatypeFetchInto(parsed *sqlparser.ParseResult, file *ind
 
 	contentStr := string(content)
 	variableTypes := collectVariableTypes(parsed, contentStr)
+	r.enrichVariableTypesFromAPI(variableTypes, parsed, contentStr)
 	cursorDeclarations := parseCursorDeclarations(contentStr)
 	if len(cursorDeclarations) == 0 {
 		return findings, nil
@@ -180,6 +182,7 @@ func (r *Runner) checkDatatypeSelectAssign(parsed *sqlparser.ParseResult, file *
 		return nil, err
 	}
 	variableTypes := collectVariableTypes(parsed, string(content))
+	r.enrichVariableTypesFromAPI(variableTypes, parsed, string(content))
 
 	for _, fragment := range parsed.Fragments {
 		if fragment == nil {
@@ -2000,6 +2003,7 @@ func (r *Runner) checkDatatypeExecParams(parsed *sqlparser.ParseResult, file *in
 		return nil, err
 	}
 	variableTypes := collectVariableTypes(parsed, string(content))
+	r.enrichVariableTypesFromAPI(variableTypes, parsed, string(content))
 
 	calls := dedupeProcedureCalls(parsed.Calls)
 	for _, call := range calls {
@@ -5652,9 +5656,13 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 		}
 		// Для прочих функций пытаемся вывести тип из аргументов
 		if len(innerArgs) > 0 {
-			// dateadd(datepart, number, date) — тип определяется последним аргументом
+			// dateadd(datepart, number, date) — всегда возвращает datetime-тип
 			if funcName == "dateadd" && len(innerArgs) >= 3 {
-				return r.resolveArgType(innerArgs[len(innerArgs)-1], variableTypes, aliasMap)
+				lastArgType := r.resolveArgType(innerArgs[len(innerArgs)-1], variableTypes, aliasMap)
+				if lastArgType != "" && typeGroup(lastArgType) != "datetime" {
+					return "datetime"
+				}
+				return lastArgType
 			}
 			return r.resolveArgType(innerArgs[0], variableTypes, aliasMap)
 		}
@@ -5754,9 +5762,9 @@ func (r *Runner) resolveArithmeticExprType(expr string, variableTypes map[string
 	return bestType
 }
 
-// resolveCaseType определяет тип результата CASE ... END по THEN-выражениям.
+// resolveCaseType определяет тип результата CASE ... END по THEN/ELSE-выражениям.
 // Если все THEN-значения — строковые литералы, возвращает varchar.
-// Если все числовые — int. Иначе берёт тип первого нетривиального THEN-выражения.
+// Если все числовые — int. Иначе берёт тип первого нетривиального THEN/ELSE-выражения.
 func (r *Runner) resolveCaseType(expr string, variableTypes map[string]string, aliasMap map[string]string) string {
 	// Извлекаем THEN-выражения
 	thenRe := reThenExpr
@@ -5769,19 +5777,42 @@ func (r *Runner) resolveCaseType(expr string, variableTypes map[string]string, a
 	allNumeric := true
 	var firstType string
 
+	// Собираем все THEN-выражения для анализа
+	var expressions []string
 	for _, m := range matches {
 		thenExpr := strings.TrimSpace(m[1])
 		if thenExpr == "" {
 			continue
 		}
+		expressions = append(expressions, thenExpr)
 		if !strings.HasPrefix(thenExpr, "'") {
 			allString = false
 		}
 		if !reNumericLiteral.MatchString(thenExpr) {
 			allNumeric = false
 		}
-		if firstType == "" {
-			firstType = r.resolveArgType(thenExpr, variableTypes, aliasMap)
+	}
+
+	// Также извлекаем ELSE-выражение
+	if elseMatch := reElseExpr.FindStringSubmatch(expr); len(elseMatch) >= 2 {
+		elseExpr := strings.TrimSpace(elseMatch[1])
+		if elseExpr != "" {
+			expressions = append(expressions, elseExpr)
+			if !strings.HasPrefix(elseExpr, "'") {
+				allString = false
+			}
+			if !reNumericLiteral.MatchString(elseExpr) {
+				allNumeric = false
+			}
+		}
+	}
+
+	// Определяем тип по первому выражению с непустым типом
+	for _, e := range expressions {
+		t := r.resolveArgType(e, variableTypes, aliasMap)
+		if t != "" {
+			firstType = t
+			break
 		}
 	}
 
