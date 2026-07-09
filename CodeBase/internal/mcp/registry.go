@@ -58,6 +58,21 @@ func optionalInt(args map[string]interface{}, key string) (int, error) {
 	}
 }
 
+func requiredInt(args map[string]interface{}, key string) (int, error) {
+	value, ok := args[key]
+	if !ok || value == nil {
+		return 0, fmt.Errorf("missing required argument: %s", key)
+	}
+	switch v := value.(type) {
+	case int:
+		return v, nil
+	case float64:
+		return int(v), nil
+	default:
+		return 0, fmt.Errorf("argument %s must be integer", key)
+	}
+}
+
 var toolRegistry = buildToolRegistry(nil)
 
 func buildToolRegistry(db *store.DB) map[string]registeredTool {
@@ -69,22 +84,23 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					"Use this when a previous tool response starts with '⚠️ PAGINATED RESPONSE'. " +
 					"Copy the continuation_id and chunk number from the '👉 Call' hint. " +
 					"Repeat until you see '✅ FINAL CHUNK'.",
-				InputSchema: objectSchema(map[string]interface{}{
-					"continuation_id": stringProp("Continuation ID from the paginated response header"),
-					"chunk":           intProp("Chunk number to read (as shown in the 👉 hint)"),
-				}),
+				InputSchema: func() map[string]interface{} {
+					s := objectSchema(map[string]interface{}{
+						"continuation_id": stringProp("Continuation ID from the paginated response header"),
+						"chunk":           intProp("Chunk number to read (as shown in the 👉 hint)"),
+					})
+					s["required"] = []string{"continuation_id", "chunk"}
+					return s
+				}(),
 			},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				id, err := requiredString(args, "continuation_id")
 				if err != nil {
 					return nil, err
 				}
-				chunk, err := optionalInt(args, "chunk")
+				chunk, err := requiredInt(args, "chunk")
 				if err != nil {
 					return nil, err
-				}
-				if chunk < 2 {
-					chunk = 2
 				}
 				return globalPages.readChunk(id, chunk)
 			},

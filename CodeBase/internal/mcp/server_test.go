@@ -212,3 +212,30 @@ func TestReadMoreHandlerUnknownID(t *testing.T) {
 		t.Fatal("expected error for unknown continuation_id")
 	}
 }
+
+func TestReadMoreHandlerRequiresChunk(t *testing.T) {
+	tool, ok := toolRegistry["codebase_read_more"]
+	if !ok {
+		t.Fatal("codebase_read_more not in toolRegistry")
+	}
+	_, err := tool.Handler(map[string]interface{}{
+		"continuation_id": "abc123",
+	})
+	if err == nil {
+		t.Fatal("expected error when chunk is missing")
+	}
+}
+
+func TestReadMoreHandlerChunkWrongType(t *testing.T) {
+	tool, ok := toolRegistry["codebase_read_more"]
+	if !ok {
+		t.Fatal("codebase_read_more not in toolRegistry")
+	}
+	_, err := tool.Handler(map[string]interface{}{
+		"continuation_id": "abc123",
+		"chunk":           "abc",
+	})
+	if err == nil {
+		t.Fatal("expected error for non-integer chunk")
+	}
+}
