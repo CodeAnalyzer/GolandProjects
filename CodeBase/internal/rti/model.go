@@ -171,5 +171,7 @@ type RTISession struct {
 	TotalCalls        int       `json:"total_calls"`
 	ErrorsCount       int       `json:"errors_count"`
 	FileSize          int64     `json:"file_size"`
+	MaxNestLevel      int       `json:"max_nest_level"`
+	UnparsedLines     int       `json:"unparsed_lines"`
 	ClientEventsCount int       `json:"client_events_count,omitempty"`
 }

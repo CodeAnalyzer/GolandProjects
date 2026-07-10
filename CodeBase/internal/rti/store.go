@@ -592,9 +592,8 @@ func ListSessions(db *store.DB, limit int) ([]RTISession, error) {
 	var sessions []RTISession
 	for rows.Next() {
 		var s RTISession
-		var maxNestLevel, unparsedLines int
 		if err := rows.Scan(&s.ID, &s.FilePath, &s.FileSize, &s.ParsedAt,
-			&s.TotalCalls, &s.ErrorsCount, &maxNestLevel, &unparsedLines, &s.ClientEventsCount); err != nil {
+			&s.TotalCalls, &s.ErrorsCount, &s.MaxNestLevel, &s.UnparsedLines, &s.ClientEventsCount); err != nil {
 			return nil, err
 		}
 		sessions = append(sessions, s)
@@ -626,13 +625,12 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 // GetSession возвращает информацию о сессии по ID.
 func GetSession(db *store.DB, sessionID int64) (*RTISession, error) {
 	var s RTISession
-	var maxNestLevel, unparsedLines int
 	err := db.QueryRow(
 		`SELECT id, file_path, file_size, parsed_at, total_calls, errors_count, max_nest_level, unparsed_lines, client_events_count
 		 FROM rti_sessions WHERE id = $1`,
 		sessionID,
 	).Scan(&s.ID, &s.FilePath, &s.FileSize, &s.ParsedAt,
-		&s.TotalCalls, &s.ErrorsCount, &maxNestLevel, &unparsedLines, &s.ClientEventsCount)
+		&s.TotalCalls, &s.ErrorsCount, &s.MaxNestLevel, &s.UnparsedLines, &s.ClientEventsCount)
 	if err != nil {
 		return nil, err
 	}
@@ -709,6 +707,16 @@ func LoadCalls(db *store.DB, sessionID int64) ([]*RTICall, error) {
 	// Load BLogTables for all calls in one query
 	if err := loadAllBLogTables(db, sessionID, calls); err != nil {
 		return nil, fmt.Errorf("failed to load blog tables: %w", err)
+	}
+
+	// Load params for all calls in one query
+	if err := loadAllParams(db, sessionID, calls); err != nil {
+		return nil, fmt.Errorf("failed to load params: %w", err)
+	}
+
+	// Load checkpoints for all calls in one query
+	if err := loadAllCheckpoints(db, sessionID, calls); err != nil {
+		return nil, fmt.Errorf("failed to load checkpoints: %w", err)
 	}
 
 	return calls, rows.Err()
@@ -850,4 +858,72 @@ func LoadClientEvents(db *store.DB, sessionID int64) ([]*RTIClientEvent, error) 
 		events = append(events, &ev)
 	}
 	return events, rows.Err()
+}
+
+// loadAllParams загружает параметры для всех вызовов сессии одним запросом.
+func loadAllParams(db *store.DB, sessionID int64, calls []*RTICall) error {
+	rows, err := db.Query(
+		`SELECT call_id, name, type, value
+		 FROM rti_params
+		 WHERE call_id IN (SELECT id FROM rti_calls WHERE session_id = $1)
+		 ORDER BY id`,
+		sessionID,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	callMap := make(map[int64]*RTICall)
+	for _, c := range calls {
+		callMap[c.ID] = c
+	}
+
+	for rows.Next() {
+		var callID int64
+		var p RTIParam
+		if err := rows.Scan(&callID, &p.Name, &p.Type, &p.Value); err != nil {
+			return err
+		}
+		if c, ok := callMap[callID]; ok {
+			c.Params = append(c.Params, p)
+		}
+	}
+	return rows.Err()
+}
+
+// loadAllCheckpoints загружает чекпоинты для всех вызовов сессии одним запросом.
+func loadAllCheckpoints(db *store.DB, sessionID int64, calls []*RTICall) error {
+	rows, err := db.Query(
+		`SELECT call_id, label, timestamp, elapsed_ms, line_no
+		 FROM rti_checkpoints
+		 WHERE call_id IN (SELECT id FROM rti_calls WHERE session_id = $1)
+		 ORDER BY id`,
+		sessionID,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	callMap := make(map[int64]*RTICall)
+	for _, c := range calls {
+		callMap[c.ID] = c
+	}
+
+	for rows.Next() {
+		var callID int64
+		var cp RTICheckpoint
+		var ts sql.NullTime
+		if err := rows.Scan(&callID, &cp.Label, &ts, &cp.ElapsedMs, &cp.LineNo); err != nil {
+			return err
+		}
+		if ts.Valid {
+			cp.Timestamp = ts.Time
+		}
+		if c, ok := callMap[callID]; ok {
+			c.Checkpoints = append(c.Checkpoints, cp)
+		}
+	}
+	return rows.Err()
 }

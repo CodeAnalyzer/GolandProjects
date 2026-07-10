@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 
 	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/querysvc"
@@ -627,7 +628,15 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if tree == nil {
 					return nil, fmt.Errorf("procedure %q not found in RTI log", procName)
 				}
-				return tree, nil
+				var enrichMap map[string]*rti.ProcedureEnrichment
+				if db != nil {
+					q := query.New(db)
+					enrichMap = rti.EnrichCalls(q, result.Calls)
+				}
+				return map[string]interface{}{
+					"tree":       tree,
+					"enrichment": enrichMap,
+				}, nil
 			},
 		},
 		"codebase_rti_errors": {
@@ -640,7 +649,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				type callSlim struct {
 					*rti.RTICall
 					BLogTables interface{} `json:"blog_tables,omitempty"`
-					BLogBlocks  interface{} `json:"blog_blocks,omitempty"`
+					BLogBlocks interface{} `json:"blog_blocks,omitempty"`
 				}
 				var serverErrors []callSlim
 				for _, c := range result.Calls {
@@ -654,14 +663,34 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 						clientErrors = append(clientErrors, ev)
 					}
 				}
+				var serverEnrich map[string]*rti.ProcedureEnrichment
 				var clientEnrich map[string]*rti.ClientEnrichment
-				if db != nil && len(clientErrors) > 0 {
+				if db != nil && (len(serverErrors) > 0 || len(clientErrors) > 0) {
 					q := query.New(db)
-					clientEnrich = rti.EnrichClientEvents(q, clientErrors)
+					if len(serverErrors) > 0 {
+						errorCalls := make([]*rti.RTICall, 0, len(serverErrors))
+						for _, s := range serverErrors {
+							errorCalls = append(errorCalls, s.RTICall)
+						}
+						serverEnrich = rti.EnrichCalls(q, errorCalls)
+						for _, s := range serverErrors {
+							if s.RetVal != nil {
+								retCode, err := q.LookupRetCode(int64(*s.RetVal))
+								if err == nil && retCode != nil {
+									s.RetValMeaning = retCode.Message
+									s.ErrorConstant = retCode.ProcName
+								}
+							}
+						}
+					}
+					if len(clientErrors) > 0 {
+						clientEnrich = rti.EnrichClientEvents(q, clientErrors)
+					}
 				}
 				return map[string]interface{}{
 					"server_errors":      serverErrors,
 					"server_error_count": len(serverErrors),
+					"server_enrichment":  serverEnrich,
 					"client_errors":      clientErrors,
 					"client_error_count": len(clientErrors),
 					"client_enrichment":  clientEnrich,
@@ -682,7 +711,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				type callSlim struct {
 					*rti.RTICall
 					BLogTables interface{} `json:"blog_tables,omitempty"`
-					BLogBlocks  interface{} `json:"blog_blocks,omitempty"`
+					BLogBlocks interface{} `json:"blog_blocks,omitempty"`
 				}
 				var slow []callSlim
 				for _, c := range result.Calls {
@@ -690,6 +719,9 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 						slow = append(slow, callSlim{RTICall: c})
 					}
 				}
+				sort.Slice(slow, func(i, j int) bool {
+					return slow[i].ElapsedMs > slow[j].ElapsedMs
+				})
 				thresholdSec := float64(threshold) / 1000.0
 				var slowClientSQL []*rti.RTIClientEvent
 				for _, ev := range result.ClientEvents {
@@ -697,14 +729,25 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 						slowClientSQL = append(slowClientSQL, ev)
 					}
 				}
+				var serverEnrich map[string]*rti.ProcedureEnrichment
 				var clientEnrich map[string]*rti.ClientEnrichment
-				if db != nil && len(slowClientSQL) > 0 {
+				if db != nil && (len(slow) > 0 || len(slowClientSQL) > 0) {
 					q := query.New(db)
-					clientEnrich = rti.EnrichClientEvents(q, slowClientSQL)
+					if len(slow) > 0 {
+						slowCalls := make([]*rti.RTICall, 0, len(slow))
+						for _, s := range slow {
+							slowCalls = append(slowCalls, s.RTICall)
+						}
+						serverEnrich = rti.EnrichCalls(q, slowCalls)
+					}
+					if len(slowClientSQL) > 0 {
+						clientEnrich = rti.EnrichClientEvents(q, slowClientSQL)
+					}
 				}
 				return map[string]interface{}{
 					"server_calls":      slow,
 					"server_call_count": len(slow),
+					"server_enrichment": serverEnrich,
 					"client_sql_blocks": slowClientSQL,
 					"client_sql_count":  len(slowClientSQL),
 					"threshold":         threshold,
@@ -1050,12 +1093,16 @@ func loadRTIFromArgs(db *store.DB, args map[string]interface{}) (*rti.RTIParseRe
 			return nil, fmt.Errorf("failed to load client events: %w", err)
 		}
 		summary := rti.RTISummary{
-			FilePath:    session.FilePath,
-			FileSize:    session.FileSize,
-			TotalCalls:  session.TotalCalls,
-			ErrorsCount: session.ErrorsCount,
+			FilePath:      session.FilePath,
+			FileSize:      session.FileSize,
+			TotalCalls:    session.TotalCalls,
+			ErrorsCount:   session.ErrorsCount,
+			MaxNestLevel:  session.MaxNestLevel,
+			UnparsedLines: session.UnparsedLines,
 		}
 		rti.FillClientSummary(&summary, clientEvents)
+		summary.TopSlow = rti.TopSlowCallsFromLoaded(calls, 10)
+		summary.SlowCallsCount = rti.CountSlowCalls(calls, 100)
 		return &rti.RTIParseResult{
 			Calls:        calls,
 			ClientEvents: clientEvents,

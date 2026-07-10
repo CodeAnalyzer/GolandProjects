@@ -337,11 +337,13 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 		// Elapsed
 		if m := reElapsed.FindStringSubmatch(line); m != nil {
 			ms, _ := strconv.Atoi(m[1])
-			stack := stacks[currentSPID]
-			if len(stack) > 0 {
-				stack[len(stack)-1].call.ElapsedMs = ms
-			} else if lastExited != nil {
+			if lastExited != nil {
 				lastExited.ElapsedMs = ms
+			} else {
+				stack := stacks[currentSPID]
+				if len(stack) > 0 {
+					stack[len(stack)-1].call.ElapsedMs = ms
+				}
 			}
 			continue
 		}
@@ -349,16 +351,21 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 		// Return
 		if m := reReturn.FindStringSubmatch(line); m != nil {
 			val, _ := strconv.Atoi(m[1])
-			stack := stacks[currentSPID]
-			if len(stack) > 0 {
-				top := stack[len(stack)-1]
-				if top.call.RetVal == nil {
+			if lastExited != nil {
+				if lastExited.RetVal == nil {
 					v := val
-					top.call.RetVal = &v
+					lastExited.RetVal = &v
 				}
-			} else if lastExited != nil && lastExited.RetVal == nil {
-				v := val
-				lastExited.RetVal = &v
+				lastExited = nil
+			} else {
+				stack := stacks[currentSPID]
+				if len(stack) > 0 {
+					top := stack[len(stack)-1]
+					if top.call.RetVal == nil {
+						v := val
+						top.call.RetVal = &v
+					}
+				}
 			}
 			continue
 		}
@@ -465,6 +472,7 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 	result.Summary.UnparsedLines = result.UnparsedLines
 	result.Summary.ErrorsCount = countErrors(allCalls)
 	result.Summary.MaxNestLevel = maxNestLevel(allCalls)
+	result.Summary.SlowCallsCount = countSlowCalls(allCalls, 100)
 	result.Summary.TopSlow = topSlowCalls(allCalls, 10)
 	FillClientSummary(&result.Summary, allClientEvents)
 
@@ -489,6 +497,24 @@ func maxNestLevel(calls []*RTICall) int {
 		}
 	}
 	return max
+}
+
+func countSlowCalls(calls []*RTICall, thresholdMs int) int {
+	count := 0
+	for _, c := range calls {
+		if c.ElapsedMs >= thresholdMs {
+			count++
+		}
+	}
+	return count
+}
+
+func TopSlowCallsFromLoaded(calls []*RTICall, n int) []RTICall {
+	return topSlowCalls(calls, n)
+}
+
+func CountSlowCalls(calls []*RTICall, thresholdMs int) int {
+	return countSlowCalls(calls, thresholdMs)
 }
 
 func topSlowCalls(calls []*RTICall, n int) []RTICall {
