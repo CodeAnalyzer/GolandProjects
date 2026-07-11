@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/querysvc"
@@ -882,41 +884,209 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_rti_client_tree": {
-			Definition: toolDefinition{Name: "codebase_rti_client_tree", Description: "Build and return a tree of client-side (thick client d5nt) events from an RTI session, grouped by PID. Each event includes kind (sql_block, recordset_open, connection, bpl_list, error, memory, generic), timestamp, class/method, and enrichment data (PAS source file, DFM form, SQL query fragment origin) from CodeBase index.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "pid": intProp("Filter by client PID (0 = all)")})},
+			Definition: toolDefinition{Name: "codebase_rti_client_tree", Description: "Build and return a tree of client-side (thick client d5nt) events from an RTI session, grouped by PID. Each event includes kind (sql_block, recordset_open, connection, bpl_list, error, memory, generic), timestamp, class/method, and enrichment data (PAS source file, DFM form, SQL query fragment origin) from CodeBase index. Supports optional filters: time_from/time_to (RFC3339), pid, class_name, method_name (case-insensitive), and format=short to omit heavy fields (BPL, Connection, SQL, Memory, ErrorText, RawBody).", InputSchema: objectSchema(map[string]interface{}{
+				"session_id":  intProp("Saved session ID"),
+				"file_path":   stringProp("Or: path to .rti file"),
+				"pid":         intProp("Filter by client PID (0 = all)"),
+				"time_from":   stringProp("Optional RFC3339 lower bound (e.g. 2026-02-20T12:40:00+03:00)"),
+				"time_to":     stringProp("Optional RFC3339 upper bound"),
+				"class_name":  stringProp("Optional client event class name filter (case-insensitive)"),
+				"method_name": stringProp("Optional client event method name filter (case-insensitive)"),
+				"format":      stringProp("Output format: full (default) or short. Short omits BPL, Connection, SQL, Memory, ErrorText, RawBody."),
+			})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				result, err := loadRTIFromArgs(db, args)
 				if err != nil {
 					return nil, err
 				}
-				pid, _ := optionalInt(args, "pid")
-				nodes := rti.BuildClientTree(result.ClientEvents, pid)
-				var clientEnrich map[string]*rti.ClientEnrichment
-				if db != nil && len(result.ClientEvents) > 0 {
-					q := query.New(db)
-					clientEnrich = rti.EnrichClientEvents(q, result.ClientEvents)
+
+				// Build filter from optional args
+				var filter rti.TimelineFilter
+
+				className, err := optionalString(args, "class_name")
+				if err != nil {
+					return nil, err
 				}
+				filter.ClassName = className
+
+				methodName, err := optionalString(args, "method_name")
+				if err != nil {
+					return nil, err
+				}
+				filter.MethodName = methodName
+
+				formatVal, err := optionalString(args, "format")
+				if err != nil {
+					return nil, err
+				}
+				filter.Format = formatVal
+
+				if v, err := optionalString(args, "time_from"); err != nil {
+					return nil, err
+				} else if v != "" {
+					t, perr := time.Parse(time.RFC3339, v)
+					if perr != nil {
+						return nil, fmt.Errorf("invalid time_from (expected RFC3339): %w", perr)
+					}
+					filter.TimeFrom = &t
+				}
+
+				if v, err := optionalString(args, "time_to"); err != nil {
+					return nil, err
+				} else if v != "" {
+					t, perr := time.Parse(time.RFC3339, v)
+					if perr != nil {
+						return nil, fmt.Errorf("invalid time_to (expected RFC3339): %w", perr)
+					}
+					filter.TimeTo = &t
+				}
+
+				pidVal, err := optionalInt(args, "pid")
+				if err != nil {
+					return nil, err
+				}
+				if pidVal > 0 {
+					filter.PID = &pidVal
+				}
+
+				// Filter events BEFORE building tree (saves enrichment queries)
+				filteredEvents := rti.FilterClientEvents(result.ClientEvents, filter)
+
+				// Build tree from filtered events; pid=0 because PID filter
+				// was already applied by FilterClientEvents
+				nodes := rti.BuildClientTree(filteredEvents, 0)
+
+				// Enrich only filtered events
+				var clientEnrich map[string]*rti.ClientEnrichment
+				if db != nil && len(filteredEvents) > 0 {
+					q := query.New(db)
+					clientEnrich = rti.EnrichClientEvents(q, filteredEvents)
+				}
+
+				// Convert to short format if requested
+				var respNodes interface{} = nodes
+				if strings.EqualFold(filter.Format, "short") {
+					shortNodes := make([]rti.RTIClientTreeNodeShort, 0, len(nodes))
+					for _, n := range nodes {
+						shortNodes = append(shortNodes, rti.ToShortClientTreeNode(n))
+					}
+					respNodes = shortNodes
+				}
+
 				return map[string]interface{}{
-					"nodes":      nodes,
-					"enrichment": clientEnrich,
+					"nodes":                 respNodes,
+					"enrichment":            clientEnrich,
+					"total_events_count":    len(result.ClientEvents),
+					"filtered_events_count": len(filteredEvents),
 				}, nil
 			},
 		},
 		"codebase_rti_timeline": {
-			Definition: toolDefinition{Name: "codebase_rti_timeline", Description: "Get a unified chronological timeline of server calls and client events from an RTI session. Entries are sorted by timestamp and tagged [server] or [client]. Client events include enrichment data (source file locations) from CodeBase index. Useful for correlating client-side SQL execution with server-side procedure calls.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file")})},
+			Definition: toolDefinition{Name: "codebase_rti_timeline", Description: "Get a unified chronological timeline of server calls and client events from an RTI session. Entries are sorted by timestamp and tagged [server] or [client]. Client events include enrichment data (source file locations) from CodeBase index. Useful for correlating client-side SQL execution with server-side procedure calls. Supports optional filters: time_from/time_to (RFC3339), pid, procedure (case-insensitive exact match), class_name, method_name, and format=short to omit heavy fields (params, checkpoints, blog_*, SQL text).", InputSchema: objectSchema(map[string]interface{}{
+				"session_id":  intProp("Saved session ID"),
+				"file_path":   stringProp("Or: path to .rti file"),
+				"time_from":   stringProp("Optional RFC3339 lower bound (e.g. 2026-02-20T12:40:00+03:00)"),
+				"time_to":     stringProp("Optional RFC3339 upper bound"),
+				"pid":         intProp("Optional client PID filter"),
+				"procedure":   stringProp("Optional server procedure name filter (case-insensitive exact match)"),
+				"class_name":  stringProp("Optional client event class name filter (case-insensitive)"),
+				"method_name": stringProp("Optional client event method name filter (case-insensitive)"),
+				"format":      stringProp("Output format: full (default) or short. Short omits params, checkpoints, blog_*, SQL text."),
+			})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				result, err := loadRTIFromArgs(db, args)
 				if err != nil {
 					return nil, err
 				}
-				var clientEnrich map[string]*rti.ClientEnrichment
-				if db != nil && len(result.ClientEvents) > 0 {
-					q := query.New(db)
-					clientEnrich = rti.EnrichClientEvents(q, result.ClientEvents)
+
+				// Build filter from optional args
+				var filter rti.TimelineFilter
+				procName, err := optionalString(args, "procedure")
+				if err != nil {
+					return nil, err
 				}
+				filter.Procedure = procName
+
+				className, err := optionalString(args, "class_name")
+				if err != nil {
+					return nil, err
+				}
+				filter.ClassName = className
+
+				methodName, err := optionalString(args, "method_name")
+				if err != nil {
+					return nil, err
+				}
+				filter.MethodName = methodName
+
+				formatVal, err := optionalString(args, "format")
+				if err != nil {
+					return nil, err
+				}
+				filter.Format = formatVal
+
+				if v, err := optionalString(args, "time_from"); err != nil {
+					return nil, err
+				} else if v != "" {
+					t, perr := time.Parse(time.RFC3339, v)
+					if perr != nil {
+						return nil, fmt.Errorf("invalid time_from (expected RFC3339): %w", perr)
+					}
+					filter.TimeFrom = &t
+				}
+
+				if v, err := optionalString(args, "time_to"); err != nil {
+					return nil, err
+				} else if v != "" {
+					t, perr := time.Parse(time.RFC3339, v)
+					if perr != nil {
+						return nil, fmt.Errorf("invalid time_to (expected RFC3339): %w", perr)
+					}
+					filter.TimeTo = &t
+				}
+
+				pidVal, err := optionalInt(args, "pid")
+				if err != nil {
+					return nil, err
+				}
+				if pidVal > 0 {
+					filter.PID = &pidVal
+				}
+
+				// Apply filters
+				filteredCalls, filteredEvents := rti.ApplyTimelineFilter(result.Calls, result.ClientEvents, filter)
+
+				// Enrich client events AFTER filtering (saves DB queries)
+				var clientEnrich map[string]*rti.ClientEnrichment
+				if db != nil && len(filteredEvents) > 0 {
+					q := query.New(db)
+					clientEnrich = rti.EnrichClientEvents(q, filteredEvents)
+				}
+
+				// Build response
+				var respCalls interface{} = filteredCalls
+				var respEvents interface{} = filteredEvents
+				if strings.EqualFold(filter.Format, "short") {
+					shortCalls := make([]rti.RTICallShort, 0, len(filteredCalls))
+					for _, c := range filteredCalls {
+						shortCalls = append(shortCalls, rti.ToShortCall(c))
+					}
+					shortEvents := make([]rti.RTIClientEventShort, 0, len(filteredEvents))
+					for _, e := range filteredEvents {
+						shortEvents = append(shortEvents, rti.ToShortEvent(e))
+					}
+					respCalls = shortCalls
+					respEvents = shortEvents
+				}
+
 				return map[string]interface{}{
-					"calls":         result.Calls,
-					"client_events": result.ClientEvents,
-					"enrichment":    clientEnrich,
+					"calls":                 respCalls,
+					"client_events":         respEvents,
+					"enrichment":            clientEnrich,
+					"total_calls_count":     len(result.Calls),
+					"filtered_calls_count":  len(filteredCalls),
+					"total_events_count":    len(result.ClientEvents),
+					"filtered_events_count": len(filteredEvents),
 				}, nil
 			},
 		},
