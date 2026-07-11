@@ -47,7 +47,7 @@
   - Поиск API contracts (контрактов API), API tables (таблиц API), API table indexes (индексов API-таблиц), API params (параметров API), implementations (реализаций), publishers (публикаторов событий), consumers (потребителей контрактов)
   - Unified `query symbol` для SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects и XML/API symbols
 - **Review (проверка SQL перед деплоем)**: статический анализ SQL-файлов с детекцией deploy stoppers (использование внешних таблиц/процедур, небезопасные конструкции IF/EXISTS, отсутствие required hints, и т.д.)
-- **RTI-анализатор** (`codebase rti`): парсинг и анализ RTI-трейс логов Diasoft 5NT; извлечение вызовов процедур, параметров, контрольных точек, кодов ошибок, бизнес-лог блоков (`M_BUSINESSLOG_BLOCK_BEGIN/END`), checkpoint-временных меток, дампов таблиц (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`); сохранение в БД для повторного анализа
+- **RTI-анализатор** (`codebase rti`): парсинг и анализ RTI-трейс логов Diasoft 5NT; извлечение вызовов процедур, параметров, контрольных точек, кодов ошибок, бизнес-лог блоков (`M_BUSINESSLOG_BLOCK_BEGIN/END`), checkpoint-временных меток, дампов таблиц (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`), клиентских событий (thick client d5nt: SQL blocks, recordset open, connection, BPL load, errors, memory); enrichment из индекса (PAS-файлы, DFM-формы, SQL-фрагменты); сохранение в БД для повторного анализа
 - **Кодировки**: CP866/WIN1251/UTF8 с эвристическим выбором для legacy-форматов, включая TPR и препроцессированные `.t01`
 
 ## Требования
@@ -482,7 +482,7 @@ codebase rti summary --json
 
 # Дерево вызовов
 codebase rti tree path/to/file.rti
-codebase rti tree --session 42 --proc MyProc --max-depth 3
+codebase rti tree --session 42 --proc MyProc --depth 3
 
 # Ошибочные вызовы (ret_val ≠ 0)
 codebase rti errors path/to/file.rti
@@ -490,7 +490,7 @@ codebase rti errors --session 42 --json
 
 # Медленные вызовы
 codebase rti slow path/to/file.rti
-codebase rti slow --session 42 --threshold 500
+codebase rti slow --session 42 --slow-ms 500
 
 # Детали конкретной процедуры (параметры, checkpoints, enrichment)
 codebase rti details path/to/file.rti --proc MyProc
@@ -499,6 +499,14 @@ codebase rti details --session 42 --proc MyProc --json
 # Бизнес-лог процедуры: блоки, checkpoints с timestamp, дампы таблиц
 codebase rti blog path/to/file.rti --proc FCD_CORE_MassAccrual_Start
 codebase rti blog --session 42 --proc FCD_CORE_MassAccrual_Start --json
+
+# Дерево клиентских событий (thick client d5nt) по PID
+codebase rti client-tree path/to/file.rti
+codebase rti client-tree --session 42 --pid 1234 --json
+
+# Единый хронологический timeline серверных и клиентских событий
+codebase rti timeline path/to/file.rti
+codebase rti timeline --session 42 --json
 
 # Список сохранённых сессий
 codebase rti list
@@ -513,10 +521,12 @@ codebase rti prune --keep-last 5
 - **`parse`** — распарсить `.rti` файл и сохранить результат в БД; выводит сводку + session ID
 - **`summary`** — общая сводка: total_calls, errors_count, max_nest_level, top_slow
 - **`tree`** — дерево вызовов с временами и кодами возврата
-- **`errors`** — вызовы с ненулевым ret_val + расшифровка кода из `ds_return_codes`
-- **`slow`** — вызовы медленнее порога (по умолчанию 100 мс)
+- **`errors`** — вызовы с ненулевым ret_val + расшифровка кода из `ds_return_codes`; также клиентские ошибки (kind=error)
+- **`slow`** — вызовы медленнее порога (по умолчанию 100 мс); также медленные client SQL blocks
 - **`details`** — параметры, checkpoints, enrichment (путь к файлу и строки из индекса) для конкретной процедуры
 - **`blog`** — бизнес-лог процедуры: блоки с Enter/Exit и elapsed_ms, контрольные точки с timestamp, дампы таблиц с заголовками и строками
+- **`client-tree`** — дерево клиентских событий (thick client d5nt), сгруппированных по PID; enrichment из индекса (PAS-методы, DFM-формы, SQL-фрагменты)
+- **`timeline`** — единый хронологический timeline серверных вызовов и клиентских событий; enrichment клиентских событий из индекса
 - **`list`** — список сохранённых сессий
 - **`delete`** — удалить сессию (CASCADE удаляет все связанные записи)
 - **`prune`** — удалить старые сессии, оставить последние N
@@ -525,6 +535,13 @@ codebase rti prune --keep-last 5
 - `--session` — загрузить данные из сохранённой сессии вместо файла
 - `--proc` — имя процедуры (для `details`, `blog`, `tree`)
 - `--json` — вывод в JSON
+
+Командно-специфичные флаги:
+- `--depth N` — максимальная глубина дерева (для `tree`, 0 = без лимита)
+- `--slow-ms N` — порог медленности в миллисекундах (для `slow`, по умолчанию 100)
+- `--pid N` — фильтр по клиентскому PID (для `client-tree`, 0 = все)
+- `--keep-last N` — сколько последних сессий оставить (для `prune`)
+- `--limit N` — максимум сессий в списке (для `list`, по умолчанию 20)
 
 ### Review (проверка SQL перед деплоем)
 
@@ -655,6 +672,8 @@ codebase mcp
 | `codebase_rti_slow` | Медленные вызовы | `session_id` или `file_path` |
 | `codebase_rti_details` | Детали процедуры с enrichment из индекса | `session_id` или `file_path`, `procedure` |
 | `codebase_rti_blog` | Бизнес-лог процедуры: блоки/checkpoints/таблицы | `session_id` или `file_path`, `procedure` |
+| `codebase_rti_client_tree` | Дерево клиентских событий по PID | `session_id` или `file_path`, опц. `pid` |
+| `codebase_rti_timeline` | Единый timeline серверных и клиентских событий | `session_id` или `file_path`, опц. `time_from`/`time_to` |
 | `codebase_rti_delete` | Удалить сессию | `session_id` |
 | `codebase_rti_prune` | Удалить старые сессии, оставить N | `keep_last` |
 
@@ -729,7 +748,7 @@ CodeBase/
 │   ├── query_execution.go         # Выполнение query и форматирование вывода
 │   ├── query_api.go               # API query-команды
 │   ├── review.go                  # Review команда (проверка SQL перед деплоем)
-│   ├── rti.go                     # RTI-анализатор: parse/summary/tree/errors/slow/details/blog/list/delete/prune
+│   ├── rti.go                     # RTI-анализатор: parse/summary/tree/errors/slow/details/blog/client-tree/timeline/list/delete/prune
 │   ├── stats.go                   # Команда stats
 │   ├── health.go                  # Команда health
 │   └── mcp.go                     # Команда запуска MCP сервера
@@ -769,13 +788,16 @@ CodeBase/
 │   │   ├── runner.go              # Review runner и execution pipeline
 │   │   └── runner_test.go         # Тесты для review rules
 │   ├── rti/                       # RTI-анализатор
-│   │   ├── model.go               # RTICall, RTIParam, RTICheckpoint, RTIBLogBlock, RTIBLogTable, RTISummary
-│   │   ├── parser.go              # ParseFile, parseContent (regex state machine, CP866/UTF8)
-│   │   ├── parser_test.go         # Тесты парсера
+│   │   ├── model.go               # RTICall, RTIParam, RTICheckpoint, RTIBLogBlock, RTIBLogTable, RTISummary, RTIClientEvent
+│   │   ├── parser.go              # ParseFile, parseContent (regex state machine, CP866/UTF8) — серверные вызовы
+│   │   ├── parser_client.go       # Парсинг клиентских событий (thick client d5nt)
 │   │   ├── tree.go                # BuildTree, FormatTree, RTITreeNode
+│   │   ├── timeline.go            # FormatUnifiedTimeline, FormatUnifiedTimelineEnriched
 │   │   ├── symbols.go             # moduleIDMap (94 записи), ModuleNameByID
-│   │   ├── enrich.go              # ProcedureLookup, EnrichCalls (enrichment из индекса)
-│   │   └── store.go               # SaveSession, LoadCalls, LoadBLogBlocks, LoadBLogTables, ListSessions, ...
+│   │   ├── enrich.go              # ProcedureLookup, EnrichCalls (enrichment серверных вызовов из индекса)
+│   │   ├── enrich_client.go       # EnrichClientEvents (enrichment клиентских событий: PAS, DFM, SQL-фрагменты)
+│   │   ├── link.go                # Связывание клиентских событий с серверными вызовами
+│   │   └── store.go               # SaveSession, LoadCalls, LoadClientEvents, ListSessions, ...
 │   ├── mcp/                       # MCP stdio JSON-RPC transport, tools registry, handlers, пагинация
 │   └── store/
 │       ├── db.go                  # Основной persistence layer и batch insert helpers
@@ -828,6 +850,7 @@ CodeBase/
 - `rti_checkpoints` — контрольные точки (`M_BUSINESSLOG_CHECKPOINT`) с timestamp
 - `rti_blog_blocks` — бизнес-лог блоки (`M_BUSINESSLOG_BLOCK_BEGIN/END`) с Enter/Exit временами и elapsed_ms
 - `rti_blog_tables` — дампы таблиц из бизнес-лога (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`) с заголовками и строками
+- `rti_client_events` — клиентские события (thick client d5nt): SQL blocks, recordset open, connection, BPL load, errors, memory; с enrichment-ссылкой на серверный вызов (`server_call_id`)
 - `ds_return_codes` — справочник кодов возврата процедур
 - `relations` - Связи между сущностями
 - `query_fragments` - SQL-фрагменты в коде, включая отдельные SQL statements из `.sql` и препроцессированных `.t01` procedures/scripts, пригодные для текстового поиска
@@ -914,6 +937,7 @@ CodeBase/
 - [x] Query mode (режим query) для `table-schema` и `table-index` обычных SQL-таблиц
 - [x] RTI-анализатор: парсинг трейс-логов, сохранение в БД, CLI и MCP tools
 - [x] RTI бизнес-лог: блоки `M_BUSINESSLOG_BLOCK_BEGIN/END`, checkpoint timestamps, дампы `M_LOG_TABLE`
+- [x] RTI клиентские события: парсинг thick client d5nt (SQL blocks, recordset open, connection, BPL, errors, memory), enrichment из индекса, client-tree и timeline
 
 ## Лицензия
 

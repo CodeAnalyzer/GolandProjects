@@ -213,7 +213,11 @@ func (r *Runner) checkDatatypeSelectAssign(parsed *sqlparser.ParseResult, file *
 					sourceTypes = []string{argType}
 				}
 			}
+			exprTrimmed := strings.TrimSpace(assignment.Expression)
 			for _, sourceType := range sourceTypes {
+				if reNumericLiteral.MatchString(exprTrimmed) && literalFitsType(exprTrimmed, targetType) {
+					continue
+				}
 				if !isPotentialPrecisionLoss(sourceType, targetType) {
 					continue
 				}

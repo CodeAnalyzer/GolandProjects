@@ -137,7 +137,8 @@ var nullParamDefaultRe = regexp.MustCompile(`(?i)@\w+\s+\w+(?:\s*\([^)]*\))?\s*=
 
 // nullSelectAssignRe соответствует строкам присвоения в SELECT: @Var = null  или  @Var = null,
 // (без объявления типа — это continuation-строка многострочного SELECT @var = ...)
-var nullSelectAssignRe = regexp.MustCompile(`(?i)^\s*@\w+\s*=\s*null\s*,?\s*$`)
+// Также матчит "select @Var = null" — однострочный SELECT-assignment.
+var nullSelectAssignRe = regexp.MustCompile(`(?i)^\s*(?:select\s+)?@\w+\s*=\s*null\s*,?\s*$`)
 
 // nullComparisonInRe ищет IN (..., NULL, ...) или IN (NULL)
 var nullComparisonInRe = regexp.MustCompile(`(?i)\bin\s*\([^)]*\bnull\b[^)]*\)`)
