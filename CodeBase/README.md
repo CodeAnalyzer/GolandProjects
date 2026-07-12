@@ -48,6 +48,7 @@
   - Unified `query symbol` для SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects и XML/API symbols
 - **Review (проверка SQL перед деплоем)**: статический анализ SQL-файлов с детекцией deploy stoppers (использование внешних таблиц/процедур, небезопасные конструкции IF/EXISTS, отсутствие required hints, и т.д.)
 - **RTI-анализатор** (`codebase rti`): парсинг и анализ RTI-трейс логов Diasoft 5NT; извлечение вызовов процедур, параметров, контрольных точек, кодов ошибок, бизнес-лог блоков (`M_BUSINESSLOG_BLOCK_BEGIN/END`), checkpoint-временных меток, дампов таблиц (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`), клиентских событий (thick client d5nt: SQL blocks, recordset open, connection, BPL load, errors, memory); enrichment из индекса (PAS-файлы, DFM-формы, SQL-фрагменты); сохранение в БД для повторного анализа
+- **TRC-анализатор** (`codebase trc`): парсинг и анализ бинарных `.trc` файлов SQL Server Profiler; декодирование событий (RPC:Completed, SQL:BatchCompleted, SP:StmtCompleted и др.), извлечение вызовов процедур и параметров из TextData, агрегация по процедурам (count/min/max/avg/total duration), дерево вызовов по SPID с восстановлением вложенности через Starting/Completed пары, enrichment из индекса (путь к файлу и строки); сохранение в БД для повторного анализа
 - **Кодировки**: CP866/WIN1251/UTF8 с эвристическим выбором для legacy-форматов, включая TPR и препроцессированные `.t01`
 
 ## Требования
@@ -543,6 +544,71 @@ codebase rti prune --keep-last 5
 - `--keep-last N` — сколько последних сессий оставить (для `prune`)
 - `--limit N` — максимум сессий в списке (для `list`, по умолчанию 20)
 
+### TRC-анализатор
+
+Анализ бинарных `.trc` файлов SQL Server Profiler:
+
+```bash
+# Парсинг файла и сохранение в БД
+codebase trc parse path/to/file.trc
+
+# Сводка по трейсу
+codebase trc summary path/to/file.trc
+codebase trc summary --session 42
+
+# Список декодированных событий (с фильтрами)
+codebase trc events path/to/file.trc
+codebase trc events --session 42 --spid 55 --proc MyProc
+
+# Агрегация событий по процедурам (count/min/max/avg/total duration)
+codebase trc procedures path/to/file.trc
+codebase trc procedures --session 42 --json
+
+# Дерево вызовов, сгруппированное по SPID
+codebase trc tree path/to/file.trc
+codebase trc tree --session 42 --spid 55 --max-depth 3 --limit 50
+
+# События с ошибками (Error(31) ≠ 0)
+codebase trc errors path/to/file.trc
+codebase trc errors --session 42 --json
+
+# Медленные события (порог в миллисекундах)
+codebase trc slow path/to/file.trc
+codebase trc slow --session 42 --slow-ms 500
+
+# Список сохранённых сессий
+codebase trc list
+codebase trc list --limit 10
+
+# Управление сессиями
+codebase trc delete --session 42
+codebase trc prune --keep-last 5
+```
+
+Подкоманды:
+- **`parse`** — распарсить `.trc` файл и сохранить результат в БД; выводит сводку + session ID
+- **`summary`** — общая сводка: total_events, метаданные провайдера/сервера/версии
+- **`events`** — список декодированных событий с опциональной фильтрацией по SPID и процедуре
+- **`procedures`** — агрегация событий по имени процедуры (извлечённому из exec-statements в TextData): count, min/max/avg/total duration; enrichment из индекса (путь к файлу)
+- **`tree`** — дерево вызовов, сгруппированное по SPID, с восстановлением вложенности через Starting/Completed пары (RPC, SQL:Batch, SQL:Stmt, SP, SP:Stmt)
+- **`errors`** — события с ненулевой колонкой Error(31)
+- **`slow`** — события медленнее порога (по умолчанию 100 мс), отсортированные по убыванию длительности
+- **`list`** — список сохранённых сессий
+- **`delete`** — удалить сессию (CASCADE удаляет все связанные события)
+- **`prune`** — удалить старые сессии, оставить последние N
+
+Общие флаги для большинства подкоманд:
+- `--session` — загрузить данные из сохранённой сессии вместо файла
+- `--json` — вывод в JSON
+
+Командно-специфичные флаги:
+- `--spid N` — фильтр по SPID (для `events`, `tree`, 0 = все)
+- `--proc NAME` — фильтр по имени процедуры (для `events`, exact match)
+- `--slow-ms N` — порог медленности в миллисекундах (для `slow`, по умолчанию 100)
+- `--max-depth N` — максимальная глубина дерева (для `tree`, 0 = без лимита)
+- `--limit N` — максимум root nodes и children per node (для `tree`, 0 = без лимита)
+- `--keep-last N` — сколько последних сессий оставить (для `prune`)
+
 ### Review (проверка SQL перед деплоем)
 
 Статический анализ SQL-файлов для выявления проблем перед деплоем:
@@ -698,6 +764,21 @@ codebase mcp
 }
 ```
 
+**TRC tools:**
+
+| Tool | Описание | Обязательные параметры |
+|------|----------|------------------------|
+| `codebase_trc_parse` | Парсинг `.trc` файла и сохранение в БД | `file_path` |
+| `codebase_trc_list` | Список сохранённых сессий | — |
+| `codebase_trc_summary` | Сводка сессии: total_events, метаданные | `session_id` или `file_path` |
+| `codebase_trc_events` | Декодированные события с фильтрами | `session_id` или `file_path`, опц. `spid`/`procedure`/`limit` |
+| `codebase_trc_procedures` | Агрегация по процедурам с enrichment | `session_id` или `file_path` |
+| `codebase_trc_tree` | Дерево вызовов по SPID | `session_id` или `file_path`, опц. `spid`/`max_depth`/`limit` |
+| `codebase_trc_errors` | События с ненулевой Error(31) | `session_id` или `file_path` |
+| `codebase_trc_slow` | Медленные события (порог DurationMs) | `session_id` или `file_path`, опц. `threshold_ms` |
+| `codebase_trc_delete` | Удалить сессию | `session_id` |
+| `codebase_trc_prune` | Удалить старые сессии, оставить N | `keep_last` |
+
 Контракт формата:
 
 - **MCP**: tools возвращают чистые доменные данные (например `{ "count": N, "items": [...] }`)
@@ -749,6 +830,7 @@ CodeBase/
 │   ├── query_api.go               # API query-команды
 │   ├── review.go                  # Review команда (проверка SQL перед деплоем)
 │   ├── rti.go                     # RTI-анализатор: parse/summary/tree/errors/slow/details/blog/client-tree/timeline/list/delete/prune
+│   ├── trc.go                     # TRC-анализатор: parse/summary/events/procedures/tree/errors/slow/list/delete/prune
 │   ├── stats.go                   # Команда stats
 │   ├── health.go                  # Команда health
 │   └── mcp.go                     # Команда запуска MCP сервера
@@ -798,6 +880,16 @@ CodeBase/
 │   │   ├── enrich_client.go       # EnrichClientEvents (enrichment клиентских событий: PAS, DFM, SQL-фрагменты)
 │   │   ├── link.go                # Связывание клиентских событий с серверными вызовами
 │   │   └── store.go               # SaveSession, LoadCalls, LoadClientEvents, ListSessions, ...
+│   ├── trc/                       # TRC-анализатор (бинарные .trc файлы SQL Server Profiler)
+│   │   ├── model.go               # TraceHeader, TRCEvent, TRCParam, TRCSession, SystemTime
+│   │   ├── parser.go              # ParseFile — декодирование бинарного формата .trc
+│   │   ├── header.go              # Разбор заголовка: OrderedColumns, TracedEvents, EventsOffset
+│   │   ├── extract.go             # Извлечение procedure/params из TextData (regex-эвристика)
+│   │   ├── aggregate.go           # AggregateByProcedure (count/min/max/avg/total duration)
+│   │   ├── tree.go                # BuildTreesWithDepth, FormatTrees — дерево вызовов по SPID
+│   │   ├── enrich.go              # EnrichEvents, EnrichAggregates — enrichment из индекса
+│   │   ├── format.go              # FormatTrees — текстовое форматирование дерева
+│   │   └── store.go               # SaveSession, LoadEvents, ListSessions, DeleteSession, PruneSessions
 │   ├── mcp/                       # MCP stdio JSON-RPC transport, tools registry, handlers, пагинация
 │   └── store/
 │       ├── db.go                  # Основной persistence layer и batch insert helpers
@@ -851,6 +943,8 @@ CodeBase/
 - `rti_blog_blocks` — бизнес-лог блоки (`M_BUSINESSLOG_BLOCK_BEGIN/END`) с Enter/Exit временами и elapsed_ms
 - `rti_blog_tables` — дампы таблиц из бизнес-лога (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`) с заголовками и строками
 - `rti_client_events` — клиентские события (thick client d5nt): SQL blocks, recordset open, connection, BPL load, errors, memory; с enrichment-ссылкой на серверный вызов (`server_call_id`)
+- `trc_sessions` — сессии парсинга `.trc` файлов (file_path, file_size, total_events, provider/server/version metadata)
+- `trc_events` — декодированные события из `.trc` (event_class, event_name, text_data, procedure, spid, duration_ms, cpu, reads, writes, error, params JSONB, columns JSONB)
 - `ds_return_codes` — справочник кодов возврата процедур
 - `relations` - Связи между сущностями
 - `query_fragments` - SQL-фрагменты в коде, включая отдельные SQL statements из `.sql` и препроцессированных `.t01` procedures/scripts, пригодные для текстового поиска
@@ -938,6 +1032,7 @@ CodeBase/
 - [x] RTI-анализатор: парсинг трейс-логов, сохранение в БД, CLI и MCP tools
 - [x] RTI бизнес-лог: блоки `M_BUSINESSLOG_BLOCK_BEGIN/END`, checkpoint timestamps, дампы `M_LOG_TABLE`
 - [x] RTI клиентские события: парсинг thick client d5nt (SQL blocks, recordset open, connection, BPL, errors, memory), enrichment из индекса, client-tree и timeline
+- [x] TRC-анализатор: парсинг бинарных `.trc` файлов SQL Server Profiler, декодирование событий, агрегация по процедурам, дерево вызовов по SPID, enrichment из индекса, CLI и MCP tools
 
 ## Лицензия
 

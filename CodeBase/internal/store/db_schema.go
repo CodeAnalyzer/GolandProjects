@@ -498,6 +498,49 @@ func (db *DB) InitSchema() error {
 		// ALTER для существующих БД, созданных до появления client_events_count
 		// (CREATE TABLE IF NOT EXISTS не добавляет колонки в уже существующую таблицу).
 		`ALTER TABLE rti_sessions ADD COLUMN IF NOT EXISTS client_events_count INTEGER NOT NULL DEFAULT 0`,
+		`CREATE TABLE IF NOT EXISTS trc_sessions (
+			id BIGSERIAL PRIMARY KEY,
+			file_path TEXT NOT NULL,
+			file_size BIGINT NOT NULL DEFAULT 0,
+			parsed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			total_events INTEGER NOT NULL DEFAULT 0,
+			provider_name TEXT,
+			server_name TEXT,
+			major_version INTEGER NOT NULL DEFAULT 0,
+			minor_version INTEGER NOT NULL DEFAULT 0,
+			build_number INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE TABLE IF NOT EXISTS trc_events (
+			id             BIGSERIAL PRIMARY KEY,
+			session_id     BIGINT NOT NULL REFERENCES trc_sessions(id) ON DELETE CASCADE,
+			event_class    INTEGER NOT NULL DEFAULT 0,
+			event_name     TEXT,
+			text_data      TEXT,
+			procedure      TEXT,
+			spid           INTEGER,
+			database_id    INTEGER,
+			database_name  TEXT,
+			application_name TEXT,
+			login_name     TEXT,
+			host_name      TEXT,
+			start_time     TIMESTAMPTZ,
+			end_time       TIMESTAMPTZ,
+			duration_ms    BIGINT NOT NULL DEFAULT 0,
+			cpu            BIGINT,
+			reads          BIGINT,
+			writes         BIGINT,
+			row_counts     BIGINT,
+			object_id      BIGINT,
+			object_name    TEXT,
+			event_sequence BIGINT,
+			nest_level     INTEGER,
+			line_number    INTEGER,
+			error          INTEGER,
+			severity       INTEGER,
+			success        INTEGER,
+			params         JSONB,
+			columns        JSONB
+		)`,
 		`CREATE TABLE IF NOT EXISTS rti_client_events (
 			id             BIGSERIAL PRIMARY KEY,
 			session_id     BIGINT NOT NULL REFERENCES rti_sessions(id) ON DELETE CASCADE,
@@ -611,6 +654,12 @@ func (db *DB) InitSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_rti_client_events_session_id ON rti_client_events(session_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_client_events_session_kind ON rti_client_events(session_id, kind)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_client_events_server_call_id ON rti_client_events(server_call_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trc_sessions_parsed_at ON trc_sessions(parsed_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_id ON trc_events(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trc_events_procedure ON trc_events(procedure)`,
+		`CREATE INDEX IF NOT EXISTS idx_trc_events_duration_ms ON trc_events(duration_ms DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_trc_events_spid ON trc_events(spid)`,
+		`CREATE INDEX IF NOT EXISTS idx_trc_events_event_sequence ON trc_events(event_sequence)`,
 	}
 
 	for _, stmt := range statements {

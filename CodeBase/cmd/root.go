@@ -15,7 +15,7 @@ import (
 var (
 	appName        = "CodeBase"
 	version        = "0.8.4"
-	buildNumber    = "1195"
+	buildNumber    = "1202"
 	copyright      = "Copyright (c) 2026"
 	cfgFile        string
 	commandLogger  *log.Logger
@@ -35,6 +35,7 @@ Supported modes:
   query  - point-in-time index queries for symbols, tables, DFM forms/components/captions, SQL fragments, reports, JS, SMF and relations
   stats  - index summary
   rti    - RTI trace log analyzer (parse, summary, tree, errors, slow)
+  trc    - binary .trc (SQL Server Profiler) trace analyzer (parse, summary, events, procedures, tree, slow, errors)
   mcp    - MCP JSON-RPC server over stdio`,
 		Version: version,
 	}
