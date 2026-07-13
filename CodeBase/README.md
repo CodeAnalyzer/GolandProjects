@@ -546,11 +546,12 @@ codebase rti prune --keep-last 5
 
 ### TRC-анализатор
 
-Анализ бинарных `.trc` файлов SQL Server Profiler:
+Анализ файлов SQL Server Profiler: бинарных `.trc` и XML-экспортов (`.xml`). Формат определяется автоматически по сигнатуре содержимого (content sniffing) — указывайте любой путь:
 
 ```bash
-# Парсинг файла и сохранение в БД
+# Парсинг файла и сохранение в БД (поддерживаются .trc и .xml)
 codebase trc parse path/to/file.trc
+codebase trc parse path/to/file.xml
 
 # Сводка по трейсу
 codebase trc summary path/to/file.trc
@@ -585,8 +586,12 @@ codebase trc delete --session 42
 codebase trc prune --keep-last 5
 ```
 
+Поддерживаемые форматы файлов:
+- **Бинарный `.trc`** — собственный формат SQL Server Profiler; декодируется через `ParseHeader` + `ParseEvents`
+- **XML-экспорт `.xml`** — трейс, сохранённый через File → Export в SQL Server Profiler; декодируется через `ParseXML` (с автоматическим определением кодировки UTF-16/UTF-8)
+
 Подкоманды:
-- **`parse`** — распарсить `.trc` файл и сохранить результат в БД; выводит сводку + session ID
+- **`parse`** — распарсить `.trc` или `.xml` файл и сохранить результат в БД; выводит сводку + session ID
 - **`summary`** — общая сводка: total_events, метаданные провайдера/сервера/версии
 - **`events`** — список декодированных событий с опциональной фильтрацией по SPID и процедуре
 - **`procedures`** — агрегация событий по имени процедуры (извлечённому из exec-statements в TextData): count, min/max/avg/total duration; enrichment из индекса (путь к файлу)
@@ -768,7 +773,7 @@ codebase mcp
 
 | Tool | Описание | Обязательные параметры |
 |------|----------|------------------------|
-| `codebase_trc_parse` | Парсинг `.trc` файла и сохранение в БД | `file_path` |
+| `codebase_trc_parse` | Парсинг `.trc` или `.xml` файла и сохранение в БД | `file_path` |
 | `codebase_trc_list` | Список сохранённых сессий | — |
 | `codebase_trc_summary` | Сводка сессии: total_events, метаданные | `session_id` или `file_path` |
 | `codebase_trc_events` | Декодированные события с фильтрами | `session_id` или `file_path`, опц. `spid`/`procedure`/`limit` |
@@ -880,10 +885,11 @@ CodeBase/
 │   │   ├── enrich_client.go       # EnrichClientEvents (enrichment клиентских событий: PAS, DFM, SQL-фрагменты)
 │   │   ├── link.go                # Связывание клиентских событий с серверными вызовами
 │   │   └── store.go               # SaveSession, LoadCalls, LoadClientEvents, ListSessions, ...
-│   ├── trc/                       # TRC-анализатор (бинарные .trc файлы SQL Server Profiler)
-│   │   ├── model.go               # TraceHeader, TRCEvent, TRCParam, TRCSession, SystemTime
-│   │   ├── parser.go              # ParseFile — декодирование бинарного формата .trc
-│   │   ├── header.go              # Разбор заголовка: OrderedColumns, TracedEvents, EventsOffset
+│   ├── trc/                       # TRC-анализатор (бинарные .trc и XML .xml файлы SQL Server Profiler)
+│   │   ├── model.go               # TraceHeader, TRCEvent, TRCParam, TRCSession, SystemTime, SystemTimeFromLocalParts
+│   │   ├── parser.go              # ParseFile — точка входа: DetectFormat → ParseXML или ParseHeader+ParseEvents
+│   │   ├── xml_parser.go          # ParseXML, DetectFormat — парсинг XML-экспорта трейса (UTF-16/UTF-8)
+│   │   ├── header.go              # Разбор заголовка бинарного формата: OrderedColumns, TracedEvents, EventsOffset
 │   │   ├── extract.go             # Извлечение procedure/params из TextData (regex-эвристика)
 │   │   ├── aggregate.go           # AggregateByProcedure (count/min/max/avg/total duration)
 │   │   ├── tree.go                # BuildTreesWithDepth, FormatTrees — дерево вызовов по SPID
@@ -943,8 +949,8 @@ CodeBase/
 - `rti_blog_blocks` — бизнес-лог блоки (`M_BUSINESSLOG_BLOCK_BEGIN/END`) с Enter/Exit временами и elapsed_ms
 - `rti_blog_tables` — дампы таблиц из бизнес-лога (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`) с заголовками и строками
 - `rti_client_events` — клиентские события (thick client d5nt): SQL blocks, recordset open, connection, BPL load, errors, memory; с enrichment-ссылкой на серверный вызов (`server_call_id`)
-- `trc_sessions` — сессии парсинга `.trc` файлов (file_path, file_size, total_events, provider/server/version metadata)
-- `trc_events` — декодированные события из `.trc` (event_class, event_name, text_data, procedure, spid, duration_ms, cpu, reads, writes, error, params JSONB, columns JSONB)
+- `trc_sessions` — сессии парсинга `.trc`/`.xml` файлов (file_path, file_size, total_events, provider/server/version metadata)
+- `trc_events` — декодированные события из `.trc`/`.xml` (event_class, event_name, text_data, procedure, spid, duration_ms, cpu, reads, writes, error, params JSONB, columns JSONB)
 - `ds_return_codes` — справочник кодов возврата процедур
 - `relations` - Связи между сущностями
 - `query_fragments` - SQL-фрагменты в коде, включая отдельные SQL statements из `.sql` и препроцессированных `.t01` procedures/scripts, пригодные для текстового поиска
@@ -1033,6 +1039,7 @@ CodeBase/
 - [x] RTI бизнес-лог: блоки `M_BUSINESSLOG_BLOCK_BEGIN/END`, checkpoint timestamps, дампы `M_LOG_TABLE`
 - [x] RTI клиентские события: парсинг thick client d5nt (SQL blocks, recordset open, connection, BPL, errors, memory), enrichment из индекса, client-tree и timeline
 - [x] TRC-анализатор: парсинг бинарных `.trc` файлов SQL Server Profiler, декодирование событий, агрегация по процедурам, дерево вызовов по SPID, enrichment из индекса, CLI и MCP tools
+- [x] TRC XML-поддержка: автоматическое определение формата (content sniffing), парсинг XML-экспортов `.xml` (UTF-16/UTF-8), маппинг в существующую модель данных без изменения схемы БД
 
 ## Лицензия
 

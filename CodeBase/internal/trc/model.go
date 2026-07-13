@@ -112,3 +112,27 @@ func (s SystemTime) ToTime() (time.Time, bool) {
 		int(s.Milliseconds)*1_000_000, time.UTC,
 	), true
 }
+
+// SystemTimeFromLocalParts конвертирует time.Time (обычно результат парсинга
+// ISO-8601 значения с офсетом из XML-экспорта трейса) в SystemTime, беря
+// только календарные поля "как есть", без учёта часового пояса/офсета —
+// в отличие от ToTime, который трактует SystemTime как UTC. Используется
+// XML-парсером (xml_parser.go), чтобы дата/время совпадали с тем, что видит
+// аналитик в исходном XML.
+//
+// DayOfWeek кодируется в конвенции SQL Server DATEPART(weekday) (1=Sunday..
+// 7=Saturday, т.е. time.Weekday()+1), а не в 0-based конвенции Go —
+// подтверждено сверкой с бинарным декодером (decodeColumnValue) на golden
+// файле DIAPR-391 (см. TestParseFile_XMLMatchesBinary).
+func SystemTimeFromLocalParts(t time.Time) SystemTime {
+	return SystemTime{
+		Year:         uint16(t.Year()),
+		Month:        uint16(t.Month()),
+		DayOfWeek:    uint16(t.Weekday()) + 1,
+		Day:          uint16(t.Day()),
+		Hour:         uint16(t.Hour()),
+		Minute:       uint16(t.Minute()),
+		Second:       uint16(t.Second()),
+		Milliseconds: uint16(t.Nanosecond() / 1_000_000),
+	}
+}

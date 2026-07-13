@@ -20,12 +20,21 @@ var eventHeaderMarker = [2]byte{0xF6, 0xFF}
 // (например, длинный TextData). Подтверждено на TextData длиной 1050 байт.
 const extendedLengthSentinel = 0xFF
 
-// ParseFile читает .trc файл, разбирает заголовок (ParseHeader) и поток
-// событий (ParseEvents), возвращая объединённый результат.
+// ParseFile читает файл трейса и разбирает его в TRCParseResult. Формат
+// файла определяется по сигнатуре содержимого (DetectFormat), а не по
+// расширению: XML-экспорт трейса (<TraceData>...) разбирается ParseXML,
+// иначе файл считается бинарным .trc и разбирается ParseHeader+ParseEvents.
 func ParseFile(path string) (*TRCParseResult, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("trc: read %s: %w", path, err)
+	}
+	if DetectFormat(data) {
+		result, err := ParseXML(data)
+		if err != nil {
+			return nil, fmt.Errorf("trc: parse xml %s: %w", path, err)
+		}
+		return result, nil
 	}
 	h, err := ParseHeader(data)
 	if err != nil {
