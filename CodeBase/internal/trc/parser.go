@@ -88,10 +88,10 @@ func ParseEvents(data []byte, h *TraceHeader) ([]TRCEvent, error) {
 		if err := decodeEventFields(data[fieldsStart:fieldsEnd], ev.Columns); err != nil {
 			return events, fmt.Errorf("trc: event at offset %d (class %d): %w", pos, eventClass, err)
 		}
-		enrichEvent(&ev)
 		events = append(events, ev)
 		pos = fieldsEnd
 	}
+	enrichEventsParallel(events)
 	return events, nil
 }
 

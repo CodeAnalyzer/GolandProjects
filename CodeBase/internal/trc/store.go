@@ -42,6 +42,14 @@ func insertTRCEvents(db *store.DB, events []TRCEvent, sessionID int64) error {
 		return nil
 	}
 
+	// Фаза 1: параллельная JSON-сериализация (CPU-bound, независима между событиями)
+	columnsJSONs := make([][]byte, len(events))
+	paramsJSONs := make([]interface{}, len(events))
+	if err := serializeParallel(events, columnsJSONs, paramsJSONs); err != nil {
+		return fmt.Errorf("serialize trc events: %w", err)
+	}
+
+	// Фаза 2: последовательный COPY IN (pq.CopyIn не потокобезопасен)
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -60,20 +68,7 @@ func insertTRCEvents(db *store.DB, events []TRCEvent, sessionID int64) error {
 	}
 	defer stmt.Close()
 
-	for _, ev := range events {
-		columnsJSON, err := marshalColumns(ev.Columns)
-		if err != nil {
-			return fmt.Errorf("marshal columns for event class %d: %w", ev.EventClass, err)
-		}
-		var paramsJSON interface{}
-		if len(ev.Params) > 0 {
-			b, err := json.Marshal(ev.Params)
-			if err != nil {
-				return fmt.Errorf("marshal params for event class %d: %w", ev.EventClass, err)
-			}
-			paramsJSON = string(b)
-		}
-
+	for i, ev := range events {
 		_, err = stmt.Exec(
 			sessionID, ev.EventClass, nullableString(ev.EventName), nullableString(strVal(ev.Columns[1])), nullableString(ev.Procedure),
 			nullableInt32(ev.Columns[12]), nullableInt32(ev.Columns[3]), nullableString(strVal(ev.Columns[35])),
@@ -83,7 +78,7 @@ func insertTRCEvents(db *store.DB, events []TRCEvent, sessionID int64) error {
 			nullableInt64(ev.Columns[22]), nullableString(strVal(ev.Columns[34])), nullableInt64(ev.Columns[51]),
 			nullableInt32(ev.Columns[29]), nullableInt32(ev.Columns[5]),
 			nullableInt32(ev.Columns[31]), nullableInt32(ev.Columns[20]), nullableInt32(ev.Columns[23]),
-			paramsJSON, string(columnsJSON),
+			paramsJSONs[i], string(columnsJSONs[i]),
 		)
 		if err != nil {
 			return err

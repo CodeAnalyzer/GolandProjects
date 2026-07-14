@@ -173,10 +173,10 @@ func ParseXML(data []byte) (*TRCParseResult, error) {
 		for _, col := range xe.Column {
 			ev.Columns[col.ID] = decodeXMLColumnValue(col.ID, col.Value)
 		}
-		enrichEvent(&ev)
 		events = append(events, ev)
 	}
 
+	enrichEventsParallel(events)
 	return &TRCParseResult{Header: h, Events: events}, nil
 }
 

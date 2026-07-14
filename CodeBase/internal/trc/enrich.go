@@ -2,7 +2,9 @@ package trc
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/codebase/internal/query"
 )
@@ -45,29 +47,88 @@ func EnrichProcedure(q ProcedureLookup, procName string) (*ProcedureEnrichment, 
 	}, nil
 }
 
+// maxEnrichWorkers — лимит конкурентных SQL-запросов при обогащении.
+// MaxOpenConns=25, оставляем запас для других запросов.
+const maxEnrichWorkers = 16
+
+// minProcsForParallelEnrich — порог для перехода на параллельный режим
+// обогащения. При меньшем числе уникальных процедур накладные расходы
+// на goroutines превысят выгоду.
+const minProcsForParallelEnrich = 16
+
 // EnrichEvents обогащает события данными из CodeBase DB. Возвращает map:
 // procedure name (как в TRCEvent.Procedure) → enrichment.
+// Параллельно обрабатывает уникальные имена процедур через chunk-based
+// паттерн (sync.WaitGroup + sync.Mutex для map), лимит — maxEnrichWorkers.
 func EnrichEvents(q ProcedureLookup, events []TRCEvent) map[string]*ProcedureEnrichment {
-	result := make(map[string]*ProcedureEnrichment)
+	uniqueProcs := make(map[string]struct{})
 	for _, ev := range events {
-		if ev.Procedure == "" {
-			continue
+		if ev.Procedure != "" {
+			uniqueProcs[ev.Procedure] = struct{}{}
 		}
-		if _, ok := result[ev.Procedure]; ok {
-			continue
-		}
-		enrich, err := EnrichProcedure(q, ev.Procedure)
-		if err != nil {
-			result[ev.Procedure] = &ProcedureEnrichment{
-				Procedure:  ev.Procedure,
-				Found:      false,
-				SourceFile: "(not found)",
-			}
-			continue
-		}
-		result[ev.Procedure] = enrich
 	}
+	if len(uniqueProcs) == 0 {
+		return map[string]*ProcedureEnrichment{}
+	}
+
+	procs := make([]string, 0, len(uniqueProcs))
+	for name := range uniqueProcs {
+		procs = append(procs, name)
+	}
+
+	if len(procs) < minProcsForParallelEnrich {
+		result := make(map[string]*ProcedureEnrichment, len(procs))
+		for _, procName := range procs {
+			result[procName] = enrichSingle(q, procName)
+		}
+		return result
+	}
+
+	result := make(map[string]*ProcedureEnrichment, len(procs))
+	var mu sync.Mutex
+
+	workers := runtime.NumCPU()
+	if workers > len(procs) {
+		workers = len(procs)
+	}
+	if workers > maxEnrichWorkers {
+		workers = maxEnrichWorkers
+	}
+
+	chunkSize := (len(procs) + workers - 1) / workers
+	var wg sync.WaitGroup
+	for i := 0; i < len(procs); i += chunkSize {
+		end := i + chunkSize
+		if end > len(procs) {
+			end = len(procs)
+		}
+		wg.Add(1)
+		go func(chunk []string) {
+			defer wg.Done()
+			for _, procName := range chunk {
+				e := enrichSingle(q, procName)
+				mu.Lock()
+				result[procName] = e
+				mu.Unlock()
+			}
+		}(procs[i:end])
+	}
+	wg.Wait()
 	return result
+}
+
+// enrichSingle — helper для переиспользования между последовательным и
+// параллельным путями EnrichEvents.
+func enrichSingle(q ProcedureLookup, procName string) *ProcedureEnrichment {
+	enrich, err := EnrichProcedure(q, procName)
+	if err != nil {
+		return &ProcedureEnrichment{
+			Procedure:  procName,
+			Found:      false,
+			SourceFile: "(not found)",
+		}
+	}
+	return enrich
 }
 
 // trimHashSuffix отбрасывает завершающий суффикс "#..." (маркер
