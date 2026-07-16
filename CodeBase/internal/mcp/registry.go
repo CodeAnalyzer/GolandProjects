@@ -1322,6 +1322,29 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		"codebase_trc_summary": {
 			Definition: toolDefinition{Name: "codebase_trc_summary", Description: "Get summary info for a trc session: total events and session metadata (provider/server/version). Requires either a saved session ID or a file path to parse on the fly.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file to parse on the fly")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
+				sessionID, err := resolveTRCSessionID(args)
+				if err != nil {
+					return nil, err
+				}
+				if sessionID > 0 && db != nil {
+					session, err := trc.GetSession(db, sessionID)
+					if err != nil {
+						return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
+					}
+					totalEvents, _ := trc.LoadEventCount(db, sessionID)
+					return map[string]interface{}{
+						"total_events": totalEvents,
+						"header": map[string]interface{}{
+							"ProviderName": session.ProviderName,
+							"ServerName":   session.ServerName,
+							"MajorVersion": session.MajorVersion,
+							"MinorVersion": session.MinorVersion,
+							"BuildNumber":  session.BuildNumber,
+						},
+						"session": session,
+					}, nil
+				}
+				// Fallback: parse from file
 				result, err := loadTRCFromArgs(db, args)
 				if err != nil {
 					return nil, err
@@ -1333,16 +1356,45 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_trc_events": {
-			Definition: toolDefinition{Name: "codebase_trc_events", Description: "List decoded events from a trc session, with optional filters. Returns event class, name, procedure, params, duration, and full decoded columns.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spid": intProp("Optional SPID filter"), "procedure": stringProp("Optional procedure name filter (exact match)"), "limit": intProp("Max events to return (default 100)")})},
+			Definition: toolDefinition{Name: "codebase_trc_events", Description: "List decoded events from a trc session, with optional filters. Returns event class, name, procedure, params, duration, and full decoded columns. Supports server-side filtering by SPID, procedure, and event_name with limit.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spid": intProp("Optional SPID filter"), "procedure": stringProp("Optional procedure name filter (exact match)"), "event_name": stringProp("Optional event name filter (e.g. RPC:Completed)"), "limit": intProp("Max events to return (default 100, max 1000)")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
+				limit := optionalLimit(args)
+				if limit > 1000 {
+					limit = 1000
+				}
+				spidFilter, _ := optionalInt(args, "spid")
+				procFilter, _ := optionalString(args, "procedure")
+				eventNameFilter, _ := optionalString(args, "event_name")
+
+				sessionID, err := resolveTRCSessionID(args)
+				if err != nil {
+					return nil, err
+				}
+
+				if sessionID > 0 && db != nil {
+					f := trc.TRCEventFilter{
+						SPID:      spidFilter,
+						Procedure: procFilter,
+						EventName: eventNameFilter,
+					}
+					events, err := trc.LoadEventsFiltered(db, sessionID, f, limit)
+					if err != nil {
+						return nil, err
+					}
+					totalCount, _ := trc.LoadEventCount(db, sessionID)
+					return map[string]interface{}{
+						"events":         events,
+						"total_count":    totalCount,
+						"filtered_count": len(events),
+						"limit":          limit,
+					}, nil
+				}
+
+				// Fallback: parse from file
 				result, err := loadTRCFromArgs(db, args)
 				if err != nil {
 					return nil, err
 				}
-				spidFilter, _ := optionalInt(args, "spid")
-				procFilter, _ := optionalString(args, "procedure")
-				limit := optionalLimit(args)
-
 				var filtered []trc.TRCEvent
 				for _, ev := range result.Events {
 					if spidFilter > 0 {
@@ -1353,21 +1405,50 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					if procFilter != "" && ev.Procedure != procFilter {
 						continue
 					}
+					if eventNameFilter != "" && ev.EventName != eventNameFilter {
+						continue
+					}
 					filtered = append(filtered, ev)
 					if len(filtered) >= limit {
 						break
 					}
 				}
 				return map[string]interface{}{
-					"events":       filtered,
-					"total_count":  len(result.Events),
+					"events":         filtered,
+					"total_count":    len(result.Events),
 					"filtered_count": len(filtered),
+					"limit":          limit,
 				}, nil
 			},
 		},
 		"codebase_trc_procedures": {
-			Definition: toolDefinition{Name: "codebase_trc_procedures", Description: "Aggregate trc session events by procedure name (extracted from exec-statements in TextData): call count, min/max/avg/total duration. Enriched with source file location from CodeBase index. Sorted by total duration descending.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file")})},
+			Definition: toolDefinition{Name: "codebase_trc_procedures", Description: "Aggregate trc session events by procedure name (extracted from exec-statements in TextData): call count, min/max/avg/total duration. Enriched with source file location from CodeBase index. Sorted by total duration descending. Uses server-side SQL aggregation when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
+				sessionID, err := resolveTRCSessionID(args)
+				if err != nil {
+					return nil, err
+				}
+				if sessionID > 0 && db != nil {
+					aggs, err := trc.LoadProceduresAggregated(db, sessionID)
+					if err != nil {
+						return nil, err
+					}
+					// Enrich with source file info
+					if len(aggs) > 0 {
+						q := query.New(db)
+						// Load a small sample of events to build enrichment map
+						sampleEvents, _ := trc.LoadEventsFiltered(db, sessionID, trc.TRCEventFilter{}, 1000)
+						if len(sampleEvents) > 0 {
+							enrichMap := trc.EnrichEvents(q, sampleEvents)
+							trc.EnrichAggregates(aggs, enrichMap)
+						}
+					}
+					return map[string]interface{}{
+						"procedures": aggs,
+						"count":      len(aggs),
+					}, nil
+				}
+				// Fallback: parse from file
 				result, err := loadTRCFromArgs(db, args)
 				if err != nil {
 					return nil, err
@@ -1385,16 +1466,36 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_trc_tree": {
-			Definition: toolDefinition{Name: "codebase_trc_tree", Description: "Build call trees from a trc session, grouped by SPID, restoring nesting via Starting/Completed event pairs (RPC, SQL:Batch, SQL:Stmt, SP, SP:Stmt). If spid is given, returns only that SPID's tree. max_depth limits tree depth (0 = unlimited). limit caps the number of root nodes and children per node (0 = unlimited).", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spid": intProp("Optional SPID filter (0 = all)"), "max_depth": intProp("Maximum tree depth (0 = unlimited)"), "limit": intProp("Maximum root nodes and children per node (0 = unlimited)")})},
+			Definition: toolDefinition{Name: "codebase_trc_tree", Description: "Build call trees from a trc session, grouped by SPID, restoring nesting via Starting/Completed event pairs (RPC, SQL:Batch, SQL:Stmt, SP, SP:Stmt). Uses server-side recursive CTE when session_id is provided. If spid is given, returns only that SPID's tree. max_depth limits tree depth (0 = unlimited). limit caps the number of root nodes and children per node (0 = unlimited).", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spid": intProp("Optional SPID filter (0 = auto-select busiest SPID)"), "max_depth": intProp("Maximum tree depth (0 = unlimited)"), "limit": intProp("Maximum root nodes and children per node (0 = unlimited)")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
+				maxDepth, _ := optionalInt(args, "max_depth")
+				limit, _ := optionalInt(args, "limit")
+				spidFilter, _ := optionalInt(args, "spid")
+
+				sessionID, err := resolveTRCSessionID(args)
+				if err != nil {
+					return nil, err
+				}
+				if sessionID > 0 && db != nil {
+					// Server-side recursive CTE tree
+					treeEvents, err := trc.LoadEventsForTree(db, sessionID, spidFilter, maxDepth, limit)
+					if err != nil {
+						return nil, err
+					}
+					// Build in-memory tree from loaded events
+					trees := trc.BuildTrees(treeEvents)
+					return map[string]interface{}{
+						"trees":        trees,
+						"event_count":  len(treeEvents),
+						"spid":         spidFilter,
+					}, nil
+				}
+				// Fallback: parse from file
 				result, err := loadTRCFromArgs(db, args)
 				if err != nil {
 					return nil, err
 				}
-				maxDepth, _ := optionalInt(args, "max_depth")
-				limit, _ := optionalInt(args, "limit")
 				trees := trc.BuildTreesWithDepth(result.Events, maxDepth)
-				spidFilter, _ := optionalInt(args, "spid")
 				if spidFilter > 0 {
 					if t, ok := trees[spidFilter]; ok {
 						trees = map[int][]*trc.TRCTreeNode{spidFilter: t}
@@ -1409,15 +1510,37 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_trc_slow": {
-			Definition: toolDefinition{Name: "codebase_trc_slow", Description: "Find the slowest events in a trc session above a duration threshold (DurationMs). Sorted by duration descending.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "threshold_ms": intProp("Minimum duration in milliseconds (default 100)")})},
+			Definition: toolDefinition{Name: "codebase_trc_slow", Description: "Find the slowest events in a trc session above a duration threshold (DurationMs). Sorted by duration descending. Uses server-side SQL when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "threshold_ms": intProp("Minimum duration in milliseconds (default 100)"), "limit": intProp("Max events to return (default 100, max 1000)")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
-				result, err := loadTRCFromArgs(db, args)
-				if err != nil {
-					return nil, err
-				}
 				threshold, _ := optionalInt(args, "threshold_ms")
 				if threshold <= 0 {
 					threshold = 100
+				}
+				limit := optionalLimit(args)
+				if limit > 1000 {
+					limit = 1000
+				}
+
+				sessionID, err := resolveTRCSessionID(args)
+				if err != nil {
+					return nil, err
+				}
+				if sessionID > 0 && db != nil {
+					events, err := trc.LoadSlowEvents(db, sessionID, threshold, limit)
+					if err != nil {
+						return nil, err
+					}
+					return map[string]interface{}{
+						"events":    events,
+						"count":     len(events),
+						"threshold": threshold,
+						"limit":     limit,
+					}, nil
+				}
+				// Fallback: parse from file
+				result, err := loadTRCFromArgs(db, args)
+				if err != nil {
+					return nil, err
 				}
 				var slow []trc.TRCEvent
 				for _, ev := range result.Events {
@@ -1426,16 +1549,41 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					}
 				}
 				sort.Slice(slow, func(i, j int) bool { return slow[i].DurationMs > slow[j].DurationMs })
+				if len(slow) > limit {
+					slow = slow[:limit]
+				}
 				return map[string]interface{}{
 					"events":    slow,
 					"count":     len(slow),
 					"threshold": threshold,
+					"limit":     limit,
 				}, nil
 			},
 		},
 		"codebase_trc_errors": {
-			Definition: toolDefinition{Name: "codebase_trc_errors", Description: "Find events with a non-zero Error(31) column in a trc session.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file")})},
+			Definition: toolDefinition{Name: "codebase_trc_errors", Description: "Find events with a non-zero Error(31) column in a trc session. Uses server-side SQL when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "limit": intProp("Max events to return (default 100, max 1000)")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
+				limit := optionalLimit(args)
+				if limit > 1000 {
+					limit = 1000
+				}
+
+				sessionID, err := resolveTRCSessionID(args)
+				if err != nil {
+					return nil, err
+				}
+				if sessionID > 0 && db != nil {
+					events, err := trc.LoadErrorEvents(db, sessionID, limit)
+					if err != nil {
+						return nil, err
+					}
+					return map[string]interface{}{
+						"events": events,
+						"count":  len(events),
+						"limit":  limit,
+					}, nil
+				}
+				// Fallback: parse from file
 				result, err := loadTRCFromArgs(db, args)
 				if err != nil {
 					return nil, err
@@ -1445,10 +1593,14 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					if code, ok := ev.Columns[31].(int32); ok && code != 0 {
 						errs = append(errs, ev)
 					}
+					if len(errs) >= limit {
+						break
+					}
 				}
 				return map[string]interface{}{
 					"events": errs,
 					"count":  len(errs),
+					"limit":  limit,
 				}, nil
 			},
 		},
@@ -1655,6 +1807,11 @@ func optionalInt64(args map[string]interface{}, key string) (int64, error) {
 
 // resolveRTISessionID extracts session_id from args. Returns 0 if not provided.
 func resolveRTISessionID(args map[string]interface{}) (int64, error) {
+	return optionalInt64(args, "session_id")
+}
+
+// resolveTRCSessionID extracts session_id from args. Returns 0 if not provided.
+func resolveTRCSessionID(args map[string]interface{}) (int64, error) {
 	return optionalInt64(args, "session_id")
 }
 

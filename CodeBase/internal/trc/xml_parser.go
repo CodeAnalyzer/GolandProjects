@@ -118,21 +118,80 @@ type traceXMLColumn struct {
 	Value string `xml:",chardata"`
 }
 
-// ParseXML разбирает XML-экспорт трейса (TraceData) в общий TRCParseResult
-// — ту же модель (TraceHeader/TRCEvent), которую строит бинарный парсер
-// (ParseHeader+ParseEvents), чтобы всё нижестоящее (store.go, tree.go,
-// aggregate.go, enrich.go, CLI/MCP) не зависело от исходного формата файла.
-func ParseXML(data []byte) (*TRCParseResult, error) {
-	utf8Data, err := decodeToUTF8(data)
-	if err != nil {
-		return nil, fmt.Errorf("decode xml encoding: %w", err)
-	}
+// ParseXMLReader разбираёт XML-экспорт трейса из io.Reader, не загружая
+// весь файл в память. Использует BOM-aware transform.NewReader поверх
+// io.Reader для перекодирования и xml.NewDecoder для streaming-разбора.
+func ParseXMLReader(r io.Reader) (*TRCParseResult, error) {
+	// BOM-aware декодер: автоматически определяет UTF-16LE/BE/UTF-8 по BOM,
+	// при отсутствии BOM пропускает как UTF-8.
+	dec := unicode.BOMOverride(unicode.UTF8.NewDecoder())
+	utf8Reader := transform.NewReader(r, dec)
 
+	xmlDec := xml.NewDecoder(utf8Reader)
 	// Пролог исходного XML (<?xml version="1.0" encoding="utf-16"?>)
 	// остаётся в тексте как есть после перекодирования в UTF-8 — decoder
 	// откажется работать, увидев некорректно заявленную кодировку без
 	// зарегистрированного CharsetReader, хотя данные уже валидный UTF-8.
 	// CharsetReader-заглушка возвращает вход без изменений для любой метки.
+	xmlDec.CharsetReader = func(_ string, input io.Reader) (io.Reader, error) {
+		return input, nil
+	}
+	var doc xmlTraceData
+	if err := xmlDec.Decode(&doc); err != nil {
+		return nil, fmt.Errorf("unmarshal xml: %w", err)
+	}
+
+	h := &TraceHeader{
+		ProviderName:   doc.Header.TraceProvider.Name,
+		MajorVersion:   doc.Header.TraceProvider.MajorVersion,
+		MinorVersion:   doc.Header.TraceProvider.MinorVersion,
+		BuildNumber:    doc.Header.TraceProvider.BuildNumber,
+		ServerName:     doc.Header.ServerInformation.Name,
+		OrderedColumns: doc.Header.ProfilerUI.OrderedColumns.ID,
+		EventClasses:   map[int]*EventClassSchema{},
+	}
+	for _, te := range doc.Header.ProfilerUI.TracedEvents.Event {
+		cols := make([]int, 0, len(te.EventColumn))
+		for _, c := range te.EventColumn {
+			cols = append(cols, c.ID)
+		}
+		h.EventClasses[te.ID] = &EventClassSchema{
+			EventClass: te.ID,
+			EventName:  EventClassName(te.ID),
+			Columns:    cols,
+		}
+	}
+
+	events := make([]TRCEvent, 0, len(doc.Events.Event))
+	for _, xe := range doc.Events.Event {
+		ev := TRCEvent{
+			EventClass: xe.ID,
+			EventName:  xe.Name,
+			Columns:    make(map[int]any, len(xe.Column)),
+		}
+		for _, col := range xe.Column {
+			ev.Columns[col.ID] = decodeXMLColumnValue(col.ID, col.Value)
+		}
+		events = append(events, ev)
+	}
+
+	enrichEventsParallel(events)
+	ComputeParentIDs(events)
+	return &TRCParseResult{Header: h, Events: events}, nil
+}
+
+// ParseXML разбирает XML-экспорт трейса из среза байтов (in-memory режим).
+// Сохранён для обратной совместимости с тестами. Продуктивный путь использует
+// ParseXMLReader через io.Reader.
+func ParseXML(data []byte) (*TRCParseResult, error) {
+	utf8Data, err := decodeToUTF8(data)
+	if err != nil {
+		return nil, fmt.Errorf("decode xml encoding: %w", err)
+	}
+	return parseXMLFromBytes(utf8Data)
+}
+
+func parseXMLFromBytes(utf8Data []byte) (*TRCParseResult, error) {
 	dec := xml.NewDecoder(bytes.NewReader(utf8Data))
 	dec.CharsetReader = func(_ string, input io.Reader) (io.Reader, error) {
 		return input, nil
@@ -177,6 +236,7 @@ func ParseXML(data []byte) (*TRCParseResult, error) {
 	}
 
 	enrichEventsParallel(events)
+	ComputeParentIDs(events)
 	return &TRCParseResult{Header: h, Events: events}, nil
 }
 

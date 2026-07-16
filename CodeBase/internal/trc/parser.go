@@ -1,8 +1,10 @@
 package trc
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -22,49 +24,95 @@ const extendedLengthSentinel = 0xFF
 
 // ParseFile читает файл трейса и разбирает его в TRCParseResult. Формат
 // файла определяется по сигнатуре содержимого (DetectFormat), а не по
-// расширению: XML-экспорт трейса (<TraceData>...) разбирается ParseXML,
-// иначе файл считается бинарным .trc и разбирается ParseHeader+ParseEvents.
+// расширению: XML-экспорт трейса (<TraceData>...) разбирается streaming-парсером
+// ParseXMLReader, иначе файл считается бинарным .trc и разбирается через
+// ParseHeader (из буфера) + ParseEventsStreaming (из bufio.Reader).
+// Использует streaming для всего файла — не загружает его целиком в память.
 func ParseFile(path string) (*TRCParseResult, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
+		return nil, fmt.Errorf("trc: open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	// Читаем первый буфер для детекции формата и парсинга заголовка.
+	// Заголовок .trc (provider name, server name, schema table) обычно
+	// занимает < 4KB, 64KB — с большим запасом.
+	const headerBufSize = 65536
+	headerBuf := make([]byte, 0, headerBufSize)
+	chunk := make([]byte, headerBufSize)
+	n, err := io.ReadFull(f, chunk)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		return nil, fmt.Errorf("trc: read %s: %w", path, err)
 	}
-	if DetectFormat(data) {
-		result, err := ParseXML(data)
+	headerBuf = append(headerBuf, chunk[:n]...)
+
+	if DetectFormat(headerBuf) {
+		// XML: перематываем файл в начало и используем xml.NewDecoder
+		// (encoding/xml — streaming-парсер, не загружает весь файл в RAM).
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("trc: seek %s: %w", path, err)
+		}
+		result, err := ParseXMLReader(f)
 		if err != nil {
 			return nil, fmt.Errorf("trc: parse xml %s: %w", path, err)
 		}
 		return result, nil
 	}
-	h, err := ParseHeader(data)
+
+	// Бинарный .trc: парсим заголовок из буфера.
+	h, err := ParseHeader(headerBuf)
 	if err != nil {
-		return nil, fmt.Errorf("trc: parse header %s: %w", path, err)
+		// Заголовок может выходить за пределы 64KB (очень маловероятно,
+		// но обрабатываем: дочитываем ещё данных).
+		if len(headerBuf) < headerBufSize && n == headerBufSize {
+			// Уже прочитали всё — заголовок действительно повреждён.
+			return nil, fmt.Errorf("trc: parse header %s: %w", path, err)
+		}
+		// Дочитываем до 1MB и пробуем снова.
+		for len(headerBuf) < 1<<20 {
+			nn, rerr := io.ReadFull(f, chunk)
+			headerBuf = append(headerBuf, chunk[:nn]...)
+			if rerr != nil && rerr != io.EOF && rerr != io.ErrUnexpectedEOF {
+				return nil, fmt.Errorf("trc: read %s: %w", path, rerr)
+			}
+			h, err = ParseHeader(headerBuf)
+			if err == nil {
+				break
+			}
+			if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
+				break
+			}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("trc: parse header %s: %w", path, err)
+		}
 	}
-	events, err := ParseEvents(data, h)
+
+	// Позиционируемся на EventsOffset и стримим события.
+	if _, err := f.Seek(int64(h.EventsOffset), io.SeekStart); err != nil {
+		return nil, fmt.Errorf("trc: seek %s: %w", path, err)
+	}
+	r := bufio.NewReaderSize(f, 1<<20) // 1MB buffer
+	events, err := ParseEventsStreaming(r, h)
 	if err != nil {
 		return nil, fmt.Errorf("trc: parse events %s: %w", path, err)
 	}
 	return &TRCParseResult{Header: h, Events: events}, nil
 }
 
-// ParseEvents разбирает поток событий, начиная с TraceHeader.EventsOffset.
-// Между концом таблицы схемы и первой записью события может находиться
-// нерасшифрованный до конца преамбул ("connection info", см. README Phase 0)
-// — он пропускается поиском первого валидного eventHeaderMarker.
+// ParseEvents разбирает поток событий из среза байтов (in-memory режим).
+// Сохранён для обратной совместимости с тестами. Продуктивный путь использует
+// ParseEventsStreaming через bufio.Reader.
 func ParseEvents(data []byte, h *TraceHeader) ([]TRCEvent, error) {
 	pos := findEventHeader(data, h.EventsOffset)
 	if pos < 0 {
-		// Не нашли ни одной записи события — это не ошибка сама по себе
-		// (файл может быть пуст после заголовка), возвращаем пустой список.
 		return nil, nil
 	}
 
 	var events []TRCEvent
 	for pos+9 <= len(data) {
 		if data[pos] != eventHeaderMarker[0] || data[pos+1] != eventHeaderMarker[1] || data[pos+2] != 0x06 {
-			// Неожиданный разрыв потока — пытаемся ресинхронизироваться,
-			// найдя следующий валидный маркер, вместо того чтобы считать
-			// файл полностью повреждённым.
 			next := findEventHeader(data, pos+1)
 			if next < 0 {
 				break
@@ -92,7 +140,144 @@ func ParseEvents(data []byte, h *TraceHeader) ([]TRCEvent, error) {
 		pos = fieldsEnd
 	}
 	enrichEventsParallel(events)
+	ComputeParentIDs(events)
 	return events, nil
+}
+
+// ParseEventsStreaming разбирает поток событий из bufio.Reader, не загружая
+// весь файл в память. Читает события по одному: 9-байтовый заголовок
+// (маркер(2) + 0x06(1) + class(2) + length(4)), затем Length байт полей.
+// При несовпадении маркера — ресинхронизация через skipToEventMarker.
+func ParseEventsStreaming(r *bufio.Reader, h *TraceHeader) ([]TRCEvent, error) {
+	var events []TRCEvent
+
+	// Пропуск преамбулы: ищем первый валидный eventHeaderMarker.
+	// skipToEventMarker позиционирует reader сразу после 3-байтового маркера.
+	if err := skipToEventMarker(r); err != nil {
+		if err == io.EOF {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	for {
+		// После skipToEventMarker прочитаны 3 байта маркера (F6 FF 06).
+		// Читаем оставшиеся 6 байт заголовка: EventClass(2) + Length(4).
+		var hdr6 [6]byte
+		if _, err := io.ReadFull(r, hdr6[:]); err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				break
+			}
+			return events, fmt.Errorf("trc: read event header: %w", err)
+		}
+
+		eventClass := int(binary.LittleEndian.Uint16(hdr6[0:2]))
+		length := int(binary.LittleEndian.Uint32(hdr6[2:6]))
+		if length < 0 {
+			return events, fmt.Errorf("trc: event (class %d): invalid length %d", eventClass, length)
+		}
+
+		// Читаем Length байт полей события.
+		fields := make([]byte, length)
+		if _, err := io.ReadFull(r, fields); err != nil {
+			return events, fmt.Errorf("trc: event (class %d): truncated fields: %w", eventClass, err)
+		}
+
+		ev := TRCEvent{
+			EventClass: eventClass,
+			EventName:  EventClassName(eventClass),
+			Columns:    map[int]any{},
+		}
+		if err := decodeEventFields(fields, ev.Columns); err != nil {
+			return events, fmt.Errorf("trc: event (class %d): %w", eventClass, err)
+		}
+		events = append(events, ev)
+
+		// Проверяем, что следующий байт — начало нового события (маркер).
+		// Если нет — ресинхронизируемся.
+		b, err := r.ReadByte()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return events, fmt.Errorf("trc: read after event: %w", err)
+		}
+		if b == eventHeaderMarker[0] {
+			b2, err := r.ReadByte()
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				return events, fmt.Errorf("trc: read marker byte 2: %w", err)
+			}
+			if b2 == eventHeaderMarker[1] {
+				b3, err := r.ReadByte()
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					return events, fmt.Errorf("trc: read marker byte 3: %w", err)
+				}
+				if b3 == 0x06 {
+					// Маркер найден — продолжаем чтение следующего события.
+					continue
+				}
+				// F6 FF но не 06 — unread b3 и b2, сканируем заново.
+				r.UnreadByte()
+				r.UnreadByte()
+			} else {
+				// F6 но не FF — unread b2, сканируем заново.
+				r.UnreadByte()
+			}
+		}
+		// Не маркер — unread и ресинхронизация.
+		r.UnreadByte()
+		if err := skipToEventMarker(r); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return events, err
+		}
+	}
+	enrichEventsParallel(events)
+	ComputeParentIDs(events)
+	return events, nil
+}
+
+// skipToEventMarker читает по одному байту из r, пока не найдёт
+// eventHeaderMarker + 0x06. Возвращает nil если найдено, io.EOF если поток
+// закончился.
+func skipToEventMarker(r *bufio.Reader) error {
+	for {
+		b, err := r.ReadByte()
+		if err != nil {
+			return err
+		}
+		if b != eventHeaderMarker[0] {
+			continue
+		}
+		b2, err := r.ReadByte()
+		if err != nil {
+			return err
+		}
+		if b2 != eventHeaderMarker[1] {
+			if b2 == eventHeaderMarker[0] {
+				// Первый байт маркера — переиспользуем как начало нового кандидата.
+				r.UnreadByte()
+			}
+			continue
+		}
+		b3, err := r.ReadByte()
+		if err != nil {
+			return err
+		}
+		if b3 == 0x06 {
+			return nil
+		}
+		if b3 == eventHeaderMarker[0] {
+			r.UnreadByte()
+		}
+	}
 }
 
 // enrichEvent заполняет производные поля TRCEvent (Procedure, Params,

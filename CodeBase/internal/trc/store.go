@@ -37,6 +37,16 @@ func SaveSession(db *store.DB, result *TRCParseResult, filePath string, fileSize
 // декодированных Columns сохраняется целиком как JSONB (аналог
 // clientEventPayload в internal/rti/store.go) — без потери данных для
 // колонок, не вынесенных в отдельные поля.
+//
+// parent_id вычисляется в ComputeParentIDs (tree.go) как индекс родительского
+// события в срезе events. Поскольку trc_events.id генерируется БД (BIGSERIAL),
+// parent_id хранит не абсолютный id, а относительный индекс + 1 (1-based),
+// который можно разрешить через подзапрос при tree loading.
+//
+// Для больших файлов (миллионы событий) insert выполняется батчами по
+// batchInsertSize событий: каждый батч — отдельная транзакция с CopyIn.
+const batchInsertSize = 50000
+
 func insertTRCEvents(db *store.DB, events []TRCEvent, sessionID int64) error {
 	if len(events) == 0 {
 		return nil
@@ -50,47 +60,69 @@ func insertTRCEvents(db *store.DB, events []TRCEvent, sessionID int64) error {
 	}
 
 	// Фаза 2: последовательный COPY IN (pq.CopyIn не потокобезопасен)
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
+	// Батчами по batchInsertSize событий, каждая батч — отдельная транзакция.
+	for batchStart := 0; batchStart < len(events); batchStart += batchInsertSize {
+		batchEnd := batchStart + batchInsertSize
+		if batchEnd > len(events) {
+			batchEnd = len(events)
+		}
 
-	stmt, err := tx.Prepare(pq.CopyIn("trc_events",
-		"session_id", "event_class", "event_name", "text_data", "procedure",
-		"spid", "database_id", "database_name", "application_name", "login_name", "host_name",
-		"start_time", "end_time", "duration_ms", "cpu", "reads", "writes", "row_counts",
-		"object_id", "object_name", "event_sequence", "nest_level", "line_number",
-		"error", "severity", "success", "params", "columns",
-	))
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for i, ev := range events {
-		_, err = stmt.Exec(
-			sessionID, ev.EventClass, nullableString(ev.EventName), nullableString(strVal(ev.Columns[1])), nullableString(ev.Procedure),
-			nullableInt32(ev.Columns[12]), nullableInt32(ev.Columns[3]), nullableString(strVal(ev.Columns[35])),
-			nullableString(strVal(ev.Columns[10])), nullableString(strVal(ev.Columns[11])), nullableString(strVal(ev.Columns[8])),
-			nullableTime(ev.Columns[14]), nullableTime(ev.Columns[15]), ev.DurationMs,
-			nullableInt64(ev.Columns[18]), nullableInt64(ev.Columns[16]), nullableInt64(ev.Columns[17]), nullableInt64(ev.Columns[48]),
-			nullableInt64(ev.Columns[22]), nullableString(strVal(ev.Columns[34])), nullableInt64(ev.Columns[51]),
-			nullableInt32(ev.Columns[29]), nullableInt32(ev.Columns[5]),
-			nullableInt32(ev.Columns[31]), nullableInt32(ev.Columns[20]), nullableInt32(ev.Columns[23]),
-			paramsJSONs[i], string(columnsJSONs[i]),
-		)
+		tx, err := db.Begin()
 		if err != nil {
+			return err
+		}
+
+		stmt, err := tx.Prepare(pq.CopyIn("trc_events",
+			"session_id", "event_class", "event_name", "text_data", "procedure",
+			"spid", "database_id", "database_name", "application_name", "login_name", "host_name",
+			"start_time", "end_time", "duration_ms", "cpu", "reads", "writes", "row_counts",
+			"object_id", "object_name", "event_sequence", "nest_level", "line_number",
+			"error", "severity", "success", "params", "columns",
+			"parent_id", "depth",
+		))
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+
+		for i := batchStart; i < batchEnd; i++ {
+			ev := events[i]
+			var parentID interface{}
+			if ev.ParentID >= 0 {
+				parentID = ev.ParentID + 1 // 1-based offset within session
+			}
+			_, err = stmt.Exec(
+				sessionID, ev.EventClass, nullableString(ev.EventName), nullableString(strVal(ev.Columns[1])), nullableString(ev.Procedure),
+				nullableInt32(ev.Columns[12]), nullableInt32(ev.Columns[3]), nullableString(strVal(ev.Columns[35])),
+				nullableString(strVal(ev.Columns[10])), nullableString(strVal(ev.Columns[11])), nullableString(strVal(ev.Columns[8])),
+				nullableTime(ev.Columns[14]), nullableTime(ev.Columns[15]), ev.DurationMs,
+				nullableInt64(ev.Columns[18]), nullableInt64(ev.Columns[16]), nullableInt64(ev.Columns[17]), nullableInt64(ev.Columns[48]),
+				nullableInt64(ev.Columns[22]), nullableString(strVal(ev.Columns[34])), nullableInt64(ev.Columns[51]),
+				nullableInt32(ev.Columns[29]), nullableInt32(ev.Columns[5]),
+				nullableInt32(ev.Columns[31]), nullableInt32(ev.Columns[20]), nullableInt32(ev.Columns[23]),
+				paramsJSONs[i], string(columnsJSONs[i]),
+				parentID, ev.Depth,
+			)
+			if err != nil {
+				_ = stmt.Close()
+				_ = tx.Rollback()
+				return err
+			}
+		}
+
+		if _, err := stmt.Exec(); err != nil {
+			_ = stmt.Close()
+			_ = tx.Rollback()
+			return err
+		}
+		stmt.Close()
+
+		if err := tx.Commit(); err != nil {
 			return err
 		}
 	}
 
-	if _, err := stmt.Exec(); err != nil {
-		return err
-	}
-	stmt.Close()
-
-	return tx.Commit()
+	return nil
 }
 
 // jsonColumn — сериализуемое представление одной декодированной колонки
@@ -295,7 +327,8 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 // декодированных Columns из JSONB-снапшота (см. marshalColumns).
 func LoadEvents(db *store.DB, sessionID int64) ([]TRCEvent, error) {
 	rows, err := db.Query(
-		`SELECT event_class, event_name, procedure, duration_ms, params, columns
+		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
+		        parent_id, depth
 		 FROM trc_events WHERE session_id = $1 ORDER BY id`,
 		sessionID,
 	)
@@ -306,30 +339,306 @@ func LoadEvents(db *store.DB, sessionID int64) ([]TRCEvent, error) {
 
 	var events []TRCEvent
 	for rows.Next() {
-		var ev TRCEvent
-		var eventName, procedure sql.NullString
-		var paramsJSON, columnsJSON sql.NullString
-		if err := rows.Scan(&ev.EventClass, &eventName, &procedure, &ev.DurationMs, &paramsJSON, &columnsJSON); err != nil {
+		ev, err := scanEventRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		ev.EventName = eventName.String
-		ev.Procedure = procedure.String
+		events = append(events, ev)
+	}
+	return events, rows.Err()
+}
 
-		if columnsJSON.Valid && columnsJSON.String != "" {
-			cols, err := unmarshalColumns([]byte(columnsJSON.String))
-			if err != nil {
-				return nil, fmt.Errorf("unmarshal columns (event class %d): %w", ev.EventClass, err)
-			}
-			ev.Columns = cols
-		} else {
-			ev.Columns = map[int]any{}
-		}
-		if paramsJSON.Valid && paramsJSON.String != "" {
-			if err := json.Unmarshal([]byte(paramsJSON.String), &ev.Params); err != nil {
-				return nil, fmt.Errorf("unmarshal params (event class %d): %w", ev.EventClass, err)
-			}
-		}
+// scanEventRow scans a single event row from the common column set.
+func scanEventRow(rows *sql.Rows) (TRCEvent, error) {
+	var ev TRCEvent
+	var eventName, procedure sql.NullString
+	var paramsJSON, columnsJSON sql.NullString
+	var parentID sql.NullInt64
+	if err := rows.Scan(&ev.EventClass, &eventName, &procedure, &ev.DurationMs,
+		&paramsJSON, &columnsJSON, &parentID, &ev.Depth); err != nil {
+		return ev, err
+	}
+	ev.EventName = eventName.String
+	ev.Procedure = procedure.String
+	if parentID.Valid {
+		ev.ParentID = int(parentID.Int64) - 1 // convert 1-based back to 0-based
+	} else {
+		ev.ParentID = -1
+	}
 
+	if columnsJSON.Valid && columnsJSON.String != "" {
+		cols, err := unmarshalColumns([]byte(columnsJSON.String))
+		if err != nil {
+			return ev, fmt.Errorf("unmarshal columns (event class %d): %w", ev.EventClass, err)
+		}
+		ev.Columns = cols
+	} else {
+		ev.Columns = map[int]any{}
+	}
+	if paramsJSON.Valid && paramsJSON.String != "" {
+		if err := json.Unmarshal([]byte(paramsJSON.String), &ev.Params); err != nil {
+			return ev, fmt.Errorf("unmarshal params (event class %d): %w", ev.EventClass, err)
+		}
+	}
+	return ev, nil
+}
+
+// TRCEventFilter — параметры серверной фильтрации событий.
+type TRCEventFilter struct {
+	SPID      int    // 0 = all
+	Procedure string // "" = all
+	EventName string // "" = all
+}
+
+// LoadEventsFiltered загружает события сессии с серверной фильтрацией и лимитом.
+func LoadEventsFiltered(db *store.DB, sessionID int64, f TRCEventFilter, limit int) ([]TRCEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	query := `SELECT event_class, event_name, procedure, duration_ms, params, columns,
+	                 parent_id, depth
+	          FROM trc_events WHERE session_id = $1`
+	args := []interface{}{sessionID}
+	argIdx := 2
+	if f.SPID > 0 {
+		query += fmt.Sprintf(" AND spid = $%d", argIdx)
+		args = append(args, f.SPID)
+		argIdx++
+	}
+	if f.Procedure != "" {
+		query += fmt.Sprintf(" AND procedure = $%d", argIdx)
+		args = append(args, f.Procedure)
+		argIdx++
+	}
+	if f.EventName != "" {
+		query += fmt.Sprintf(" AND event_name = $%d", argIdx)
+		args = append(args, f.EventName)
+		argIdx++
+	}
+	query += fmt.Sprintf(" ORDER BY id LIMIT $%d", argIdx)
+	args = append(args, limit)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load filtered events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []TRCEvent
+	for rows.Next() {
+		ev, err := scanEventRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, ev)
+	}
+	return events, rows.Err()
+}
+
+// LoadSlowEvents загружает самые медленные события сессии.
+func LoadSlowEvents(db *store.DB, sessionID int64, thresholdMs int, limit int) ([]TRCEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := db.Query(
+		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
+		        parent_id, depth
+		 FROM trc_events
+		 WHERE session_id = $1 AND duration_ms >= $2
+		 ORDER BY duration_ms DESC LIMIT $3`,
+		sessionID, thresholdMs, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load slow events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []TRCEvent
+	for rows.Next() {
+		ev, err := scanEventRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, ev)
+	}
+	return events, rows.Err()
+}
+
+// LoadErrorEvents загружает события с ненулевым Error.
+func LoadErrorEvents(db *store.DB, sessionID int64, limit int) ([]TRCEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := db.Query(
+		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
+		        parent_id, depth
+		 FROM trc_events
+		 WHERE session_id = $1 AND error IS NOT NULL AND error <> 0
+		 ORDER BY id LIMIT $2`,
+		sessionID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load error events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []TRCEvent
+	for rows.Next() {
+		ev, err := scanEventRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, ev)
+	}
+	return events, rows.Err()
+}
+
+// LoadEventsByProcedure загружает события конкретной процедуры.
+func LoadEventsByProcedure(db *store.DB, sessionID int64, procName string, limit int) ([]TRCEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := db.Query(
+		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
+		        parent_id, depth
+		 FROM trc_events
+		 WHERE session_id = $1 AND procedure = $2
+		 ORDER BY id LIMIT $3`,
+		sessionID, procName, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load events by procedure: %w", err)
+	}
+	defer rows.Close()
+
+	var events []TRCEvent
+	for rows.Next() {
+		ev, err := scanEventRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, ev)
+	}
+	return events, rows.Err()
+}
+
+// LoadEventCount возвращает количество событий в сессии без их загрузки.
+func LoadEventCount(db *store.DB, sessionID int64) (int, error) {
+	var count int
+	err := db.QueryRow(
+		`SELECT count(*) FROM trc_events WHERE session_id = $1`,
+		sessionID,
+	).Scan(&count)
+	return count, err
+}
+
+// LoadProceduresAggregated агрегирует статистику по процедурам на стороне БД.
+func LoadProceduresAggregated(db *store.DB, sessionID int64) ([]TRCProcAgg, error) {
+	rows, err := db.Query(
+		`SELECT procedure,
+		        count(*) AS cnt,
+		        COALESCE(sum(duration_ms), 0) AS total_ms,
+		        COALESCE(min(duration_ms) FILTER (WHERE duration_ms > 0), 0) AS min_ms,
+		        COALESCE(max(duration_ms), 0) AS max_ms,
+		        COALESCE(avg(duration_ms) FILTER (WHERE duration_ms > 0), 0) AS avg_ms
+		 FROM trc_events
+		 WHERE session_id = $1 AND procedure IS NOT NULL AND procedure <> ''
+		 GROUP BY procedure
+		 ORDER BY total_ms DESC`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load aggregated procedures: %w", err)
+	}
+	defer rows.Close()
+
+	var aggs []TRCProcAgg
+	for rows.Next() {
+		var a TRCProcAgg
+		if err := rows.Scan(&a.Procedure, &a.Count, &a.TotalMs, &a.MinMs, &a.MaxMs, &a.AvgMs); err != nil {
+			return nil, err
+		}
+		aggs = append(aggs, a)
+	}
+	return aggs, rows.Err()
+}
+
+// LoadEventsForTree загружает события для построения дерева через recursive CTE.
+// parent_id в trc_events хранит 1-based offset внутри сессии. Через CTE с
+// row_number() маппим offset на реальный id и строим дерево на стороне БД.
+// spid: 0 = выбрать SPID с наибольшим числом событий.
+// maxDepth: 0 = без ограничения глубины.
+// maxNodes: 0 = без ограничения количества узлов.
+func LoadEventsForTree(db *store.DB, sessionID int64, spid, maxDepth, maxNodes int) ([]TRCEvent, error) {
+	// Если SPID не указан, выбираем SPID с наибольшим числом корневых событий.
+	if spid <= 0 {
+		err := db.QueryRow(
+			`SELECT spid FROM trc_events
+			 WHERE session_id = $1 AND parent_id IS NULL AND spid IS NOT NULL
+			 GROUP BY spid ORDER BY count(*) DESC LIMIT 1`,
+			sessionID,
+		).Scan(&spid)
+		if err != nil {
+			return nil, nil // нет событий
+		}
+	}
+
+	// Recursive CTE: нумеруем строки сессии row_number, маппим parent_id
+	// (1-based offset) на реальный id через join с numbered CTE.
+	query := `WITH RECURSIVE numbered AS (
+		SELECT id, row_number() OVER (ORDER BY id) AS rn
+		FROM trc_events WHERE session_id = $1
+	),
+	tree AS (
+		SELECT e.event_class, e.event_name, e.procedure, e.duration_ms,
+		       e.params, e.columns, e.parent_id, e.depth, e.id, 1 AS tree_depth
+		FROM trc_events e
+		JOIN numbered n ON e.id = n.id
+		WHERE e.session_id = $1 AND e.spid = $2 AND e.parent_id IS NULL
+		UNION ALL
+		SELECT c.event_class, c.event_name, c.procedure, c.duration_ms,
+		       c.params, c.columns, c.parent_id, c.depth, c.id, t.tree_depth + 1
+		FROM trc_events c
+		JOIN numbered nc ON c.id = nc.id
+		JOIN numbered np ON c.parent_id = np.rn
+		JOIN tree t ON np.id = t.id
+		WHERE c.session_id = $1 AND c.spid = $2 AND ($3 = 0 OR t.tree_depth < $3)
+	)
+	SELECT event_class, event_name, procedure, duration_ms, params, columns,
+	       parent_id, depth
+	FROM tree`
+	args := []interface{}{sessionID, spid, maxDepth}
+
+	if maxNodes > 0 {
+		query += ` LIMIT $4`
+		args = append(args, maxNodes)
+	}
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load tree events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []TRCEvent
+	for rows.Next() {
+		ev, err := scanEventRow(rows)
+		if err != nil {
+			return nil, err
+		}
 		events = append(events, ev)
 	}
 	return events, rows.Err()

@@ -56,6 +56,17 @@ type TRCEvent struct {
 	Procedure  string
 	Params     []TRCParam
 	DurationMs int64
+
+	// ParentID — индекс родительского события в срезе Events (для tree building).
+	// -1 (или 0) означает корень. Заполняется в ComputeParentIDs.
+	ParentID int
+
+	// Depth — глубина в дереве вызовов (0 = корень).
+	Depth int
+
+	// EventIndex — порядковый индекс события в срезе Events.
+	// Используется для вычисления parent_id при insert в БД.
+	EventIndex int
 }
 
 // TRCParam — параметр вызова процедуры, извлечённый из TextData.

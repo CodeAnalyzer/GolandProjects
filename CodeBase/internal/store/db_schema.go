@@ -539,8 +539,13 @@ func (db *DB) InitSchema() error {
 			severity       INTEGER,
 			success        INTEGER,
 			params         JSONB,
-			columns        JSONB
+			columns        JSONB,
+			parent_id      BIGINT,
+			depth          INTEGER NOT NULL DEFAULT 0
 		)`,
+		// ALTER для существующих БД, созданных до добавления parent_id/depth
+		`ALTER TABLE trc_events ADD COLUMN IF NOT EXISTS parent_id BIGINT`,
+		`ALTER TABLE trc_events ADD COLUMN IF NOT EXISTS depth INTEGER NOT NULL DEFAULT 0`,
 		`CREATE TABLE IF NOT EXISTS rti_client_events (
 			id             BIGSERIAL PRIMARY KEY,
 			session_id     BIGINT NOT NULL REFERENCES rti_sessions(id) ON DELETE CASCADE,
@@ -667,6 +672,12 @@ func (db *DB) InitSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_trc_events_duration_ms ON trc_events(duration_ms DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_trc_events_spid ON trc_events(spid)`,
 		`CREATE INDEX IF NOT EXISTS idx_trc_events_event_sequence ON trc_events(event_sequence)`,
+		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_spid ON trc_events(session_id, spid)`,
+		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_proc ON trc_events(session_id, procedure)`,
+		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_duration ON trc_events(session_id, duration_ms DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_parent ON trc_events(session_id, parent_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_error ON trc_events(session_id) WHERE error IS NOT NULL AND error <> 0`,
+		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_event_name ON trc_events(session_id, event_name)`,
 	}
 
 	for _, stmt := range statements {

@@ -104,6 +104,72 @@ type openFrame struct {
 	node   *TRCTreeNode
 }
 
+// ComputeParentIDs вычисляет ParentID и Depth для каждого события в срезе
+// events, используя тот же алгоритм Starting/Completed пар, что и buildSPIDTree,
+// но заполняя поля ParentID (индекс родительского события в срезе) и Depth.
+// ParentID = -1 для корневых событий. EventIndex заполняется порядковым номером.
+// Вызывается после парсинга, перед сохранением в БД.
+func ComputeParentIDs(events []TRCEvent) {
+	for i := range events {
+		events[i].EventIndex = i
+		events[i].ParentID = -1
+		events[i].Depth = 0
+	}
+
+	// Группируем по SPID, сохраняя порядок событий.
+	type spidFrame struct {
+		family  string
+		idx     int // индекс события Starting в срезе events
+	}
+
+	bySPID := make(map[int][]int) // spid -> indices
+	for i := range events {
+		spid, ok := events[i].Columns[12].(int32)
+		if !ok {
+			continue
+		}
+		s := int(spid)
+		bySPID[s] = append(bySPID[s], i)
+	}
+
+	for _, indices := range bySPID {
+		var stack []spidFrame
+		for _, idx := range indices {
+			ev := &events[idx]
+			name := ev.EventName
+			switch {
+			case strings.HasSuffix(name, "Starting"):
+				if len(stack) > 0 {
+					top := stack[len(stack)-1]
+					ev.ParentID = top.idx
+					ev.Depth = events[top.idx].Depth + 1
+				}
+				stack = append(stack, spidFrame{
+					family: strings.TrimSuffix(name, "Starting"),
+					idx:    idx,
+				})
+			case strings.HasSuffix(name, "Completed"):
+				family := strings.TrimSuffix(name, "Completed")
+				if len(stack) > 0 && stack[len(stack)-1].family == family {
+					stack = stack[:len(stack)-1]
+				}
+				// Completed событие — ребёнок текущего верхнего фрейма (если есть).
+				if len(stack) > 0 {
+					top := stack[len(stack)-1]
+					ev.ParentID = top.idx
+					ev.Depth = events[top.idx].Depth + 1
+				}
+			default:
+				if len(stack) > 0 {
+					top := stack[len(stack)-1]
+					ev.ParentID = top.idx
+					ev.Depth = events[top.idx].Depth + 1
+				}
+			}
+		}
+	}
+}
+
 func buildSPIDTree(events []*TRCEvent) []*TRCTreeNode {
 	var roots []*TRCTreeNode
 	var stack []openFrame
