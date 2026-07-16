@@ -612,6 +612,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		"codebase_rti_summary": {
 			Definition: toolDefinition{Name: "codebase_rti_summary", Description: "Get summary statistics for an RTI session: total calls, errors, max nest level, unparsed lines, top 10 slowest calls. Requires either a saved session ID or a file path to parse on the fly.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file to parse on the fly")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
+				sessionID, err := resolveRTISessionID(args)
+				if err != nil {
+					return nil, err
+				}
+				if sessionID > 0 && db != nil {
+					return rti.LoadSummary(db, sessionID)
+				}
 				result, err := loadRTIFromArgs(db, args)
 				if err != nil {
 					return nil, err
@@ -622,20 +629,34 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		"codebase_rti_tree": {
 			Definition: toolDefinition{Name: "codebase_rti_tree", Description: "Build and return a call tree from an RTI session. The tree shows nested procedure calls with elapsed time, return values, module info, and source file locations (enriched from CodeBase index). If procedure is omitted, auto-selects the root call with the most descendants.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "procedure": stringProp("Root procedure name (default: auto-select)"), "max_depth": intProp("Max tree depth (0 = unlimited)")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
-				result, err := loadRTIFromArgs(db, args)
+				procName, _ := optionalString(args, "procedure")
+				maxDepth, _ := optionalInt(args, "max_depth")
+				sessionID, err := resolveRTISessionID(args)
 				if err != nil {
 					return nil, err
 				}
-				procName, _ := optionalString(args, "procedure")
-				maxDepth, _ := optionalInt(args, "max_depth")
-				tree := rti.BuildTree(result.Calls, procName, maxDepth)
+				var calls []*rti.RTICall
+				if sessionID > 0 && db != nil {
+					maxTreeNodes := 5000
+					calls, err = rti.LoadCallsForTree(db, sessionID, procName, maxDepth, maxTreeNodes)
+					if err != nil {
+						return nil, err
+					}
+				} else {
+					result, err := loadRTIFromArgs(db, args)
+					if err != nil {
+						return nil, err
+					}
+					calls = result.Calls
+				}
+				tree := rti.BuildTree(calls, procName, maxDepth)
 				if tree == nil {
 					return nil, fmt.Errorf("procedure %q not found in RTI log", procName)
 				}
 				var enrichMap map[string]*rti.ProcedureEnrichment
 				if db != nil {
 					q := query.New(db)
-					enrichMap = rti.EnrichCalls(q, result.Calls)
+					enrichMap = rti.EnrichCalls(q, calls)
 				}
 				return map[string]interface{}{
 					"tree":       tree,
@@ -644,39 +665,71 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_rti_errors": {
-			Definition: toolDefinition{Name: "codebase_rti_errors", Description: "Find all calls with non-zero RetVal in an RTI session. Returns server errors (procedure name, line number, return value, error context, elapsed time, nest level, module info, error code description, source file) and client errors (ClassName.MethodName, error text, source file from CodeBase enrichment).", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file")})},
+			Definition: toolDefinition{Name: "codebase_rti_errors", Description: "Find all calls with non-zero RetVal in an RTI session. Returns server errors (procedure name, line number, return value, error context, elapsed time, nest level, module info, error code description, source file) and client errors (ClassName.MethodName, error text, source file from CodeBase enrichment).", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "limit": intProp("Maximum number of errors to return (default 100, max 1000)")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
-				result, err := loadRTIFromArgs(db, args)
-				if err != nil {
-					return nil, err
+				limit, _ := optionalInt(args, "limit")
+				if limit <= 0 {
+					limit = 100
+				}
+				if limit > 1000 {
+					limit = 1000
 				}
 				type callSlim struct {
 					*rti.RTICall
 					BLogTables interface{} `json:"blog_tables,omitempty"`
 					BLogBlocks interface{} `json:"blog_blocks,omitempty"`
 				}
-				var serverErrors []callSlim
-				for _, c := range result.Calls {
-					if c.RetVal != nil && *c.RetVal != 0 {
-						serverErrors = append(serverErrors, callSlim{RTICall: c})
+				var errorCalls []*rti.RTICall
+				var clientErrors []*rti.RTIClientEvent
+				sessionID, err := resolveRTISessionID(args)
+				if err != nil {
+					return nil, err
+				}
+				if sessionID > 0 && db != nil {
+					errorCalls, err = rti.LoadErrorCalls(db, sessionID, limit)
+					if err != nil {
+						return nil, err
+					}
+					clientErrors, err = rti.LoadClientErrors(db, sessionID, limit)
+					if err != nil {
+						return nil, err
+					}
+				} else {
+					result, err := loadRTIFromArgs(db, args)
+					if err != nil {
+						return nil, err
+					}
+					for _, c := range result.Calls {
+						if c.RetVal != nil && *c.RetVal != 0 {
+							errorCalls = append(errorCalls, c)
+							if len(errorCalls) >= limit {
+								break
+							}
+						}
+					}
+					for _, ev := range result.ClientEvents {
+						if ev.Kind == "error" && ev.ErrorText != "" {
+							clientErrors = append(clientErrors, ev)
+							if len(clientErrors) >= limit {
+								break
+							}
+						}
 					}
 				}
-				var clientErrors []*rti.RTIClientEvent
-				for _, ev := range result.ClientEvents {
-					if ev.Kind == "error" && ev.ErrorText != "" {
-						clientErrors = append(clientErrors, ev)
-					}
+				var serverErrors []callSlim
+				for _, c := range errorCalls {
+					serverErrors = append(serverErrors, callSlim{RTICall: c})
 				}
 				var serverEnrich map[string]*rti.ProcedureEnrichment
 				var clientEnrich map[string]*rti.ClientEnrichment
 				if db != nil && (len(serverErrors) > 0 || len(clientErrors) > 0) {
 					q := query.New(db)
 					if len(serverErrors) > 0 {
-						errorCalls := make([]*rti.RTICall, 0, len(serverErrors))
+						callsForEnrich := make([]*rti.RTICall, 0, len(serverErrors))
 						for _, s := range serverErrors {
-							errorCalls = append(errorCalls, s.RTICall)
+							callsForEnrich = append(callsForEnrich, s.RTICall)
 						}
-						serverEnrich = rti.EnrichCalls(q, errorCalls)
+						serverEnrich = rti.EnrichCalls(q, callsForEnrich)
 						for _, s := range serverErrors {
 							if s.RetVal != nil {
 								retCode, err := q.LookupRetCode(int64(*s.RetVal))
@@ -698,51 +751,87 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					"client_errors":      clientErrors,
 					"client_error_count": len(clientErrors),
 					"client_enrichment":  clientEnrich,
+					"limit":              limit,
 				}, nil
 			},
 		},
 		"codebase_rti_slow": {
-			Definition: toolDefinition{Name: "codebase_rti_slow", Description: "Find the slowest calls in an RTI session above a threshold. Returns server calls sorted by elapsed time descending, and client SQL blocks sorted by duration. Includes enrichment data (source files, SQL origin) from CodeBase index.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "threshold_ms": intProp("Minimum elapsed milliseconds (default 100)")})},
+			Definition: toolDefinition{Name: "codebase_rti_slow", Description: "Find the slowest calls in an RTI session above a threshold. Returns server calls sorted by elapsed time descending, and client SQL blocks sorted by duration. Includes enrichment data (source files, SQL origin) from CodeBase index.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "threshold_ms": intProp("Minimum elapsed milliseconds (default 100)"), "limit": intProp("Maximum number of calls to return (default 100, max 1000)")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
-				result, err := loadRTIFromArgs(db, args)
-				if err != nil {
-					return nil, err
-				}
 				threshold, _ := optionalInt(args, "threshold_ms")
 				if threshold <= 0 {
 					threshold = 100
+				}
+				limit, _ := optionalInt(args, "limit")
+				if limit <= 0 {
+					limit = 100
+				}
+				if limit > 1000 {
+					limit = 1000
+				}
+				sessionID, err := resolveRTISessionID(args)
+				if err != nil {
+					return nil, err
 				}
 				type callSlim struct {
 					*rti.RTICall
 					BLogTables interface{} `json:"blog_tables,omitempty"`
 					BLogBlocks interface{} `json:"blog_blocks,omitempty"`
 				}
-				var slow []callSlim
-				for _, c := range result.Calls {
-					if c.ElapsedMs >= threshold {
-						slow = append(slow, callSlim{RTICall: c})
+				var slowCalls []*rti.RTICall
+				var slowClientSQL []*rti.RTIClientEvent
+				if sessionID > 0 && db != nil {
+					slowCalls, err = rti.LoadSlowCalls(db, sessionID, threshold, limit)
+					if err != nil {
+						return nil, err
+					}
+					slowClientSQL, err = rti.LoadSlowClientSQL(db, sessionID, threshold, limit)
+					if err != nil {
+						return nil, err
+					}
+				} else {
+					result, err := loadRTIFromArgs(db, args)
+					if err != nil {
+						return nil, err
+					}
+					for _, c := range result.Calls {
+						if c.ElapsedMs >= threshold {
+							slowCalls = append(slowCalls, c)
+						}
+					}
+					sort.Slice(slowCalls, func(i, j int) bool {
+						return slowCalls[i].ElapsedMs > slowCalls[j].ElapsedMs
+					})
+					if len(slowCalls) > limit {
+						slowCalls = slowCalls[:limit]
+					}
+					thresholdSec := float64(threshold) / 1000.0
+					for _, ev := range result.ClientEvents {
+						if ev.Kind == "sql_block" && ev.SQL != nil && ev.SQL.DurationSec >= thresholdSec {
+							slowClientSQL = append(slowClientSQL, ev)
+						}
+					}
+					sort.Slice(slowClientSQL, func(i, j int) bool {
+						return slowClientSQL[i].SQL.DurationSec > slowClientSQL[j].SQL.DurationSec
+					})
+					if len(slowClientSQL) > limit {
+						slowClientSQL = slowClientSQL[:limit]
 					}
 				}
-				sort.Slice(slow, func(i, j int) bool {
-					return slow[i].ElapsedMs > slow[j].ElapsedMs
-				})
-				thresholdSec := float64(threshold) / 1000.0
-				var slowClientSQL []*rti.RTIClientEvent
-				for _, ev := range result.ClientEvents {
-					if ev.Kind == "sql_block" && ev.SQL != nil && ev.SQL.DurationSec >= thresholdSec {
-						slowClientSQL = append(slowClientSQL, ev)
-					}
+				var slow []callSlim
+				for _, c := range slowCalls {
+					slow = append(slow, callSlim{RTICall: c})
 				}
 				var serverEnrich map[string]*rti.ProcedureEnrichment
 				var clientEnrich map[string]*rti.ClientEnrichment
 				if db != nil && (len(slow) > 0 || len(slowClientSQL) > 0) {
 					q := query.New(db)
 					if len(slow) > 0 {
-						slowCalls := make([]*rti.RTICall, 0, len(slow))
+						callsForEnrich := make([]*rti.RTICall, 0, len(slow))
 						for _, s := range slow {
-							slowCalls = append(slowCalls, s.RTICall)
+							callsForEnrich = append(callsForEnrich, s.RTICall)
 						}
-						serverEnrich = rti.EnrichCalls(q, slowCalls)
+						serverEnrich = rti.EnrichCalls(q, callsForEnrich)
 					}
 					if len(slowClientSQL) > 0 {
 						clientEnrich = rti.EnrichClientEvents(q, slowClientSQL)
@@ -755,25 +844,47 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					"client_sql_blocks": slowClientSQL,
 					"client_sql_count":  len(slowClientSQL),
 					"threshold":         threshold,
+					"limit":             limit,
 					"client_enrichment": clientEnrich,
 				}, nil
 			},
 		},
 		"codebase_rti_details": {
-			Definition: toolDefinition{Name: "codebase_rti_details", Description: "Get enriched details for a specific procedure in an RTI session: source file path, line range, parameter definitions (name, type, direction) from CodeBase index, all call instances with timing, return values, error descriptions, and context.", InputSchema: objectSchema(map[string]interface{}{"procedure": stringProp("Procedure name"), "session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file")})},
+			Definition: toolDefinition{Name: "codebase_rti_details", Description: "Get enriched details for a specific procedure in an RTI session: source file path, line range, parameter definitions (name, type, direction) from CodeBase index, all call instances with timing, return values, error descriptions, and context.", InputSchema: objectSchema(map[string]interface{}{"procedure": stringProp("Procedure name"), "session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "limit": intProp("Maximum number of call instances to return (default 100, max 1000)")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				procName, err := requiredString(args, "procedure")
 				if err != nil {
 					return nil, err
 				}
-				result, err := loadRTIFromArgs(db, args)
+				limit, _ := optionalInt(args, "limit")
+				if limit <= 0 {
+					limit = 100
+				}
+				if limit > 1000 {
+					limit = 1000
+				}
+				sessionID, err := resolveRTISessionID(args)
 				if err != nil {
 					return nil, err
 				}
 				var calls []*rti.RTICall
-				for _, c := range result.Calls {
-					if c.Procedure == procName {
-						calls = append(calls, c)
+				if sessionID > 0 && db != nil {
+					calls, err = rti.LoadCallsByProcedure(db, sessionID, procName, limit)
+					if err != nil {
+						return nil, err
+					}
+				} else {
+					result, err := loadRTIFromArgs(db, args)
+					if err != nil {
+						return nil, err
+					}
+					for _, c := range result.Calls {
+						if c.Procedure == procName {
+							calls = append(calls, c)
+							if len(calls) >= limit {
+								break
+							}
+						}
 					}
 				}
 				if len(calls) == 0 {
@@ -787,6 +898,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				return map[string]interface{}{
 					"procedure":  procName,
 					"calls":      calls,
+					"count":      len(calls),
 					"enrichment": enrich,
 				}, nil
 			},
@@ -842,20 +954,41 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_rti_blog": {
-			Definition: toolDefinition{Name: "codebase_rti_blog", Description: "Get business log data for a specific procedure in an RTI session: business log blocks (BLOCK_BEGIN/END with names and timing), checkpoints with timestamps, and table dumps (M_LOG_TABLE/M_LOG_TABLE_LISTID). Requires either a saved session ID or a file path.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "procedure": stringProp("Procedure name")})},
+			Definition: toolDefinition{Name: "codebase_rti_blog", Description: "Get business log data for a specific procedure in an RTI session: business log blocks (BLOCK_BEGIN/END with names and timing), checkpoints with timestamps, and table dumps (M_LOG_TABLE/M_LOG_TABLE_LISTID). Requires either a saved session ID or a file path.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "procedure": stringProp("Procedure name"), "limit": intProp("Maximum number of call instances to return (default 100, max 1000)")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				procName, err := requiredString(args, "procedure")
 				if err != nil {
 					return nil, err
 				}
-				result, err := loadRTIFromArgs(db, args)
+				limit, _ := optionalInt(args, "limit")
+				if limit <= 0 {
+					limit = 100
+				}
+				if limit > 1000 {
+					limit = 1000
+				}
+				sessionID, err := resolveRTISessionID(args)
 				if err != nil {
 					return nil, err
 				}
 				var calls []*rti.RTICall
-				for _, c := range result.Calls {
-					if c.Procedure == procName {
-						calls = append(calls, c)
+				if sessionID > 0 && db != nil {
+					calls, err = rti.LoadCallsByProcedure(db, sessionID, procName, limit)
+					if err != nil {
+						return nil, err
+					}
+				} else {
+					result, err := loadRTIFromArgs(db, args)
+					if err != nil {
+						return nil, err
+					}
+					for _, c := range result.Calls {
+						if c.Procedure == procName {
+							calls = append(calls, c)
+							if len(calls) >= limit {
+								break
+							}
+						}
 					}
 				}
 				if len(calls) == 0 {
@@ -895,11 +1028,15 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				"class_name":  stringProp("Optional client event class name filter (case-insensitive)"),
 				"method_name": stringProp("Optional client event method name filter (case-insensitive)"),
 				"format":      stringProp("Output format: full (default) or short. Short omits BPL, Connection, SQL, Memory, ErrorText, RawBody."),
-			})},
+				"limit":       intProp("Maximum number of events to return (default 100, max 1000)"),
+		})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
-				result, err := loadRTIFromArgs(db, args)
-				if err != nil {
-					return nil, err
+				limit, _ := optionalInt(args, "limit")
+				if limit <= 0 {
+					limit = 100
+				}
+				if limit > 1000 {
+					limit = 1000
 				}
 
 				// Build filter from optional args
@@ -951,8 +1088,26 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					filter.PID = &pidVal
 				}
 
-				// Filter events BEFORE building tree (saves enrichment queries)
-				filteredEvents := rti.FilterClientEvents(result.ClientEvents, filter)
+				var filteredEvents []*rti.RTIClientEvent
+				sessionID, err := resolveRTISessionID(args)
+				if err != nil {
+					return nil, err
+				}
+				if sessionID > 0 && db != nil {
+					filteredEvents, err = rti.LoadClientEventsFiltered(db, sessionID, filter, limit)
+					if err != nil {
+						return nil, err
+					}
+				} else {
+					result, err := loadRTIFromArgs(db, args)
+					if err != nil {
+						return nil, err
+					}
+					filteredEvents = rti.FilterClientEvents(result.ClientEvents, filter)
+					if len(filteredEvents) > limit {
+						filteredEvents = filteredEvents[:limit]
+					}
+				}
 
 				// Build tree from filtered events; pid=0 because PID filter
 				// was already applied by FilterClientEvents
@@ -978,8 +1133,8 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				return map[string]interface{}{
 					"nodes":                 respNodes,
 					"enrichment":            clientEnrich,
-					"total_events_count":    len(result.ClientEvents),
 					"filtered_events_count": len(filteredEvents),
+					"limit":                 limit,
 				}, nil
 			},
 		},
@@ -994,11 +1149,15 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				"class_name":  stringProp("Optional client event class name filter (case-insensitive)"),
 				"method_name": stringProp("Optional client event method name filter (case-insensitive)"),
 				"format":      stringProp("Output format: full (default) or short. Short omits params, checkpoints, blog_*, SQL text."),
-			})},
+				"limit":       intProp("Maximum number of items to return per type (default 100, max 1000)"),
+		})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
-				result, err := loadRTIFromArgs(db, args)
-				if err != nil {
-					return nil, err
+				limit, _ := optionalInt(args, "limit")
+				if limit <= 0 {
+					limit = 100
+				}
+				if limit > 1000 {
+					limit = 1000
 				}
 
 				// Build filter from optional args
@@ -1055,8 +1214,34 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					filter.PID = &pidVal
 				}
 
-				// Apply filters
-				filteredCalls, filteredEvents := rti.ApplyTimelineFilter(result.Calls, result.ClientEvents, filter)
+				var filteredCalls []*rti.RTICall
+				var filteredEvents []*rti.RTIClientEvent
+				sessionID, err := resolveRTISessionID(args)
+				if err != nil {
+					return nil, err
+				}
+				if sessionID > 0 && db != nil {
+					filteredCalls, err = rti.LoadTimelineCalls(db, sessionID, filter, limit)
+					if err != nil {
+						return nil, err
+					}
+					filteredEvents, err = rti.LoadTimelineClientEvents(db, sessionID, filter, limit)
+					if err != nil {
+						return nil, err
+					}
+				} else {
+					result, err := loadRTIFromArgs(db, args)
+					if err != nil {
+						return nil, err
+					}
+					filteredCalls, filteredEvents = rti.ApplyTimelineFilter(result.Calls, result.ClientEvents, filter)
+					if len(filteredCalls) > limit {
+						filteredCalls = filteredCalls[:limit]
+					}
+					if len(filteredEvents) > limit {
+						filteredEvents = filteredEvents[:limit]
+					}
+				}
 
 				// Enrich client events AFTER filtering (saves DB queries)
 				var clientEnrich map[string]*rti.ClientEnrichment
@@ -1085,10 +1270,9 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					"calls":                 respCalls,
 					"client_events":         respEvents,
 					"enrichment":            clientEnrich,
-					"total_calls_count":     len(result.Calls),
 					"filtered_calls_count":  len(filteredCalls),
-					"total_events_count":    len(result.ClientEvents),
 					"filtered_events_count": len(filteredEvents),
+					"limit":                 limit,
 				}, nil
 			},
 		},
@@ -1467,6 +1651,11 @@ func optionalInt64(args map[string]interface{}, key string) (int64, error) {
 	default:
 		return 0, fmt.Errorf("argument %s must be integer", key)
 	}
+}
+
+// resolveRTISessionID extracts session_id from args. Returns 0 if not provided.
+func resolveRTISessionID(args map[string]interface{}) (int64, error) {
+	return optionalInt64(args, "session_id")
 }
 
 func loadRTIFromArgs(db *store.DB, args map[string]interface{}) (*rti.RTIParseResult, error) {

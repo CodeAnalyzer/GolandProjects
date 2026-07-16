@@ -271,13 +271,12 @@ func insertRTICalls(db *store.DB, calls []*RTICall, sessionID int64) (map[int64]
 		}
 	}
 
-	// Обновить parent_id: оригинальные ID → DB ID
-	updateStmt, err := tx.Prepare(`UPDATE rti_calls SET parent_id = $1 WHERE id = $2 AND session_id = $3`)
-	if err != nil {
-		return nil, err
+	// Обновить parent_id: оригинальные ID → DB ID (batched UPDATE FROM VALUES)
+	type parentPair struct {
+		id       int64
+		parentID int64
 	}
-	defer updateStmt.Close()
-
+	var pairs []parentPair
 	for _, c := range calls {
 		if c.ParentID == nil {
 			continue
@@ -290,7 +289,29 @@ func insertRTICalls(db *store.DB, calls []*RTICall, sessionID int64) (map[int64]
 		if !ok {
 			continue
 		}
-		if _, err := updateStmt.Exec(parentDBID, dbID, sessionID); err != nil {
+		pairs = append(pairs, parentPair{id: dbID, parentID: parentDBID})
+	}
+
+	const batchSize = 5000
+	for i := 0; i < len(pairs); i += batchSize {
+		end := i + batchSize
+		if end > len(pairs) {
+			end = len(pairs)
+		}
+		batch := pairs[i:end]
+		var sb strings.Builder
+		sb.WriteString("UPDATE rti_calls AS t SET parent_id = v.parent_id FROM (VALUES ")
+		args := make([]interface{}, 0, len(batch)*2+1)
+		for j, p := range batch {
+			if j > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(fmt.Sprintf("($%d::bigint, $%d::bigint)", j*2+1, j*2+2))
+			args = append(args, p.id, p.parentID)
+		}
+		sb.WriteString(fmt.Sprintf(") AS v(id, parent_id) WHERE t.id = v.id AND t.session_id = $%d", len(batch)*2+1))
+		args = append(args, sessionID)
+		if _, err := tx.Exec(sb.String(), args...); err != nil {
 			return nil, err
 		}
 	}
@@ -687,14 +708,15 @@ func LoadCalls(db *store.DB, sessionID int64) ([]*RTICall, error) {
 		calls = append(calls, &c)
 	}
 
-	// Load children IDs
+	// Load children IDs — O(n) via map lookup instead of O(n²) linear scan
+	callByID := make(map[int64]*RTICall, len(calls))
+	for _, c := range calls {
+		callByID[c.ID] = c
+	}
 	for _, c := range calls {
 		if c.ParentID != nil {
-			for _, p := range calls {
-				if p.ID == *c.ParentID {
-					p.Children = append(p.Children, c.ID)
-					break
-				}
+			if p, ok := callByID[*c.ParentID]; ok {
+				p.Children = append(p.Children, c.ID)
 			}
 		}
 	}
@@ -926,4 +948,700 @@ func loadAllCheckpoints(db *store.DB, sessionID int64, calls []*RTICall) error {
 		}
 	}
 	return rows.Err()
+}
+
+// scanCallColumns сканирует стандартный набор колонок rti_calls в RTICall.
+func scanCallColumns(rows *sql.Rows) (*RTICall, error) {
+	var c RTICall
+	var enterTime sql.NullTime
+	var exitTime sql.NullTime
+	var retVal sql.NullInt64
+	var parentID sql.NullInt64
+	var moduleName sql.NullString
+	if err := rows.Scan(
+		&c.ID, &c.Procedure, &c.EnterLine, &c.ExitLine,
+		&enterTime, &exitTime, &c.ElapsedMs, &c.NestLevel,
+		&c.ModuleID, &moduleName, &c.TranCount, &c.BeginCnt,
+		&retVal, &c.RetValContext, &parentID, &c.SPID,
+	); err != nil {
+		return nil, err
+	}
+	if enterTime.Valid {
+		c.EnterTime = enterTime.Time
+	}
+	if exitTime.Valid {
+		c.ExitTime = &exitTime.Time
+	}
+	if retVal.Valid {
+		v := int(retVal.Int64)
+		c.RetVal = &v
+	}
+	if parentID.Valid {
+		pid := parentID.Int64
+		c.ParentID = &pid
+	}
+	if moduleName.Valid {
+		c.ModuleName = moduleName.String
+	}
+	return &c, nil
+}
+
+const callSelectColumns = `id, procedure, enter_line, exit_line, enter_time, exit_time,
+	elapsed_ms, nest_level, module_id, module_name, tran_count,
+	begin_cnt, ret_val, ret_val_context, parent_id, spid`
+
+// scanClientEventColumns сканирует стандартный набор колонок rti_client_events.
+func scanClientEventColumns(rows *sql.Rows) (*RTIClientEvent, error) {
+	var ev RTIClientEvent
+	var ts sql.NullTime
+	var level, category, className, methodName sql.NullString
+	var payloadJSON sql.NullString
+	var serverCallID sql.NullInt64
+
+	if err := rows.Scan(
+		&ev.ID, &ts, &level, &category, &className, &methodName,
+		&ev.PID, &ev.SeqNo, &ev.Line, &ev.Kind, &ev.ElapsedMs,
+		&payloadJSON, &serverCallID,
+	); err != nil {
+		return nil, err
+	}
+	if ts.Valid {
+		ev.Timestamp = ts.Time
+	}
+	ev.Level = level.String
+	ev.Category = category.String
+	ev.ClassName = className.String
+	ev.MethodName = methodName.String
+	if serverCallID.Valid {
+		id := serverCallID.Int64
+		ev.ServerCallID = &id
+	}
+
+	if payloadJSON.Valid && payloadJSON.String != "" {
+		var payload clientEventPayload
+		if err := json.Unmarshal([]byte(payloadJSON.String), &payload); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal client event payload (id=%d): %w", ev.ID, err)
+		}
+		ev.BPL = payload.BPL
+		ev.Connection = payload.Connection
+		ev.SQL = payload.SQL
+		ev.TranCount = payload.TranCount
+		ev.Memory = payload.Memory
+		ev.ErrorText = payload.ErrorText
+		ev.RawBody = payload.RawBody
+	}
+	return &ev, nil
+}
+
+// LoadSummary загружает сводку по сессии напрямую из БД через SQL-агрегаты,
+// без загрузки всех вызовов в память.
+func LoadSummary(db *store.DB, sessionID int64) (*RTISummary, error) {
+	session, err := GetSession(db, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
+	}
+
+	summary := &RTISummary{
+		FilePath:      session.FilePath,
+		FileSize:      session.FileSize,
+		TotalCalls:    session.TotalCalls,
+		ErrorsCount:   session.ErrorsCount,
+		MaxNestLevel:  session.MaxNestLevel,
+		UnparsedLines: session.UnparsedLines,
+	}
+
+	// Агрегаты из rti_calls
+	var totalCalls, errorsCount, maxNest, slowCalls int
+	err = db.QueryRow(
+		`SELECT count(*),
+		        count(*) FILTER (WHERE ret_val IS NOT NULL AND ret_val != 0),
+		        COALESCE(max(nest_level), 0),
+		        count(*) FILTER (WHERE elapsed_ms >= 100)
+		 FROM rti_calls WHERE session_id = $1`,
+		sessionID,
+	).Scan(&totalCalls, &errorsCount, &maxNest, &slowCalls)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("failed to load call aggregates: %w", err)
+	}
+	summary.TotalCalls = totalCalls
+	summary.ErrorsCount = errorsCount
+	summary.MaxNestLevel = maxNest
+	summary.SlowCallsCount = slowCalls
+
+	// Top 10 slow calls (без params/checkpoints/blog)
+	rows, err := db.Query(
+		`SELECT `+callSelectColumns+`
+		 FROM rti_calls WHERE session_id = $1 ORDER BY elapsed_ms DESC LIMIT 10`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load top slow calls: %w", err)
+	}
+	var topSlow []RTICall
+	for rows.Next() {
+		c, err := scanCallColumns(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		c.BLogTables = nil
+		c.BLogBlocks = nil
+		topSlow = append(topSlow, *c)
+	}
+	rows.Close()
+	summary.TopSlow = topSlow
+
+	// Клиентские агрегаты
+	var clientCount, clientErrors, clientSlowSQL int
+	err = db.QueryRow(
+		`SELECT count(*),
+		        count(*) FILTER (WHERE kind = 'error' AND payload->>'error_text' != ''),
+		        count(*) FILTER (WHERE kind = 'sql_block' AND elapsed_ms >= 100)
+		 FROM rti_client_events WHERE session_id = $1`,
+		sessionID,
+	).Scan(&clientCount, &clientErrors, &clientSlowSQL)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("failed to load client aggregates: %w", err)
+	}
+	summary.ClientEventsCount = clientCount
+	summary.ClientErrorsCount = clientErrors
+	summary.ClientSlowSQLCount = clientSlowSQL
+
+	// Top 10 slow client SQL blocks
+	clientRows, err := db.Query(
+		`SELECT id, timestamp, level, category, class_name, method_name,
+		        pid, seq_no, line_no, kind, elapsed_ms, payload, server_call_id
+		 FROM rti_client_events
+		 WHERE session_id = $1 AND kind = 'sql_block'
+		 ORDER BY elapsed_ms DESC LIMIT 10`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load top slow client SQL: %w", err)
+	}
+	var topSlowClientSQL []RTIClientEvent
+	for clientRows.Next() {
+		ev, err := scanClientEventColumns(clientRows)
+		if err != nil {
+			clientRows.Close()
+			return nil, err
+		}
+		topSlowClientSQL = append(topSlowClientSQL, *ev)
+	}
+	clientRows.Close()
+	summary.TopSlowClientSQL = topSlowClientSQL
+
+	return summary, nil
+}
+
+// LoadSlowCalls загружает медленные вызовы из БД с фильтрацией и лимитом на стороне SQL.
+// Не загружает params/checkpoints/blog — только базовые поля вызова.
+func LoadSlowCalls(db *store.DB, sessionID int64, thresholdMs int, limit int) ([]*RTICall, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := db.Query(
+		`SELECT `+callSelectColumns+`
+		 FROM rti_calls
+		 WHERE session_id = $1 AND elapsed_ms >= $2
+		 ORDER BY elapsed_ms DESC LIMIT $3`,
+		sessionID, thresholdMs, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load slow calls: %w", err)
+	}
+	defer rows.Close()
+
+	var calls []*RTICall
+	for rows.Next() {
+		c, err := scanCallColumns(rows)
+		if err != nil {
+			return nil, err
+		}
+		calls = append(calls, c)
+	}
+	return calls, rows.Err()
+}
+
+// LoadErrorCalls загружает вызовы с ненулевым ret_val из БД с лимитом.
+func LoadErrorCalls(db *store.DB, sessionID int64, limit int) ([]*RTICall, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := db.Query(
+		`SELECT `+callSelectColumns+`
+		 FROM rti_calls
+		 WHERE session_id = $1 AND ret_val IS NOT NULL AND ret_val != 0
+		 ORDER BY id LIMIT $2`,
+		sessionID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load error calls: %w", err)
+	}
+	defer rows.Close()
+
+	var calls []*RTICall
+	for rows.Next() {
+		c, err := scanCallColumns(rows)
+		if err != nil {
+			return nil, err
+		}
+		calls = append(calls, c)
+	}
+	return calls, rows.Err()
+}
+
+// LoadClientErrors загружает клиентские ошибки из БД с лимитом.
+func LoadClientErrors(db *store.DB, sessionID int64, limit int) ([]*RTIClientEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := db.Query(
+		`SELECT id, timestamp, level, category, class_name, method_name,
+		        pid, seq_no, line_no, kind, elapsed_ms, payload, server_call_id
+		 FROM rti_client_events
+		 WHERE session_id = $1 AND kind = 'error' AND payload->>'error_text' != ''
+		 ORDER BY id LIMIT $2`,
+		sessionID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load client errors: %w", err)
+	}
+	defer rows.Close()
+
+	var events []*RTIClientEvent
+	for rows.Next() {
+		ev, err := scanClientEventColumns(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, ev)
+	}
+	return events, rows.Err()
+}
+
+// LoadSlowClientSQL загружает медленные клиентские SQL-блоки из БД с лимитом.
+func LoadSlowClientSQL(db *store.DB, sessionID int64, thresholdMs int, limit int) ([]*RTIClientEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := db.Query(
+		`SELECT id, timestamp, level, category, class_name, method_name,
+		        pid, seq_no, line_no, kind, elapsed_ms, payload, server_call_id
+		 FROM rti_client_events
+		 WHERE session_id = $1 AND kind = 'sql_block' AND elapsed_ms >= $2
+		 ORDER BY elapsed_ms DESC LIMIT $3`,
+		sessionID, thresholdMs, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load slow client SQL: %w", err)
+	}
+	defer rows.Close()
+
+	var events []*RTIClientEvent
+	for rows.Next() {
+		ev, err := scanClientEventColumns(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, ev)
+	}
+	return events, rows.Err()
+}
+
+// LoadCallsByProcedure загружает вызовы конкретной процедуры из БД с лимитом.
+// Загружает params/checkpoints/blog только для найденных вызовов.
+func LoadCallsByProcedure(db *store.DB, sessionID int64, procName string, limit int) ([]*RTICall, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := db.Query(
+		`SELECT `+callSelectColumns+`
+		 FROM rti_calls
+		 WHERE session_id = $1 AND procedure = $2
+		 ORDER BY id LIMIT $3`,
+		sessionID, procName, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load calls by procedure: %w", err)
+	}
+	defer rows.Close()
+
+	var calls []*RTICall
+	for rows.Next() {
+		c, err := scanCallColumns(rows)
+		if err != nil {
+			return nil, err
+		}
+		calls = append(calls, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(calls) == 0 {
+		return calls, nil
+	}
+
+	// Build callID map for detail loading
+	callMap := make(map[int64]*RTICall, len(calls))
+	callIDs := make([]int64, 0, len(calls))
+	for _, c := range calls {
+		callMap[c.ID] = c
+		callIDs = append(callIDs, c.ID)
+	}
+
+	// Load params, checkpoints, blog for these calls only
+	if err := loadDetailsForCallIDs(db, sessionID, callIDs, callMap); err != nil {
+		return nil, err
+	}
+
+	return calls, nil
+}
+
+// loadDetailsForCallIDs загружает params/checkpoints/blog для указанных call IDs.
+func loadDetailsForCallIDs(db *store.DB, sessionID int64, callIDs []int64, callMap map[int64]*RTICall) error {
+	if len(callIDs) == 0 {
+		return nil
+	}
+
+	// Params
+	paramRows, err := db.Query(
+		`SELECT call_id, name, type, value
+		 FROM rti_params
+		 WHERE call_id = ANY($1)
+		 ORDER BY id`,
+		pq.Array(callIDs),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to load params: %w", err)
+	}
+	defer paramRows.Close()
+	for paramRows.Next() {
+		var callID int64
+		var p RTIParam
+		if err := paramRows.Scan(&callID, &p.Name, &p.Type, &p.Value); err != nil {
+			return err
+		}
+		if c, ok := callMap[callID]; ok {
+			c.Params = append(c.Params, p)
+		}
+	}
+	if err := paramRows.Err(); err != nil {
+		return err
+	}
+
+	// Checkpoints
+	cpRows, err := db.Query(
+		`SELECT call_id, label, timestamp, elapsed_ms, line_no
+		 FROM rti_checkpoints
+		 WHERE call_id = ANY($1)
+		 ORDER BY id`,
+		pq.Array(callIDs),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to load checkpoints: %w", err)
+	}
+	defer cpRows.Close()
+	for cpRows.Next() {
+		var callID int64
+		var cp RTICheckpoint
+		var ts sql.NullTime
+		if err := cpRows.Scan(&callID, &cp.Label, &ts, &cp.ElapsedMs, &cp.LineNo); err != nil {
+			return err
+		}
+		if ts.Valid {
+			cp.Timestamp = ts.Time
+		}
+		if c, ok := callMap[callID]; ok {
+			c.Checkpoints = append(c.Checkpoints, cp)
+		}
+	}
+	if err := cpRows.Err(); err != nil {
+		return err
+	}
+
+	// BLog blocks
+	bbRows, err := db.Query(
+		`SELECT call_id, block_name, enter_time, exit_time, elapsed_ms, enter_line, exit_line
+		 FROM rti_blog_blocks
+		 WHERE session_id = $1 AND call_id = ANY($2)
+		 ORDER BY id`,
+		sessionID, pq.Array(callIDs),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to load blog blocks: %w", err)
+	}
+	defer bbRows.Close()
+	for bbRows.Next() {
+		var callID int64
+		var b RTIBLogBlock
+		var enterTime, exitTime sql.NullTime
+		if err := bbRows.Scan(&callID, &b.BlockName, &enterTime, &exitTime, &b.ElapsedMs, &b.EnterLine, &b.ExitLine); err != nil {
+			return err
+		}
+		if enterTime.Valid {
+			b.EnterTime = enterTime.Time
+		}
+		if exitTime.Valid {
+			b.ExitTime = exitTime.Time
+		}
+		if c, ok := callMap[callID]; ok {
+			c.BLogBlocks = append(c.BLogBlocks, b)
+		}
+	}
+	if err := bbRows.Err(); err != nil {
+		return err
+	}
+
+	// BLog tables
+	btRows, err := db.Query(
+		`SELECT call_id, table_name, columns_header, row_count, rows_data, enter_line
+		 FROM rti_blog_tables
+		 WHERE session_id = $1 AND call_id = ANY($2)
+		 ORDER BY id`,
+		sessionID, pq.Array(callIDs),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to load blog tables: %w", err)
+	}
+	defer btRows.Close()
+	for btRows.Next() {
+		var callID int64
+		var t RTIBLogTable
+		var columnsHeader, rowsData sql.NullString
+		if err := btRows.Scan(&callID, &t.TableName, &columnsHeader, &t.RowCount, &rowsData, &t.EnterLine); err != nil {
+			return err
+		}
+		if columnsHeader.Valid && columnsHeader.String != "" {
+			t.Columns = strings.Split(columnsHeader.String, "_|_")
+		}
+		if rowsData.Valid && rowsData.String != "" {
+			t.Rows = strings.Split(rowsData.String, "\n")
+		}
+		if c, ok := callMap[callID]; ok {
+			c.BLogTables = append(c.BLogTables, t)
+		}
+	}
+	return btRows.Err()
+}
+
+// LoadCallsForTree загружает вызовы для построения дерева через recursive CTE.
+// Если rootProcedure пустой, автоматически выбирает корень (NestLevel=1 с наибольшим числом потомков).
+// maxTreeNodes ограничивает общее количество загружаемых узлов (default 5000).
+func LoadCallsForTree(db *store.DB, sessionID int64, rootProcedure string, maxDepth int, maxTreeNodes int) ([]*RTICall, error) {
+	if maxTreeNodes <= 0 {
+		maxTreeNodes = 5000
+	}
+
+	var rows *sql.Rows
+	var err error
+
+	if rootProcedure != "" {
+		rows, err = db.Query(
+			`WITH RECURSIVE call_tree AS (
+				(SELECT `+callSelectColumns+`, 1 AS depth
+				FROM rti_calls
+				WHERE session_id = $1 AND procedure = $2
+				LIMIT 1)
+				UNION ALL
+				SELECT c.id, c.procedure, c.enter_line, c.exit_line, c.enter_time, c.exit_time,
+				       c.elapsed_ms, c.nest_level, c.module_id, c.module_name, c.tran_count,
+				       c.begin_cnt, c.ret_val, c.ret_val_context, c.parent_id, c.spid, t.depth + 1
+				FROM rti_calls c
+				JOIN call_tree t ON c.parent_id = t.id
+				WHERE c.session_id = $1 AND ($3 = 0 OR t.depth < $3)
+			)
+			SELECT id, procedure, enter_line, exit_line, enter_time, exit_time,
+			       elapsed_ms, nest_level, module_id, module_name, tran_count,
+			       begin_cnt, ret_val, ret_val_context, parent_id, spid
+			FROM call_tree LIMIT $4`,
+			sessionID, rootProcedure, maxDepth, maxTreeNodes,
+		)
+	} else {
+		rows, err = db.Query(
+			`WITH RECURSIVE call_tree AS (
+				SELECT `+callSelectColumns+`, 1 AS depth
+				FROM rti_calls
+				WHERE session_id = $1 AND nest_level = 1
+				  AND id = (
+				    SELECT c.id FROM rti_calls c
+				    WHERE c.session_id = $1 AND c.nest_level = 1
+				    ORDER BY (SELECT count(*) FROM rti_calls ch WHERE ch.session_id = $1 AND ch.parent_id = c.id) DESC
+				    LIMIT 1
+				  )
+				UNION ALL
+				SELECT c.id, c.procedure, c.enter_line, c.exit_line, c.enter_time, c.exit_time,
+				       c.elapsed_ms, c.nest_level, c.module_id, c.module_name, c.tran_count,
+				       c.begin_cnt, c.ret_val, c.ret_val_context, c.parent_id, c.spid, t.depth + 1
+				FROM rti_calls c
+				JOIN call_tree t ON c.parent_id = t.id
+				WHERE c.session_id = $1 AND ($2 = 0 OR t.depth < $2)
+			)
+			SELECT id, procedure, enter_line, exit_line, enter_time, exit_time,
+			       elapsed_ms, nest_level, module_id, module_name, tran_count,
+			       begin_cnt, ret_val, ret_val_context, parent_id, spid
+			FROM call_tree LIMIT $3`,
+			sessionID, maxDepth, maxTreeNodes,
+		)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to load tree calls: %w", err)
+	}
+	defer rows.Close()
+
+	var calls []*RTICall
+	for rows.Next() {
+		c, err := scanCallColumns(rows)
+		if err != nil {
+			return nil, err
+		}
+		calls = append(calls, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(calls) == 0 {
+		return calls, nil
+	}
+
+	// Build parent-child relationships
+	callByID := make(map[int64]*RTICall, len(calls))
+	for _, c := range calls {
+		callByID[c.ID] = c
+	}
+	for _, c := range calls {
+		if c.ParentID != nil {
+			if p, ok := callByID[*c.ParentID]; ok {
+				p.Children = append(p.Children, c.ID)
+			}
+		}
+	}
+
+	return calls, nil
+}
+
+// LoadTimelineCalls загружает серверные вызовы для timeline с серверной фильтрацией и лимитом.
+func LoadTimelineCalls(db *store.DB, sessionID int64, filter TimelineFilter, limit int) ([]*RTICall, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	var sb strings.Builder
+	sb.WriteString(`SELECT ` + callSelectColumns + ` FROM rti_calls WHERE session_id = $1`)
+	args := []interface{}{sessionID}
+	argIdx := 2
+	if filter.TimeFrom != nil {
+		sb.WriteString(fmt.Sprintf(" AND enter_time >= $%d", argIdx))
+		args = append(args, *filter.TimeFrom)
+		argIdx++
+	}
+	if filter.TimeTo != nil {
+		sb.WriteString(fmt.Sprintf(" AND enter_time <= $%d", argIdx))
+		args = append(args, *filter.TimeTo)
+		argIdx++
+	}
+	if filter.Procedure != "" {
+		sb.WriteString(fmt.Sprintf(" AND procedure ILIKE $%d", argIdx))
+		args = append(args, filter.Procedure)
+		argIdx++
+	}
+	sb.WriteString(fmt.Sprintf(" ORDER BY enter_time ASC LIMIT $%d", argIdx))
+	args = append(args, limit)
+
+	rows, err := db.Query(sb.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load timeline calls: %w", err)
+	}
+	defer rows.Close()
+
+	var calls []*RTICall
+	for rows.Next() {
+		c, err := scanCallColumns(rows)
+		if err != nil {
+			return nil, err
+		}
+		calls = append(calls, c)
+	}
+	return calls, rows.Err()
+}
+
+// LoadTimelineClientEvents загружает клиентские события для timeline с серверной фильтрацией и лимитом.
+func LoadTimelineClientEvents(db *store.DB, sessionID int64, filter TimelineFilter, limit int) ([]*RTIClientEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	var sb strings.Builder
+	sb.WriteString(`SELECT id, timestamp, level, category, class_name, method_name,
+		        pid, seq_no, line_no, kind, elapsed_ms, payload, server_call_id
+		 FROM rti_client_events WHERE session_id = $1`)
+	args := []interface{}{sessionID}
+	argIdx := 2
+	if filter.TimeFrom != nil {
+		sb.WriteString(fmt.Sprintf(" AND timestamp >= $%d", argIdx))
+		args = append(args, *filter.TimeFrom)
+		argIdx++
+	}
+	if filter.TimeTo != nil {
+		sb.WriteString(fmt.Sprintf(" AND timestamp <= $%d", argIdx))
+		args = append(args, *filter.TimeTo)
+		argIdx++
+	}
+	if filter.PID != nil && *filter.PID > 0 {
+		sb.WriteString(fmt.Sprintf(" AND pid = $%d", argIdx))
+		args = append(args, *filter.PID)
+		argIdx++
+	}
+	if filter.ClassName != "" {
+		sb.WriteString(fmt.Sprintf(" AND class_name ILIKE $%d", argIdx))
+		args = append(args, filter.ClassName)
+		argIdx++
+	}
+	if filter.MethodName != "" {
+		sb.WriteString(fmt.Sprintf(" AND method_name ILIKE $%d", argIdx))
+		args = append(args, filter.MethodName)
+		argIdx++
+	}
+	sb.WriteString(fmt.Sprintf(" ORDER BY timestamp ASC LIMIT $%d", argIdx))
+	args = append(args, limit)
+
+	rows, err := db.Query(sb.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load timeline client events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []*RTIClientEvent
+	for rows.Next() {
+		ev, err := scanClientEventColumns(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, ev)
+	}
+	return events, rows.Err()
+}
+
+// LoadClientEventsFiltered загружает клиентские события для client_tree с серверной фильтрацией и лимитом.
+func LoadClientEventsFiltered(db *store.DB, sessionID int64, filter TimelineFilter, limit int) ([]*RTIClientEvent, error) {
+	return LoadTimelineClientEvents(db, sessionID, filter, limit)
 }
