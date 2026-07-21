@@ -22,6 +22,12 @@ var eventHeaderMarker = [2]byte{0xF6, 0xFF}
 // (например, длинный TextData). Подтверждено на TextData длиной 1050 байт.
 const extendedLengthSentinel = 0xFF
 
+// maxEventSize — верхний предел размера одного события (полей). Значения
+// больше этого предела указывают на повреждение потока (garbage в поле
+// Length), и попытка make([]byte, length) может исчерпать системные ресурсы.
+// TextData в SQL Server Profiler трейсах обычно < 1 МБ, 16 МБ — с запасом.
+const maxEventSize = 16 * 1024 * 1024
+
 // ParseFile читает файл трейса и разбирает его в TRCParseResult. Формат
 // файла определяется по сигнатуре содержимого (DetectFormat), а не по
 // расширению: XML-экспорт трейса (<TraceData>...) разбирается streaming-парсером
@@ -101,6 +107,64 @@ func ParseFile(path string) (*TRCParseResult, error) {
 	return &TRCParseResult{Header: h, Events: events}, nil
 }
 
+// parseHeaderFromFile открывает файл, читает и парсит заголовок .trc,
+// возвращает открытый файл (позиционированный на EventsOffset) и заголовок.
+// Выделено из ParseFile для переиспользования в ParseFileToDB.
+func parseHeaderFromFile(path string) (*os.File, *TraceHeader, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("trc: open %s: %w", path, err)
+	}
+
+	const headerBufSize = 65536
+	headerBuf := make([]byte, 0, headerBufSize)
+	chunk := make([]byte, headerBufSize)
+	n, err := io.ReadFull(f, chunk)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		f.Close()
+		return nil, nil, fmt.Errorf("trc: read %s: %w", path, err)
+	}
+	headerBuf = append(headerBuf, chunk[:n]...)
+
+	if DetectFormat(headerBuf) {
+		f.Close()
+		return nil, nil, fmt.Errorf("trc: XML format not supported by ParseFileToDB, use ParseFile")
+	}
+
+	h, err := ParseHeader(headerBuf)
+	if err != nil {
+		if len(headerBuf) < headerBufSize && n == headerBufSize {
+			f.Close()
+			return nil, nil, fmt.Errorf("trc: parse header %s: %w", path, err)
+		}
+		for len(headerBuf) < 1<<20 {
+			nn, rerr := io.ReadFull(f, chunk)
+			headerBuf = append(headerBuf, chunk[:nn]...)
+			if rerr != nil && rerr != io.EOF && rerr != io.ErrUnexpectedEOF {
+				f.Close()
+				return nil, nil, fmt.Errorf("trc: read %s: %w", path, rerr)
+			}
+			h, err = ParseHeader(headerBuf)
+			if err == nil {
+				break
+			}
+			if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
+				break
+			}
+		}
+		if err != nil {
+			f.Close()
+			return nil, nil, fmt.Errorf("trc: parse header %s: %w", path, err)
+		}
+	}
+
+	if _, err := f.Seek(int64(h.EventsOffset), io.SeekStart); err != nil {
+		f.Close()
+		return nil, nil, fmt.Errorf("trc: seek %s: %w", path, err)
+	}
+	return f, h, nil
+}
+
 // ParseEvents разбирает поток событий из среза байтов (in-memory режим).
 // Сохранён для обратной совместимости с тестами. Продуктивный путь использует
 // ParseEventsStreaming через bufio.Reader.
@@ -124,8 +188,13 @@ func ParseEvents(data []byte, h *TraceHeader) ([]TRCEvent, error) {
 		length := int(binary.LittleEndian.Uint32(data[pos+5 : pos+9]))
 		fieldsStart := pos + 9
 		fieldsEnd := fieldsStart + length
-		if length < 0 || fieldsEnd > len(data) {
-			return events, fmt.Errorf("trc: event at offset %d: invalid length %d", pos, length)
+		if length < 0 || length > maxEventSize || fieldsEnd > len(data) {
+			next := findEventHeader(data, fieldsStart)
+			if next < 0 {
+				break
+			}
+			pos = next
+			continue
 		}
 
 		ev := TRCEvent{
@@ -148,39 +217,59 @@ func ParseEvents(data []byte, h *TraceHeader) ([]TRCEvent, error) {
 // весь файл в память. Читает события по одному: 9-байтовый заголовок
 // (маркер(2) + 0x06(1) + class(2) + length(4)), затем Length байт полей.
 // При несовпадении маркера — ресинхронизация через skipToEventMarker.
-func ParseEventsStreaming(r *bufio.Reader, h *TraceHeader) ([]TRCEvent, error) {
+func ParseEventsStreaming(r *bufio.Reader, _ *TraceHeader) ([]TRCEvent, error) {
 	var events []TRCEvent
+	err := parseEventsStreamingCB(r, func(ev *TRCEvent) error {
+		events = append(events, *ev)
+		return nil
+	})
+	if err != nil {
+		return events, err
+	}
+	enrichEventsParallel(events)
+	ComputeParentIDs(events)
+	return events, nil
+}
 
+// parseEventsStreamingCB — внутренняя функция парсинга событий с callback.
+// Для каждого декодированного события вызывается cb. Если cb != nil,
+// событие не накапливается в памяти — вызывающая сторона решает, что с ним
+// делать (например, стримить в БД). enrichEvent вызывается здесь (одиночный,
+// не parallel — события идут по одному в streaming-режиме).
+func parseEventsStreamingCB(r *bufio.Reader, cb func(ev *TRCEvent) error) error {
 	// Пропуск преамбулы: ищем первый валидный eventHeaderMarker.
-	// skipToEventMarker позиционирует reader сразу после 3-байтового маркера.
 	if err := skipToEventMarker(r); err != nil {
 		if err == io.EOF {
-			return nil, nil
+			return nil
 		}
-		return nil, err
+		return err
 	}
 
 	for {
-		// После skipToEventMarker прочитаны 3 байта маркера (F6 FF 06).
-		// Читаем оставшиеся 6 байт заголовка: EventClass(2) + Length(4).
 		var hdr6 [6]byte
 		if _, err := io.ReadFull(r, hdr6[:]); err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break
 			}
-			return events, fmt.Errorf("trc: read event header: %w", err)
+			return fmt.Errorf("trc: read event header: %w", err)
 		}
 
 		eventClass := int(binary.LittleEndian.Uint16(hdr6[0:2]))
 		length := int(binary.LittleEndian.Uint32(hdr6[2:6]))
-		if length < 0 {
-			return events, fmt.Errorf("trc: event (class %d): invalid length %d", eventClass, length)
+		if length < 0 || length > maxEventSize {
+			fmt.Fprintf(os.Stderr, "trc: warning: event (class %d): oversize length %d, skipping\n", eventClass, length)
+			if err := skipToEventMarker(r); err != nil {
+				if err == io.EOF {
+					break
+				}
+				return err
+			}
+			continue
 		}
 
-		// Читаем Length байт полей события.
 		fields := make([]byte, length)
 		if _, err := io.ReadFull(r, fields); err != nil {
-			return events, fmt.Errorf("trc: event (class %d): truncated fields: %w", eventClass, err)
+			return fmt.Errorf("trc: event (class %d): truncated fields: %w", eventClass, err)
 		}
 
 		ev := TRCEvent{
@@ -189,59 +278,34 @@ func ParseEventsStreaming(r *bufio.Reader, h *TraceHeader) ([]TRCEvent, error) {
 			Columns:    map[int]any{},
 		}
 		if err := decodeEventFields(fields, ev.Columns); err != nil {
-			return events, fmt.Errorf("trc: event (class %d): %w", eventClass, err)
+			return fmt.Errorf("trc: event (class %d): %w", eventClass, err)
 		}
-		events = append(events, ev)
+		enrichEvent(&ev)
 
-		// Проверяем, что следующий байт — начало нового события (маркер).
-		// Если нет — ресинхронизируемся.
-		b, err := r.ReadByte()
+		if cb != nil {
+			if err := cb(&ev); err != nil {
+				return err
+			}
+		}
+
+		peeked, err := r.Peek(3)
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return events, fmt.Errorf("trc: read after event: %w", err)
+			break
 		}
-		if b == eventHeaderMarker[0] {
-			b2, err := r.ReadByte()
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				return events, fmt.Errorf("trc: read marker byte 2: %w", err)
+		if peeked[0] == eventHeaderMarker[0] && peeked[1] == eventHeaderMarker[1] && peeked[2] == 0x06 {
+			if _, err := r.Discard(3); err != nil {
+				return fmt.Errorf("trc: discard marker: %w", err)
 			}
-			if b2 == eventHeaderMarker[1] {
-				b3, err := r.ReadByte()
-				if err != nil {
-					if err == io.EOF {
-						break
-					}
-					return events, fmt.Errorf("trc: read marker byte 3: %w", err)
-				}
-				if b3 == 0x06 {
-					// Маркер найден — продолжаем чтение следующего события.
-					continue
-				}
-				// F6 FF но не 06 — unread b3 и b2, сканируем заново.
-				r.UnreadByte()
-				r.UnreadByte()
-			} else {
-				// F6 но не FF — unread b2, сканируем заново.
-				r.UnreadByte()
-			}
+			continue
 		}
-		// Не маркер — unread и ресинхронизация.
-		r.UnreadByte()
 		if err := skipToEventMarker(r); err != nil {
 			if err == io.EOF {
 				break
 			}
-			return events, err
+			return err
 		}
 	}
-	enrichEventsParallel(events)
-	ComputeParentIDs(events)
-	return events, nil
+	return nil
 }
 
 // skipToEventMarker читает по одному байту из r, пока не найдёт
@@ -263,7 +327,8 @@ func skipToEventMarker(r *bufio.Reader) error {
 		if b2 != eventHeaderMarker[1] {
 			if b2 == eventHeaderMarker[0] {
 				// Первый байт маркера — переиспользуем как начало нового кандидата.
-				r.UnreadByte()
+				// Ошибка невозможна: UnreadByte вызывается сразу после успешного ReadByte.
+				_ = r.UnreadByte()
 			}
 			continue
 		}
@@ -275,7 +340,8 @@ func skipToEventMarker(r *bufio.Reader) error {
 			return nil
 		}
 		if b3 == eventHeaderMarker[0] {
-			r.UnreadByte()
+			// Ошибка невозможна: UnreadByte вызывается сразу после успешного ReadByte.
+			_ = r.UnreadByte()
 		}
 	}
 }

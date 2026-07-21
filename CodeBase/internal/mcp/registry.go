@@ -3,7 +3,6 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -1283,25 +1282,26 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if err != nil {
 					return nil, err
 				}
+				if db != nil {
+					// Streaming parse-to-DB: не накапливает события в памяти.
+					// Критично для больших файлов (> 1 ГБ).
+					sessionID, totalEvents, perr := trc.ParseFileToDB(filePath, db)
+					if perr != nil {
+						return nil, fmt.Errorf("failed to parse trc file: %w", perr)
+					}
+					return map[string]interface{}{
+						"total_events": totalEvents,
+						"session_id":   sessionID,
+					}, nil
+				}
+				// Fallback без DB — только парсинг, без сохранения
 				result, err := trc.ParseFile(filePath)
 				if err != nil {
 					return nil, fmt.Errorf("failed to parse trc file: %w", err)
 				}
-				var sessionID int64
-				if db != nil {
-					fi, statErr := os.Stat(filePath)
-					var fileSize int64
-					if statErr == nil {
-						fileSize = fi.Size()
-					}
-					sessionID, err = trc.SaveSession(db, result, filePath, fileSize)
-					if err != nil {
-						return nil, fmt.Errorf("failed to save session: %w", err)
-					}
-				}
 				return map[string]interface{}{
 					"total_events": len(result.Events),
-					"session_id":   sessionID,
+					"session_id":   0,
 				}, nil
 			},
 		},

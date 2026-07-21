@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"sort"
 
 	"github.com/codebase/internal/config"
@@ -151,12 +150,9 @@ func loadTRCResult(args []string) (*trc.TRCParseResult, error) {
 }
 
 func runTRCParse(cmd *cobra.Command, args []string) error {
-	result, err := trc.ParseFile(args[0])
-	if err != nil {
-		return fmt.Errorf("failed to parse trc file: %w", err)
-	}
-
-	var sessionID int64
+	// Если DB доступна — используем streaming parse-to-DB (ParseFileToDB),
+	// который не накапливает события в памяти. Это критично для больших
+	// файлов (> 1 ГБ), где накопление []TRCEvent исчерпывает RAM.
 	cfg := config.Get()
 	if cfg != nil {
 		if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
@@ -164,28 +160,36 @@ func runTRCParse(cmd *cobra.Command, args []string) error {
 			if err := db.InitSchema(); err != nil {
 				return fmt.Errorf("failed to init schema: %w", err)
 			}
-			fi, statErr := os.Stat(args[0])
-			var fileSize int64
-			if statErr == nil {
-				fileSize = fi.Size()
-			}
-			sessionID, err = trc.SaveSession(db, result, args[0], fileSize)
+			sessionID, totalEvents, err := trc.ParseFileToDB(args[0], db)
 			if err != nil {
-				return fmt.Errorf("failed to save session: %w", err)
+				return fmt.Errorf("failed to parse trc file: %w", err)
 			}
+			if trcOutputJSON {
+				return printJSON(map[string]interface{}{
+					"total_events": totalEvents,
+					"session_id":   sessionID,
+				})
+			}
+			fmt.Printf("TRC file: %s\n", args[0])
+			fmt.Printf("Total events: %d\n", totalEvents)
+			fmt.Printf("Saved session: %d\n", sessionID)
+			return nil
 		}
+	}
+
+	// Fallback: ParseFile без DB (no-DB режим)
+	result, err := trc.ParseFile(args[0])
+	if err != nil {
+		return fmt.Errorf("failed to parse trc file: %w", err)
 	}
 
 	if trcOutputJSON {
 		return printJSON(map[string]interface{}{
 			"total_events": len(result.Events),
-			"session_id":   sessionID,
+			"session_id":   0,
 		})
 	}
 	printTRCSummary(args[0], result)
-	if sessionID > 0 {
-		fmt.Printf("Saved session: %d\n", sessionID)
-	}
 	return nil
 }
 
