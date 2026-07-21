@@ -848,8 +848,8 @@ func runRTIDelete(cmd *cobra.Command, args []string) error {
 }
 
 func runRTIPrune(cmd *cobra.Command, args []string) error {
-	if rtiKeepLast <= 0 {
-		return fmt.Errorf("--keep-last is required for prune command")
+	if rtiKeepLast < 0 {
+		return fmt.Errorf("--keep-last must be >= 0")
 	}
 	cfg := config.Get()
 	if cfg == nil {
@@ -1057,7 +1057,7 @@ func init() {
 	rtiSlowCmd.Flags().Int64Var(&rtiSessionID, "session", 0, "load from saved session ID instead of file")
 	rtiDetailsCmd.Flags().Int64Var(&rtiSessionID, "session", 0, "load from saved session ID instead of file")
 	rtiDeleteCmd.Flags().Int64Var(&rtiSessionID, "session", 0, "session ID to delete")
-	rtiPruneCmd.Flags().IntVar(&rtiKeepLast, "keep-last", 0, "keep only last N sessions")
+	rtiPruneCmd.Flags().IntVar(&rtiKeepLast, "keep-last", 0, "keep only last N sessions (0 = delete all)")
 	rtiListCmd.Flags().IntVar(&rtiListLimit, "limit", 20, "max sessions to list")
 	rtiSummaryCmd.Flags().Int64Var(&rtiSessionID, "session", 0, "load from saved session ID instead of file")
 

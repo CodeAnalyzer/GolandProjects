@@ -697,8 +697,8 @@ func runTRCDelete(cmd *cobra.Command, args []string) error {
 }
 
 func runTRCPrune(cmd *cobra.Command, args []string) error {
-	if trcKeepLast <= 0 {
-		return fmt.Errorf("--keep-last is required for prune command")
+	if trcKeepLast < 0 {
+		return fmt.Errorf("--keep-last must be >= 0")
 	}
 	cfg := config.Get()
 	if cfg == nil {
@@ -750,7 +750,7 @@ func init() {
 
 	trcListCmd.Flags().IntVar(&trcListLimit, "limit", 20, "max sessions to list")
 	trcDeleteCmd.Flags().Int64Var(&trcSessionID, "session", 0, "session ID to delete")
-	trcPruneCmd.Flags().IntVar(&trcKeepLast, "keep-last", 0, "keep only last N sessions")
+	trcPruneCmd.Flags().IntVar(&trcKeepLast, "keep-last", 0, "keep only last N sessions (0 = delete all)")
 
 	trcCmd.AddCommand(trcParseCmd)
 	trcCmd.AddCommand(trcSummaryCmd)

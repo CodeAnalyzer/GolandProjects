@@ -12,6 +12,7 @@ import (
 // GetLatestFilesByRootPath возвращает последнее известное состояние файлов для указанного root path.
 func (db *DB) GetLatestFilesByRootPath(rootPath string) (map[string]*model.File, error) {
 	normalizedRoot := strings.ReplaceAll(strings.TrimSpace(rootPath), `\`, "/")
+	normalizedRoot = strings.TrimSuffix(normalizedRoot, "/")
 	rows, err := db.Query(`
 		SELECT DISTINCT ON (path)
 			id, scan_run_id, ds_product_id, path, rel_path, extension, size_bytes,
