@@ -302,14 +302,98 @@ func GetLatestSessionID(db *store.DB) (int64, error) {
 	return id, err
 }
 
-// DeleteSession удаляет сессию по ID (CASCADE удаляет все trc_events).
+// batchDeleteSize — размер батча для построчного удаления событий.
+const batchDeleteSize = 50000
+
+// DeleteSession удаляет сессию по ID. Сначала батчами удаляются trc_events
+// (чтобы избежать длительного CASCADE-удаления в одной транзакции), затем
+// удаляется сама сессия.
 func DeleteSession(db *store.DB, sessionID int64) error {
+	// Пакетное удаление событий из trc_events
+	for {
+		res, err := db.Exec(
+			`DELETE FROM trc_events WHERE session_id = $1 AND id IN (
+				SELECT id FROM trc_events WHERE session_id = $1 LIMIT $2
+			)`,
+			sessionID, batchDeleteSize,
+		)
+		if err != nil {
+			return fmt.Errorf("batch delete trc_events: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			break
+		}
+	}
+	// Удаление сессии (CASCADE уже нечего удалять)
 	_, err := db.Exec(`DELETE FROM trc_sessions WHERE id = $1`, sessionID)
 	return err
 }
 
 // PruneSessions удаляет старые сессии, оставляя только последние N.
+// При keepLast=0 используется TRUNCATE (мгновенная очистка независимо от
+// объёма данных). При keepLast>0 — пакетное удаление событий с последующим
+// удалением сессий.
 func PruneSessions(db *store.DB, keepLast int) (int64, error) {
+	if keepLast == 0 {
+		// Подсчитать количество сессий до TRUNCATE
+		var count int64
+		if err := db.QueryRow(`SELECT count(*) FROM trc_sessions`).Scan(&count); err != nil {
+			return 0, fmt.Errorf("count trc_sessions: %w", err)
+		}
+		// TRUNCATE мгновенно очищает таблицы без построчного удаления
+		if _, err := db.Exec(`TRUNCATE trc_events, trc_sessions RESTART IDENTITY CASCADE`); err != nil {
+			return 0, fmt.Errorf("truncate trc tables: %w", err)
+		}
+		// VACUUM ANALYZE после массового удаления (ошибка не критична)
+		_, _ = db.Exec(`VACUUM ANALYZE trc_events, trc_sessions`)
+		return count, nil
+	}
+
+	// Найти ID сессий на удаление
+	rows, err := db.Query(
+		`SELECT id FROM trc_sessions WHERE id NOT IN (
+			SELECT id FROM trc_sessions ORDER BY parsed_at DESC LIMIT $1
+		)`,
+		keepLast,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("select trc_sessions to delete: %w", err)
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	// Пакетное удаление событий для каждой сессии
+	for _, sid := range ids {
+		for {
+			res, err := db.Exec(
+				`DELETE FROM trc_events WHERE session_id = $1 AND id IN (
+					SELECT id FROM trc_events WHERE session_id = $1 LIMIT $2
+				)`,
+				sid, batchDeleteSize,
+			)
+			if err != nil {
+				return 0, fmt.Errorf("batch delete trc_events for session %d: %w", sid, err)
+			}
+			n, _ := res.RowsAffected()
+			if n == 0 {
+				break
+			}
+		}
+	}
+
+	// Удаление сессий (CASCADE уже нечего удалять)
 	result, err := db.Exec(
 		`DELETE FROM trc_sessions WHERE id NOT IN (
 			SELECT id FROM trc_sessions ORDER BY parsed_at DESC LIMIT $1
@@ -317,10 +401,12 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 		keepLast,
 	)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("delete trc_sessions: %w", err)
 	}
-	rows, _ := result.RowsAffected()
-	return rows, nil
+	deleted, _ := result.RowsAffected()
+	// VACUUM ANALYZE после массового удаления (ошибка не критична)
+	_, _ = db.Exec(`VACUUM ANALYZE trc_events, trc_sessions`)
+	return deleted, nil
 }
 
 // LoadEvents загружает события сессии из БД, восстанавливая полный набор

@@ -930,7 +930,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_rti_prune": {
-			Definition: toolDefinition{Name: "codebase_rti_prune", Description: "Delete old RTI sessions, keeping only the most recent N. Returns the number of deleted sessions.", InputSchema: objectSchema(map[string]interface{}{"keep_last": intProp("Number of most recent sessions to keep")})},
+			Definition: toolDefinition{Name: "codebase_rti_prune", Description: "Delete old RTI sessions, keeping only the most recent N. Use keep_last=0 to delete all sessions (uses TRUNCATE for instant cleanup). Returns the number of deleted sessions.", InputSchema: objectSchema(map[string]interface{}{"keep_last": intProp("Number of most recent sessions to keep")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				if db == nil {
 					return nil, fmt.Errorf("database not available")
@@ -939,8 +939,8 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if err != nil {
 					return nil, err
 				}
-				if keepLast <= 0 {
-					return nil, fmt.Errorf("keep_last must be positive")
+				if keepLast < 0 {
+					return nil, fmt.Errorf("keep_last must be >= 0")
 				}
 				deleted, err := rti.PruneSessions(db, keepLast)
 				if err != nil {
@@ -1605,7 +1605,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_trc_delete": {
-			Definition: toolDefinition{Name: "codebase_trc_delete", Description: "Delete a saved trc session by ID. Cascades to delete all associated events.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Session ID to delete")})},
+			Definition: toolDefinition{Name: "codebase_trc_delete", Description: "Delete a saved trc session by ID. Batch-deletes all associated events first, then removes the session.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Session ID to delete")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				if db == nil {
 					return nil, fmt.Errorf("database not available")
@@ -1632,7 +1632,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_trc_prune": {
-			Definition: toolDefinition{Name: "codebase_trc_prune", Description: "Delete old trc sessions, keeping only the most recent N. Returns the number of deleted sessions.", InputSchema: objectSchema(map[string]interface{}{"keep_last": intProp("Number of most recent sessions to keep")})},
+			Definition: toolDefinition{Name: "codebase_trc_prune", Description: "Delete old trc sessions, keeping only the most recent N. Use keep_last=0 to delete all sessions (uses TRUNCATE for instant cleanup). Returns the number of deleted sessions.", InputSchema: objectSchema(map[string]interface{}{"keep_last": intProp("Number of most recent sessions to keep")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				if db == nil {
 					return nil, fmt.Errorf("database not available")
@@ -1641,8 +1641,8 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if err != nil {
 					return nil, err
 				}
-				if keepLast <= 0 {
-					return nil, fmt.Errorf("keep_last must be positive")
+				if keepLast < 0 {
+					return nil, fmt.Errorf("keep_last must be >= 0")
 				}
 				deleted, err := trc.PruneSessions(db, keepLast)
 				if err != nil {

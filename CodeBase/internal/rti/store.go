@@ -622,14 +622,193 @@ func ListSessions(db *store.DB, limit int) ([]RTISession, error) {
 	return sessions, rows.Err()
 }
 
-// DeleteSession удаляет сессию по ID (CASCADE удаляет все дочерние записи).
+// batchDeleteSize — размер батча для построчного удаления.
+const batchDeleteSize = 50000
+
+// DeleteSession удаляет сессию по ID. Сначала батчами удаляются дочерние
+// таблицы (чтобы избежать длительного CASCADE-удаления в одной транзакции),
+// затем удаляется сама сессия.
 func DeleteSession(db *store.DB, sessionID int64) error {
+	// 1. Батч-удаление rti_calls (CASCADE → rti_params, rti_checkpoints)
+	for {
+		res, err := db.Exec(
+			`DELETE FROM rti_calls WHERE session_id = $1 AND id IN (
+				SELECT id FROM rti_calls WHERE session_id = $1 LIMIT $2
+			)`,
+			sessionID, batchDeleteSize,
+		)
+		if err != nil {
+			return fmt.Errorf("batch delete rti_calls: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			break
+		}
+	}
+	// 2. Батч-удаление rti_client_events (по session_id)
+	for {
+		res, err := db.Exec(
+			`DELETE FROM rti_client_events WHERE session_id = $1 AND id IN (
+				SELECT id FROM rti_client_events WHERE session_id = $1 LIMIT $2
+			)`,
+			sessionID, batchDeleteSize,
+		)
+		if err != nil {
+			return fmt.Errorf("batch delete rti_client_events: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			break
+		}
+	}
+	// 3. Батч-удаление rti_blog_blocks (по session_id)
+	for {
+		res, err := db.Exec(
+			`DELETE FROM rti_blog_blocks WHERE session_id = $1 AND id IN (
+				SELECT id FROM rti_blog_blocks WHERE session_id = $1 LIMIT $2
+			)`,
+			sessionID, batchDeleteSize,
+		)
+		if err != nil {
+			return fmt.Errorf("batch delete rti_blog_blocks: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			break
+		}
+	}
+	// 4. Батч-удаление rti_blog_tables (по session_id)
+	for {
+		res, err := db.Exec(
+			`DELETE FROM rti_blog_tables WHERE session_id = $1 AND id IN (
+				SELECT id FROM rti_blog_tables WHERE session_id = $1 LIMIT $2
+			)`,
+			sessionID, batchDeleteSize,
+		)
+		if err != nil {
+			return fmt.Errorf("batch delete rti_blog_tables: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			break
+		}
+	}
+	// 5. Удаление сессии (CASCADE уже нечего удалять)
 	_, err := db.Exec(`DELETE FROM rti_sessions WHERE id = $1`, sessionID)
 	return err
 }
 
 // PruneSessions удаляет старые сессии, оставляя только последние N.
+// При keepLast=0 используется TRUNCATE (мгновенная очистка независимо от
+// объёма данных). При keepLast>0 — пакетное удаление дочерних таблиц с
+// последующим удалением сессий.
 func PruneSessions(db *store.DB, keepLast int) (int64, error) {
+	if keepLast == 0 {
+		var count int64
+		if err := db.QueryRow(`SELECT count(*) FROM rti_sessions`).Scan(&count); err != nil {
+			return 0, fmt.Errorf("count rti_sessions: %w", err)
+		}
+		if _, err := db.Exec(`TRUNCATE rti_client_events, rti_blog_tables, rti_blog_blocks, rti_checkpoints, rti_params, rti_calls, rti_sessions RESTART IDENTITY CASCADE`); err != nil {
+			return 0, fmt.Errorf("truncate rti tables: %w", err)
+		}
+		// VACUUM ANALYZE после массового удаления (ошибка не критична)
+		_, _ = db.Exec(`VACUUM ANALYZE rti_calls, rti_sessions, rti_client_events, rti_blog_blocks, rti_blog_tables`)
+		return count, nil
+	}
+
+	// Найти ID сессий на удаление
+	rows, err := db.Query(
+		`SELECT id FROM rti_sessions WHERE id NOT IN (
+			SELECT id FROM rti_sessions ORDER BY parsed_at DESC LIMIT $1
+		)`,
+		keepLast,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("select rti_sessions to delete: %w", err)
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	// Пакетное удаление дочерних таблиц для каждой сессии
+	for _, sid := range ids {
+		// rti_calls (CASCADE → rti_params, rti_checkpoints)
+		for {
+			res, err := db.Exec(
+				`DELETE FROM rti_calls WHERE session_id = $1 AND id IN (
+					SELECT id FROM rti_calls WHERE session_id = $1 LIMIT $2
+				)`,
+				sid, batchDeleteSize,
+			)
+			if err != nil {
+				return 0, fmt.Errorf("batch delete rti_calls for session %d: %w", sid, err)
+			}
+			n, _ := res.RowsAffected()
+			if n == 0 {
+				break
+			}
+		}
+		// rti_client_events
+		for {
+			res, err := db.Exec(
+				`DELETE FROM rti_client_events WHERE session_id = $1 AND id IN (
+					SELECT id FROM rti_client_events WHERE session_id = $1 LIMIT $2
+				)`,
+				sid, batchDeleteSize,
+			)
+			if err != nil {
+				return 0, fmt.Errorf("batch delete rti_client_events for session %d: %w", sid, err)
+			}
+			n, _ := res.RowsAffected()
+			if n == 0 {
+				break
+			}
+		}
+		// rti_blog_blocks
+		for {
+			res, err := db.Exec(
+				`DELETE FROM rti_blog_blocks WHERE session_id = $1 AND id IN (
+					SELECT id FROM rti_blog_blocks WHERE session_id = $1 LIMIT $2
+				)`,
+				sid, batchDeleteSize,
+			)
+			if err != nil {
+				return 0, fmt.Errorf("batch delete rti_blog_blocks for session %d: %w", sid, err)
+			}
+			n, _ := res.RowsAffected()
+			if n == 0 {
+				break
+			}
+		}
+		// rti_blog_tables
+		for {
+			res, err := db.Exec(
+				`DELETE FROM rti_blog_tables WHERE session_id = $1 AND id IN (
+					SELECT id FROM rti_blog_tables WHERE session_id = $1 LIMIT $2
+				)`,
+				sid, batchDeleteSize,
+			)
+			if err != nil {
+				return 0, fmt.Errorf("batch delete rti_blog_tables for session %d: %w", sid, err)
+			}
+			n, _ := res.RowsAffected()
+			if n == 0 {
+				break
+			}
+		}
+	}
+
+	// Удаление сессий (CASCADE уже нечего удалять)
 	result, err := db.Exec(
 		`DELETE FROM rti_sessions WHERE id NOT IN (
 			SELECT id FROM rti_sessions ORDER BY parsed_at DESC LIMIT $1
@@ -637,10 +816,12 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 		keepLast,
 	)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("delete rti_sessions: %w", err)
 	}
-	rows, _ := result.RowsAffected()
-	return rows, nil
+	deleted, _ := result.RowsAffected()
+	// VACUUM ANALYZE после массового удаления (ошибка не критична)
+	_, _ = db.Exec(`VACUUM ANALYZE rti_calls, rti_sessions, rti_client_events, rti_blog_blocks, rti_blog_tables`)
+	return deleted, nil
 }
 
 // GetSession возвращает информацию о сессии по ID.

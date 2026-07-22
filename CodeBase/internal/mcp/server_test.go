@@ -239,3 +239,79 @@ func TestReadMoreHandlerChunkWrongType(t *testing.T) {
 		t.Fatal("expected error for non-integer chunk")
 	}
 }
+
+func TestRTIPruneHandlerRejectsNegativeKeepLast(t *testing.T) {
+	tool, ok := toolRegistry["codebase_rti_prune"]
+	if !ok {
+		t.Fatal("codebase_rti_prune not in toolRegistry")
+	}
+	_, err := tool.Handler(map[string]interface{}{
+		"keep_last": float64(-1),
+	})
+	if err == nil {
+		t.Fatal("expected error for negative keep_last")
+	}
+}
+
+func TestRTIPruneHandlerAcceptsZeroKeepLast(t *testing.T) {
+	tool, ok := toolRegistry["codebase_rti_prune"]
+	if !ok {
+		t.Fatal("codebase_rti_prune not in toolRegistry")
+	}
+	// keep_last=0 is now valid (TRUNCATE all). Without DB, it will fail
+	// with "database not available", but NOT with "keep_last must be positive".
+	_, err := tool.Handler(map[string]interface{}{
+		"keep_last": float64(0),
+	})
+	if err != nil && err.Error() == "keep_last must be >= 0" {
+		t.Fatalf("keep_last=0 should be accepted, got: %v", err)
+	}
+}
+
+func TestTRCToolsInRegistry(t *testing.T) {
+	expected := []string{
+		"codebase_trc_parse",
+		"codebase_trc_list",
+		"codebase_trc_summary",
+		"codebase_trc_tree",
+		"codebase_trc_errors",
+		"codebase_trc_slow",
+		"codebase_trc_events",
+		"codebase_trc_procedures",
+		"codebase_trc_delete",
+		"codebase_trc_prune",
+	}
+	for _, name := range expected {
+		if _, ok := toolRegistry[name]; !ok {
+			t.Errorf("tool %s not in registry", name)
+		}
+	}
+}
+
+func TestTRCPruneHandlerRejectsNegativeKeepLast(t *testing.T) {
+	tool, ok := toolRegistry["codebase_trc_prune"]
+	if !ok {
+		t.Fatal("codebase_trc_prune not in toolRegistry")
+	}
+	_, err := tool.Handler(map[string]interface{}{
+		"keep_last": float64(-1),
+	})
+	if err == nil {
+		t.Fatal("expected error for negative keep_last")
+	}
+}
+
+func TestTRCPruneHandlerAcceptsZeroKeepLast(t *testing.T) {
+	tool, ok := toolRegistry["codebase_trc_prune"]
+	if !ok {
+		t.Fatal("codebase_trc_prune not in toolRegistry")
+	}
+	// keep_last=0 is now valid (TRUNCATE all). Without DB, it will fail
+	// with "database not available", but NOT with "keep_last must be positive".
+	_, err := tool.Handler(map[string]interface{}{
+		"keep_last": float64(0),
+	})
+	if err != nil && err.Error() == "keep_last must be >= 0" {
+		t.Fatalf("keep_last=0 should be accepted, got: %v", err)
+	}
+}
