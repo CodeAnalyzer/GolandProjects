@@ -470,7 +470,7 @@ Health status: ok
 
 ### RTI-анализатор
 
-Анализ RTI-трейс логов (`.rti`) Diasoft 5NT:
+Анализ RTI-трейс логов (`.rti`, `.hrti`) Diasoft 5NT. HRTI (Hashed RTI) — формат анонимизированных RTI-логов, в котором все строковые поля кодируются алгоритмом TDsHash. Парсер автоматически детектирует HRTI по маркерам `6D6...6D6` и декодирует строковые значения (параметры, контексты ошибок, имена блоков BLog, ячейки таблиц) с использованием встроенного декодера (ключи M1=3, M2=102):
 
 ```bash
 # Парсинг файла и сохранение в БД
@@ -735,7 +735,7 @@ codebase mcp
 
 | Tool | Описание | Обязательные параметры |
 |------|----------|------------------------|
-| `codebase_rti_parse` | Парсинг `.rti` файла и сохранение в БД | `file_path` |
+| `codebase_rti_parse` | Парсинг `.rti`/`.hrti` файла и сохранение в БД | `file_path` |
 | `codebase_rti_list` | Список сохранённых сессий | — |
 | `codebase_rti_summary` | Сводка сессии | `session_id` или `file_path` |
 | `codebase_rti_tree` | Дерево вызовов | `session_id` или `file_path` |
@@ -874,9 +874,10 @@ CodeBase/
 │   │   ├── review_helpers.go      # Вспомогательные функции
 │   │   ├── runner.go              # Review runner и execution pipeline
 │   │   └── runner_test.go         # Тесты для review rules
-│   ├── rti/                       # RTI-анализатор
+│   ├── rti/                       # RTI-анализатор (поддержка .rti и .hrti)
 │   │   ├── model.go               # RTICall, RTIParam, RTICheckpoint, RTIBLogBlock, RTIBLogTable, RTISummary, RTIClientEvent
-│   │   ├── parser.go              # ParseFile, parseContent (regex state machine, CP866/UTF8) — серверные вызовы
+│   │   ├── parser.go              # ParseFile, parseContent (regex state machine, CP866/UTF8) — серверные вызовы, авто-детект HRTI
+│   │   ├── hrti.go                # Декодер TDsHash для HRTI: decodeHRTIString, isHRTIContent, DecodeHRTIResult
 │   │   ├── parser_client.go       # Парсинг клиентских событий (thick client d5nt)
 │   │   ├── tree.go                # BuildTree, FormatTree, RTITreeNode
 │   │   ├── timeline.go            # FormatUnifiedTimeline, FormatUnifiedTimelineEnriched

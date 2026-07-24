@@ -476,6 +476,11 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 	result.Summary.TopSlow = topSlowCalls(allCalls, 10)
 	FillClientSummary(&result.Summary, allClientEvents)
 
+	// HRTI: авто-детект и декодирование строковых полей
+	if isHRTIContent(allCalls) {
+		DecodeHRTIResult(result)
+	}
+
 	return result, nil
 }
 
