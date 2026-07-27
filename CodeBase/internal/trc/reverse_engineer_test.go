@@ -24,6 +24,7 @@ import (
 func TestReverseEngineerEventBody(t *testing.T) {
 	dir := modificationsDir(t)
 	trcPath := filepath.Join(dir, "DIAPR-391.trc")
+	skipIfMissing(t, trcPath)
 	data, err := os.ReadFile(trcPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", trcPath, err)

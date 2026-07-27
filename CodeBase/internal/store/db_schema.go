@@ -508,8 +508,10 @@ func (db *DB) InitSchema() error {
 			server_name TEXT,
 			major_version INTEGER NOT NULL DEFAULT 0,
 			minor_version INTEGER NOT NULL DEFAULT 0,
-			build_number INTEGER NOT NULL DEFAULT 0
+			build_number INTEGER NOT NULL DEFAULT 0,
+			source_format TEXT NOT NULL DEFAULT 'trc_binary'
 		)`,
+	`ALTER TABLE trc_sessions ADD COLUMN IF NOT EXISTS source_format TEXT NOT NULL DEFAULT 'trc_binary'`,
 		`CREATE TABLE IF NOT EXISTS trc_events (
 			id             BIGSERIAL PRIMARY KEY,
 			session_id     BIGINT NOT NULL REFERENCES trc_sessions(id) ON DELETE CASCADE,

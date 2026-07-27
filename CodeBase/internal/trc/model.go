@@ -94,6 +94,10 @@ type SystemTime struct {
 type TRCParseResult struct {
 	Header *TraceHeader
 	Events []TRCEvent
+	// SourceFormat — формат исходного файла для записи в БД (trc_binary,
+	// trc_xml, xel). Заполняется парсером; SaveSession и ParseFileToDB
+	// используют его для колонки trc_sessions.source_format.
+	SourceFormat string
 }
 
 // TRCSession — запись о сессии (разобранном .trc файле) в БД.

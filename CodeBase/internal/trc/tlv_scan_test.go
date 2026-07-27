@@ -141,6 +141,7 @@ func tlvScan(data []byte, start, maxEnd int) (fields []tlvField, markers []marke
 func TestTLVScan_TypeConsistency(t *testing.T) {
 	dir := modificationsDir(t)
 	trcPath := filepath.Join(dir, "DIAPR-391.trc")
+	skipIfMissing(t, trcPath)
 	data, err := os.ReadFile(trcPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", trcPath, err)
@@ -247,6 +248,7 @@ func TestTLVScan_TypeConsistency(t *testing.T) {
 func TestTLVScan_FirstRealEvent(t *testing.T) {
 	dir := modificationsDir(t)
 	trcPath := filepath.Join(dir, "DIAPR-391.trc")
+	skipIfMissing(t, trcPath)
 	data, err := os.ReadFile(trcPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", trcPath, err)
@@ -282,6 +284,7 @@ func TestTLVScan_FirstRealEvent(t *testing.T) {
 func TestTLVScan_LongTextDataLength(t *testing.T) {
 	dir := modificationsDir(t)
 	trcPath := filepath.Join(dir, "DIAPR-391.trc")
+	skipIfMissing(t, trcPath)
 	data, err := os.ReadFile(trcPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", trcPath, err)

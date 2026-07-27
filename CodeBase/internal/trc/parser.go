@@ -53,7 +53,8 @@ func ParseFile(path string) (*TRCParseResult, error) {
 	}
 	headerBuf = append(headerBuf, chunk[:n]...)
 
-	if DetectFormat(headerBuf) {
+	switch DetectFormat(headerBuf) {
+	case FormatXML:
 		// XML: перематываем файл в начало и используем xml.NewDecoder
 		// (encoding/xml — streaming-парсер, не загружает весь файл в RAM).
 		if _, err := f.Seek(0, io.SeekStart); err != nil {
@@ -62,6 +63,19 @@ func ParseFile(path string) (*TRCParseResult, error) {
 		result, err := ParseXMLReader(f)
 		if err != nil {
 			return nil, fmt.Errorf("trc: parse xml %s: %w", path, err)
+		}
+		return result, nil
+	case FormatXEL:
+		// .xel (Extended Events): требует произвольного доступа к байтам
+		// (dictionary-блок, TLV, маркеры) — ParseXELReader читает весь файл
+		// в память (см. её комментарий), поэтому перематывать не нужно, но
+		// используем именно её, а не headerBuf, чтобы разобрать файл целиком.
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("trc: seek %s: %w", path, err)
+		}
+		result, err := ParseXELReader(f)
+		if err != nil {
+			return nil, fmt.Errorf("trc: parse xel %s: %w", path, err)
 		}
 		return result, nil
 	}
@@ -104,65 +118,7 @@ func ParseFile(path string) (*TRCParseResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("trc: parse events %s: %w", path, err)
 	}
-	return &TRCParseResult{Header: h, Events: events}, nil
-}
-
-// parseHeaderFromFile открывает файл, читает и парсит заголовок .trc,
-// возвращает открытый файл (позиционированный на EventsOffset) и заголовок.
-// Выделено из ParseFile для переиспользования в ParseFileToDB.
-func parseHeaderFromFile(path string) (*os.File, *TraceHeader, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("trc: open %s: %w", path, err)
-	}
-
-	const headerBufSize = 65536
-	headerBuf := make([]byte, 0, headerBufSize)
-	chunk := make([]byte, headerBufSize)
-	n, err := io.ReadFull(f, chunk)
-	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		f.Close()
-		return nil, nil, fmt.Errorf("trc: read %s: %w", path, err)
-	}
-	headerBuf = append(headerBuf, chunk[:n]...)
-
-	if DetectFormat(headerBuf) {
-		f.Close()
-		return nil, nil, fmt.Errorf("trc: XML format not supported by ParseFileToDB, use ParseFile")
-	}
-
-	h, err := ParseHeader(headerBuf)
-	if err != nil {
-		if len(headerBuf) < headerBufSize && n == headerBufSize {
-			f.Close()
-			return nil, nil, fmt.Errorf("trc: parse header %s: %w", path, err)
-		}
-		for len(headerBuf) < 1<<20 {
-			nn, rerr := io.ReadFull(f, chunk)
-			headerBuf = append(headerBuf, chunk[:nn]...)
-			if rerr != nil && rerr != io.EOF && rerr != io.ErrUnexpectedEOF {
-				f.Close()
-				return nil, nil, fmt.Errorf("trc: read %s: %w", path, rerr)
-			}
-			h, err = ParseHeader(headerBuf)
-			if err == nil {
-				break
-			}
-			if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
-				break
-			}
-		}
-		if err != nil {
-			f.Close()
-			return nil, nil, fmt.Errorf("trc: parse header %s: %w", path, err)
-		}
-	}
-
-	if _, err := f.Seek(int64(h.EventsOffset), io.SeekStart); err != nil {
-		f.Close()
-		return nil, nil, fmt.Errorf("trc: seek %s: %w", path, err)
-	}
-	return f, h, nil
+	return &TRCParseResult{Header: h, Events: events, SourceFormat: "trc_binary"}, nil
 }
 
 // ParseEvents разбирает поток событий из среза байтов (in-memory режим).

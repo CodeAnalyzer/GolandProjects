@@ -13,22 +13,67 @@ import (
 	"golang.org/x/text/transform"
 )
 
-// DetectFormat определяет, является ли содержимое XML-экспортом трейса
-// (<TraceData>...</TraceData>), а не бинарным .trc. Экспорт из SQL Server
-// Profiler обычно в UTF-16 с BOM (<?xml version="1.0" encoding="utf-16"?>),
-// но детект не полагается на расширение файла: декодирует префикс через
-// BOM-aware декодер и ищет "<?xml" / "<TraceData" в начале.
-func DetectFormat(data []byte) bool {
+// Format — распознанный формат файла трейса (см. DetectFormat).
+type Format int
+
+const (
+	// FormatBinary — бинарный .trc (SQL Server Profiler), разбирается
+	// ParseHeader/ParseEventsStreaming.
+	FormatBinary Format = iota
+	// FormatXML — XML-экспорт трейса (<TraceData>...), разбирается ParseXMLReader.
+	FormatXML
+	// FormatXEL — Extended Events (.xel), разбирается ParseXELReader.
+	FormatXEL
+)
+
+func (f Format) String() string {
+	switch f {
+	case FormatXML:
+		return "xml"
+	case FormatXEL:
+		return "xel"
+	default:
+		return "binary"
+	}
+}
+
+// DetectFormat определяет формат содержимого файла трейса по сигнатуре, а
+// не по расширению: XML-экспорт (<TraceData>...</TraceData>, обычно в
+// UTF-16 с BOM), бинарный Extended Events (.xel, см. looksLikeXEL) или
+// бинарный .trc (SQL Server Profiler) как формат по умолчанию.
+func DetectFormat(data []byte) Format {
 	if hasBOM(data) {
 		prefixLen := 4096
 		if prefixLen > len(data) {
 			prefixLen = len(data)
 		}
 		decoded, _ := decodeToUTF8(data[:prefixLen])
-		return looksLikeTraceXML(decoded)
+		if looksLikeTraceXML(decoded) {
+			return FormatXML
+		}
+	} else if looksLikeTraceXML(data) {
+		// Нет BOM — защитная проверка на случай экспорта без BOM (чистый UTF-8/ASCII XML).
+		return FormatXML
 	}
-	// Нет BOM — защитная проверка на случай экспорта без BOM (чистый UTF-8/ASCII XML).
-	return looksLikeTraceXML(data)
+	if looksLikeXEL(data) {
+		return FormatXEL
+	}
+	return FormatBinary
+}
+
+// xelFileSignature — первые 4 байта заголовка .xel, подтверждённые
+// побайтово в Phase 0 на STP3_1.xel ("5A 37 AB EF"). Оставшиеся 4 байта
+// заголовка ("0A 00 00 02") предположительно являются версией формата и
+// намеренно не проверяются здесь как менее надёжные для разных версий
+// SQL Server/файлов.
+var xelFileSignature = []byte{0x5A, 0x37, 0xAB, 0xEF}
+
+// looksLikeXEL проверяет 4-байтовую сигнатуру заголовка .xel (см.
+// xelFileSignature). Известное ограничение: сигнатура подтверждена только
+// на одном тестовом файле (STP3_1.xel) — для файлов другой версии SQL
+// Server сигнатура может отличаться (открытая задача, см. Phase 0).
+func looksLikeXEL(data []byte) bool {
+	return bytes.HasPrefix(data, xelFileSignature)
 }
 
 func hasBOM(data []byte) bool {
@@ -177,7 +222,94 @@ func ParseXMLReader(r io.Reader) (*TRCParseResult, error) {
 
 	enrichEventsParallel(events)
 	ComputeParentIDs(events)
-	return &TRCParseResult{Header: h, Events: events}, nil
+	return &TRCParseResult{Header: h, Events: events, SourceFormat: "trc_xml"}, nil
+}
+
+// parseXMLReaderCB — streaming-версия ParseXMLReader: обходит XML токены
+// через xml.Decoder.Token и для каждого <Event> вызывает cb. Заголовок
+// (<Header>) декодируется одним DecodeElement, события (<Event> внутри
+// <Events>) — по одному через DecodeElement, без накопления всего массива
+// в памяти. enrichEvent вызывается одиночно (как в parseEventsStreamingCB
+// для бинарного формата).
+//
+// Возвращает разобранный заголовок TraceHeader.
+func parseXMLReaderCB(r io.Reader, cb func(*TRCEvent) error) (*TraceHeader, error) {
+	dec := unicode.BOMOverride(unicode.UTF8.NewDecoder())
+	utf8Reader := transform.NewReader(r, dec)
+
+	xmlDec := xml.NewDecoder(utf8Reader)
+	xmlDec.CharsetReader = func(_ string, input io.Reader) (io.Reader, error) {
+		return input, nil
+	}
+
+	var h *TraceHeader
+
+	for {
+		tok, err := xmlDec.Token()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("xml token: %w", err)
+		}
+
+		se, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+
+		switch se.Name.Local {
+		case "Header":
+			var hdr traceXMLHeader
+			if err := xmlDec.DecodeElement(&hdr, &se); err != nil {
+				return nil, fmt.Errorf("decode Header: %w", err)
+			}
+			h = &TraceHeader{
+				ProviderName:   hdr.TraceProvider.Name,
+				MajorVersion:   hdr.TraceProvider.MajorVersion,
+				MinorVersion:   hdr.TraceProvider.MinorVersion,
+				BuildNumber:    hdr.TraceProvider.BuildNumber,
+				ServerName:     hdr.ServerInformation.Name,
+				OrderedColumns: hdr.ProfilerUI.OrderedColumns.ID,
+				EventClasses:   map[int]*EventClassSchema{},
+			}
+			for _, te := range hdr.ProfilerUI.TracedEvents.Event {
+				cols := make([]int, 0, len(te.EventColumn))
+				for _, c := range te.EventColumn {
+					cols = append(cols, c.ID)
+				}
+				h.EventClasses[te.ID] = &EventClassSchema{
+					EventClass: te.ID,
+					EventName:  EventClassName(te.ID),
+					Columns:    cols,
+				}
+			}
+
+		case "Event":
+			// <Event> внутри <Events> — декодируем одно событие
+			var xe traceXMLEvent
+			if err := xmlDec.DecodeElement(&xe, &se); err != nil {
+				return nil, fmt.Errorf("decode Event: %w", err)
+			}
+			ev := TRCEvent{
+				EventClass: xe.ID,
+				EventName:  xe.Name,
+				Columns:    make(map[int]any, len(xe.Column)),
+			}
+			for _, col := range xe.Column {
+				ev.Columns[col.ID] = decodeXMLColumnValue(col.ID, col.Value)
+			}
+			enrichEvent(&ev)
+			if err := cb(&ev); err != nil {
+				return h, err
+			}
+		}
+	}
+
+	if h == nil {
+		h = &TraceHeader{EventClasses: map[int]*EventClassSchema{}}
+	}
+	return h, nil
 }
 
 // ParseXML разбирает XML-экспорт трейса из среза байтов (in-memory режим).
@@ -237,7 +369,7 @@ func parseXMLFromBytes(utf8Data []byte) (*TRCParseResult, error) {
 
 	enrichEventsParallel(events)
 	ComputeParentIDs(events)
-	return &TRCParseResult{Header: h, Events: events}, nil
+	return &TRCParseResult{Header: h, Events: events, SourceFormat: "trc_xml"}, nil
 }
 
 // decodeXMLColumnValue декодирует текстовое значение колонки согласно её

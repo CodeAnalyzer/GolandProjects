@@ -45,6 +45,15 @@ func modificationsDir(t *testing.T) string {
 	return filepath.Join("..", "..", "Modifications")
 }
 
+// skipIfMissing проверяет существование файла и пропускает тест, если файл
+// отсутствует. Применяется ко всем тестам, использующим файлы из Modifications.
+func skipIfMissing(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("file not available: %s: %v", path, err)
+	}
+}
+
 // readXMLHeaderPrefix читает первые maxBytes байт UTF-16 XML файла (без
 // загрузки всего файла — nbki.xml занимает 754 МБ), декодирует в UTF-8 и
 // парсит секцию <Header>...</Header> в xmlHeader. Не требует валидного
@@ -104,6 +113,8 @@ func TestParseHeader_DIAPR391_MatchesXML(t *testing.T) {
 	dir := modificationsDir(t)
 	trcPath := filepath.Join(dir, "DIAPR-391.trc")
 	xmlPath := filepath.Join(dir, "DIAPR-391.xml")
+	skipIfMissing(t, trcPath)
+	skipIfMissing(t, xmlPath)
 	assertHeaderMatchesXML(t, trcPath, xmlPath, 2<<20)
 }
 
@@ -111,9 +122,8 @@ func TestParseHeader_NBKI_MatchesXML(t *testing.T) {
 	dir := modificationsDir(t)
 	trcPath := filepath.Join(dir, "nbki.trc")
 	xmlPath := filepath.Join(dir, "nbki.xml")
-	if _, err := os.Stat(trcPath); err != nil {
-		t.Skipf("nbki.trc not available: %v", err)
-	}
+	skipIfMissing(t, trcPath)
+	skipIfMissing(t, xmlPath)
 	assertHeaderMatchesXML(t, trcPath, xmlPath, 2<<20)
 }
 

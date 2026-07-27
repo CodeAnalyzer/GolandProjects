@@ -1028,7 +1028,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				"method_name": stringProp("Optional client event method name filter (case-insensitive)"),
 				"format":      stringProp("Output format: full (default) or short. Short omits BPL, Connection, SQL, Memory, ErrorText, RawBody."),
 				"limit":       intProp("Maximum number of events to return (default 100, max 1000)"),
-		})},
+			})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				limit, _ := optionalInt(args, "limit")
 				if limit <= 0 {
@@ -1149,7 +1149,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				"method_name": stringProp("Optional client event method name filter (case-insensitive)"),
 				"format":      stringProp("Output format: full (default) or short. Short omits params, checkpoints, blog_*, SQL text."),
 				"limit":       intProp("Maximum number of items to return per type (default 100, max 1000)"),
-		})},
+			})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				limit, _ := optionalInt(args, "limit")
 				if limit <= 0 {
@@ -1276,7 +1276,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_trc_parse": {
-			Definition: toolDefinition{Name: "codebase_trc_parse", Description: "Parse a binary SQL Server Profiler .trc trace file and save the session to the database. Returns total event count and the saved session ID. Use this as the first step before querying trc data via other trc tools.", InputSchema: objectSchema(map[string]interface{}{"file_path": stringProp("Absolute path to .trc file")})},
+			Definition: toolDefinition{Name: "codebase_trc_parse", Description: "Parse a SQL Server trace file (.trc binary, .trc XML export, or .xel Extended Events) and save the session to the database. Returns total event count and the saved session ID. Use this as the first step before querying trc data via other trc tools.", InputSchema: objectSchema(map[string]interface{}{"file_path": stringProp("Absolute path to .trc or .xel file")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				filePath, err := requiredString(args, "file_path")
 				if err != nil {
@@ -1285,6 +1285,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if db != nil {
 					// Streaming parse-to-DB: не накапливает события в памяти.
 					// Критично для больших файлов (> 1 ГБ).
+					// Поддерживает бинарный .trc, XML-экспорт и .xel (Extended Events).
 					sessionID, totalEvents, perr := trc.ParseFileToDB(filePath, db)
 					if perr != nil {
 						return nil, fmt.Errorf("failed to parse trc file: %w", perr)
@@ -1485,9 +1486,9 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					// Build in-memory tree from loaded events
 					trees := trc.BuildTrees(treeEvents)
 					return map[string]interface{}{
-						"trees":        trees,
-						"event_count":  len(treeEvents),
-						"spid":         spidFilter,
+						"trees":       trees,
+						"event_count": len(treeEvents),
+						"spid":        spidFilter,
 					}, nil
 				}
 				// Fallback: parse from file

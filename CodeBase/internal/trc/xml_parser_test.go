@@ -11,22 +11,29 @@ func TestDetectFormat_XMLWithBOM(t *testing.T) {
 	for _, r := range "<?xml version=\"1.0\" encoding=\"utf-16\"?>" {
 		data = append(data, byte(r), 0)
 	}
-	if !DetectFormat(data) {
-		t.Fatal("DetectFormat: expected true for UTF-16 XML prologue")
+	if got := DetectFormat(data); got != FormatXML {
+		t.Fatalf("DetectFormat: got %s, expected xml for UTF-16 XML prologue", got)
 	}
 }
 
 func TestDetectFormat_XMLPlainUTF8(t *testing.T) {
 	data := []byte("<TraceData xmlns=\"http://tempuri.org/TracePersistence.xsd\">")
-	if !DetectFormat(data) {
-		t.Fatal("DetectFormat: expected true for plain UTF-8 <TraceData prologue")
+	if got := DetectFormat(data); got != FormatXML {
+		t.Fatalf("DetectFormat: got %s, expected xml for plain UTF-8 <TraceData prologue", got)
 	}
 }
 
 func TestDetectFormat_Binary(t *testing.T) {
 	data := []byte{0x00, 0x00, 0x00, 0x01, 0xF6, 0xFF, 0x06, 0x25, 0x00}
-	if DetectFormat(data) {
-		t.Fatal("DetectFormat: expected false for binary data")
+	if got := DetectFormat(data); got != FormatBinary {
+		t.Fatalf("DetectFormat: got %s, expected binary", got)
+	}
+}
+
+func TestDetectFormat_XEL(t *testing.T) {
+	data := append([]byte{0x5A, 0x37, 0xAB, 0xEF, 0x0A, 0x00, 0x00, 0x02}, make([]byte, 16)...)
+	if got := DetectFormat(data); got != FormatXEL {
+		t.Fatalf("DetectFormat: got %s, expected xel", got)
 	}
 }
 
@@ -96,6 +103,8 @@ func TestParseFile_XMLMatchesBinary(t *testing.T) {
 	dir := modificationsDir(t)
 	trcPath := filepath.Join(dir, "DIAPR-391.trc")
 	xmlPath := filepath.Join(dir, "DIAPR-391.xml")
+	skipIfMissing(t, trcPath)
+	skipIfMissing(t, xmlPath)
 
 	binResult, err := ParseFile(trcPath)
 	if err != nil {

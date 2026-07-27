@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/codebase/internal/store"
 	"github.com/lib/pq"
@@ -14,11 +15,16 @@ import (
 func SaveSession(db *store.DB, result *TRCParseResult, filePath string, fileSize int64) (int64, error) {
 	var sessionID int64
 	h := result.Header
+	sourceFormat := result.SourceFormat
+	if sourceFormat == "" {
+		sourceFormat = "trc_binary"
+	}
 	err := db.QueryRow(
-		`INSERT INTO trc_sessions (file_path, file_size, total_events, provider_name, server_name, major_version, minor_version, build_number)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+		`INSERT INTO trc_sessions (file_path, file_size, total_events, provider_name, server_name, major_version, minor_version, build_number, source_format)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
 		filePath, fileSize, len(result.Events),
 		h.ProviderName, h.ServerName, h.MajorVersion, h.MinorVersion, h.BuildNumber,
+		sourceFormat,
 	).Scan(&sessionID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert trc_sessions: %w", err)
@@ -143,7 +149,8 @@ func marshalColumns(columns map[int]any) ([]byte, error) {
 		key := fmt.Sprintf("%d", id)
 		switch val := v.(type) {
 		case string:
-			out[key] = jsonColumn{"string", val}
+			// PostgreSQL jsonb не принимает нулевые байты (0x00) в строках.
+			out[key] = jsonColumn{"string", strings.ReplaceAll(val, "\x00", "")}
 		case int32:
 			out[key] = jsonColumn{"int32", val}
 		case int64:
@@ -211,6 +218,12 @@ func strVal(v any) string {
 }
 
 func nullableString(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	// PostgreSQL text/varchar не принимает нулевые байты (0x00).
+	// XEL-события могут содержать бинарный мусор в строковых полях.
+	s = strings.ReplaceAll(s, "\x00", "")
 	if s == "" {
 		return nil
 	}

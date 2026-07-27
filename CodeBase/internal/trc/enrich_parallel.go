@@ -3,6 +3,7 @@ package trc
 import (
 	"encoding/json"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -83,7 +84,7 @@ func serializeParallel(events []TRCEvent, columnsJSONs [][]byte, paramsJSONs []i
 				}
 				columnsJSONs[j] = b
 				if len(events[j].Params) > 0 {
-					pb, err := json.Marshal(events[j].Params)
+					pb, err := json.Marshal(sanitizeParams(events[j].Params))
 					if err != nil {
 						firstErr.CompareAndSwap(nil, &err)
 						return
@@ -110,7 +111,7 @@ func serializeSequential(events []TRCEvent, columnsJSONs [][]byte, paramsJSONs [
 		}
 		columnsJSONs[i] = b
 		if len(ev.Params) > 0 {
-			pb, err := json.Marshal(ev.Params)
+			pb, err := json.Marshal(sanitizeParams(ev.Params))
 			if err != nil {
 				return err
 			}
@@ -118,4 +119,17 @@ func serializeSequential(events []TRCEvent, columnsJSONs [][]byte, paramsJSONs [
 		}
 	}
 	return nil
+}
+
+// sanitizeParams возвращает копию params с очищенными от нулевых байтов (0x00)
+// строковыми значениями. PostgreSQL jsonb не принимает \u0000 в строках.
+func sanitizeParams(params []TRCParam) []TRCParam {
+	out := make([]TRCParam, len(params))
+	for i, p := range params {
+		out[i] = TRCParam{
+			Name:  strings.ReplaceAll(p.Name, "\x00", ""),
+			Value: strings.ReplaceAll(p.Value, "\x00", ""),
+		}
+	}
+	return out
 }

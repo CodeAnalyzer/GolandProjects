@@ -96,6 +96,8 @@ func TestParseEvents_DIAPR391_MatchesXML(t *testing.T) {
 	dir := modificationsDir(t)
 	trcPath := filepath.Join(dir, "DIAPR-391.trc")
 	xmlPath := filepath.Join(dir, "DIAPR-391.xml")
+	skipIfMissing(t, trcPath)
+	skipIfMissing(t, xmlPath)
 
 	result, err := ParseFile(trcPath)
 	if err != nil {
@@ -157,13 +159,8 @@ func TestParseEvents_NBKI_MatchesXML(t *testing.T) {
 	dir := modificationsDir(t)
 	trcPath := filepath.Join(dir, "nbki.trc")
 	xmlPath := filepath.Join(dir, "nbki.xml")
-
-	if _, err := os.Stat(trcPath); err != nil {
-		t.Skipf("nbki.trc not found: %v", err)
-	}
-	if _, err := os.Stat(xmlPath); err != nil {
-		t.Skipf("nbki.xml not found: %v", err)
-	}
+	skipIfMissing(t, trcPath)
+	skipIfMissing(t, xmlPath)
 
 	result, err := ParseFile(trcPath)
 	if err != nil {
@@ -210,5 +207,33 @@ func TestParseEvents_NBKI_MatchesXML(t *testing.T) {
 		if mismatches > 20 {
 			t.Fatalf("too many mismatches, aborting early")
 		}
+	}
+}
+
+// TestParseFile_AutoDetectXEL — сквозной тест: ParseFile определяет формат
+// .xel по сигнатуре и разбирает его через ParseXELReader.
+func TestParseFile_AutoDetectXEL(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping full-file smoke test in -short mode")
+	}
+	path := filepath.Join(modificationsDir(t), "STP3_1.xel")
+	skipIfMissing(t, path)
+	result, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile %s: %v", path, err)
+	}
+	if len(result.Events) == 0 {
+		t.Fatalf("ParseFile вернул 0 событий для .xel")
+	}
+	if result.SourceFormat != "xel" {
+		t.Errorf("SourceFormat = %q, want %q", result.SourceFormat, "xel")
+	}
+	counts := map[string]int{}
+	for _, ev := range result.Events {
+		counts[ev.EventName]++
+	}
+	t.Logf("всего событий: %d (SourceFormat=%s)", len(result.Events), result.SourceFormat)
+	for name, c := range counts {
+		t.Logf("  %-30s %d", name, c)
 	}
 }
