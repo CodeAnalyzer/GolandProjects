@@ -3,6 +3,7 @@ package tpr
 import (
 	"bufio"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 
@@ -54,18 +55,27 @@ func NewParser() *Parser {
 }
 
 func (p *Parser) ParseFile(path string) (*ParseResult, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+	return p.ParseBytes(data, path)
+}
+
+// ParseBytes парсит TPR-файл из уже прочитанных байт (без повторного чтения с диска)
+func (p *Parser) ParseBytes(data []byte, path string) (*ParseResult, error) {
 	encodings := []encoding.Encoding{encoding.WIN1251, encoding.CP866, encoding.UTF8}
 
 	var content string
 	var err error
 	for _, enc := range encodings {
-		content, err = encoding.ReadFile(path, enc)
+		content, err = encoding.DecodeBytes(data, enc)
 		if err == nil && p.isValidEncoding(content) {
 			return p.ParseContent(content, path)
 		}
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to read file with any encoding: %w", err)
+		return nil, fmt.Errorf("failed to decode file with any encoding: %w", err)
 	}
 	return p.ParseContent(content, path)
 }

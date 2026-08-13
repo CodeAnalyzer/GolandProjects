@@ -228,6 +228,15 @@ func NewParser() *Parser {
 
 // ParseFile парсит SMF-файл
 func (p *Parser) ParseFile(path string) (*ParseResult, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+	return p.ParseBytes(data, path)
+}
+
+// ParseBytes парсит SMF-файл из уже прочитанных байт (без повторного чтения с диска)
+func (p *Parser) ParseBytes(data []byte, path string) (*ParseResult, error) {
 	// Пробуем разные кодировки в порядке приоритета
 	encodings := []encoding.Encoding{encoding.WIN1251, encoding.CP866, encoding.UTF8}
 
@@ -235,14 +244,14 @@ func (p *Parser) ParseFile(path string) (*ParseResult, error) {
 	var err error
 
 	for _, enc := range encodings {
-		content, err = encoding.ReadFile(path, enc)
+		content, err = encoding.DecodeBytes(data, enc)
 		if err == nil && p.isValidEncoding(content) {
-			break // Файл успешно прочитан с корректной кодировкой
+			break // Файл успешно декодирован с корректной кодировкой
 		}
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to read file with any encoding: %w", err)
+		return nil, fmt.Errorf("failed to decode file with any encoding: %w", err)
 	}
 
 	// Извлекаем базовый путь из полного пути файла

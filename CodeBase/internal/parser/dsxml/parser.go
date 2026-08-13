@@ -178,6 +178,11 @@ func (p *Parser) ParseFile(path string) (*ParseResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	return p.ParseBytes(rawBytes, path)
+}
+
+// ParseBytes парсит XML из уже прочитанных байт (без повторного чтения с диска)
+func (p *Parser) ParseBytes(rawBytes []byte, path string) (*ParseResult, error) {
 	encoding := cbencoding.DetectXMLEncoding(rawBytes)
 	content, err := cbencoding.DecodeBytes(rawBytes, encoding)
 	if err != nil {

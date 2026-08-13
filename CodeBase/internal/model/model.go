@@ -413,6 +413,12 @@ type ScanStats struct {
 	APITables       int
 	APITableFields  int
 	APITableIndexes int
+
+	// Тайминги стадий пайплайна (миллисекунды, wall-clock).
+	WalkSaveMs    int64 // обход файловой системы + хэширование + saveFile
+	ProcessMs     int64 // парсинг + вставки (воркеры), от старта до завершения пула
+	PostProcessMs int64 // пост-обработка relations
+	CleanupMs     int64 // удаление устаревших/исчезнувших файлов (только update)
 }
 
 // APIBusinessObject бизнес-объект DSArchitect.

@@ -305,3 +305,130 @@ func (db *DB) UpdatePASFieldClass(fieldID int64, classID int64) error {
 	}
 	return nil
 }
+
+// BatchUpdatePASClassDFMForm пакетно обновляет dfm_form_id у PAS классов.
+// pairs — (classID, dfmFormID).
+func (db *DB) BatchUpdatePASClassDFMForm(pairs []PASUpdatePair) error {
+	if len(pairs) == 0 {
+		return nil
+	}
+	const chunkSize = 1000
+	for i := 0; i < len(pairs); i += chunkSize {
+		end := i + chunkSize
+		if end > len(pairs) {
+			end = len(pairs)
+		}
+		chunk := pairs[i:end]
+		ids := make([]int64, len(chunk))
+		values := make([]int64, len(chunk))
+		for j, p := range chunk {
+			ids[j] = p.ID
+			values[j] = p.ValueID
+		}
+		if _, err := db.Exec(`
+			UPDATE pas_classes c
+			SET dfm_form_id = v.dfm_form_id
+			FROM unnest($1::bigint[], $2::bigint[]) AS v(id, dfm_form_id)
+			WHERE c.id = v.id
+		`, pq.Array(ids), pq.Array(values)); err != nil {
+			return fmt.Errorf("failed to batch update pas class dfm form: %w", err)
+		}
+	}
+	return nil
+}
+
+// BatchUpdatePASMethodClass пакетно обновляет class_id у PAS методов.
+func (db *DB) BatchUpdatePASMethodClass(pairs []PASUpdatePair) error {
+	if len(pairs) == 0 {
+		return nil
+	}
+	const chunkSize = 1000
+	for i := 0; i < len(pairs); i += chunkSize {
+		end := i + chunkSize
+		if end > len(pairs) {
+			end = len(pairs)
+		}
+		chunk := pairs[i:end]
+		ids := make([]int64, len(chunk))
+		classIDs := make([]int64, len(chunk))
+		for j, p := range chunk {
+			ids[j] = p.ID
+			classIDs[j] = p.ValueID
+		}
+		if _, err := db.Exec(`
+			UPDATE pas_methods m
+			SET class_id = v.class_id
+			FROM unnest($1::bigint[], $2::bigint[]) AS v(id, class_id)
+			WHERE m.id = v.id
+		`, pq.Array(ids), pq.Array(classIDs)); err != nil {
+			return fmt.Errorf("failed to batch update pas method class: %w", err)
+		}
+	}
+	return nil
+}
+
+// BatchUpdatePASFieldClass пакетно обновляет class_id у PAS полей.
+func (db *DB) BatchUpdatePASFieldClass(pairs []PASUpdatePair) error {
+	if len(pairs) == 0 {
+		return nil
+	}
+	const chunkSize = 1000
+	for i := 0; i < len(pairs); i += chunkSize {
+		end := i + chunkSize
+		if end > len(pairs) {
+			end = len(pairs)
+		}
+		chunk := pairs[i:end]
+		ids := make([]int64, len(chunk))
+		classIDs := make([]int64, len(chunk))
+		for j, p := range chunk {
+			ids[j] = p.ID
+			classIDs[j] = p.ValueID
+		}
+		if _, err := db.Exec(`
+			UPDATE pas_fields f
+			SET class_id = v.class_id
+			FROM unnest($1::bigint[], $2::bigint[]) AS v(id, class_id)
+			WHERE f.id = v.id
+		`, pq.Array(ids), pq.Array(classIDs)); err != nil {
+			return fmt.Errorf("failed to batch update pas field class: %w", err)
+		}
+	}
+	return nil
+}
+
+// BatchUpdatePASFieldDFMComponent пакетно обновляет dfm_component_id у PAS полей.
+func (db *DB) BatchUpdatePASFieldDFMComponent(pairs []PASUpdatePair) error {
+	if len(pairs) == 0 {
+		return nil
+	}
+	const chunkSize = 1000
+	for i := 0; i < len(pairs); i += chunkSize {
+		end := i + chunkSize
+		if end > len(pairs) {
+			end = len(pairs)
+		}
+		chunk := pairs[i:end]
+		ids := make([]int64, len(chunk))
+		componentIDs := make([]int64, len(chunk))
+		for j, p := range chunk {
+			ids[j] = p.ID
+			componentIDs[j] = p.ValueID
+		}
+		if _, err := db.Exec(`
+			UPDATE pas_fields f
+			SET dfm_component_id = v.component_id
+			FROM unnest($1::bigint[], $2::bigint[]) AS v(id, component_id)
+			WHERE f.id = v.id
+		`, pq.Array(ids), pq.Array(componentIDs)); err != nil {
+			return fmt.Errorf("failed to batch update pas field dfm component: %w", err)
+		}
+	}
+	return nil
+}
+
+// PASUpdatePair — пара (ID, ValueID) для batch UPDATE.
+type PASUpdatePair struct {
+	ID      int64
+	ValueID int64
+}

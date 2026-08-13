@@ -12,6 +12,11 @@ import (
 // DB обёртка над sql.DB
 type DB struct {
 	*sql.DB
+	// boundTx — если задана, batch-операции (withCopyInTx, exec) выполняются
+	// внутри этой транзакции без собственного commit. См. WithBatchTx.
+	// Экземпляр с boundTx не является потокобезопасным для конкурентного
+	// использования (одна транзакция = один воркер).
+	boundTx *sql.Tx
 }
 
 // Stats статистика индекса
@@ -109,13 +114,14 @@ func NewDB(cfg config.DBConfig) (*DB, error) {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	// Пул соединений настраивается консервативно: CLI-процесс короткоживущий,
-	// но indexer может параллельно держать несколько запросов.
+	// Пул соединений: indexer держит parallel воркеров, каждый делает серию
+	// батчей подряд. MaxIdleConns = MaxOpenConns, чтобы установленные соединения
+	// переиспользовались, а не закрывались/открывались заново между батчами.
 	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
+	db.SetMaxIdleConns(25)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
-	return &DB{db}, nil
+	return &DB{DB: db}, nil
 }
 
 // createDatabaseIfNotExists создаёт БД если она не существует

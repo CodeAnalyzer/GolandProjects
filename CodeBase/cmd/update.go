@@ -65,6 +65,8 @@ Uses file hashes to detect changes.`,
 
 		finishedAt := time.Now()
 		fmt.Printf("\nUpdating completed: %s\n", finishedAt.Format("2006-01-02 15:04:05"))
+		printPipelineTimings(stats)
+		fmt.Printf("\nStats:\n")
 		fmt.Printf("  Files scanned:  %d\n", stats.FilesScanned)
 		fmt.Printf("  Files indexed:  %d\n", stats.FilesIndexed)
 		fmt.Printf("  Files updated:  %d\n", stats.FilesUpdated)

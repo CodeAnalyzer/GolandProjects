@@ -3,7 +3,6 @@ package fswalk
 import (
 	"crypto/sha256"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,6 +20,9 @@ type FileInfo struct {
 	ModifiedAt time.Time
 	Encoding   string
 	Language   string
+	// Content — сырые байты файла, прочитанные один раз при обходе.
+	// Используются и для хэша, и для парсинга, чтобы не читать файл повторно.
+	Content []byte
 }
 
 // Walker обходчик файлов
@@ -128,12 +130,13 @@ func (w *Walker) Walk() (<-chan FileInfo, <-chan error) {
 				return nil
 			}
 
-			// Вычисляем хэш
-			hash, err := computeHash(path)
+			// Читаем файл один раз: из этих же байтов считаем хэш и дальше парсим.
+			content, err := os.ReadFile(path)
 			if err != nil {
-				errorsChan <- fmt.Errorf("failed to compute hash for %s: %w", path, err)
+				errorsChan <- fmt.Errorf("failed to read %s: %w", path, err)
 				return nil
 			}
+			hash := computeHashBytes(content)
 
 			// Расширение здесь выступает дешёвым классификатором языка и кодировки,
 			// чтобы parser layer (слой парсеров) знал, как читать файл.
@@ -149,6 +152,7 @@ func (w *Walker) Walk() (<-chan FileInfo, <-chan error) {
 				ModifiedAt: info.ModTime(),
 				Encoding:   encoding,
 				Language:   language,
+				Content:    content,
 			}
 
 			return nil
@@ -193,20 +197,10 @@ func (w *Walker) isIncluded(path string) bool {
 	return false
 }
 
-// computeHash вычисляет SHA256 хэш файла
-func computeHash(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
+// computeHashBytes вычисляет SHA256 хэш содержимого файла
+func computeHashBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum[:])
 }
 
 // getEncodingAndLanguage возвращает кодировку и язык по расширению

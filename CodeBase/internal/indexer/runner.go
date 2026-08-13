@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/codebase/internal/fswalk"
 	"github.com/codebase/internal/model"
@@ -57,6 +58,7 @@ func (idx *Indexer) walkerPatterns() ([]string, []string) {
 }
 
 func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error) {
+	startedAt := time.Now()
 	scanRunID, err := idx.db.CreateScanRun(rootPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create scan run: %w", err)
@@ -77,7 +79,10 @@ func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error
 		idx.processFilesWorkerPool(parallel, jobs, collector)
 	}()
 
+	var feederWG sync.WaitGroup
+	feederWG.Add(1)
 	go func() {
+		defer feederWG.Done()
 		for file := range filesCh {
 			collector.Add(func(stats *model.ScanStats) {
 				stats.FilesScanned++
@@ -98,9 +103,16 @@ func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 	}
 
+	feederWG.Wait()
+	walkSaveDone := time.Now()
 	workersWG.Wait()
+	processDone := time.Now()
 	idx.runPostProcessingParallel(collector, parallel)
+	postProcessDone := time.Now()
 	stats := collector.Snapshot()
+	stats.WalkSaveMs = walkSaveDone.Sub(startedAt).Milliseconds()
+	stats.ProcessMs = processDone.Sub(startedAt).Milliseconds()
+	stats.PostProcessMs = postProcessDone.Sub(processDone).Milliseconds()
 	status := "completed"
 	if stats.Errors > 0 {
 		status = "completed_with_errors"
@@ -112,6 +124,7 @@ func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error
 }
 
 func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*model.ScanStats, error) {
+	startedAt := time.Now()
 	scanRunID, err := idx.db.CreateScanRun(rootPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create scan run: %w", err)
@@ -138,7 +151,14 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 		idx.processFilesWorkerPool(parallel, jobs, collector)
 	}()
 
+	// Collect paths and new file IDs for modified files.
+	modifiedPaths := make([]string, 0, 128)
+	newFileIDs := make(map[string]int64, 128)
+
+	var feederWG sync.WaitGroup
+	feederWG.Add(1)
 	go func() {
+		defer feederWG.Done()
 		for file := range filesCh {
 			normalizedPath := filepath.ToSlash(strings.TrimSpace(file.Path))
 			seen[normalizedPath] = struct{}{}
@@ -149,21 +169,18 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 			if onlyModified && prev != nil && prev.HashSHA256 == file.Hash {
 				continue
 			}
-			if prev != nil {
-				if err := idx.db.DeleteFilesByPathExcept(normalizedPath, 0); err != nil {
-					idx.logError(file.Path, "Error deleting outdated file rows: %v", err)
-					collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
-					continue
-				}
-				collector.Add(func(stats *model.ScanStats) { stats.FilesUpdated++ })
-			} else {
-				collector.Add(func(stats *model.ScanStats) { stats.FilesAdded++ })
-			}
 			fileID, err := idx.saveFile(file, scanRunID)
 			if err != nil {
 				idx.logError(file.Path, "Error saving file row: %v", err)
 				collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 				continue
+			}
+			if prev != nil {
+				modifiedPaths = append(modifiedPaths, normalizedPath)
+				newFileIDs[normalizedPath] = fileID
+				collector.Add(func(stats *model.ScanStats) { stats.FilesUpdated++ })
+			} else {
+				collector.Add(func(stats *model.ScanStats) { stats.FilesAdded++ })
 			}
 			jobs <- indexedFileJob{file: file, fileID: fileID}
 		}
@@ -175,22 +192,42 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 	}
 
-	workersWG.Wait()
-	idx.runPostProcessingParallel(collector, parallel)
+	feederWG.Wait()
+	walkSaveDone := time.Now()
 
+	// Batch delete old rows for modified files, keeping the new file IDs.
+	if len(modifiedPaths) > 0 {
+		if err := idx.db.DeleteFilesByPathsExcept(modifiedPaths, newFileIDs); err != nil {
+			idx.logError("<cleanup>", "Error batch deleting outdated file rows: %v", err)
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+		}
+	}
+
+	workersWG.Wait()
+	processDone := time.Now()
+	idx.runPostProcessingParallel(collector, parallel)
+	postProcessDone := time.Now()
+
+	// Batch delete removed files (not seen in walker).
+	removedPaths := make([]string, 0, 128)
 	for path := range existing {
 		if _, ok := seen[path]; ok {
 			continue
 		}
-		if err := idx.db.DeleteFilesByPath(path); err != nil {
-			idx.logError(path, "Error deleting removed file: %v", err)
-			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
-			continue
-		}
-		collector.Add(func(stats *model.ScanStats) { stats.FilesDeleted++ })
+		removedPaths = append(removedPaths, path)
 	}
+	if err := idx.db.DeleteFilesByPaths(removedPaths); err != nil {
+		idx.logError("<cleanup>", "Error batch deleting removed files: %v", err)
+		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+	}
+	collector.Add(func(stats *model.ScanStats) { stats.FilesDeleted += len(removedPaths) })
+	cleanupDone := time.Now()
 
 	stats := collector.Snapshot()
+	stats.WalkSaveMs = walkSaveDone.Sub(startedAt).Milliseconds()
+	stats.ProcessMs = processDone.Sub(startedAt).Milliseconds()
+	stats.PostProcessMs = postProcessDone.Sub(processDone).Milliseconds()
+	stats.CleanupMs = cleanupDone.Sub(postProcessDone).Milliseconds()
 	status := "completed"
 	if stats.Errors > 0 {
 		status = "completed_with_errors"
@@ -211,7 +248,7 @@ func (idx *Indexer) runPostProcessingParallel(collector *statsCollector, paralle
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(5)
 	go func() {
 		defer wg.Done()
 		idx.postProcessPASPending(collector)
@@ -227,6 +264,10 @@ func (idx *Indexer) runPostProcessingParallel(collector *statsCollector, paralle
 	go func() {
 		defer wg.Done()
 		idx.postProcessRetCodeConstants(collector)
+	}()
+	go func() {
+		defer wg.Done()
+		idx.postProcessAllFragmentRelations(collector)
 	}()
 	wg.Wait()
 }

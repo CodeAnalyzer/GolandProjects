@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	cbencoding "github.com/codebase/internal/encoding"
+	"github.com/codebase/internal/fswalk"
 	"github.com/codebase/internal/model"
 	pasparser "github.com/codebase/internal/parser/pas"
 	"github.com/codebase/internal/parser/retcode"
@@ -16,13 +16,18 @@ import (
 )
 
 // parseSQLFile парсит SQL-файл с использованием batch-вставки
-func (idx *Indexer) parseSQLFile(path string, fileID int64, stats *model.ScanStats) error {
-	return idx.parseSQLLikeFile(path, fileID, stats, true, false)
+func (idx *Indexer) parseSQLFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+	return idx.parseSQLLikeFile(file, fileID, stats, true, false)
 }
 
-func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.ScanStats, includeAPIMacros bool, includeGeneratedSubscriberCalls bool) error {
+func (idx *Indexer) parseSQLLikeFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats, includeAPIMacros bool, includeGeneratedSubscriberCalls bool) error {
+	path := file.Path
+	content, err := decodeIndexedFileContent(file)
+	if err != nil {
+		return fmt.Errorf("failed to decode SQL file: %w", err)
+	}
 	parser := sqlparser.NewParser()
-	result, err := parser.ParseFile(path)
+	result, err := parser.ParseContent(content)
 	if err != nil {
 		return fmt.Errorf("failed to parse SQL file: %w", err)
 	}
@@ -200,13 +205,15 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 		}
 	}
 
+	var indexIDs map[string]int64
 	if len(indexDefinitionsBatch) > 0 {
 		if err := idx.db.BatchInsertSQLIndexDefinitions(indexDefinitionsBatch, idx.config.Indexer.BatchSize); err != nil {
 			idx.logError(path, "Error batch inserting SQL index definitions: %v", err)
 			stats.Errors += len(indexDefinitionsBatch)
 			return err
 		}
-		indexIDs, err := idx.db.FindSQLIndexDefinitionIDsByFile(fileID)
+		var err error
+		indexIDs, err = idx.db.FindSQLIndexDefinitionIDsByFile(fileID)
 		if err != nil {
 			return fmt.Errorf("failed to resolve SQL index definition ids for symbols: %w", err)
 		}
@@ -241,9 +248,12 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 	}
 
 	if len(indexDefinitionFieldsBatch) > 0 {
-		indexIDs, err := idx.db.FindSQLIndexDefinitionIDsByFile(fileID)
-		if err != nil {
-			return fmt.Errorf("failed to resolve SQL index definition ids: %w", err)
+		if indexIDs == nil {
+			var err error
+			indexIDs, err = idx.db.FindSQLIndexDefinitionIDsByFile(fileID)
+			if err != nil {
+				return fmt.Errorf("failed to resolve SQL index definition ids: %w", err)
+			}
 		}
 		fieldsToPersist := make([]*model.SQLIndexDefinitionField, 0, len(indexDefinitionFieldsBatch))
 		for _, field := range indexDefinitionFieldsBatch {
@@ -342,12 +352,12 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 
 	idx.addPendingSQLCalls(fileID, path, proceduresBatch, procedureIDs, result.Calls)
 
-	relations, err := idx.buildSQLProcedureTableRelations(fileID, proceduresBatch, tablesBatch)
+	relations, err := buildSQLProcedureTableRelations(procedureIDs, tableIDs, proceduresBatch, tablesBatch)
 	if err != nil {
 		return fmt.Errorf("failed to build SQL relations: %w", err)
 	}
 	if includeAPIMacros {
-		macroRelations, err := idx.indexAPIMacros(path, fileID, "SQL", stats)
+		macroRelations, err := idx.indexAPIMacros(path, content, fileID)
 		if err != nil {
 			return fmt.Errorf("failed to index SQL API macros: %w", err)
 		}
@@ -359,7 +369,7 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 	}
 	relations = append(relations, queryRelations...)
 	if includeGeneratedSubscriberCalls {
-		generatedRelations, err := idx.buildT01GeneratedSubscriberRelations(path, fileID, proceduresBatch, result.Calls)
+		generatedRelations, err := idx.buildT01GeneratedSubscriberRelations(content, fileID, proceduresBatch, result.Calls)
 		if err != nil {
 			return fmt.Errorf("failed to build T01 generated subscriber relations: %w", err)
 		}
@@ -377,17 +387,16 @@ func (idx *Indexer) parseSQLLikeFile(path string, fileID int64, stats *model.Sca
 		}
 	}
 
-	// Retcode parsing: prescreen content, then parse and batch insert
-	if content, err := cbencoding.ReadFile(path, cbencoding.CP866); err == nil {
-		if retcode.HasReturnCodes(content) {
-			entries := retcode.Parse(content)
-			for _, e := range entries {
-				e.FileID = fileID
-			}
-			if len(entries) > 0 {
-				if err := idx.db.BatchInsertRetCodes(entries, idx.config.Indexer.BatchSize); err != nil {
-					idx.logError(path, "Error batch inserting return codes: %v", err)
-				}
+	// Retcode parsing: prescreen content, then parse and batch insert.
+	// Контент уже прочитан walker'ом и декодирован выше — повторное чтение не нужно.
+	if retcode.HasReturnCodes(content) {
+		entries := retcode.Parse(content)
+		for _, e := range entries {
+			e.FileID = fileID
+		}
+		if len(entries) > 0 {
+			if err := idx.db.BatchInsertRetCodes(entries, idx.config.Indexer.BatchSize); err != nil {
+				idx.logError(path, "Error batch inserting return codes: %v", err)
 			}
 		}
 	}
@@ -699,39 +708,14 @@ func extractSimpleSourceColumn(segment string) (string, string, bool) {
 	return "", "", false
 }
 
-func (idx *Indexer) buildT01GeneratedSubscriberRelations(path string, fileID int64, procedures []*model.SQLProcedure, calls []*model.SQLProcedureCall) ([]*model.Relation, error) {
-	content, err := cbencoding.ReadFile(path, cbencoding.CP866)
-	if err != nil {
-		return nil, err
-	}
+func (idx *Indexer) buildT01GeneratedSubscriberRelations(content string, fileID int64, procedures []*model.SQLProcedure, calls []*model.SQLProcedureCall) ([]*model.Relation, error) {
 	lines := strings.Split(content, "\n")
 	procedureIDs, err := idx.db.FindSQLProcedureIDsByFile(fileID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Collect unique callee names for batch-resolve.
-	calleeNameSet := make(map[string]struct{})
-	for _, call := range calls {
-		if call == nil {
-			continue
-		}
-		name := strings.TrimSpace(call.CalleeName)
-		if name != "" {
-			calleeNameSet[strings.ToLower(name)] = struct{}{}
-		}
-	}
-	calleeNames := make([]string, 0, len(calleeNameSet))
-	for name := range calleeNameSet {
-		calleeNames = append(calleeNames, name)
-	}
-	calleeIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(calleeNames)
-	if err != nil {
-		return nil, err
-	}
-
-	relations := make([]*model.Relation, 0)
-	seen := make(map[string]struct{})
+	pendingRefs := make([]*PendingT01SubscriberRef, 0)
 	for _, call := range calls {
 		if call == nil {
 			continue
@@ -747,26 +731,19 @@ func (idx *Indexer) buildT01GeneratedSubscriberRelations(path string, fileID int
 		if sourceID == 0 {
 			continue
 		}
-		targetID := calleeIDMap[strings.ToLower(strings.TrimSpace(call.CalleeName))]
-		if targetID == 0 {
+		calleeName := strings.TrimSpace(call.CalleeName)
+		if calleeName == "" {
 			continue
 		}
-		key := fmt.Sprintf("sql_procedure|%d|sql_procedure|%d|dispatches_to_subscriber|%d", sourceID, targetID, call.LineNumber)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		relations = append(relations, &model.Relation{
-			SourceType:   "sql_procedure",
-			SourceID:     sourceID,
-			TargetType:   "sql_procedure",
-			TargetID:     targetID,
-			RelationType: "dispatches_to_subscriber",
-			Confidence:   "regex",
-			LineNumber:   call.LineNumber,
+		pendingRefs = append(pendingRefs, &PendingT01SubscriberRef{
+			SourceID:   sourceID,
+			CalleeName: calleeName,
+			LineNumber: call.LineNumber,
 		})
 	}
-	return relations, nil
+
+	idx.addPendingT01SubscriberRefs(pendingRefs)
+	return nil, nil
 }
 
 func hasGlobalProcessIDBinding(lines []string, lineNumber int) bool {
@@ -811,9 +788,14 @@ func findProcedureForLine(procedures []*model.SQLProcedure, lineNumber int, call
 	return nil
 }
 
-func (idx *Indexer) parsePASFile(path string, fileID int64, stats *model.ScanStats) error {
+func (idx *Indexer) parsePASFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+	path := file.Path
+	content, err := decodeIndexedFileContent(file)
+	if err != nil {
+		return fmt.Errorf("failed to decode PAS file: %w", err)
+	}
 	parser := pasparser.NewParser()
-	result, err := parser.ParseFile(path)
+	result, err := parser.ParseContent(content)
 	if err != nil {
 		return fmt.Errorf("failed to parse PAS file: %w", err)
 	}

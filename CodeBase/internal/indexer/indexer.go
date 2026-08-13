@@ -31,12 +31,41 @@ type Indexer struct {
 	db          *store.DB
 	config      *config.Config
 	errorLogger *log.Logger
-	pendingMu   sync.Mutex
+	shared      *indexerSharedState
+}
+
+// indexerSharedState — состояние, разделяемое между корневым Indexer и его
+// per-file клонами, работающими в bound-транзакции (см. processFile).
+type indexerSharedState struct {
+	pendingMu sync.Mutex
 	// Для пост-обработки методов и полей с отсутствующими классами
 	pendingClasses  []*PendingClass
 	pendingMethods  []*PendingMethod
 	pendingFields   []*PendingField
 	pendingSQLCalls []*PendingSQLCallFile
+	// Фаза 4: накопленные refs для глобального резолва в пост-обработке
+	pendingFragmentRefs    []*PendingFragmentRef
+	pendingJSCallRefs      []*PendingJSCallRef
+	pendingT01SubscriberRefs []*PendingT01SubscriberRef
+	pendingAPIMacroRefs    []*PendingAPIMacroRef
+	// Кэш ds_products: продуктов десятки, файлов — десятки тысяч,
+	// поэтому upsert в БД делаем только на промахе кэша.
+	dsProductMu    sync.Mutex
+	dsProductCache map[string]int64
+}
+
+func newIndexerSharedState() *indexerSharedState {
+	return &indexerSharedState{
+		pendingClasses:          make([]*PendingClass, 0),
+		pendingMethods:          make([]*PendingMethod, 0),
+		pendingFields:           make([]*PendingField, 0),
+		pendingSQLCalls:         make([]*PendingSQLCallFile, 0),
+		pendingFragmentRefs:     make([]*PendingFragmentRef, 0),
+		pendingJSCallRefs:       make([]*PendingJSCallRef, 0),
+		pendingT01SubscriberRefs: make([]*PendingT01SubscriberRef, 0),
+		pendingAPIMacroRefs:     make([]*PendingAPIMacroRef, 0),
+		dsProductCache:          make(map[string]int64),
+	}
 }
 
 type PendingSQLCallFile struct {
@@ -45,6 +74,37 @@ type PendingSQLCallFile struct {
 	Procedures   []*model.SQLProcedure
 	ProcedureIDs map[string]int64
 	Calls        []*model.SQLProcedureCall
+}
+
+// PendingFragmentRef — накопленный fragment ref для глобального
+// резолва table/proc references в пост-обработке.
+type PendingFragmentRef struct {
+	FragmentID       int64
+	LineNumber       int
+	TablesReferenced []string
+	ProcCalls        []string
+}
+
+// PendingJSCallRef — накопленный JS proc call для глобального резолва.
+type PendingJSCallRef struct {
+	SourceID   int64
+	ProcName   string
+	LineNumber int
+}
+
+// PendingT01SubscriberRef — накопленный T01 subscriber call для глобального резолва.
+type PendingT01SubscriberRef struct {
+	SourceID   int64
+	CalleeName string
+	LineNumber int
+}
+
+// PendingAPIMacroRef — накопленный API macro invocation для глобального резолва.
+type PendingAPIMacroRef struct {
+	SourceID   int64
+	MacroType  string
+	TargetName string
+	LineNumber int
 }
 
 type statsCollector struct {
@@ -142,20 +202,18 @@ func (idx *Indexer) processFilesWorkerPool(parallel int, jobs <-chan indexedFile
 
 // New создаёт новый индексатор
 func New(db *store.DB, cfg *config.Config) *Indexer {
+	idx := &Indexer{
+		db:     db,
+		config: cfg,
+		shared: newIndexerSharedState(),
+	}
+
 	// Создаем файл для логирования ошибок в каталоге с исполняемым файлом
 	exePath, err := os.Executable()
 	if err != nil {
 		log.Printf("Failed to get executable path: %v", err)
-		errorLogger := log.New(os.Stderr, "ERROR: ", log.LstdFlags)
-		return &Indexer{
-			db:              db,
-			config:          cfg,
-			errorLogger:     errorLogger,
-			pendingClasses:  make([]*PendingClass, 0),
-			pendingMethods:  make([]*PendingMethod, 0),
-			pendingFields:   make([]*PendingField, 0),
-			pendingSQLCalls: make([]*PendingSQLCallFile, 0),
-		}
+		idx.errorLogger = log.New(os.Stderr, "ERROR: ", log.LstdFlags)
+		return idx
 	}
 	exeDir := filepath.Dir(exePath)
 	errorLogName := fmt.Sprintf("indexer_errors_%s.log", time.Now().Format("20060102_150405"))
@@ -164,26 +222,12 @@ func New(db *store.DB, cfg *config.Config) *Indexer {
 	if err != nil {
 		log.Printf("Failed to create error log file: %v", err)
 		// Если не удалось создать файл, используем стандартный лог
-		return &Indexer{
-			db:              db,
-			config:          cfg,
-			errorLogger:     log.New(os.Stderr, "ERROR: ", log.LstdFlags),
-			pendingClasses:  make([]*PendingClass, 0),
-			pendingMethods:  make([]*PendingMethod, 0),
-			pendingFields:   make([]*PendingField, 0),
-			pendingSQLCalls: make([]*PendingSQLCallFile, 0),
-		}
+		idx.errorLogger = log.New(os.Stderr, "ERROR: ", log.LstdFlags)
+		return idx
 	}
 
-	return &Indexer{
-		db:              db,
-		config:          cfg,
-		errorLogger:     log.New(errorFile, "", log.LstdFlags),
-		pendingClasses:  make([]*PendingClass, 0),
-		pendingMethods:  make([]*PendingMethod, 0),
-		pendingFields:   make([]*PendingField, 0),
-		pendingSQLCalls: make([]*PendingSQLCallFile, 0),
-	}
+	idx.errorLogger = log.New(errorFile, "", log.LstdFlags)
+	return idx
 }
 
 // logError логирует ошибку с указанием файла и увеличивает счетчик ошибок
@@ -197,9 +241,9 @@ func (idx *Indexer) addPendingSQLCalls(fileID int64, filePath string, procedures
 	if len(calls) == 0 {
 		return
 	}
-	idx.pendingMu.Lock()
-	defer idx.pendingMu.Unlock()
-	idx.pendingSQLCalls = append(idx.pendingSQLCalls, &PendingSQLCallFile{
+	idx.shared.pendingMu.Lock()
+	defer idx.shared.pendingMu.Unlock()
+	idx.shared.pendingSQLCalls = append(idx.shared.pendingSQLCalls, &PendingSQLCallFile{
 		FileID:       fileID,
 		FilePath:     filePath,
 		Procedures:   append([]*model.SQLProcedure(nil), procedures...),
@@ -209,11 +253,79 @@ func (idx *Indexer) addPendingSQLCalls(fileID int64, filePath string, procedures
 }
 
 func (idx *Indexer) snapshotPendingSQLCalls() []*PendingSQLCallFile {
-	idx.pendingMu.Lock()
-	defer idx.pendingMu.Unlock()
-	pending := append([]*PendingSQLCallFile(nil), idx.pendingSQLCalls...)
-	idx.pendingSQLCalls = nil
+	idx.shared.pendingMu.Lock()
+	defer idx.shared.pendingMu.Unlock()
+	pending := append([]*PendingSQLCallFile(nil), idx.shared.pendingSQLCalls...)
+	idx.shared.pendingSQLCalls = nil
 	return pending
+}
+
+func (idx *Indexer) addPendingFragmentRefs(refs []*PendingFragmentRef) {
+	if len(refs) == 0 {
+		return
+	}
+	idx.shared.pendingMu.Lock()
+	defer idx.shared.pendingMu.Unlock()
+	idx.shared.pendingFragmentRefs = append(idx.shared.pendingFragmentRefs, refs...)
+}
+
+func (idx *Indexer) snapshotPendingFragmentRefs() []*PendingFragmentRef {
+	idx.shared.pendingMu.Lock()
+	defer idx.shared.pendingMu.Unlock()
+	refs := append([]*PendingFragmentRef(nil), idx.shared.pendingFragmentRefs...)
+	idx.shared.pendingFragmentRefs = nil
+	return refs
+}
+
+func (idx *Indexer) addPendingJSCallRefs(refs []*PendingJSCallRef) {
+	if len(refs) == 0 {
+		return
+	}
+	idx.shared.pendingMu.Lock()
+	defer idx.shared.pendingMu.Unlock()
+	idx.shared.pendingJSCallRefs = append(idx.shared.pendingJSCallRefs, refs...)
+}
+
+func (idx *Indexer) snapshotPendingJSCallRefs() []*PendingJSCallRef {
+	idx.shared.pendingMu.Lock()
+	defer idx.shared.pendingMu.Unlock()
+	refs := append([]*PendingJSCallRef(nil), idx.shared.pendingJSCallRefs...)
+	idx.shared.pendingJSCallRefs = nil
+	return refs
+}
+
+func (idx *Indexer) addPendingT01SubscriberRefs(refs []*PendingT01SubscriberRef) {
+	if len(refs) == 0 {
+		return
+	}
+	idx.shared.pendingMu.Lock()
+	defer idx.shared.pendingMu.Unlock()
+	idx.shared.pendingT01SubscriberRefs = append(idx.shared.pendingT01SubscriberRefs, refs...)
+}
+
+func (idx *Indexer) snapshotPendingT01SubscriberRefs() []*PendingT01SubscriberRef {
+	idx.shared.pendingMu.Lock()
+	defer idx.shared.pendingMu.Unlock()
+	refs := append([]*PendingT01SubscriberRef(nil), idx.shared.pendingT01SubscriberRefs...)
+	idx.shared.pendingT01SubscriberRefs = nil
+	return refs
+}
+
+func (idx *Indexer) addPendingAPIMacroRefs(refs []*PendingAPIMacroRef) {
+	if len(refs) == 0 {
+		return
+	}
+	idx.shared.pendingMu.Lock()
+	defer idx.shared.pendingMu.Unlock()
+	idx.shared.pendingAPIMacroRefs = append(idx.shared.pendingAPIMacroRefs, refs...)
+}
+
+func (idx *Indexer) snapshotPendingAPIMacroRefs() []*PendingAPIMacroRef {
+	idx.shared.pendingMu.Lock()
+	defer idx.shared.pendingMu.Unlock()
+	refs := append([]*PendingAPIMacroRef(nil), idx.shared.pendingAPIMacroRefs...)
+	idx.shared.pendingAPIMacroRefs = nil
+	return refs
 }
 
 func cloneInt64Map(values map[string]int64) map[string]int64 {
@@ -224,10 +336,17 @@ func cloneInt64Map(values map[string]int64) map[string]int64 {
 	return cloned
 }
 
-func (idx *Indexer) parseHFile(path string, fileID int64, stats *model.ScanStats) error {
-	content, err := encoding.ReadFile(path, encoding.CP866)
+// decodeIndexedFileContent декодирует уже прочитанные walker'ом байты файла
+// в UTF-8 строку по кодировке, определённой по расширению.
+func decodeIndexedFileContent(file fswalk.FileInfo) (string, error) {
+	return encoding.DecodeBytes(file.Content, encoding.Encoding(file.Encoding))
+}
+
+func (idx *Indexer) parseHFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+	path := file.Path
+	content, err := decodeIndexedFileContent(file)
 	if err != nil {
-		return fmt.Errorf("failed to read H file: %w", err)
+		return fmt.Errorf("failed to decode H file: %w", err)
 	}
 	lines := strings.Split(content, "\n")
 
@@ -342,9 +461,14 @@ func isLineInsideMacroDefinition(lines []string, lineNum int) bool {
 	return false
 }
 
-func (idx *Indexer) parseDFMFile(path string, fileID int64, stats *model.ScanStats) error {
+func (idx *Indexer) parseDFMFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+	path := file.Path
+	content, err := decodeIndexedFileContent(file)
+	if err != nil {
+		return fmt.Errorf("failed to decode DFM file: %w", err)
+	}
 	parser := dfm.NewParser()
-	result, err := parser.ParseFile(path)
+	result, err := parser.ParseContent(content)
 	if err != nil {
 		return fmt.Errorf("failed to parse DFM file: %w", err)
 	}
@@ -493,9 +617,14 @@ func (idx *Indexer) parseDFMFile(path string, fileID int64, stats *model.ScanSta
 	return nil
 }
 
-func (idx *Indexer) parseJSFile(path string, fileID int64, stats *model.ScanStats) error {
+func (idx *Indexer) parseJSFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+	path := file.Path
+	content, err := decodeIndexedFileContent(file)
+	if err != nil {
+		return fmt.Errorf("failed to decode JS file: %w", err)
+	}
 	parser := jsparser.NewParser()
-	result, err := parser.ParseFile(path)
+	result, err := parser.ParseContent(content)
 	if err != nil {
 		return fmt.Errorf("failed to parse JS file: %w", err)
 	}
@@ -619,9 +748,10 @@ func (idx *Indexer) saveJSConstantSymbols(fileID int64, constants []*model.JSCon
 	return nil
 }
 
-func (idx *Indexer) parseTPRFile(path string, fileID int64, stats *model.ScanStats) error {
+func (idx *Indexer) parseTPRFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+	path := file.Path
 	parser := tprparser.NewParser()
-	result, err := parser.ParseFile(path)
+	result, err := parser.ParseBytes(file.Content, path)
 	if err != nil {
 		return fmt.Errorf("failed to parse TPR file: %w", err)
 	}
@@ -739,9 +869,14 @@ func (idx *Indexer) parseTPRFile(path string, fileID int64, stats *model.ScanSta
 	return nil
 }
 
-func (idx *Indexer) parseRPTFile(path string, fileID int64, stats *model.ScanStats) error {
+func (idx *Indexer) parseRPTFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+	path := file.Path
+	content, err := decodeIndexedFileContent(file)
+	if err != nil {
+		return fmt.Errorf("failed to decode RPT file: %w", err)
+	}
 	parser := rptparser.NewParser()
-	result, err := parser.ParseFile(path)
+	result, err := parser.ParseContent(content, path)
 	if err != nil {
 		return fmt.Errorf("failed to parse RPT file: %w", err)
 	}
@@ -875,9 +1010,10 @@ func (idx *Indexer) parseRPTFile(path string, fileID int64, stats *model.ScanSta
 	return nil
 }
 
-func (idx *Indexer) parseSMFFile(path string, fileID int64, stats *model.ScanStats) error {
+func (idx *Indexer) parseSMFFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+	path := file.Path
 	parser := smfparser.NewParser()
-	result, err := parser.ParseFile(path)
+	result, err := parser.ParseBytes(file.Content, path)
 	if err != nil {
 		return fmt.Errorf("failed to parse SMF file: %w", err)
 	}
@@ -976,9 +1112,10 @@ func (idx *Indexer) parseSMFFile(path string, fileID int64, stats *model.ScanSta
 	return nil
 }
 
-func (idx *Indexer) parseXMLFile(path string, fileID int64, stats *model.ScanStats) error {
+func (idx *Indexer) parseXMLFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+	path := file.Path
 	parser := dsxml.NewParser()
-	result, err := parser.ParseFile(path)
+	result, err := parser.ParseBytes(file.Content, path)
 	if err != nil {
 		return fmt.Errorf("failed to parse XML file: %w", err)
 	}
@@ -1195,13 +1332,13 @@ func (idx *Indexer) parseXMLFile(path string, fileID int64, stats *model.ScanSta
 	return nil
 }
 
-func (idx *Indexer) parseT01File(path string, fileID int64, stats *model.ScanStats) error {
-	return idx.parseSQLLikeFile(path, fileID, stats, false, true)
+func (idx *Indexer) parseT01File(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+	return idx.parseSQLLikeFile(file, fileID, stats, false, true)
 }
 
-func (idx *Indexer) indexAPIMacros(path string, fileID int64, language string, stats *model.ScanStats) ([]*model.Relation, error) {
+func (idx *Indexer) indexAPIMacros(path string, content string, fileID int64) ([]*model.Relation, error) {
 	parser := apimacro.NewParser()
-	result, err := parser.ParseFile(path, language)
+	result, err := parser.ParseContent(path, content)
 	if err != nil {
 		return nil, err
 	}
@@ -1219,138 +1356,105 @@ func (idx *Indexer) indexAPIMacros(path string, fileID int64, language string, s
 		return nil, err
 	}
 
-	// Pre-collect unique (targetName, kind) pairs and proc names for batch-resolve.
-	contractPairs := make([]store.APIContractNameKind, 0)
-	procNameSet := make(map[string]struct{})
-	for _, invocation := range result.Invocations {
-		targetName := strings.TrimSpace(invocation.TargetName)
-		if targetName == "" {
-			continue
-		}
-		switch invocation.MacroType {
-		case "create_proc":
-			contractPairs = append(contractPairs, store.APIContractNameKind{Name: targetName, Kind: "service"})
-			contractPairs = append(contractPairs, store.APIContractNameKind{Name: targetName, Kind: "callback_event"})
-		case "init_event":
-			contractPairs = append(contractPairs, store.APIContractNameKind{Name: targetName, Kind: "event"})
-		case "exec_contract":
-			contractPairs = append(contractPairs, store.APIContractNameKind{Name: targetName, Kind: "used_service"})
-			contractPairs = append(contractPairs, store.APIContractNameKind{Name: targetName, Kind: "service"})
-		case "dispatches_to":
-			procNameSet[strings.ToLower(targetName)] = struct{}{}
-		}
-	}
-	contractIDMap, err := idx.db.FindLatestAPIContractIDsByNamesAndKinds(contractPairs)
-	if err != nil {
-		contractIDMap = map[string]int64{}
-	}
-	procNames := make([]string, 0, len(procNameSet))
-	for name := range procNameSet {
-		if name != "" {
-			procNames = append(procNames, name)
-		}
-	}
-	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(procNames)
-	if err != nil {
-		procIDMap = map[string]int64{}
-	}
-
-	relations := make([]*model.Relation, 0, len(result.Invocations))
+	// Накапливаем refs для глобального резолва в пост-обработке
+	pendingRefs := make([]*PendingAPIMacroRef, 0, len(result.Invocations))
 	for _, invocation := range result.Invocations {
 		sourceID := procedureIDs[strings.ToLower(strings.TrimSpace(invocation.ProcedureName))]
 		if sourceID == 0 {
 			continue
 		}
 		targetName := strings.TrimSpace(invocation.TargetName)
-		nameKey := strings.ToLower(targetName)
-		switch invocation.MacroType {
-		case "create_proc":
-			if targetID := contractIDMap[nameKey+"|service"]; targetID != 0 {
-				relations = append(relations, &model.Relation{SourceType: "sql_procedure", SourceID: sourceID, TargetType: "api_contract", TargetID: targetID, RelationType: "implements_contract", Confidence: "regex", LineNumber: invocation.LineNumber})
-			} else if targetID := contractIDMap[nameKey+"|callback_event"]; targetID != 0 {
-				relations = append(relations, &model.Relation{SourceType: "sql_procedure", SourceID: sourceID, TargetType: "api_contract", TargetID: targetID, RelationType: "implements_contract", Confidence: "regex", LineNumber: invocation.LineNumber})
-			}
-		case "init_event":
-			if targetID := contractIDMap[nameKey+"|event"]; targetID != 0 {
-				relations = append(relations, &model.Relation{SourceType: "sql_procedure", SourceID: sourceID, TargetType: "api_contract", TargetID: targetID, RelationType: "publishes_event", Confidence: "regex", LineNumber: invocation.LineNumber})
-			}
-		case "exec_contract":
-			if targetID := contractIDMap[nameKey+"|used_service"]; targetID != 0 {
-				relations = append(relations, &model.Relation{SourceType: "sql_procedure", SourceID: sourceID, TargetType: "api_contract", TargetID: targetID, RelationType: "executes_contract", Confidence: "regex", LineNumber: invocation.LineNumber})
-			} else if targetID := contractIDMap[nameKey+"|service"]; targetID != 0 {
-				relations = append(relations, &model.Relation{SourceType: "sql_procedure", SourceID: sourceID, TargetType: "api_contract", TargetID: targetID, RelationType: "executes_contract", Confidence: "regex", LineNumber: invocation.LineNumber})
-			}
-		case "dispatches_to":
-			targetID := procIDMap[nameKey]
-			if targetID != 0 {
-				relations = append(relations, &model.Relation{SourceType: "sql_procedure", SourceID: sourceID, TargetType: "sql_procedure", TargetID: targetID, RelationType: "dispatches_to", Confidence: "regex", LineNumber: invocation.LineNumber})
-			}
+		if targetName == "" {
+			continue
 		}
+		pendingRefs = append(pendingRefs, &PendingAPIMacroRef{
+			SourceID:   sourceID,
+			MacroType:  invocation.MacroType,
+			TargetName: targetName,
+			LineNumber: invocation.LineNumber,
+		})
 	}
-	stats.Relations += len(relations)
-	return relations, nil
+
+	idx.addPendingAPIMacroRefs(pendingRefs)
+	return nil, nil
 }
 
+// processFile обрабатывает файл в одной транзакции: все batch-вставки
+// и SELECT-back резолвы файла идут через bound-tx (один COMMIT на файл
+// вместо COMMIT на каждый BatchInsert*). Клон разделяет с корневым
+// Indexer pending-состояние и кэши через shared.
 func (idx *Indexer) processFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+	return idx.db.WithBatchTx(func(txdb *store.DB) error {
+		fileIdx := &Indexer{
+			db:          txdb,
+			config:      idx.config,
+			errorLogger: idx.errorLogger,
+			shared:      idx.shared,
+		}
+		return fileIdx.processFileInTx(file, fileID, stats)
+	})
+}
+
+func (idx *Indexer) processFileInTx(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
 	switch strings.ToUpper(file.Language) {
 	case "SQL":
 		stats.SQLFiles++
-		if err := idx.parseSQLFile(file.Path, fileID, stats); err != nil {
+		if err := idx.parseSQLFile(file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "PAS":
 		stats.PASFiles++
-		if err := idx.parsePASFile(file.Path, fileID, stats); err != nil {
+		if err := idx.parsePASFile(file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "JS":
 		stats.JSFiles++
-		if err := idx.parseJSFile(file.Path, fileID, stats); err != nil {
+		if err := idx.parseJSFile(file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "H":
 		stats.HFiles++
-		if err := idx.parseHFile(file.Path, fileID, stats); err != nil {
+		if err := idx.parseHFile(file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "DFM":
 		stats.DFMFiles++
-		if err := idx.parseDFMFile(file.Path, fileID, stats); err != nil {
+		if err := idx.parseDFMFile(file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "SMF":
 		stats.SMFFiles++
-		if err := idx.parseSMFFile(file.Path, fileID, stats); err != nil {
+		if err := idx.parseSMFFile(file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "TPR":
 		stats.TPRFiles++
-		if err := idx.parseTPRFile(file.Path, fileID, stats); err != nil {
+		if err := idx.parseTPRFile(file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "RPT":
 		stats.RPTFiles++
-		if err := idx.parseRPTFile(file.Path, fileID, stats); err != nil {
+		if err := idx.parseRPTFile(file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "XML":
 		if strings.Contains(filepath.ToSlash(file.Path), "/DSArchitectData/") {
 			stats.XMLFiles++
-			if err := idx.parseXMLFile(file.Path, fileID, stats); err != nil {
+			if err := idx.parseXMLFile(file, fileID, stats); err != nil {
 				return err
 			}
 			stats.FilesIndexed++
 		}
 	case "T01":
-		if err := idx.parseT01File(file.Path, fileID, stats); err != nil {
+		if err := idx.parseT01File(file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
@@ -1359,11 +1463,25 @@ func (idx *Indexer) processFile(file fswalk.FileInfo, fileID int64, stats *model
 	return nil
 }
 
+func (idx *Indexer) resolveDSProductID(productName string) (int64, error) {
+	idx.shared.dsProductMu.Lock()
+	defer idx.shared.dsProductMu.Unlock()
+	if id, ok := idx.shared.dsProductCache[productName]; ok {
+		return id, nil
+	}
+	productID, err := idx.db.GetOrCreateDSProductIDByName(productName)
+	if err != nil {
+		return 0, err
+	}
+	idx.shared.dsProductCache[productName] = productID
+	return productID, nil
+}
+
 func (idx *Indexer) saveFile(file fswalk.FileInfo, scanRunID int64) (int64, error) {
 	productName := extractCanonicalDSProductName(file.Path, file.RelPath)
 	var dsProductID interface{}
 	if productName != "" {
-		productID, err := idx.db.GetOrCreateDSProductIDByName(productName)
+		productID, err := idx.resolveDSProductID(productName)
 		if err != nil {
 			return 0, fmt.Errorf("failed to resolve ds product id for %q: %w", productName, err)
 		}

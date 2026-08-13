@@ -150,39 +150,35 @@ func (idx *Indexer) saveRelations(relations []*model.Relation, path string, stat
 }
 
 func (idx *Indexer) buildJSProcedureCallRelations(fileID int64, calls []*model.JSProcedureCall) ([]*model.Relation, error) {
-	// Collect unique proc names for batch-resolve.
-	procNameSet := make(map[string]struct{})
+	pendingRefs := make([]*PendingJSCallRef, 0, len(calls))
+
 	for _, call := range calls {
 		if call == nil {
 			continue
 		}
-		name := strings.TrimSpace(call.ProcName)
-		if name != "" {
-			procNameSet[strings.ToLower(name)] = struct{}{}
+		procName := strings.TrimSpace(call.ProcName)
+		if procName == "" {
+			continue
 		}
-	}
-	procNames := make([]string, 0, len(procNameSet))
-	for name := range procNameSet {
-		procNames = append(procNames, name)
-	}
-	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(procNames)
-	if err != nil {
-		return nil, err
+		if call.LineNumber <= 0 {
+			continue
+		}
+		sourceID, err := idx.db.FindJSFunctionIDByFileAndLine(fileID, call.LineNumber)
+		if err != nil {
+			if err == dbsql.ErrNoRows {
+				continue
+			}
+			return nil, err
+		}
+		pendingRefs = append(pendingRefs, &PendingJSCallRef{
+			SourceID:   sourceID,
+			ProcName:   procName,
+			LineNumber: call.LineNumber,
+		})
 	}
 
-	return buildJSProcedureCallRelationsWithResolvers(
-		calls,
-		func(lineNumber int) (int64, error) {
-			return idx.db.FindJSFunctionIDByFileAndLine(fileID, lineNumber)
-		},
-		func(procName string) (int64, error) {
-			id := procIDMap[strings.ToLower(strings.TrimSpace(procName))]
-			if id == 0 {
-				return 0, dbsql.ErrNoRows
-			}
-			return id, nil
-		},
-	)
+	idx.addPendingJSCallRefs(pendingRefs)
+	return nil, nil
 }
 
 func buildJSProcedureCallRelationsWithResolvers(
@@ -245,16 +241,9 @@ func buildJSProcedureCallRelationsWithResolvers(
 	return relations, nil
 }
 
-func (idx *Indexer) buildSQLProcedureTableRelations(fileID int64, procedures []*model.SQLProcedure, tables []*model.SQLTable) ([]*model.Relation, error) {
-	procedureIDs, err := idx.db.FindSQLProcedureIDsByFile(fileID)
-	if err != nil {
-		return nil, err
-	}
-	tableIDs, err := idx.db.FindSQLTableIDsByFileAndLine(fileID)
-	if err != nil {
-		return nil, err
-	}
-
+// buildSQLProcedureTableRelations строит relations по уже загруженным ID-мапам
+// (procedureIDs/tableIDs резолвятся вызывающим кодом один раз на файл).
+func buildSQLProcedureTableRelations(procedureIDs map[string]int64, tableIDs map[string]int64, procedures []*model.SQLProcedure, tables []*model.SQLTable) ([]*model.Relation, error) {
 	relations := make([]*model.Relation, 0)
 	seen := make(map[string]struct{})
 
@@ -562,43 +551,9 @@ func (idx *Indexer) buildQueryFragmentRelations(fileID int64, fragments []*model
 		return nil, err
 	}
 
-	// Pre-collect unique table names and procedure names for batch-resolve.
-	tableNameSet := make(map[string]struct{})
-	procNameSet := make(map[string]struct{})
-	for _, fragment := range fragments {
-		if fragment == nil {
-			continue
-		}
-		for _, tableName := range uniqueStrings(fragment.TablesReferenced) {
-			tableNameSet[strings.ToLower(strings.TrimSpace(tableName))] = struct{}{}
-		}
-		for _, procName := range extractProcedureCallsFromQuery(fragment.QueryText) {
-			procNameSet[strings.ToLower(strings.TrimSpace(procName))] = struct{}{}
-		}
-	}
-	tableNames := make([]string, 0, len(tableNameSet))
-	for name := range tableNameSet {
-		if name != "" {
-			tableNames = append(tableNames, name)
-		}
-	}
-	procNames := make([]string, 0, len(procNameSet))
-	for name := range procNameSet {
-		if name != "" {
-			procNames = append(procNames, name)
-		}
-	}
-	tableIDMap, err := idx.db.FindLatestSQLTableIDsByNames(tableNames)
-	if err != nil {
-		return nil, err
-	}
-	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(procNames)
-	if err != nil {
-		return nil, err
-	}
-
 	relations := make([]*model.Relation, 0)
 	seen := make(map[string]struct{})
+	pendingRefs := make([]*PendingFragmentRef, 0, len(fragments))
 
 	for _, fragment := range fragments {
 		if fragment == nil {
@@ -608,6 +563,7 @@ func (idx *Indexer) buildQueryFragmentRelations(fileID int64, fragments []*model
 		if fragmentID == 0 {
 			continue
 		}
+		// Parent relations — локальные, строятся per-file
 		parentRelationType := mapQueryFragmentParentRelationType(fragment.ParentType, fragment)
 		if fragment.ParentID > 0 && parentRelationType != "" {
 			key := fmt.Sprintf("%s|%d|query_fragment|%d|%s|%d", fragment.ParentType, fragment.ParentID, fragmentID, parentRelationType, fragment.LineNumber)
@@ -624,47 +580,19 @@ func (idx *Indexer) buildQueryFragmentRelations(fileID int64, fragments []*model
 				})
 			}
 		}
-		for _, tableName := range uniqueStrings(fragment.TablesReferenced) {
-			targetID := tableIDMap[strings.ToLower(strings.TrimSpace(tableName))]
-			if targetID == 0 {
-				continue
-			}
-			key := fmt.Sprintf("query_fragment|%d|sql_table|%d|references_table|%d", fragmentID, targetID, fragment.LineNumber)
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			seen[key] = struct{}{}
-			relations = append(relations, &model.Relation{
-				SourceType:   "query_fragment",
-				SourceID:     fragmentID,
-				TargetType:   "sql_table",
-				TargetID:     targetID,
-				RelationType: "references_table",
-				Confidence:   "regex",
-				LineNumber:   fragment.LineNumber,
-			})
-		}
-		for _, procName := range extractProcedureCallsFromQuery(fragment.QueryText) {
-			targetID := procIDMap[strings.ToLower(strings.TrimSpace(procName))]
-			if targetID == 0 {
-				continue
-			}
-			key := fmt.Sprintf("query_fragment|%d|sql_procedure|%d|calls_procedure|%d", fragmentID, targetID, fragment.LineNumber)
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			seen[key] = struct{}{}
-			relations = append(relations, &model.Relation{
-				SourceType:   "query_fragment",
-				SourceID:     fragmentID,
-				TargetType:   "sql_procedure",
-				TargetID:     targetID,
-				RelationType: "calls_procedure",
-				Confidence:   "regex",
-				LineNumber:   fragment.LineNumber,
+		// Накапливаем refs для глобального резолва table/proc в пост-обработке
+		tableRefs := uniqueStrings(fragment.TablesReferenced)
+		procCalls := extractProcedureCallsFromQuery(fragment.QueryText)
+		if len(tableRefs) > 0 || len(procCalls) > 0 {
+			pendingRefs = append(pendingRefs, &PendingFragmentRef{
+				FragmentID:       fragmentID,
+				LineNumber:       fragment.LineNumber,
+				TablesReferenced: tableRefs,
+				ProcCalls:        procCalls,
 			})
 		}
 	}
 
+	idx.addPendingFragmentRefs(pendingRefs)
 	return relations, nil
 }

@@ -31,9 +31,9 @@ type PendingField struct {
 }
 
 func (idx *Indexer) addPendingMethod(methodID int64, className string, methodName string, filePath string) {
-	idx.pendingMu.Lock()
-	defer idx.pendingMu.Unlock()
-	idx.pendingMethods = append(idx.pendingMethods, &PendingMethod{
+	idx.shared.pendingMu.Lock()
+	defer idx.shared.pendingMu.Unlock()
+	idx.shared.pendingMethods = append(idx.shared.pendingMethods, &PendingMethod{
 		MethodID:   methodID,
 		ClassName:  className,
 		MethodName: methodName,
@@ -42,9 +42,9 @@ func (idx *Indexer) addPendingMethod(methodID int64, className string, methodNam
 }
 
 func (idx *Indexer) addPendingClass(classID int64, className string, filePath string) {
-	idx.pendingMu.Lock()
-	defer idx.pendingMu.Unlock()
-	idx.pendingClasses = append(idx.pendingClasses, &PendingClass{
+	idx.shared.pendingMu.Lock()
+	defer idx.shared.pendingMu.Unlock()
+	idx.shared.pendingClasses = append(idx.shared.pendingClasses, &PendingClass{
 		ClassID:   classID,
 		ClassName: className,
 		FilePath:  filePath,
@@ -52,9 +52,9 @@ func (idx *Indexer) addPendingClass(classID int64, className string, filePath st
 }
 
 func (idx *Indexer) addPendingField(fieldID int64, className string, fieldName string, filePath string) {
-	idx.pendingMu.Lock()
-	defer idx.pendingMu.Unlock()
-	idx.pendingFields = append(idx.pendingFields, &PendingField{
+	idx.shared.pendingMu.Lock()
+	defer idx.shared.pendingMu.Unlock()
+	idx.shared.pendingFields = append(idx.shared.pendingFields, &PendingField{
 		FieldID:   fieldID,
 		ClassName: className,
 		FieldName: fieldName,
@@ -63,14 +63,14 @@ func (idx *Indexer) addPendingField(fieldID int64, className string, fieldName s
 }
 
 func (idx *Indexer) postProcessPASPending(collector *statsCollector) {
-	idx.pendingMu.Lock()
-	pendingClasses := append([]*PendingClass(nil), idx.pendingClasses...)
-	pendingMethods := append([]*PendingMethod(nil), idx.pendingMethods...)
-	pendingFields := append([]*PendingField(nil), idx.pendingFields...)
-	idx.pendingClasses = idx.pendingClasses[:0]
-	idx.pendingMethods = idx.pendingMethods[:0]
-	idx.pendingFields = idx.pendingFields[:0]
-	idx.pendingMu.Unlock()
+	idx.shared.pendingMu.Lock()
+	pendingClasses := append([]*PendingClass(nil), idx.shared.pendingClasses...)
+	pendingMethods := append([]*PendingMethod(nil), idx.shared.pendingMethods...)
+	pendingFields := append([]*PendingField(nil), idx.shared.pendingFields...)
+	idx.shared.pendingClasses = idx.shared.pendingClasses[:0]
+	idx.shared.pendingMethods = idx.shared.pendingMethods[:0]
+	idx.shared.pendingFields = idx.shared.pendingFields[:0]
+	idx.shared.pendingMu.Unlock()
 
 	// Collect unique class names from all pending items for batch-resolve.
 	classNameSet := make(map[string]struct{})
@@ -106,20 +106,25 @@ func (idx *Indexer) postProcessPASPending(collector *statsCollector) {
 		return
 	}
 
-	// Process pending classes: link to DFM forms.
+	// Process pending classes: link to DFM forms (batch).
+	classDFMPairs := make([]store.PASUpdatePair, 0, len(pendingClasses))
 	for _, pending := range pendingClasses {
 		classKey := strings.ToLower(strings.TrimSpace(pending.ClassName))
 		dfmFormID := dfmFormIDMap[classKey]
 		if dfmFormID == 0 {
 			continue
 		}
-		if err := idx.db.UpdatePASClassDFMForm(pending.ClassID, dfmFormID); err != nil {
-			idx.logError(pending.FilePath, "Error updating DFM form link for PAS class %s: %v", pending.ClassName, err)
+		classDFMPairs = append(classDFMPairs, store.PASUpdatePair{ID: pending.ClassID, ValueID: dfmFormID})
+	}
+	if len(classDFMPairs) > 0 {
+		if err := idx.db.BatchUpdatePASClassDFMForm(classDFMPairs); err != nil {
+			idx.logError("<post-processing>", "Error batch updating DFM form links for PAS classes: %v", err)
 			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		}
 	}
 
-	// Process pending methods: link to classes.
+	// Process pending methods: link to classes (batch).
+	methodClassPairs := make([]store.PASUpdatePair, 0, len(pendingMethods))
 	for _, pending := range pendingMethods {
 		classKey := strings.ToLower(strings.TrimSpace(pending.ClassName))
 		classID := classIDMap[classKey]
@@ -127,13 +132,17 @@ func (idx *Indexer) postProcessPASPending(collector *statsCollector) {
 			idx.logError(pending.FilePath, "Warning: class %s not found for PAS method %s during post-processing", pending.ClassName, pending.MethodName)
 			continue
 		}
-		if err := idx.db.UpdatePASMethodClass(pending.MethodID, classID); err != nil {
-			idx.logError(pending.FilePath, "Error updating class for PAS method %s: %v", pending.MethodName, err)
+		methodClassPairs = append(methodClassPairs, store.PASUpdatePair{ID: pending.MethodID, ValueID: classID})
+	}
+	if len(methodClassPairs) > 0 {
+		if err := idx.db.BatchUpdatePASMethodClass(methodClassPairs); err != nil {
+			idx.logError("<post-processing>", "Error batch updating class links for PAS methods: %v", err)
 			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		}
 	}
 
-	// Process pending fields: link to classes.
+	// Process pending fields: link to classes (batch).
+	fieldClassPairs := make([]store.PASUpdatePair, 0, len(pendingFields))
 	for _, pending := range pendingFields {
 		classKey := strings.ToLower(strings.TrimSpace(pending.ClassName))
 		classID := classIDMap[classKey]
@@ -141,8 +150,11 @@ func (idx *Indexer) postProcessPASPending(collector *statsCollector) {
 			idx.logError(pending.FilePath, "Warning: class %s not found for PAS field %s during post-processing", pending.ClassName, pending.FieldName)
 			continue
 		}
-		if err := idx.db.UpdatePASFieldClass(pending.FieldID, classID); err != nil {
-			idx.logError(pending.FilePath, "Error updating class for PAS field %s: %v", pending.FieldName, err)
+		fieldClassPairs = append(fieldClassPairs, store.PASUpdatePair{ID: pending.FieldID, ValueID: classID})
+	}
+	if len(fieldClassPairs) > 0 {
+		if err := idx.db.BatchUpdatePASFieldClass(fieldClassPairs); err != nil {
+			idx.logError("<post-processing>", "Error batch updating class links for PAS fields: %v", err)
 			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		}
 	}
@@ -172,14 +184,18 @@ func (idx *Indexer) postProcessPASPending(collector *statsCollector) {
 			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 			continue
 		}
+		componentPairs := make([]store.PASUpdatePair, 0, len(candidates))
 		for _, candidate := range candidates {
 			compKey := strings.ToLower(strings.TrimSpace(candidate.FieldName))
 			dfmComponentID := componentIDMap[compKey]
 			if dfmComponentID == 0 {
 				continue
 			}
-			if err := idx.db.UpdatePASFieldDFMComponent(candidate.FieldID, dfmComponentID); err != nil {
-				idx.logError("<post-processing>", "Error updating DFM component link for PAS field %s: %v", candidate.FieldName, err)
+			componentPairs = append(componentPairs, store.PASUpdatePair{ID: candidate.FieldID, ValueID: dfmComponentID})
+		}
+		if len(componentPairs) > 0 {
+			if err := idx.db.BatchUpdatePASFieldDFMComponent(componentPairs); err != nil {
+				idx.logError("<post-processing>", "Error batch updating DFM component links for form %d: %v", formID, err)
 				collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 			}
 		}

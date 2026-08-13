@@ -7,6 +7,7 @@ import (
 
 	"github.com/codebase/internal/config"
 	"github.com/codebase/internal/indexer"
+	"github.com/codebase/internal/model"
 	"github.com/codebase/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -16,6 +17,16 @@ var (
 	parallel  int
 	noConfirm bool
 )
+
+func printPipelineTimings(stats *model.ScanStats) {
+	fmt.Printf("\nStage timings:\n")
+	fmt.Printf("  Walk+save files: %d ms\n", stats.WalkSaveMs)
+	fmt.Printf("  Parse+insert:    %d ms (cumulative, overlaps walk)\n", stats.ProcessMs)
+	fmt.Printf("  Post-processing: %d ms\n", stats.PostProcessMs)
+	if stats.CleanupMs > 0 {
+		fmt.Printf("  Cleanup:         %d ms\n", stats.CleanupMs)
+	}
+}
 
 var initCmd = &cobra.Command{
 	Use:   "init [root_path]",
@@ -89,6 +100,8 @@ Arguments:
 
 		finishedAt := time.Now()
 		fmt.Printf("\nIndexing completed: %s\n", finishedAt.Format("2006-01-02 15:04:05"))
+		printPipelineTimings(stats)
+		fmt.Printf("\nStats:\n")
 		fmt.Printf("  Files scanned:  %d\n", stats.FilesScanned)
 		fmt.Printf("  Files indexed:  %d\n", stats.FilesIndexed)
 		fmt.Printf("  SQL files:      %d\n", stats.SQLFiles)

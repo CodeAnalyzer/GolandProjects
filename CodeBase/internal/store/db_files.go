@@ -78,6 +78,70 @@ func (db *DB) DeleteFilesByPathExcept(path string, keepID int64) error {
 	return nil
 }
 
+// DeleteFilesByPaths удаляет все записи файлов по списку path одним батчем.
+func (db *DB) DeleteFilesByPaths(paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	const chunkSize = 500
+	for i := 0; i < len(paths); i += chunkSize {
+		end := i + chunkSize
+		if end > len(paths) {
+			end = len(paths)
+		}
+		chunk := paths[i:end]
+		if _, err := db.Exec(`DELETE FROM files WHERE path = ANY($1)`, pq.Array(chunk)); err != nil {
+			return fmt.Errorf("failed to delete files by paths: %w", err)
+		}
+	}
+	return nil
+}
+
+// DeleteFilesByPathsExcept удаляет все записи файлов по списку path, кроме указанных ID.
+// keepIDs — map[path]id, которые нужно сохранить.
+func (db *DB) DeleteFilesByPathsExcept(paths []string, keepIDs map[string]int64) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	const chunkSize = 500
+	for i := 0; i < len(paths); i += chunkSize {
+		end := i + chunkSize
+		if end > len(paths) {
+			end = len(paths)
+		}
+		chunk := paths[i:end]
+		withKeep := make([]string, 0, len(chunk))
+		withoutKeep := make([]string, 0, len(chunk))
+		for _, p := range chunk {
+			if _, ok := keepIDs[p]; ok {
+				withKeep = append(withKeep, p)
+			} else {
+				withoutKeep = append(withoutKeep, p)
+			}
+		}
+		if len(withoutKeep) > 0 {
+			if _, err := db.Exec(`DELETE FROM files WHERE path = ANY($1)`, pq.Array(withoutKeep)); err != nil {
+				return fmt.Errorf("failed to delete files by paths: %w", err)
+			}
+		}
+		if len(withKeep) > 0 {
+			keepPathArr := make([]string, len(withKeep))
+			keepIDArr := make([]int64, len(withKeep))
+			for j, p := range withKeep {
+				keepPathArr[j] = p
+				keepIDArr[j] = keepIDs[p]
+			}
+			if _, err := db.Exec(`
+				DELETE FROM files
+				WHERE path = ANY($1) AND NOT (id = ANY($2))
+			`, pq.Array(keepPathArr), pq.Array(keepIDArr)); err != nil {
+				return fmt.Errorf("failed to delete outdated file rows: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
 // FindLatestFileIDByPaths возвращает последний file id, найденный по одному из path/rel_path кандидатов.
 func (db *DB) FindLatestFileIDByPaths(paths []string) (int64, error) {
 	if len(paths) == 0 {

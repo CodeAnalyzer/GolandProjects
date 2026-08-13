@@ -62,16 +62,8 @@ func TestWalkerEmptyIncludeAllowsAll(t *testing.T) {
 	}
 }
 
-func TestComputeHash(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "file.txt")
-	if err := os.WriteFile(path, []byte("abc"), 0644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-
-	got, err := computeHash(path)
-	if err != nil {
-		t.Fatalf("computeHash returned error: %v", err)
-	}
+func TestComputeHashBytes(t *testing.T) {
+	got := computeHashBytes([]byte("abc"))
 	want := "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 	if got != want {
 		t.Fatalf("hash = %q, want %q", got, want)
