@@ -12,6 +12,7 @@ database = "codebase"
 user = "postgres"
 password = "123456"
 sslmode = "disable"
+connect_timeout = 10  # Таймаут подключения к БД (секунды)
 
 # Настройки индексатора
 [indexer]

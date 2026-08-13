@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -68,8 +69,8 @@ func NewDB(cfg config.DBConfig) (*DB, error) {
 	// сначала идём в postgres/system database, затем в рабочую базу CodeBase.
 	// Сначала подключаемся к default database для создания целевой БД
 	dsnDefault := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=postgres sslmode=%s",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.SSLMode,
+		"host=%s port=%d user=%s password=%s dbname=postgres sslmode=%s connect_timeout=%d",
+		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.SSLMode, cfg.ConnectTimeout,
 	)
 
 	dbDefault, err := sql.Open("postgres", dsnDefault)
@@ -78,20 +79,22 @@ func NewDB(cfg config.DBConfig) (*DB, error) {
 	}
 	defer dbDefault.Close()
 
-	// Проверяем подключение
-	if err := dbDefault.Ping(); err != nil {
+	// Проверяем подключение с таймаутом
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), time.Duration(cfg.ConnectTimeout)*time.Second)
+	defer pingCancel()
+	if err := dbDefault.PingContext(pingCtx); err != nil {
 		return nil, fmt.Errorf("failed to ping default database: %w", err)
 	}
 
 	// Создаём БД если не существует
-	if err := createDatabaseIfNotExists(dbDefault, cfg.Database); err != nil {
+	if err := createDatabaseIfNotExists(dbDefault, cfg.Database, cfg.ConnectTimeout); err != nil {
 		return nil, fmt.Errorf("failed to create database: %w", err)
 	}
 
 	// Теперь подключаемся к целевой БД
 	dsn := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Database, cfg.SSLMode,
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s connect_timeout=%d",
+		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Database, cfg.SSLMode, cfg.ConnectTimeout,
 	)
 
 	db, err := sql.Open("postgres", dsn)
@@ -100,7 +103,9 @@ func NewDB(cfg config.DBConfig) (*DB, error) {
 	}
 
 	// Финальный ping подтверждает, что рабочая БД доступна уже после возможного создания.
-	if err := db.Ping(); err != nil {
+	pingCtx2, pingCancel2 := context.WithTimeout(context.Background(), time.Duration(cfg.ConnectTimeout)*time.Second)
+	defer pingCancel2()
+	if err := db.PingContext(pingCtx2); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
@@ -114,10 +119,13 @@ func NewDB(cfg config.DBConfig) (*DB, error) {
 }
 
 // createDatabaseIfNotExists создаёт БД если она не существует
-func createDatabaseIfNotExists(db *sql.DB, dbName string) error {
+func createDatabaseIfNotExists(db *sql.DB, dbName string, timeoutSec int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
 	// Проверяем существование БД
 	var exists bool
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT EXISTS(
 			SELECT 1 FROM pg_database WHERE datname = $1
 		)
@@ -127,8 +135,8 @@ func createDatabaseIfNotExists(db *sql.DB, dbName string) error {
 	}
 
 	if !exists {
-		// Создаём БД
-		_, err = db.Exec(fmt.Sprintf("CREATE DATABASE %s", dbName))
+		// Создаём БД (имя экранируется двойными кавычками для защиты от спецсимволов)
+		_, err = db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE \"%s\"", dbName))
 		if err != nil {
 			return fmt.Errorf("failed to create database: %w", err)
 		}

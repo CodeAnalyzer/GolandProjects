@@ -10,12 +10,13 @@ import (
 
 // DBConfig конфигурация подключения к PostgreSQL
 type DBConfig struct {
-	Host     string `toml:"host"`
-	Port     int    `toml:"port"`
-	Database string `toml:"database"`
-	User     string `toml:"user"`
-	Password string `toml:"password"`
-	SSLMode  string `toml:"sslmode"`
+	Host          string `toml:"host"`
+	Port          int    `toml:"port"`
+	Database      string `toml:"database"`
+	User          string `toml:"user"`
+	Password      string `toml:"password"`
+	SSLMode       string `toml:"sslmode"`
+	ConnectTimeout int   `toml:"connect_timeout"` // секунды
 }
 
 // Config полная конфигурация приложения
@@ -101,6 +102,9 @@ func Load() error {
 	if cfg.DB.SSLMode == "" {
 		cfg.DB.SSLMode = "disable"
 	}
+	if cfg.DB.ConnectTimeout <= 0 {
+		cfg.DB.ConnectTimeout = 10
+	}
 	if cfg.Indexer.Parallel == 0 {
 		cfg.Indexer.Parallel = 4
 	}
@@ -171,7 +175,8 @@ func CreateDefault(rootPath string) *Config {
 			Database: "codebase",
 			User:     "postgres",
 			Password: "",
-			SSLMode:  "disable",
+			SSLMode:       "disable",
+			ConnectTimeout: 10,
 		},
 		Indexer: IndexerConfig{
 			Parallel:  4,
