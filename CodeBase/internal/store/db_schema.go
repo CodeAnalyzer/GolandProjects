@@ -571,7 +571,6 @@ func (db *DB) InitSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_files_ds_product_id ON files(ds_product_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_files_extension ON files(extension)`,
 		`CREATE INDEX IF NOT EXISTS idx_symbols_file_id ON symbols(file_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_symbols_symbol_name_lower ON symbols(LOWER(symbol_name))`,
 		`CREATE INDEX IF NOT EXISTS idx_symbols_symbol_name_type_lower ON symbols(LOWER(symbol_name), symbol_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_symbols_symbol_name_trgm ON symbols USING GIN (symbol_name gin_trgm_ops)`,
 		`CREATE INDEX IF NOT EXISTS idx_symbols_signature_trgm ON symbols USING GIN (signature gin_trgm_ops)`,
@@ -620,7 +619,6 @@ func (db *DB) InitSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_vb_functions_report_form_id ON vb_functions(report_form_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_vb_functions_function_name_lower ON vb_functions(LOWER(function_name))`,
 		`CREATE INDEX IF NOT EXISTS idx_vb_functions_function_name_trgm ON vb_functions USING GIN (function_name gin_trgm_ops)`,
-		`CREATE INDEX IF NOT EXISTS idx_query_fragments_file_id ON query_fragments(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_query_fragments_file_line ON query_fragments(file_id, line_number)`,
 		`CREATE INDEX IF NOT EXISTS idx_query_fragments_component_name_lower ON query_fragments(LOWER(component_name))`,
 		`CREATE INDEX IF NOT EXISTS idx_query_fragments_component_name_trgm ON query_fragments USING GIN (component_name gin_trgm_ops)`,
@@ -629,8 +627,7 @@ func (db *DB) InitSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_api_business_objects_file_id ON api_business_objects(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_api_business_objects_name ON api_business_objects(business_object)`,
 		`CREATE INDEX IF NOT EXISTS idx_api_contracts_file_id ON api_contracts(file_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_api_contracts_name_kind ON api_contracts(contract_name, contract_kind)`,
-		`CREATE INDEX IF NOT EXISTS idx_api_contracts_contract_name_lower ON api_contracts(LOWER(contract_name))`,
+		`CREATE INDEX IF NOT EXISTS idx_api_contracts_lower_name_kind ON api_contracts(LOWER(contract_name), LOWER(contract_kind))`,
 		`CREATE INDEX IF NOT EXISTS idx_api_contracts_contract_name_trgm ON api_contracts USING GIN (contract_name gin_trgm_ops)`,
 		`CREATE INDEX IF NOT EXISTS idx_api_contracts_business_object ON api_contracts(business_object)`,
 		`CREATE INDEX IF NOT EXISTS idx_api_contract_params_contract_id ON api_contract_params(contract_id)`,
@@ -647,7 +644,6 @@ func (db *DB) InitSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_relations_target_type_id ON relations(target_type, target_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_relations_source_type_relation ON relations(source_type, relation_type, source_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_relations_target_type_relation ON relations(target_type, relation_type, target_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_relations_relation_type ON relations(relation_type)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ds_return_codes_code ON ds_return_codes(ret_code)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_sessions_parsed_at ON rti_sessions(parsed_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_calls_session_proc ON rti_calls(session_id, procedure)`,
@@ -659,7 +655,6 @@ func (db *DB) InitSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_rti_blog_blocks_session_id ON rti_blog_blocks(session_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_blog_tables_call_id ON rti_blog_tables(call_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_blog_tables_session_id ON rti_blog_tables(session_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_rti_client_events_session_id ON rti_client_events(session_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_client_events_session_kind ON rti_client_events(session_id, kind)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_client_events_server_call_id ON rti_client_events(server_call_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_client_events_session_ts ON rti_client_events(session_id, timestamp)`,
@@ -682,6 +677,14 @@ func (db *DB) InitSchema() error {
 		`DROP INDEX IF EXISTS idx_trc_events_duration_ms`,
 		`DROP INDEX IF EXISTS idx_trc_events_spid`,
 		`DROP INDEX IF EXISTS idx_trc_events_event_sequence`,
+		// Удаление избыточных standalone-индексов, дублируемых составными (leftmost-prefix)
+		`DROP INDEX IF EXISTS idx_symbols_symbol_name_lower`,
+		`DROP INDEX IF EXISTS idx_query_fragments_file_id`,
+		`DROP INDEX IF EXISTS idx_rti_client_events_session_id`,
+		// Удаление мёртвых индексов (0 сканов по pg_stat_user_indexes)
+		`DROP INDEX IF EXISTS idx_api_contracts_name_kind`,
+		`DROP INDEX IF EXISTS idx_api_contracts_contract_name_lower`,
+		`DROP INDEX IF EXISTS idx_relations_relation_type`,
 	}
 
 	for _, stmt := range statements {
