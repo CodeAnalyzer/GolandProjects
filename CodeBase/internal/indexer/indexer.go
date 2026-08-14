@@ -176,6 +176,37 @@ func normalizeParallel(parallel int) int {
 	return parallel
 }
 
+func (idx *Indexer) processFilesWorkerPoolInit(parallel int, filesCh <-chan fswalk.FileInfo, scanRunID int64, collector *statsCollector) {
+	workerCount := normalizeParallel(parallel)
+	var wg sync.WaitGroup
+	wg.Add(workerCount)
+
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			defer wg.Done()
+			for file := range filesCh {
+				collector.Add(func(stats *model.ScanStats) { stats.FilesScanned++ })
+				fileID, err := idx.saveFile(file, scanRunID)
+				if err != nil {
+					idx.logError(file.Path, "Error saving file row: %v", err)
+					collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+					continue
+				}
+				localStats := &model.ScanStats{}
+				if err := idx.processFile(file, fileID, localStats); err != nil {
+					idx.logError(file.Path, "Error processing file: %v", err)
+					localStats.Errors++
+				}
+				collector.Add(func(stats *model.ScanStats) {
+					mergeScanStats(stats, localStats)
+				})
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
 func (idx *Indexer) processFilesWorkerPool(parallel int, jobs <-chan indexedFileJob, collector *statsCollector) {
 	workerCount := normalizeParallel(parallel)
 	var wg sync.WaitGroup

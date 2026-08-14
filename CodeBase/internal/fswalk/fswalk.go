@@ -2,7 +2,9 @@ package fswalk
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -94,7 +96,7 @@ func (w *Walker) Walk() (<-chan FileInfo, <-chan error) {
 		defer close(errorsChan)
 
 		// Начинаем обход файлов в корневой директории
-		err := filepath.Walk(w.rootPath, func(path string, info os.FileInfo, err error) error {
+		err := filepath.WalkDir(w.rootPath, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				// Если произошла ошибка, отправляем ее в канал ошибок
 				errorsChan <- err
@@ -102,9 +104,9 @@ func (w *Walker) Walk() (<-chan FileInfo, <-chan error) {
 			}
 
 			// Пропускаем директории
-			if info.IsDir() {
+			if d.IsDir() {
 				// Пропускаем скрытые директории
-				if strings.HasPrefix(info.Name(), ".") {
+				if strings.HasPrefix(d.Name(), ".") {
 					return filepath.SkipDir
 				}
 				return nil
@@ -127,6 +129,14 @@ func (w *Walker) Walk() (<-chan FileInfo, <-chan error) {
 
 			// Затем применяем include-паттерны: только подходящие файлы уходят в индексатор.
 			if !w.isIncluded(relPath) {
+				return nil
+			}
+
+			// d.Info() на Windows возвращает данные из кэша ReadDir (WIN32_FIND_DATA)
+			// без дополнительного syscall.
+			info, err := d.Info()
+			if err != nil {
+				errorsChan <- fmt.Errorf("failed to get file info for %s: %w", path, err)
 				return nil
 			}
 
@@ -200,7 +210,7 @@ func (w *Walker) isIncluded(path string) bool {
 // computeHashBytes вычисляет SHA256 хэш содержимого файла
 func computeHashBytes(data []byte) string {
 	sum := sha256.Sum256(data)
-	return fmt.Sprintf("%x", sum[:])
+	return hex.EncodeToString(sum[:])
 }
 
 // getEncodingAndLanguage возвращает кодировку и язык по расширению

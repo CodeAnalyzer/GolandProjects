@@ -71,31 +71,14 @@ func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error
 	includePatterns, excludePatterns := idx.walkerPatterns()
 	walker := fswalk.NewWalker(rootPath, includePatterns, excludePatterns)
 	filesCh, errsCh := walker.Walk()
-	jobs := make(chan indexedFileJob, 128)
+
+	// Воркеры читают файлы напрямую из filesCh и делают saveFile + processFile
+	// параллельно. Это устраняет bottleneck последовательных INSERT-ов в один поток.
 	var workersWG sync.WaitGroup
 	workersWG.Add(1)
 	go func() {
 		defer workersWG.Done()
-		idx.processFilesWorkerPool(parallel, jobs, collector)
-	}()
-
-	var feederWG sync.WaitGroup
-	feederWG.Add(1)
-	go func() {
-		defer feederWG.Done()
-		for file := range filesCh {
-			collector.Add(func(stats *model.ScanStats) {
-				stats.FilesScanned++
-			})
-			fileID, err := idx.saveFile(file, scanRunID)
-			if err != nil {
-				idx.logError(file.Path, "Error saving file row: %v", err)
-				collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
-				continue
-			}
-			jobs <- indexedFileJob{file: file, fileID: fileID}
-		}
-		close(jobs)
+		idx.processFilesWorkerPoolInit(parallel, filesCh, scanRunID, collector)
 	}()
 
 	for err := range errsCh {
@@ -103,9 +86,8 @@ func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 	}
 
-	feederWG.Wait()
-	walkSaveDone := time.Now()
 	workersWG.Wait()
+	walkSaveDone := time.Now()
 	processDone := time.Now()
 	idx.runPostProcessingParallel(collector, parallel)
 	postProcessDone := time.Now()
