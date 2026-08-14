@@ -108,7 +108,7 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 		currentTable *RTIBLogTable
 	)
 
-	scanner := bufio.NewScanner(bytes.NewReader([]byte(content)))
+	scanner := bufio.NewScanner(strings.NewReader(content))
 	buf := make([]byte, 0, 1<<20)
 	scanner.Buffer(buf, 1<<20)
 	lineNum := 0
@@ -171,289 +171,301 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 			continue
 		}
 
-		// Enter
-		if m := reEnter.FindStringSubmatch(line); m != nil {
-			procName := m[1]
-			tranCount, _ := strconv.Atoi(m[2])
-			nestLevel, _ := strconv.Atoi(m[3])
-			moduleID, _ := strconv.Atoi(m[4])
+		// Прескрининг по первому байту: направляет строку только в релевантные
+		// regex-проверки, исключая 85-95% вызовов на нерелевантных строках.
+		if len(line) == 0 {
+			continue
+		}
 
-			callIDCounter++
-			call := &RTICall{
-				ID:         callIDCounter,
-				Procedure:  procName,
-				EnterLine:  lineNum,
-				NestLevel:  nestLevel,
-				ModuleID:   moduleID,
-				TranCount:  tranCount,
-				ModuleName: ModuleNameByID(moduleID),
-				SPID:       currentSPID,
-			}
-			lastExited = nil
-
-			stack := stacks[currentSPID]
-			if len(stack) > 0 {
-				parent := stack[len(stack)-1]
-				if parent.call.NestLevel == nestLevel-1 {
-					pid := parent.call.ID
-					call.ParentID = &pid
-					parent.call.Children = append(parent.call.Children, call.ID)
+		switch line[0] {
+		case 'E':
+			// BusinessLog Enter/Exit (only when pendingBLog is active) —
+			// проверяются до reEnter/reExit, т.к. "Enter @@TranCount" не матчит
+			// reEnter (требует имя процедуры после Enter), но проверка дёргает
+			// regex, поэтому ставим первой, чтобы сразу continue при pendingBLog.
+			if pendingBLog {
+				if reBLogEnter.MatchString(line) {
+					t := true
+					pendingBLogIsEnter = &t
+					continue
+				}
+				if reBLogExit.MatchString(line) {
+					f := false
+					pendingBLogIsEnter = &f
+					continue
 				}
 			}
+			// reEnter: "Enter <ProcName> @@TranCount=..."
+			if m := reEnter.FindStringSubmatch(line); m != nil {
+				procName := m[1]
+				tranCount, _ := strconv.Atoi(m[2])
+				nestLevel, _ := strconv.Atoi(m[3])
+				moduleID, _ := strconv.Atoi(m[4])
 
-			stacks[currentSPID] = append(stacks[currentSPID], &stackEntry{call: call})
-			allCalls = append(allCalls, call)
-			continue
-		}
-
-		// Exit
-		if m := reExit.FindStringSubmatch(line); m != nil {
-			procName := m[1]
-			nestLevel, _ := strconv.Atoi(m[3])
-			beginCnt, _ := strconv.Atoi(m[4])
-
-			stack := stacks[currentSPID]
-			if len(stack) > 0 {
-				top := stack[len(stack)-1]
-				if top.call.Procedure == procName && top.call.NestLevel == nestLevel {
-					top.call.ExitLine = lineNum
-					top.call.BeginCnt = beginCnt
-					lastExited = top.call
-					stacks[currentSPID] = stack[:len(stack)-1]
+				callIDCounter++
+				call := &RTICall{
+					ID:         callIDCounter,
+					Procedure:  procName,
+					EnterLine:  lineNum,
+					NestLevel:  nestLevel,
+					ModuleID:   moduleID,
+					TranCount:  tranCount,
+					ModuleName: ModuleNameByID(moduleID),
+					SPID:       currentSPID,
 				}
-			}
-			continue
-		}
+				lastExited = nil
 
-		// BusinessLog header (Trace.Server.BusinessLog)
-		if m := reBLogHeader.FindStringSubmatch(line); m != nil {
-			tsStr := m[1]
-			spid, _ := strconv.Atoi(m[2])
-			srcLine, _ := strconv.Atoi(m[5])
-			if ts, err := time.ParseInLocation("02.01.2006 15:04:05.000", tsStr, time.Local); err == nil {
-				pendingBLogTS = ts
-			}
-			pendingBLogSPID = spid
-			pendingBLogSrcLine = srcLine
-			pendingBLog = true
-			pendingBLogIsEnter = nil
-			currentSPID = spid
-			continue
-		}
-
-		// Trace line (Trace.Server.Proc or Trace.Server.Trace)
-		if m := reTrace.FindStringSubmatch(line); m != nil {
-			tsStr := m[1]
-			traceKind := m[2]
-			spid, _ := strconv.Atoi(m[4])
-
-			if ts, err := time.ParseInLocation("02.01.2006 15:04:05.000", tsStr, time.Local); err == nil {
-				stack := stacks[spid]
+				stack := stacks[currentSPID]
 				if len(stack) > 0 {
-					top := stack[len(stack)-1]
-					if top.call.EnterTime.IsZero() {
-						top.call.EnterTime = ts
+					parent := stack[len(stack)-1]
+					if parent.call.NestLevel == nestLevel-1 {
+						pid := parent.call.ID
+						call.ParentID = &pid
+						parent.call.Children = append(parent.call.Children, call.ID)
 					}
 				}
-				if traceKind == "Trace" {
-					pendingTraceTS = ts
-					hasPendingTrace = true
-				}
-			}
-			currentSPID = spid
-			continue
-		}
 
-		// BusinessLog Enter/Exit (only when pendingBLog is active)
-		if pendingBLog {
-			if reBLogEnter.MatchString(line) {
-				t := true
-				pendingBLogIsEnter = &t
+				stacks[currentSPID] = append(stacks[currentSPID], &stackEntry{call: call})
+				allCalls = append(allCalls, call)
 				continue
 			}
-			if reBLogExit.MatchString(line) {
-				f := false
-				pendingBLogIsEnter = &f
-				continue
-			}
-		}
+			// reExit: "Exit <ProcName> @@TranCount=..."
+			if m := reExit.FindStringSubmatch(line); m != nil {
+				procName := m[1]
+				nestLevel, _ := strconv.Atoi(m[3])
+				beginCnt, _ := strconv.Atoi(m[4])
 
-		// RetVal — intercept for BusinessLog blocks, otherwise normal handling
-		if m := reRetVal.FindStringSubmatch(line); m != nil {
-			val, _ := strconv.Atoi(m[1])
-			ctx := strings.TrimSpace(m[2])
-
-			// M_LOG entry: pendingBLog active but no Enter/Exit prefix seen.
-			// This is a plain log message (not a block begin/end) — skip it.
-			if pendingBLog && pendingBLogIsEnter == nil {
-				_ = val
-				_ = ctx
-				pendingBLog = false
-				continue
-			}
-
-			if pendingBLog && pendingBLogIsEnter != nil {
-				stack := stacks[pendingBLogSPID]
+				stack := stacks[currentSPID]
 				if len(stack) > 0 {
 					top := stack[len(stack)-1]
-					if *pendingBLogIsEnter {
-						top.call.BLogBlocks = append(top.call.BLogBlocks, RTIBLogBlock{
-							BlockName: ctx,
-							EnterTime: pendingBLogTS,
-							EnterLine: pendingBLogSrcLine,
-						})
-					} else {
-						for i := len(top.call.BLogBlocks) - 1; i >= 0; i-- {
-							b := &top.call.BLogBlocks[i]
-							if b.BlockName == ctx && b.ExitTime.IsZero() {
-								b.ExitTime = pendingBLogTS
-								b.ExitLine = pendingBLogSrcLine
-								if !b.EnterTime.IsZero() {
-									b.ElapsedMs = int(pendingBLogTS.Sub(b.EnterTime).Milliseconds())
+					if top.call.Procedure == procName && top.call.NestLevel == nestLevel {
+						top.call.ExitLine = lineNum
+						top.call.BeginCnt = beginCnt
+						lastExited = top.call
+						stacks[currentSPID] = stack[:len(stack)-1]
+					}
+				}
+				continue
+			}
+			// reElapsed: "Elapsed, ms: <N>"
+			if m := reElapsed.FindStringSubmatch(line); m != nil {
+				ms, _ := strconv.Atoi(m[1])
+				if lastExited != nil {
+					lastExited.ElapsedMs = ms
+				} else {
+					stack := stacks[currentSPID]
+					if len(stack) > 0 {
+						stack[len(stack)-1].call.ElapsedMs = ms
+					}
+				}
+				continue
+			}
+
+		case 'R':
+			// reRetVal: "RetVal = <N>#<ctx>"
+			if m := reRetVal.FindStringSubmatch(line); m != nil {
+				val, _ := strconv.Atoi(m[1])
+				ctx := strings.TrimSpace(m[2])
+
+				// M_LOG entry: pendingBLog active but no Enter/Exit prefix seen.
+				// This is a plain log message (not a block begin/end) — skip it.
+				if pendingBLog && pendingBLogIsEnter == nil {
+					_ = val
+					_ = ctx
+					pendingBLog = false
+					continue
+				}
+
+				if pendingBLog && pendingBLogIsEnter != nil {
+					stack := stacks[pendingBLogSPID]
+					if len(stack) > 0 {
+						top := stack[len(stack)-1]
+						if *pendingBLogIsEnter {
+							top.call.BLogBlocks = append(top.call.BLogBlocks, RTIBLogBlock{
+								BlockName: ctx,
+								EnterTime: pendingBLogTS,
+								EnterLine: pendingBLogSrcLine,
+							})
+						} else {
+							for i := len(top.call.BLogBlocks) - 1; i >= 0; i-- {
+								b := &top.call.BLogBlocks[i]
+								if b.BlockName == ctx && b.ExitTime.IsZero() {
+									b.ExitTime = pendingBLogTS
+									b.ExitLine = pendingBLogSrcLine
+									if !b.EnterTime.IsZero() {
+										b.ElapsedMs = int(pendingBLogTS.Sub(b.EnterTime).Milliseconds())
+									}
+									break
 								}
-								break
 							}
 						}
 					}
+					_ = val
+					pendingBLog = false
+					pendingBLogIsEnter = nil
+					continue
 				}
-				_ = val
-				pendingBLog = false
-				pendingBLogIsEnter = nil
-				continue
-			}
 
-			stack := stacks[currentSPID]
-			if len(stack) > 0 {
-				top := stack[len(stack)-1]
-				if top.call.RetVal == nil {
-					v := val
-					top.call.RetVal = &v
-					top.call.RetValContext = ctx
-				}
-			}
-			continue
-		}
-
-		// Elapsed
-		if m := reElapsed.FindStringSubmatch(line); m != nil {
-			ms, _ := strconv.Atoi(m[1])
-			if lastExited != nil {
-				lastExited.ElapsedMs = ms
-			} else {
-				stack := stacks[currentSPID]
-				if len(stack) > 0 {
-					stack[len(stack)-1].call.ElapsedMs = ms
-				}
-			}
-			continue
-		}
-
-		// Return
-		if m := reReturn.FindStringSubmatch(line); m != nil {
-			val, _ := strconv.Atoi(m[1])
-			if lastExited != nil {
-				if lastExited.RetVal == nil {
-					v := val
-					lastExited.RetVal = &v
-				}
-				lastExited = nil
-			} else {
 				stack := stacks[currentSPID]
 				if len(stack) > 0 {
 					top := stack[len(stack)-1]
 					if top.call.RetVal == nil {
 						v := val
 						top.call.RetVal = &v
+						top.call.RetValContext = ctx
 					}
 				}
+				continue
 			}
-			continue
-		}
-
-		// Params
-		if m := reParam.FindStringSubmatch(line); m != nil {
-			stack := stacks[currentSPID]
-			if len(stack) > 0 {
-				top := stack[len(stack)-1]
-				top.call.Params = append(top.call.Params, RTIParam{
-					Name:  m[1],
-					Type:  m[2],
-					Value: strings.TrimSpace(m[3]),
-				})
-			}
-			continue
-		}
-
-		// BLogParam
-		if m := reBLogParam.FindStringSubmatch(line); m != nil {
-			stack := stacks[currentSPID]
-			if len(stack) > 0 {
-				top := stack[len(stack)-1]
-				top.call.Params = append(top.call.Params, RTIParam{
-					Name:  m[1],
-					Type:  m[2],
-					Value: strings.TrimSpace(m[3]),
-				})
-			}
-			continue
-		}
-
-		// Checkpoint — with timestamp from preceding Trace.Server.Trace header
-		if m := reCheckpoint.FindStringSubmatch(line); m != nil {
-			procName := m[1]
-			checkpointNum, _ := strconv.Atoi(m[2])
-			stack := stacks[currentSPID]
-			if len(stack) > 0 {
-				top := stack[len(stack)-1]
-				cp := RTICheckpoint{
-					Label:     fmt.Sprintf("%s_Begin_%d", procName, checkpointNum),
-					LineNo:    lineNum,
-					ElapsedMs: top.call.ElapsedMs,
+			// reReturn: "Return <N>"
+			if m := reReturn.FindStringSubmatch(line); m != nil {
+				val, _ := strconv.Atoi(m[1])
+				if lastExited != nil {
+					if lastExited.RetVal == nil {
+						v := val
+						lastExited.RetVal = &v
+					}
+					lastExited = nil
+				} else {
+					stack := stacks[currentSPID]
+					if len(stack) > 0 {
+						top := stack[len(stack)-1]
+						if top.call.RetVal == nil {
+							v := val
+							top.call.RetVal = &v
+						}
+					}
 				}
-				if hasPendingTrace {
-					cp.Timestamp = pendingTraceTS
-					hasPendingTrace = false
+				continue
+			}
+
+		case '@':
+			// reParam: "@<Name> : <Type> = <Value>"
+			if m := reParam.FindStringSubmatch(line); m != nil {
+				stack := stacks[currentSPID]
+				if len(stack) > 0 {
+					top := stack[len(stack)-1]
+					top.call.Params = append(top.call.Params, RTIParam{
+						Name:  m[1],
+						Type:  m[2],
+						Value: strings.TrimSpace(m[3]),
+					})
 				}
-				top.call.Checkpoints = append(top.call.Checkpoints, cp)
+				continue
 			}
-			continue
+
+		case 'B':
+			// reBLogParam: "BLogParam:@<Name> : <Type> = <Value>"
+			if m := reBLogParam.FindStringSubmatch(line); m != nil {
+				stack := stacks[currentSPID]
+				if len(stack) > 0 {
+					top := stack[len(stack)-1]
+					top.call.Params = append(top.call.Params, RTIParam{
+						Name:  m[1],
+						Type:  m[2],
+						Value: strings.TrimSpace(m[3]),
+					})
+				}
+				continue
+			}
+
+		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+			// reBLogHeader: "DD.MM.YYYY ... Trace.Server.BusinessLog ..."
+			if m := reBLogHeader.FindStringSubmatch(line); m != nil {
+				tsStr := m[1]
+				spid, _ := strconv.Atoi(m[2])
+				srcLine, _ := strconv.Atoi(m[5])
+				if ts, err := time.ParseInLocation("02.01.2006 15:04:05.000", tsStr, time.Local); err == nil {
+					pendingBLogTS = ts
+				}
+				pendingBLogSPID = spid
+				pendingBLogSrcLine = srcLine
+				pendingBLog = true
+				pendingBLogIsEnter = nil
+				currentSPID = spid
+				continue
+			}
+			// reTrace: "DD.MM.YYYY ... Trace.Server.Proc|Trace ..."
+			if m := reTrace.FindStringSubmatch(line); m != nil {
+				tsStr := m[1]
+				traceKind := m[2]
+				spid, _ := strconv.Atoi(m[4])
+
+				if ts, err := time.ParseInLocation("02.01.2006 15:04:05.000", tsStr, time.Local); err == nil {
+					stack := stacks[spid]
+					if len(stack) > 0 {
+						top := stack[len(stack)-1]
+						if top.call.EnterTime.IsZero() {
+							top.call.EnterTime = ts
+						}
+					}
+					if traceKind == "Trace" {
+						pendingTraceTS = ts
+						hasPendingTrace = true
+					}
+				}
+				currentSPID = spid
+				continue
+			}
+			// reClientHeader: "DD.MM.YYYY ... <Level> <Category> ..."
+			if m := reClientHeader.FindStringSubmatch(line); m != nil {
+				tsStr := m[1]
+				level := m[2]
+				category := m[3]
+				class := m[4]
+				method := m[5]
+				pid, _ := strconv.Atoi(m[6])
+				seq, _ := strconv.Atoi(m[7])
+
+				var ts time.Time
+				if parsed, err := time.ParseInLocation("02.01.2006 15:04:05.000", tsStr, time.Local); err == nil {
+					ts = parsed
+				}
+
+				clientIDCounter++
+				pendingClient = &RTIClientEvent{
+					ID:         clientIDCounter,
+					Timestamp:  ts,
+					Level:      level,
+					Category:   category,
+					ClassName:  class,
+					MethodName: method,
+					PID:        pid,
+					SeqNo:      seq,
+					Line:       lineNum,
+					Kind:       classifyClientKind(category, class, method),
+				}
+				clientBody = clientBodyState{}
+				continue
+			}
+
+		default:
+			// reCheckpoint: "<ProcName>_Begin_<N>" — имя процедуры может начинаться
+			// с любой заглавной буквы, не только E/R/B/T/@/digit.
+			if m := reCheckpoint.FindStringSubmatch(line); m != nil {
+				procName := m[1]
+				checkpointNum, _ := strconv.Atoi(m[2])
+				stack := stacks[currentSPID]
+				if len(stack) > 0 {
+					top := stack[len(stack)-1]
+					cp := RTICheckpoint{
+						Label:     fmt.Sprintf("%s_Begin_%d", procName, checkpointNum),
+						LineNo:    lineNum,
+						ElapsedMs: top.call.ElapsedMs,
+					}
+					if hasPendingTrace {
+						cp.Timestamp = pendingTraceTS
+						hasPendingTrace = false
+					}
+					top.call.Checkpoints = append(top.call.Checkpoints, cp)
+				}
+				continue
+			}
 		}
 
-		// Клиентский заголовок (Debug.d5ntsys/SQL/SQL_TranCount/Error.* и т.п.) —
-		// проверяется после всех серверных паттернов, чтобы не перехватывать
-		// строки Trace.Server.*/BusinessLog, которые уже обработаны выше.
-		if m := reClientHeader.FindStringSubmatch(line); m != nil {
-			tsStr := m[1]
-			level := m[2]
-			category := m[3]
-			class := m[4]
-			method := m[5]
-			pid, _ := strconv.Atoi(m[6])
-			seq, _ := strconv.Atoi(m[7])
-
-			var ts time.Time
-			if parsed, err := time.ParseInLocation("02.01.2006 15:04:05.000", tsStr, time.Local); err == nil {
-				ts = parsed
-			}
-
-			clientIDCounter++
-			pendingClient = &RTIClientEvent{
-				ID:         clientIDCounter,
-				Timestamp:  ts,
-				Level:      level,
-				Category:   category,
-				ClassName:  class,
-				MethodName: method,
-				PID:        pid,
-				SeqNo:      seq,
-				Line:       lineNum,
-				Kind:       classifyClientKind(category, class, method),
-			}
-			clientBody = clientBodyState{}
-			continue
-		}
-
-		// Unparsed
+		// Unparsed — строки, не матчиющие ни один паттерн.
+		// continue внутри switch выше пропускает эту проверку (строка обработана).
+		// Сюда попадают только строки, выпавшие из switch без continue.
 		if strings.TrimSpace(line) != "" {
 			result.UnparsedLines++
 		}
