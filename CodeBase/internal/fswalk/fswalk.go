@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,6 +28,13 @@ type FileInfo struct {
 	Content []byte
 }
 
+// FileFingerprint — метаданные файла для pre-filter (Update only).
+// Если size и modTime совпадают с предыдущей индексацией, файл считается неизменённым.
+type FileFingerprint struct {
+	Size    int64
+	ModTime time.Time
+}
+
 // Walker обходчик файлов
 type Walker struct {
 	rootPath        string
@@ -34,6 +42,9 @@ type Walker struct {
 	excludePatterns []string
 	includeRegexps  []*regexp.Regexp
 	excludeRegexps  []*regexp.Regexp
+	// preFilter — карта известных файлов для пропуска по mtime+size (Update only).
+	// Ключ: нормализованный path (filepath.ToSlash). nil = pre-filter отключён.
+	preFilter map[string]FileFingerprint
 }
 
 // NewWalker создаёт новый walker
@@ -84,93 +95,142 @@ func patternToRegexp(pattern string) *regexp.Regexp {
 	return r
 }
 
-// Walk обходит файлы и возвращает канал FileInfo
+// SetPreFilter устанавливает карту известных файлов для пропуска по mtime+size.
+// Вызывается только для Update (Init не имеет предыдущего состояния).
+func (w *Walker) SetPreFilter(existing map[string]FileFingerprint) {
+	w.preFilter = existing
+}
+
+// walkTask — метаданные файла для передачи в воркер чтения+хэширования.
+type walkTask struct {
+	path    string
+	relPath string
+	info    fs.FileInfo
+	ext     string
+}
+
+// Walk обходит файлы в один поток (делегирует в WalkParallel с workers=1).
 func (w *Walker) Walk() (<-chan FileInfo, <-chan error) {
-	filesChan := make(chan FileInfo, 100)
+	return w.WalkParallel(1)
+}
+
+// WalkParallel обходит файлы с параллельным чтением+хэшированием.
+// WalkDir (обход каталогов) выполняется в одной горутине — это лёгкая операция.
+// os.ReadFile + sha256 выполняются в workers горутинах — это тяжёлая I/O+CPU часть.
+// При установленном preFilter файлы с совпадающими mtime+size отправляются напрямую
+// в filesChan с пустым Hash (без чтения с диска).
+func (w *Walker) WalkParallel(workers int) (<-chan FileInfo, <-chan error) {
+	if workers < 1 {
+		workers = 1
+	}
+	filesChan := make(chan FileInfo, workers*50)
 	errorsChan := make(chan error, 100)
+	fileQueue := make(chan walkTask, workers*50)
 
+	// Обходчик каталогов — 1 горутина (только метаданные, без чтения файлов)
 	go func() {
-		// Обход выполняется асинхронно: вызывающий код может параллельно читать
-		// найденные файлы и передавать их дальше в indexing pipeline.
-		defer close(filesChan)
-		defer close(errorsChan)
+		defer close(fileQueue)
 
-		// Начинаем обход файлов в корневой директории
 		err := filepath.WalkDir(w.rootPath, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
-				// Если произошла ошибка, отправляем ее в канал ошибок
 				errorsChan <- err
-				return nil // Продолжаем обход
+				return nil
 			}
 
-			// Пропускаем директории
 			if d.IsDir() {
-				// Пропускаем скрытые директории
 				if strings.HasPrefix(d.Name(), ".") {
 					return filepath.SkipDir
 				}
 				return nil
 			}
 
-			// Получаем относительный путь
 			relPath, err := filepath.Rel(w.rootPath, path)
 			if err != nil {
 				errorsChan <- fmt.Errorf("failed to get relative path: %w", err)
 				return nil
 			}
-
-			// Нормализуем путь для Windows
 			relPath = filepath.ToSlash(relPath)
 
-			// Сначала применяем exclude-паттерны, чтобы быстро отсечь шумные файлы.
 			if w.isExcluded(relPath) {
 				return nil
 			}
-
-			// Затем применяем include-паттерны: только подходящие файлы уходят в индексатор.
 			if !w.isIncluded(relPath) {
 				return nil
 			}
 
-			// d.Info() на Windows возвращает данные из кэша ReadDir (WIN32_FIND_DATA)
-			// без дополнительного syscall.
 			info, err := d.Info()
 			if err != nil {
 				errorsChan <- fmt.Errorf("failed to get file info for %s: %w", path, err)
 				return nil
 			}
 
-			// Читаем файл один раз: из этих же байтов считаем хэш и дальше парсим.
-			content, err := os.ReadFile(path)
-			if err != nil {
-				errorsChan <- fmt.Errorf("failed to read %s: %w", path, err)
-				return nil
-			}
-			hash := computeHashBytes(content)
-
-			// Расширение здесь выступает дешёвым классификатором языка и кодировки,
-			// чтобы parser layer (слой парсеров) знал, как читать файл.
 			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
-			encoding, language := getEncodingAndLanguage(ext)
+			normalizedPath := filepath.ToSlash(path)
 
-			filesChan <- FileInfo{
-				Path:       filepath.ToSlash(path),
-				RelPath:    relPath,
-				Extension:  ext,
-				Size:       info.Size(),
-				Hash:       hash,
-				ModifiedAt: info.ModTime(),
-				Encoding:   encoding,
-				Language:   language,
-				Content:    content,
+			// Pre-filter: если mtime+size совпадают — пропускаем чтение файла.
+			// Отправляем метаданные с пустым Hash как маркер pre-filtered файла.
+			if w.preFilter != nil {
+				if fp, ok := w.preFilter[normalizedPath]; ok {
+					if fp.Size == info.Size() && modTimeMatch(fp.ModTime, info.ModTime()) {
+						encoding, language := getEncodingAndLanguage(ext)
+						filesChan <- FileInfo{
+							Path:       normalizedPath,
+							RelPath:    relPath,
+							Extension:  ext,
+							Size:       info.Size(),
+							Hash:       "", // маркер: файл не читался
+							ModifiedAt: info.ModTime(),
+							Encoding:   encoding,
+							Language:   language,
+						}
+						return nil
+					}
+				}
 			}
 
+			fileQueue <- walkTask{path: path, relPath: relPath, info: info, ext: ext}
 			return nil
 		})
 
 		if err != nil {
 			errorsChan <- fmt.Errorf("walk error: %w", err)
 		}
+	}()
+
+	// Воркеры чтения+хэширования — N горутин
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for task := range fileQueue {
+				content, err := os.ReadFile(task.path)
+				if err != nil {
+					errorsChan <- fmt.Errorf("failed to read %s: %w", task.path, err)
+					continue
+				}
+				hash := computeHashBytes(content)
+				encoding, language := getEncodingAndLanguage(task.ext)
+				filesChan <- FileInfo{
+					Path:       filepath.ToSlash(task.path),
+					RelPath:    task.relPath,
+					Extension:  task.ext,
+					Size:       task.info.Size(),
+					Hash:       hash,
+					ModifiedAt: task.info.ModTime(),
+					Encoding:   encoding,
+					Language:   language,
+					Content:    content,
+				}
+			}
+		}()
+	}
+
+	// Закрытие channels после завершения всех воркеров
+	go func() {
+		wg.Wait()
+		close(filesChan)
+		close(errorsChan)
 	}()
 
 	return filesChan, errorsChan
@@ -211,6 +271,18 @@ func (w *Walker) isIncluded(path string) bool {
 func computeHashBytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// modTimeMatch сравнивает время модификации с допуском 1ms.
+// PostgreSQL TIMESTAMPTZ хранит микросекунды, Windows os.Stat отдаёт 100ns.
+// При сохранении в БД и чтении обратно точность теряется, поэтому точное
+// сравнение time.Equal() не работает. Допуск 1ms покрывает разницу.
+func modTimeMatch(a, b time.Time) bool {
+	diff := a.Sub(b)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= time.Millisecond
 }
 
 // getEncodingAndLanguage возвращает кодировку и язык по расширению

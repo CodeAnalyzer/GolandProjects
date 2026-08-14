@@ -407,6 +407,7 @@ type ScanStats struct {
 	Relations       int
 	Errors          int
 	PostProcessed   int
+	PreFilteredFiles int // файлы, пропущенные по mtime+size pre-filter (Update only)
 	XMLFiles        int
 	APIContracts    int
 	APIParams       int

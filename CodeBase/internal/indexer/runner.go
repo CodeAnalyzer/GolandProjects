@@ -70,7 +70,7 @@ func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error
 
 	includePatterns, excludePatterns := idx.walkerPatterns()
 	walker := fswalk.NewWalker(rootPath, includePatterns, excludePatterns)
-	filesCh, errsCh := walker.Walk()
+	filesCh, errsCh := walker.WalkParallel(parallel)
 
 	// Воркеры читают файлы напрямую из filesCh и делают saveFile + processFile
 	// параллельно. Это устраняет bottleneck последовательных INSERT-ов в один поток.
@@ -122,7 +122,15 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 
 	includePatterns, excludePatterns := idx.walkerPatterns()
 	walker := fswalk.NewWalker(rootPath, includePatterns, excludePatterns)
-	filesCh, errsCh := walker.Walk()
+
+	// Pre-filter: пропускаем чтение файлов, у которых mtime+size не изменились.
+	fingerprints := make(map[string]fswalk.FileFingerprint, len(existing))
+	for path, f := range existing {
+		fingerprints[path] = fswalk.FileFingerprint{Size: f.SizeBytes, ModTime: f.ModifiedAt}
+	}
+	walker.SetPreFilter(fingerprints)
+
+	filesCh, errsCh := walker.WalkParallel(parallel)
 	jobs := make(chan indexedFileJob, 128)
 	seen := make(map[string]struct{})
 	var workersWG sync.WaitGroup
@@ -147,6 +155,11 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 				stats.FilesScanned++
 			})
 			prev := existing[normalizedPath]
+			// Pre-filtered файл (Hash пустой — не читался, mtime+size совпадают)
+			if file.Hash == "" && prev != nil {
+				collector.Add(func(stats *model.ScanStats) { stats.PreFilteredFiles++ })
+				continue
+			}
 			if onlyModified && prev != nil && prev.HashSHA256 == file.Hash {
 				continue
 			}

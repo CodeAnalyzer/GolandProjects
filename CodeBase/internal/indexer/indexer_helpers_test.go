@@ -38,6 +38,14 @@ func TestMergeScanStatsAndCollector(t *testing.T) {
 		t.Fatalf("SaveMs/ParseMs merge: got SaveMs=%d ParseMs=%d, want 150/500", dst2.SaveMs, dst2.ParseMs)
 	}
 
+	// PreFilteredFiles должен суммироваться
+	dst3 := &model.ScanStats{PreFilteredFiles: 100}
+	src3 := &model.ScanStats{PreFilteredFiles: 200}
+	mergeScanStats(dst3, src3)
+	if dst3.PreFilteredFiles != 300 {
+		t.Fatalf("PreFilteredFiles merge: got %d, want 300", dst3.PreFilteredFiles)
+	}
+
 	c := &statsCollector{}
 	c.Add(func(stats *model.ScanStats) {
 		stats.FilesScanned = 7

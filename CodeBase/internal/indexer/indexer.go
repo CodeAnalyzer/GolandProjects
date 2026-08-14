@@ -167,6 +167,7 @@ func mergeScanStats(dst *model.ScanStats, src *model.ScanStats) {
 	dst.Relations += src.Relations
 	dst.Errors += src.Errors
 	dst.PostProcessed += src.PostProcessed
+	dst.PreFilteredFiles += src.PreFilteredFiles
 	dst.SaveMs += src.SaveMs
 	dst.ParseMs += src.ParseMs
 }
