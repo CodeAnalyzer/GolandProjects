@@ -30,6 +30,14 @@ func TestMergeScanStatsAndCollector(t *testing.T) {
 		t.Fatalf("merged stats = %+v", dst)
 	}
 
+	// SaveMs/ParseMs должны суммироваться
+	dst2 := &model.ScanStats{SaveMs: 100, ParseMs: 200}
+	src2 := &model.ScanStats{SaveMs: 50, ParseMs: 300}
+	mergeScanStats(dst2, src2)
+	if dst2.SaveMs != 150 || dst2.ParseMs != 500 {
+		t.Fatalf("SaveMs/ParseMs merge: got SaveMs=%d ParseMs=%d, want 150/500", dst2.SaveMs, dst2.ParseMs)
+	}
+
 	c := &statsCollector{}
 	c.Add(func(stats *model.ScanStats) {
 		stats.FilesScanned = 7
@@ -42,6 +50,14 @@ func TestMergeScanStatsAndCollector(t *testing.T) {
 	c.Add(func(stats *model.ScanStats) { stats.FilesScanned++ })
 	if c.Snapshot().FilesScanned != 8 {
 		t.Fatalf("collector increment failed: %+v", c.Snapshot())
+	}
+
+	// SaveMs аккумуляция через collector
+	c2 := &statsCollector{}
+	c2.Add(func(stats *model.ScanStats) { stats.SaveMs += 10 })
+	c2.Add(func(stats *model.ScanStats) { stats.SaveMs += 20 })
+	if c2.Snapshot().SaveMs != 30 {
+		t.Fatalf("SaveMs accumulation: got %d, want 30", c2.Snapshot().SaveMs)
 	}
 }
 

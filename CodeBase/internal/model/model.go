@@ -414,9 +414,11 @@ type ScanStats struct {
 	APITableFields  int
 	APITableIndexes int
 
-	// Тайминги стадий пайплайна (миллисекунды, wall-clock).
-	WalkSaveMs    int64 // обход файловой системы + хэширование + saveFile
-	ProcessMs     int64 // парсинг + вставки (воркеры), от старта до завершения пула
+	// Тайминги стадий пайплайна (миллисекунды).
+	WalkSaveMs    int64 // wall-clock: старт → завершение walk+save
+	SaveMs        int64 // суммарное время воркеров в saveFile (per-worker Σ)
+	ParseMs       int64 // суммарное время воркеров в processFile (per-worker Σ)
+	ProcessMs     int64 // wall-clock: завершение walk+save → завершение пула (Update only; 0 для Init)
 	PostProcessMs int64 // пост-обработка relations
 	CleanupMs     int64 // удаление устаревших/исчезнувших файлов (только update)
 }

@@ -88,13 +88,12 @@ func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error
 
 	workersWG.Wait()
 	walkSaveDone := time.Now()
-	processDone := time.Now()
 	idx.runPostProcessingParallel(collector, parallel)
 	postProcessDone := time.Now()
 	stats := collector.Snapshot()
 	stats.WalkSaveMs = walkSaveDone.Sub(startedAt).Milliseconds()
-	stats.ProcessMs = processDone.Sub(startedAt).Milliseconds()
-	stats.PostProcessMs = postProcessDone.Sub(processDone).Milliseconds()
+	stats.ProcessMs = 0 // Init: saveFile+processFile в одном цикле, per-phase через SaveMs/ParseMs
+	stats.PostProcessMs = postProcessDone.Sub(walkSaveDone).Milliseconds()
 	status := "completed"
 	if stats.Errors > 0 {
 		status = "completed_with_errors"
@@ -151,7 +150,10 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 			if onlyModified && prev != nil && prev.HashSHA256 == file.Hash {
 				continue
 			}
+			saveStart := time.Now()
 			fileID, err := idx.saveFile(file, scanRunID)
+			saveElapsed := time.Since(saveStart).Milliseconds()
+			collector.Add(func(stats *model.ScanStats) { stats.SaveMs += saveElapsed })
 			if err != nil {
 				idx.logError(file.Path, "Error saving file row: %v", err)
 				collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
@@ -207,7 +209,7 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 
 	stats := collector.Snapshot()
 	stats.WalkSaveMs = walkSaveDone.Sub(startedAt).Milliseconds()
-	stats.ProcessMs = processDone.Sub(startedAt).Milliseconds()
+	stats.ProcessMs = processDone.Sub(walkSaveDone).Milliseconds()
 	stats.PostProcessMs = postProcessDone.Sub(processDone).Milliseconds()
 	stats.CleanupMs = cleanupDone.Sub(postProcessDone).Milliseconds()
 	status := "completed"

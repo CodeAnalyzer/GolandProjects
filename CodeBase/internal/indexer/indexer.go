@@ -167,6 +167,8 @@ func mergeScanStats(dst *model.ScanStats, src *model.ScanStats) {
 	dst.Relations += src.Relations
 	dst.Errors += src.Errors
 	dst.PostProcessed += src.PostProcessed
+	dst.SaveMs += src.SaveMs
+	dst.ParseMs += src.ParseMs
 }
 
 func normalizeParallel(parallel int) int {
@@ -186,17 +188,24 @@ func (idx *Indexer) processFilesWorkerPoolInit(parallel int, filesCh <-chan fswa
 			defer wg.Done()
 			for file := range filesCh {
 				collector.Add(func(stats *model.ScanStats) { stats.FilesScanned++ })
+
+				saveStart := time.Now()
 				fileID, err := idx.saveFile(file, scanRunID)
+				saveElapsed := time.Since(saveStart).Milliseconds()
+				collector.Add(func(stats *model.ScanStats) { stats.SaveMs += saveElapsed })
 				if err != nil {
 					idx.logError(file.Path, "Error saving file row: %v", err)
 					collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 					continue
 				}
+
 				localStats := &model.ScanStats{}
+				parseStart := time.Now()
 				if err := idx.processFile(file, fileID, localStats); err != nil {
 					idx.logError(file.Path, "Error processing file: %v", err)
 					localStats.Errors++
 				}
+				localStats.ParseMs += time.Since(parseStart).Milliseconds()
 				collector.Add(func(stats *model.ScanStats) {
 					mergeScanStats(stats, localStats)
 				})
@@ -217,10 +226,12 @@ func (idx *Indexer) processFilesWorkerPool(parallel int, jobs <-chan indexedFile
 			defer wg.Done()
 			for job := range jobs {
 				localStats := &model.ScanStats{}
+				parseStart := time.Now()
 				if err := idx.processFile(job.file, job.fileID, localStats); err != nil {
 					idx.logError(job.file.Path, "Error processing file: %v", err)
 					localStats.Errors++
 				}
+				localStats.ParseMs += time.Since(parseStart).Milliseconds()
 				collector.Add(func(stats *model.ScanStats) {
 					mergeScanStats(stats, localStats)
 				})

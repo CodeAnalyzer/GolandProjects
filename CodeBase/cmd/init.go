@@ -20,8 +20,18 @@ var (
 
 func printPipelineTimings(stats *model.ScanStats) {
 	fmt.Printf("\nStage timings:\n")
-	fmt.Printf("  Walk+save files: %d ms\n", stats.WalkSaveMs)
-	fmt.Printf("  Parse+insert:    %d ms (cumulative, overlaps walk)\n", stats.ProcessMs)
+	fmt.Printf("  Walk+save files: %d ms (wall-clock)\n", stats.WalkSaveMs)
+	if stats.SaveMs > 0 || stats.ParseMs > 0 {
+		fmt.Printf("  Save (Σ workers):  %d ms\n", stats.SaveMs)
+		fmt.Printf("  Parse (Σ workers): %d ms\n", stats.ParseMs)
+		if stats.WalkSaveMs > 0 {
+			ratio := float64(stats.SaveMs+stats.ParseMs) / float64(stats.WalkSaveMs)
+			fmt.Printf("  Parallel efficiency: %.1fx (Σ / wall-clock)\n", ratio)
+		}
+	}
+	if stats.ProcessMs > 0 {
+		fmt.Printf("  Parse+insert:    %d ms (wall-clock, post-walk)\n", stats.ProcessMs)
+	}
 	fmt.Printf("  Post-processing: %d ms\n", stats.PostProcessMs)
 	if stats.CleanupMs > 0 {
 		fmt.Printf("  Cleanup:         %d ms\n", stats.CleanupMs)
