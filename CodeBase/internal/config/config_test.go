@@ -70,8 +70,8 @@ exclude_patterns = ["*.bak"]
 	}
 
 	got := Get()
-	if got.RootPath != "D:/repo" {
-		t.Fatalf("RootPath = %q, want %q", got.RootPath, "D:/repo")
+	if got.RootPath != filepath.FromSlash("D:/repo") {
+		t.Fatalf("RootPath = %q, want %q", got.RootPath, filepath.FromSlash("D:/repo"))
 	}
 	if got.DB.Host != "localhost" || got.DB.Port != 5435 || got.DB.Database != "codebase" || got.DB.User != "postgres" || got.DB.Password != "secret" || got.DB.SSLMode != "disable" {
 		t.Fatalf("unexpected DB config: %+v", got.DB)

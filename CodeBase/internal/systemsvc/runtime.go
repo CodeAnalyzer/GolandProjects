@@ -18,7 +18,7 @@ type HealthResult struct {
 	Checks []HealthCheck `json:"checks"`
 }
 
-func ExecuteHealth() (HealthResult, error) {
+func ExecuteHealth(db *store.DB) (HealthResult, error) {
 	result := HealthResult{
 		Status: "ok",
 		Checks: make([]HealthCheck, 0, 4),
@@ -29,17 +29,7 @@ func ExecuteHealth() (HealthResult, error) {
 		return result, fmt.Errorf("config not loaded")
 	}
 	result.Checks = append(result.Checks, HealthCheck{Name: "config", Status: "ok"})
-
-	db, err := store.NewDB(cfg.DB)
-	if err != nil {
-		return result, fmt.Errorf("failed to connect to database: %w", err)
-	}
-	defer db.Close()
 	result.Checks = append(result.Checks, HealthCheck{Name: "database", Status: "ok"})
-
-	if err := db.InitSchema(); err != nil {
-		return result, fmt.Errorf("failed to init schema: %w", err)
-	}
 	result.Checks = append(result.Checks, HealthCheck{Name: "schema", Status: "ok"})
 
 	hasIndex, err := db.HasCompletedInit()
@@ -60,20 +50,10 @@ func ExecuteHealth() (HealthResult, error) {
 	return result, nil
 }
 
-func ExecuteStats() (*store.Stats, error) {
+func ExecuteStats(db *store.DB) (*store.Stats, error) {
 	cfg := config.Get()
 	if cfg == nil {
 		return nil, fmt.Errorf("config not loaded")
-	}
-
-	db, err := store.NewDB(cfg.DB)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
-	}
-	defer db.Close()
-
-	if err := db.InitSchema(); err != nil {
-		return nil, fmt.Errorf("failed to init schema: %w", err)
 	}
 
 	stats, err := db.GetStats()

@@ -1005,6 +1005,25 @@ CodeBase/
 - В каждой записи указывается путь файла, на котором произошла ошибка.
 - Это предотвращает смешивание ошибок от разных запусков `init`/`update`.
 
+## Integration-тесты store / indexer
+
+Обычный `go test` **не** подключается к PostgreSQL.
+
+Integration-тесты (`-tags=integration`) создают отдельную БД `codebase_test_<pid>_<nano>` на том же сервере, что и `[database]` в `codebase.toml` (host/port/user/password), но **не** используют имя `codebase`. После теста БД удаляется.
+
+```powershell
+go test ./internal/store/... ./internal/indexer/... ./internal/rti/... ./internal/trc/... -count=1
+go test ./internal/store/... ./internal/indexer/... ./internal/rti/... ./internal/trc/... -tags=integration -count=1
+```
+
+Опционально задать DSN к системной БД `postgres` (не к `codebase`):
+
+```powershell
+$env:CODEBASE_TEST_DSN = "postgres://postgres:123456@localhost:5435/postgres?sslmode=disable"
+```
+
+Если Postgres недоступен, integration-тесты делают `Skip`, а не fail.
+
 ## Планы развития
 
 ### Текущее состояние

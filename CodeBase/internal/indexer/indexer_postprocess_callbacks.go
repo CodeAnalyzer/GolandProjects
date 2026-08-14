@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/codebase/internal/model"
+	"github.com/codebase/internal/store"
 )
 
 func (idx *Indexer) postProcessCallbackEventRelations(collector *statsCollector) {
@@ -38,6 +39,24 @@ func (idx *Indexer) postProcessCallbackEventRelations(collector *statsCollector)
 		return
 	}
 
+	relations := buildCallbackEventRelations(callbacks, lookup)
+
+	localStats := &model.ScanStats{}
+	if err := idx.saveRelations(relations, "<post-processing>", localStats); err != nil {
+		collector.Add(func(stats *model.ScanStats) {
+			mergeScanStats(stats, localStats)
+		})
+		return
+	}
+	collector.Add(func(stats *model.ScanStats) {
+		mergeScanStats(stats, localStats)
+	})
+}
+
+func buildCallbackEventRelations(callbacks []*model.APIContract, lookup *store.EventContractLookup) []*model.Relation {
+	if lookup == nil {
+		return nil
+	}
 	relations := make([]*model.Relation, 0, len(callbacks))
 	seen := make(map[string]struct{})
 	for _, callback := range callbacks {
@@ -52,7 +71,6 @@ func (idx *Indexer) postProcessCallbackEventRelations(collector *statsCollector)
 		nameKey := strings.ToLower(usedObjectName)
 		moduleKey := strings.ToLower(strings.TrimSpace(callback.UsedModuleSysName))
 
-		// Try name+module first, then fallback to name only.
 		var targetID int64
 		if moduleKey != "" {
 			targetID = lookup.ByNameAndModule[nameKey+"|"+moduleKey]
@@ -79,15 +97,5 @@ func (idx *Indexer) postProcessCallbackEventRelations(collector *statsCollector)
 			LineNumber:   1,
 		})
 	}
-
-	localStats := &model.ScanStats{}
-	if err := idx.saveRelations(relations, "<post-processing>", localStats); err != nil {
-		collector.Add(func(stats *model.ScanStats) {
-			mergeScanStats(stats, localStats)
-		})
-		return
-	}
-	collector.Add(func(stats *model.ScanStats) {
-		mergeScanStats(stats, localStats)
-	})
+	return relations
 }

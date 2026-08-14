@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/codebase/internal/config"
 	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/systemsvc"
 	"github.com/spf13/cobra"
@@ -167,7 +168,19 @@ var statsCmd = &cobra.Command{
 }
 
 func executeStats() (*store.Stats, error) {
-	return systemsvc.ExecuteStats()
+	cfg := config.Get()
+	if cfg == nil {
+		return nil, fmt.Errorf("config not loaded")
+	}
+	db, err := store.NewDB(cfg.DB)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+	defer db.Close()
+	if err := db.InitSchema(); err != nil {
+		return nil, fmt.Errorf("failed to init schema: %w", err)
+	}
+	return systemsvc.ExecuteStats(db)
 }
 
 func buildStatsResponse(stats *store.Stats) statsResponse {

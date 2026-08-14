@@ -90,3 +90,43 @@ func TestSanitizeHelpers(t *testing.T) {
 		t.Fatalf("sanitizeNullableJSON(non-string) = %#v, want 10", got)
 	}
 }
+
+func TestSplitPathsByKeepIDs(t *testing.T) {
+	keep := map[string]int64{"keep/a.sql": 10, "keep/b.sql": 20}
+	withKeep, withoutKeep := splitPathsByKeepIDs(
+		[]string{"keep/a.sql", "drop/c.sql", "keep/b.sql", "drop/d.sql"},
+		keep,
+	)
+	if len(withKeep) != 2 || withKeep[0] != "keep/a.sql" || withKeep[1] != "keep/b.sql" {
+		t.Fatalf("withKeep = %#v", withKeep)
+	}
+	if len(withoutKeep) != 2 || withoutKeep[0] != "drop/c.sql" || withoutKeep[1] != "drop/d.sql" {
+		t.Fatalf("withoutKeep = %#v", withoutKeep)
+	}
+
+	emptyKeep, emptyDrop := splitPathsByKeepIDs(nil, keep)
+	if len(emptyKeep) != 0 || len(emptyDrop) != 0 {
+		t.Fatalf("empty paths: with=%#v without=%#v", emptyKeep, emptyDrop)
+	}
+}
+
+func TestChunkStrings(t *testing.T) {
+	if got := chunkStrings(nil, 500); got != nil {
+		t.Fatalf("nil values = %#v, want nil", got)
+	}
+	if got := chunkStrings([]string{"a"}, 0); got != nil {
+		t.Fatalf("zero chunk size = %#v, want nil", got)
+	}
+
+	values := make([]string, 501)
+	for i := range values {
+		values[i] = string(rune('a' + i%26))
+	}
+	chunks := chunkStrings(values, 500)
+	if len(chunks) != 2 {
+		t.Fatalf("chunks = %d, want 2", len(chunks))
+	}
+	if len(chunks[0]) != 500 || len(chunks[1]) != 1 {
+		t.Fatalf("chunk sizes = %d, %d", len(chunks[0]), len(chunks[1]))
+	}
+}

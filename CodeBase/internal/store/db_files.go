@@ -109,16 +109,7 @@ func (db *DB) DeleteFilesByPathsExcept(paths []string, keepIDs map[string]int64)
 		if end > len(paths) {
 			end = len(paths)
 		}
-		chunk := paths[i:end]
-		withKeep := make([]string, 0, len(chunk))
-		withoutKeep := make([]string, 0, len(chunk))
-		for _, p := range chunk {
-			if _, ok := keepIDs[p]; ok {
-				withKeep = append(withKeep, p)
-			} else {
-				withoutKeep = append(withoutKeep, p)
-			}
-		}
+		withKeep, withoutKeep := splitPathsByKeepIDs(paths[i:end], keepIDs)
 		if len(withoutKeep) > 0 {
 			if _, err := db.Exec(`DELETE FROM files WHERE path = ANY($1)`, pq.Array(withoutKeep)); err != nil {
 				return fmt.Errorf("failed to delete files by paths: %w", err)
@@ -140,6 +131,34 @@ func (db *DB) DeleteFilesByPathsExcept(paths []string, keepIDs map[string]int64)
 		}
 	}
 	return nil
+}
+
+func splitPathsByKeepIDs(paths []string, keepIDs map[string]int64) (withKeep, withoutKeep []string) {
+	withKeep = make([]string, 0, len(paths))
+	withoutKeep = make([]string, 0, len(paths))
+	for _, p := range paths {
+		if _, ok := keepIDs[p]; ok {
+			withKeep = append(withKeep, p)
+			continue
+		}
+		withoutKeep = append(withoutKeep, p)
+	}
+	return withKeep, withoutKeep
+}
+
+func chunkStrings(values []string, chunkSize int) [][]string {
+	if chunkSize <= 0 || len(values) == 0 {
+		return nil
+	}
+	chunks := make([][]string, 0, (len(values)+chunkSize-1)/chunkSize)
+	for i := 0; i < len(values); i += chunkSize {
+		end := i + chunkSize
+		if end > len(values) {
+			end = len(values)
+		}
+		chunks = append(chunks, values[i:end])
+	}
+	return chunks
 }
 
 // FindLatestFileIDByPaths возвращает последний file id, найденный по одному из path/rel_path кандидатов.

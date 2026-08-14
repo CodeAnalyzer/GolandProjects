@@ -126,7 +126,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				InputSchema: objectSchema(map[string]interface{}{}),
 			},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
-				return systemsvc.ExecuteHealth()
+				return systemsvc.ExecuteHealth(db)
 			},
 		},
 		"codebase_stats": {
@@ -136,7 +136,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				InputSchema: objectSchema(map[string]interface{}{}),
 			},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
-				return systemsvc.ExecuteStats()
+				return systemsvc.ExecuteStats(db)
 			},
 		},
 		"codebase_review_sql": {

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Object>
+  <ObjectTypeID>3</ObjectTypeID>
+  <ObjectName>OnAfterTestCB</ObjectName>
+  <UsedObjectName>OnAfterTest</UsedObjectName>
+  <UsedModuleSysName>mini</UsedModuleSysName>
+  <Implemented>1</Implemented>
+</Object>

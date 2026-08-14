@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/codebase/internal/config"
+	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/systemsvc"
 	"github.com/spf13/cobra"
 )
@@ -56,7 +58,19 @@ var healthCmd = &cobra.Command{
 }
 
 func executeHealth() (healthResponse, error) {
-	result, err := systemsvc.ExecuteHealth()
+	cfg := config.Get()
+	if cfg == nil {
+		return healthResponse{}, fmt.Errorf("config not loaded")
+	}
+	db, err := store.NewDB(cfg.DB)
+	if err != nil {
+		return healthResponse{}, fmt.Errorf("failed to connect to database: %w", err)
+	}
+	defer db.Close()
+	if err := db.InitSchema(); err != nil {
+		return healthResponse{}, fmt.Errorf("failed to init schema: %w", err)
+	}
+	result, err := systemsvc.ExecuteHealth(db)
 	if err != nil {
 		return healthResponse{}, err
 	}

@@ -86,6 +86,8 @@ func Load() error {
 		return fmt.Errorf("failed to parse config: %w", err)
 	}
 
+	cfg.RootPath = filepath.FromSlash(cfg.RootPath)
+
 	// Дефолты заполняют только отсутствующие значения, не затирая явно заданную конфигурацию.
 	if cfg.DB.Host == "" {
 		cfg.DB.Host = "localhost"
