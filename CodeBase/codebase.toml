@@ -6,18 +6,23 @@ root_path = "D:/GITHUB/GolandProjects/FA"
 
 # Настройки подключения к PostgreSQL
 [database]
-host = "localhost"
-port = 5435
-database = "codebase"
-user = "postgres"
-password = "123456"
-sslmode = "disable"
+host = "localhost"     # Адрес сервера PostgreSQL
+port = 5435            # Порт подключения
+database = "codebase"  # Имя базы данных
+user = "postgres"      # Пользователь БД
+password = "123456"    # Пароль пользователя БД
+sslmode = "disable"    # Режим SSL (disable, require, verify-ca, verify-full)
 connect_timeout = 10  # Таймаут подключения к БД (секунды)
+max_open_conns = 25    # Максимум открытых соединений пула
+max_idle_conns = 25    # Максимум простаивающих соединений пула
+conn_max_lifetime = "5m"  # Время жизни соединения (Go duration)
 
 # Настройки индексатора
 [indexer]
 parallel = 12         # Количество параллельных workers
 batch_size = 1000     # Размер батча для вставки в БД
+batch_insert_size = 50000  # Размер батча для TRC/RTI insert/delete (строк)
+progress_interval_ms = 250  # Интервал вывода прогресса (мс)
 
 # Включаемые файлы (glob-паттерны)
 include_patterns = [
@@ -47,6 +52,23 @@ exclude_patterns = [
 [logging]
 command_enabled = true
 
+# Лимиты для query/rti/trc вызовов
+[query]
+default_limit = 100   # Лимит по умолчанию
+max_limit = 1000       # Максимальный лимит (hard cap)
+
+# Настройки RTI-анализатора
+[rti]
+slow_threshold_ms = 100  # Вызовы длительнее этого значения считаются медленными (мс)
+top_slow_count = 10      # Количество Top-N медленных вызовов в summary
+
+# Настройки TRC-анализатора
+[trc]
+slow_threshold_ms = 100  # События длительнее этого значения считаются медленными (мс)
+max_enrich_workers = 16  # Лимит конкурентных SQL-запросов при обогащении
+min_procs_for_parallel_enrich = 16  # Порог параллельного обогащения
+
 # Настройки MCP-сервера
 [mcp]
 pagination_chunk_size = 8000  # Максимальный размер чанка (байт) для пагинации больших ответов
+pagination_ttl = "15m"  # Время жизни пагинированных ответов

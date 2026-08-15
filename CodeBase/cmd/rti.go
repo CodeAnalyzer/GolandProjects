@@ -278,13 +278,7 @@ func runRTITree(cmd *cobra.Command, args []string) error {
 }
 
 func runRTIClientTree(cmd *cobra.Command, args []string) error {
-	limit := rtiLimit
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
+	limit := applyQueryLimit(rtiLimit)
 	var events []*rti.RTIClientEvent
 	if rtiSessionID > 0 {
 		cfg := config.Get()
@@ -346,13 +340,7 @@ func runRTIClientTree(cmd *cobra.Command, args []string) error {
 }
 
 func runRTITimeline(cmd *cobra.Command, args []string) error {
-	limit := rtiLimit
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
+	limit := applyQueryLimit(rtiLimit)
 	var calls []*rti.RTICall
 	var events []*rti.RTIClientEvent
 	if rtiSessionID > 0 {
@@ -419,13 +407,7 @@ func runRTITimeline(cmd *cobra.Command, args []string) error {
 }
 
 func runRTIErrors(cmd *cobra.Command, args []string) error {
-	limit := rtiLimit
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
+	limit := applyQueryLimit(rtiLimit)
 	var errors []*rti.RTICall
 	var clientErrors []*rti.RTIClientEvent
 	if rtiSessionID > 0 {
@@ -561,13 +543,7 @@ func runRTIDetails(cmd *cobra.Command, args []string) error {
 	if rtiProcedure == "" {
 		return fmt.Errorf("--proc is required for details command")
 	}
-	limit := rtiLimit
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
+	limit := applyQueryLimit(rtiLimit)
 	var calls []*rti.RTICall
 	if rtiSessionID > 0 {
 		cfg := config.Get()
@@ -672,13 +648,7 @@ func runRTIBlog(cmd *cobra.Command, args []string) error {
 	if rtiProcedure == "" {
 		return fmt.Errorf("--proc is required for blog command")
 	}
-	limit := rtiLimit
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
+	limit := applyQueryLimit(rtiLimit)
 	var calls []*rti.RTICall
 	if rtiSessionID > 0 {
 		cfg := config.Get()
@@ -879,15 +849,9 @@ func runRTIPrune(cmd *cobra.Command, args []string) error {
 func runRTISlow(cmd *cobra.Command, args []string) error {
 	threshold := rtiSlowThreshold
 	if threshold <= 0 {
-		threshold = 100
+		threshold = rti.GetSlowThresholdMs()
 	}
-	limit := rtiLimit
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
+	limit := applyQueryLimit(rtiLimit)
 	var slow []*rti.RTICall
 	var slowClientSQL []*rti.RTIClientEvent
 	if rtiSessionID > 0 {

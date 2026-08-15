@@ -10,13 +10,12 @@ import (
 )
 
 // streamBatchSize — размер батча событий для streaming-записи в БД.
-// Выровнен с batchInsertSize в store.go для минимизации overhead на
-// goroutine spawn/sync в serializeParallel. 50000 событий × ~2KB/event ≈ 100MB на батч.
-const streamBatchSize = 50000
+// Использует trcBatchSize (настраивается через SetBatchSize).
 
 // ParseFileToDB парсит файл трейса (.trc бинарный, .trc XML-экспорт, .xel
 // Extended Events) и стримит события напрямую в БД батчами по
 // streamBatchSize, не накапливая полный []TRCEvent в памяти.
+// Использует trcBatchSize (настраивается через SetBatchSize).
 // Это позволяет парсить файлы размером > 1 ГБ без исчерпания RAM.
 //
 // Формат файла определяется по сигнатуре содержимого (DetectFormat).
@@ -70,7 +69,7 @@ func ParseFileToDB(path string, db *store.DB) (sessionID int64, totalEvents int,
 
 	// Подготовка общих компонентов streaming-записи.
 	tracker := NewIncrementalParentTracker()
-	batch := make([]TRCEvent, 0, streamBatchSize)
+	batch := make([]TRCEvent, 0, trcBatchSize)
 	var parseErr error
 
 	flushBatch := func() error {
@@ -88,7 +87,7 @@ func ParseFileToDB(path string, db *store.DB) (sessionID int64, totalEvents int,
 		tracker.Process(ev)
 		batch = append(batch, *ev)
 		totalEvents++
-		if len(batch) >= streamBatchSize {
+		if len(batch) >= trcBatchSize {
 			return flushBatch()
 		}
 		return nil

@@ -51,8 +51,15 @@ func SaveSession(db *store.DB, result *TRCParseResult, filePath string, fileSize
 // который можно разрешить через подзапрос при tree loading.
 //
 // Для больших файлов (миллионы событий) insert выполняется батчами по
-// batchInsertSize событий: каждый батч — отдельная транзакция с CopyIn.
-const batchInsertSize = 50000
+// trcBatchSize событий: каждый батч — отдельная транзакция с CopyIn.
+var trcBatchSize = 50000
+
+// SetBatchSize устанавливает размер батча для insert/delete операций.
+func SetBatchSize(size int) {
+	if size > 0 {
+		trcBatchSize = size
+	}
+}
 
 func insertTRCEvents(db *store.DB, events []TRCEvent, sessionID int64) error {
 	if len(events) == 0 {
@@ -67,9 +74,9 @@ func insertTRCEvents(db *store.DB, events []TRCEvent, sessionID int64) error {
 	}
 
 	// Фаза 2: последовательный COPY IN (pq.CopyIn не потокобезопасен)
-	// Батчами по batchInsertSize событий, каждая батч — отдельная транзакция.
-	for batchStart := 0; batchStart < len(events); batchStart += batchInsertSize {
-		batchEnd := batchStart + batchInsertSize
+	// Батчами по trcBatchSize событий, каждая батч — отдельная транзакция.
+	for batchStart := 0; batchStart < len(events); batchStart += trcBatchSize {
+		batchEnd := batchStart + trcBatchSize
 		if batchEnd > len(events) {
 			batchEnd = len(events)
 		}
@@ -317,7 +324,7 @@ func GetLatestSessionID(db *store.DB) (int64, error) {
 }
 
 // batchDeleteSize — размер батча для построчного удаления событий.
-const batchDeleteSize = 50000
+// Использует trcBatchSize (настраивается через SetBatchSize).
 
 // DeleteSession удаляет сессию по ID. Сначала батчами удаляются trc_events
 // (чтобы избежать длительного CASCADE-удаления в одной транзакции), затем
@@ -329,7 +336,7 @@ func DeleteSession(db *store.DB, sessionID int64) error {
 			`DELETE FROM trc_events WHERE session_id = $1 AND id IN (
 				SELECT id FROM trc_events WHERE session_id = $1 LIMIT $2
 			)`,
-			sessionID, batchDeleteSize,
+			sessionID, trcBatchSize,
 		)
 		if err != nil {
 			return fmt.Errorf("batch delete trc_events: %w", err)
@@ -395,7 +402,7 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 				`DELETE FROM trc_events WHERE session_id = $1 AND id IN (
 					SELECT id FROM trc_events WHERE session_id = $1 LIMIT $2
 				)`,
-				sid, batchDeleteSize,
+				sid, trcBatchSize,
 			)
 			if err != nil {
 				return 0, fmt.Errorf("batch delete trc_events for session %d: %w", sid, err)

@@ -49,12 +49,37 @@ func EnrichProcedure(q ProcedureLookup, procName string) (*ProcedureEnrichment, 
 
 // maxEnrichWorkers — лимит конкурентных SQL-запросов при обогащении.
 // MaxOpenConns=25, оставляем запас для других запросов.
-const maxEnrichWorkers = 16
+var maxEnrichWorkers = 16
 
 // minProcsForParallelEnrich — порог для перехода на параллельный режим
 // обогащения. При меньшем числе уникальных процедур накладные расходы
 // на goroutines превысят выгоду.
-const minProcsForParallelEnrich = 16
+var minProcsForParallelEnrich = 16
+
+// trcSlowThresholdMs — порог медленности событий (мс).
+var trcSlowThresholdMs = 100
+
+// SetEnrichWorkers устанавливает лимит enrich-воркеров и порог параллельности.
+func SetEnrichWorkers(max, minParallel int) {
+	if max > 0 {
+		maxEnrichWorkers = max
+	}
+	if minParallel > 0 {
+		minProcsForParallelEnrich = minParallel
+	}
+}
+
+// SetSlowThresholdMs устанавливает порог медленности событий (мс).
+func SetSlowThresholdMs(ms int) {
+	if ms > 0 {
+		trcSlowThresholdMs = ms
+	}
+}
+
+// GetSlowThresholdMs возвращает текущий порог медленности событий (мс).
+func GetSlowThresholdMs() int {
+	return trcSlowThresholdMs
+}
 
 // EnrichEvents обогащает события данными из CodeBase DB. Возвращает map:
 // procedure name (как в TRCEvent.Procedure) → enrichment.

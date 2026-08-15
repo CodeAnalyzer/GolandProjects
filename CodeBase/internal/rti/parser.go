@@ -16,6 +16,31 @@ import (
 	"golang.org/x/text/transform"
 )
 
+// Пакетные переменные для параметризации из конфига.
+var (
+	rtiSlowThresholdMs = 100
+	rtiTopSlowCount    = 10
+)
+
+// SetSlowThresholdMs устанавливает порог медленности серверных вызовов (мс).
+func SetSlowThresholdMs(ms int) {
+	if ms > 0 {
+		rtiSlowThresholdMs = ms
+	}
+}
+
+// GetSlowThresholdMs возвращает текущий порог медленности серверных вызовов (мс).
+func GetSlowThresholdMs() int {
+	return rtiSlowThresholdMs
+}
+
+// SetTopSlowCount устанавливает количество Top-N медленных вызовов в summary.
+func SetTopSlowCount(n int) {
+	if n > 0 {
+		rtiTopSlowCount = n
+	}
+}
+
 // Regex patterns для распознавания строк RTI-лога
 var (
 	reEnter = regexp.MustCompile(
@@ -484,8 +509,8 @@ func parseContent(content, filePath string, fileSize int64) (*RTIParseResult, er
 	result.Summary.UnparsedLines = result.UnparsedLines
 	result.Summary.ErrorsCount = countErrors(allCalls)
 	result.Summary.MaxNestLevel = maxNestLevel(allCalls)
-	result.Summary.SlowCallsCount = countSlowCalls(allCalls, 100)
-	result.Summary.TopSlow = topSlowCalls(allCalls, 10)
+	result.Summary.SlowCallsCount = countSlowCalls(allCalls, rtiSlowThresholdMs)
+	result.Summary.TopSlow = topSlowCalls(allCalls, rtiTopSlowCount)
 	FillClientSummary(&result.Summary, allClientEvents)
 
 	// HRTI: авто-детект и декодирование строковых полей

@@ -9,13 +9,17 @@ import (
 	"time"
 
 	"github.com/codebase/internal/config"
+	"github.com/codebase/internal/indexer"
+	"github.com/codebase/internal/mcp"
+	"github.com/codebase/internal/rti"
+	"github.com/codebase/internal/trc"
 	"github.com/spf13/cobra"
 )
 
 var (
 	appName        = "CodeBase"
 	version        = "0.8.7"
-	buildNumber    = "1308"
+	buildNumber    = "1316"
 	copyright      = "Copyright (c) 2026"
 	cfgFile        string
 	commandLogger  *log.Logger
@@ -249,4 +253,46 @@ func initConfig() {
 		// Отсутствие файла конфигурации не является ошибкой для старта CLI:
 		// команда init может создать его позже с дефолтными значениями.
 	}
+
+	// Применяем параметры из конфига к пакетам, не имеющим прямого доступа к config.
+	applyConfigToPackages()
+}
+
+func applyConfigToPackages() {
+	cfg := config.Get()
+	if cfg == nil {
+		return
+	}
+	trc.SetBatchSize(cfg.Indexer.BatchInsertSize)
+	rti.SetBatchSize(cfg.Indexer.BatchInsertSize)
+	mcp.SetQueryLimits(cfg.Query.DefaultLimit, cfg.Query.MaxLimit)
+	rti.SetSlowThresholdMs(cfg.RTI.SlowThresholdMs)
+	rti.SetTopSlowCount(cfg.RTI.TopSlowCount)
+	trc.SetSlowThresholdMs(cfg.TRC.SlowThresholdMs)
+	trc.SetEnrichWorkers(cfg.TRC.MaxEnrichWorkers, cfg.TRC.MinProcsForParallelEnrich)
+	indexer.SetProgressInterval(cfg.Indexer.ProgressIntervalMs)
+	if ttl, err := time.ParseDuration(cfg.MCP.PaginationTTL); err == nil && ttl > 0 {
+		mcp.SetPaginationTTL(ttl)
+	}
+}
+
+// applyQueryLimit applies default/max limit from config to a raw limit value.
+func applyQueryLimit(limit int) int {
+	cfg := config.Get()
+	if cfg != nil {
+		if limit <= 0 {
+			limit = cfg.Query.DefaultLimit
+		}
+		if limit > cfg.Query.MaxLimit {
+			limit = cfg.Query.MaxLimit
+		}
+	} else {
+		if limit <= 0 {
+			limit = 100
+		}
+		if limit > 1000 {
+			limit = 1000
+		}
+	}
+	return limit
 }

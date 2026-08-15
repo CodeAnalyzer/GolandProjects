@@ -314,16 +314,19 @@ func finalizeClientEvent(ev *RTIClientEvent, st *clientBodyState) {
 }
 
 // clientSlowSQLThresholdSec — порог (в секундах) для подсчёта "медленных" клиентских
-// SQL-блоков в сводке, аналогично порогу 100мс, используемому для серверных вызовов.
-const clientSlowSQLThresholdSec = 0.1
+// SQL-блоков в сводке, аналогично порогу для серверных вызовов.
+// Вычисляется из rtiSlowThresholdMs (настраивается через SetSlowThresholdMs).
+func clientSlowSQLThresholdSec() float64 {
+	return float64(rtiSlowThresholdMs) / 1000.0
+}
 
 // FillClientSummary заполняет клиентские поля сводки на основе загруженных событий.
 // Используется как при парсинге файла, так и при загрузке сессии из БД.
 func FillClientSummary(s *RTISummary, events []*RTIClientEvent) {
 	s.ClientEventsCount = len(events)
 	s.ClientErrorsCount = countClientErrors(events)
-	s.ClientSlowSQLCount = countClientSlowSQL(events, clientSlowSQLThresholdSec)
-	s.TopSlowClientSQL = topSlowClientSQLEvents(events, 10)
+	s.ClientSlowSQLCount = countClientSlowSQL(events, clientSlowSQLThresholdSec())
+	s.TopSlowClientSQL = topSlowClientSQLEvents(events, rtiTopSlowCount)
 }
 
 func countClientErrors(events []*RTIClientEvent) int {

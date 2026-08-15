@@ -80,6 +80,10 @@ database = "codebase"
 user = "postgres"
 password = ""
 sslmode = "disable"
+connect_timeout = 10
+max_open_conns = 25
+max_idle_conns = 25
+conn_max_lifetime = "5m"
 ```
 
 Пример секции индексатора:
@@ -88,12 +92,37 @@ sslmode = "disable"
 [indexer]
 parallel = 12
 batch_size = 500
+batch_insert_size = 50000
+progress_interval_ms = 250
 include_patterns = ["*.sql", "*.h", "*.pas", "*.inc", "*.js", "*.smf", "*.dfm", "*.tpr", "*.rpt", "*.xml"]
 exclude_patterns = ["*/.*", "*~", "*.bak", "*.old"]
 
 [logging]
 command_enabled = true
+
+# Лимиты для query/rti/trc вызовов
+[query]
+default_limit = 100
+max_limit = 1000
+
+# Настройки RTI-анализатора
+[rti]
+slow_threshold_ms = 100
+top_slow_count = 10
+
+# Настройки TRC-анализатора
+[trc]
+slow_threshold_ms = 100
+max_enrich_workers = 16
+min_procs_for_parallel_enrich = 16
+
+# Настройки MCP-сервера
+[mcp]
+pagination_chunk_size = 8000
+pagination_ttl = "15m"
 ```
+
+Все параметры имеют значения по умолчанию и могут быть опущены — старый `codebase.toml` без новых секций работает без изменений.
 
 **Примечание:** При первом запуске `codebase init` база данных и схема создаются автоматически.
 
@@ -102,13 +131,6 @@ command_enabled = true
 Если в вашем конфиге ещё нет поддержки DSArchitect XML, также добавьте `*.xml` в `indexer.include_patterns`.
 
 `.sql` остаётся первичным дистрибутивным источником, а `.t01` рассматривается как опциональный временный артефакт препроцессора: он может отсутствовать и может лежать в отдельном рабочем каталоге препроцессора.
-
-Секция `[mcp]` (опционально):
-
-```toml
-[mcp]
-pagination_chunk_size = 8000
-```
 
 Если флаг `--config` не передан, CLI ищет `codebase.toml` **рядом с executable (исполняемым файлом)**. Файл в текущем рабочем каталоге автоматически не подхватывается, если это не каталог самого executable.
 
@@ -539,8 +561,7 @@ codebase rti prune --keep-last 5
 
 Командно-специфичные флаги:
 - `--depth N` — максимальная глубина дерева (для `tree`, 0 = без лимита)
-- `--slow-ms N` — порог медленности в миллисекундах (для `slow`, по умолчанию 100)
-- `--pid N` — фильтр по клиентскому PID (для `client-tree`, 0 = все)
+- `--slow-ms N` — порог медленности в миллисекундах (для `slow`, по умолчанию из `[rti] slow_threshold_ms`)
 - `--keep-last N` — сколько последних сессий оставить (для `prune`)
 - `--limit N` — максимум сессий в списке (для `list`, по умолчанию 20)
 
@@ -609,7 +630,7 @@ codebase trc prune --keep-last 5
 Командно-специфичные флаги:
 - `--spid N` — фильтр по SPID (для `events`, `tree`, 0 = все)
 - `--proc NAME` — фильтр по имени процедуры (для `events`, exact match)
-- `--slow-ms N` — порог медленности в миллисекундах (для `slow`, по умолчанию 100)
+- `--slow-ms N` — порог медленности в миллисекундах (для `slow`, по умолчанию из `[trc] slow_threshold_ms`)
 - `--max-depth N` — максимальная глубина дерева (для `tree`, 0 = без лимита)
 - `--limit N` — максимум root nodes и children per node (для `tree`, 0 = без лимита)
 - `--keep-last N` — сколько последних сессий оставить (для `prune`)
@@ -797,8 +818,8 @@ codebase mcp
 
 - Размер чанка по умолчанию — 8 000 байт (≈ 6 600–8 000 символов Unicode, безопасно под IDE-лимит ~10 000 символов)
 - Чанки выравниваются по границе UTF-8 руны — не режут посередине многобайтовых символов (кириллица и т.п.)
-- Чанки хранятся в памяти (TTL 15 минут), после чего автоматически удаляются
-- Конфигурация через `[mcp]` секцию в `codebase.toml`
+- Чанки хранятся в памяти (TTL 15 минут по умолчанию), после чего автоматически удаляются
+- Конфигурация через `[mcp]` секцию в `codebase.toml` (`pagination_chunk_size`, `pagination_ttl`)
 
 Формат ответа при пагинации:
 
@@ -818,6 +839,7 @@ codebase mcp
 ```toml
 [mcp]
 pagination_chunk_size = 8000
+pagination_ttl = "15m"
 ```
 
 ## Архитектура

@@ -258,13 +258,7 @@ func printTRCSummary(filePath string, result *trc.TRCParseResult) {
 }
 
 func runTRCEvents(cmd *cobra.Command, args []string) error {
-	limit := trcLimit
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
+	limit := applyQueryLimit(trcLimit)
 
 	// Server-side SQL when session_id > 0
 	if trcSessionID > 0 {
@@ -475,13 +469,7 @@ func runTRCTree(cmd *cobra.Command, args []string) error {
 }
 
 func runTRCErrors(cmd *cobra.Command, args []string) error {
-	limit := trcLimit
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
+	limit := applyQueryLimit(trcLimit)
 
 	// Server-side SQL when session_id > 0
 	if trcSessionID > 0 {
@@ -552,15 +540,9 @@ func runTRCErrors(cmd *cobra.Command, args []string) error {
 func runTRCSlow(cmd *cobra.Command, args []string) error {
 	threshold := trcSlowThreshold
 	if threshold <= 0 {
-		threshold = 100
+		threshold = trc.GetSlowThresholdMs()
 	}
-	limit := trcLimit
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
+	limit := applyQueryLimit(trcLimit)
 
 	// Server-side SQL when session_id > 0
 	if trcSessionID > 0 {

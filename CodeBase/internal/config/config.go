@@ -10,13 +10,16 @@ import (
 
 // DBConfig конфигурация подключения к PostgreSQL
 type DBConfig struct {
-	Host          string `toml:"host"`
-	Port          int    `toml:"port"`
-	Database      string `toml:"database"`
-	User          string `toml:"user"`
-	Password      string `toml:"password"`
-	SSLMode       string `toml:"sslmode"`
-	ConnectTimeout int   `toml:"connect_timeout"` // секунды
+	Host            string `toml:"host"`
+	Port            int    `toml:"port"`
+	Database        string `toml:"database"`
+	User            string `toml:"user"`
+	Password        string `toml:"password"`
+	SSLMode         string `toml:"sslmode"`
+	ConnectTimeout  int    `toml:"connect_timeout"` // секунды
+	MaxOpenConns    int    `toml:"max_open_conns"`
+	MaxIdleConns    int    `toml:"max_idle_conns"`
+	ConnMaxLifetime string `toml:"conn_max_lifetime"` // Go duration: "5m", "30s", "1h"
 }
 
 // Config полная конфигурация приложения
@@ -24,16 +27,40 @@ type Config struct {
 	RootPath string        `toml:"root_path"`
 	DB       DBConfig      `toml:"database"`
 	Indexer  IndexerConfig `toml:"indexer"`
+	Query    QueryConfig   `toml:"query"`
+	RTI      RTIConfig     `toml:"rti"`
+	TRC      TRCConfig     `toml:"trc"`
 	Logging  LoggingConfig `toml:"logging"`
 	MCP      MCPConfig     `toml:"mcp"`
 }
 
 // IndexerConfig конфигурация индексатора
 type IndexerConfig struct {
-	Parallel        int      `toml:"parallel"`
-	BatchSize       int      `toml:"batch_size"`
-	IncludePatterns []string `toml:"include_patterns"`
-	ExcludePatterns []string `toml:"exclude_patterns"`
+	Parallel            int      `toml:"parallel"`
+	BatchSize           int      `toml:"batch_size"`
+	BatchInsertSize     int      `toml:"batch_insert_size"`
+	ProgressIntervalMs  int      `toml:"progress_interval_ms"`
+	IncludePatterns     []string `toml:"include_patterns"`
+	ExcludePatterns     []string `toml:"exclude_patterns"`
+}
+
+// QueryConfig лимиты для query/rti/trc вызовов
+type QueryConfig struct {
+	DefaultLimit int `toml:"default_limit"`
+	MaxLimit     int `toml:"max_limit"`
+}
+
+// RTIConfig настройки RTI-анализатора
+type RTIConfig struct {
+	SlowThresholdMs int `toml:"slow_threshold_ms"`
+	TopSlowCount    int `toml:"top_slow_count"`
+}
+
+// TRCConfig настройки TRC-анализатора
+type TRCConfig struct {
+	SlowThresholdMs           int `toml:"slow_threshold_ms"`
+	MaxEnrichWorkers          int `toml:"max_enrich_workers"`
+	MinProcsForParallelEnrich int `toml:"min_procs_for_parallel_enrich"`
 }
 
 type LoggingConfig struct {
@@ -42,7 +69,8 @@ type LoggingConfig struct {
 
 // MCPConfig конфигурация MCP-сервера
 type MCPConfig struct {
-	PaginationChunkSize int `toml:"pagination_chunk_size"`
+	PaginationChunkSize int    `toml:"pagination_chunk_size"`
+	PaginationTTL       string `toml:"pagination_ttl"` // Go duration: "15m", "30m"
 }
 
 var (
@@ -107,11 +135,47 @@ func Load() error {
 	if cfg.DB.ConnectTimeout <= 0 {
 		cfg.DB.ConnectTimeout = 10
 	}
+	if cfg.DB.MaxOpenConns <= 0 {
+		cfg.DB.MaxOpenConns = 25
+	}
+	if cfg.DB.MaxIdleConns <= 0 {
+		cfg.DB.MaxIdleConns = 25
+	}
+	if cfg.DB.ConnMaxLifetime == "" {
+		cfg.DB.ConnMaxLifetime = "5m"
+	}
 	if cfg.Indexer.Parallel == 0 {
 		cfg.Indexer.Parallel = 4
 	}
 	if cfg.Indexer.BatchSize == 0 {
 		cfg.Indexer.BatchSize = 100
+	}
+	if cfg.Indexer.BatchInsertSize <= 0 {
+		cfg.Indexer.BatchInsertSize = 50000
+	}
+	if cfg.Indexer.ProgressIntervalMs <= 0 {
+		cfg.Indexer.ProgressIntervalMs = 250
+	}
+	if cfg.Query.DefaultLimit <= 0 {
+		cfg.Query.DefaultLimit = 100
+	}
+	if cfg.Query.MaxLimit <= 0 {
+		cfg.Query.MaxLimit = 1000
+	}
+	if cfg.RTI.SlowThresholdMs <= 0 {
+		cfg.RTI.SlowThresholdMs = 100
+	}
+	if cfg.RTI.TopSlowCount <= 0 {
+		cfg.RTI.TopSlowCount = 10
+	}
+	if cfg.TRC.SlowThresholdMs <= 0 {
+		cfg.TRC.SlowThresholdMs = 100
+	}
+	if cfg.TRC.MaxEnrichWorkers <= 0 {
+		cfg.TRC.MaxEnrichWorkers = 16
+	}
+	if cfg.TRC.MinProcsForParallelEnrich <= 0 {
+		cfg.TRC.MinProcsForParallelEnrich = 16
 	}
 	if len(cfg.Indexer.IncludePatterns) == 0 {
 		cfg.Indexer.IncludePatterns = []string{
@@ -129,6 +193,9 @@ func Load() error {
 	}
 	if cfg.MCP.PaginationChunkSize == 0 {
 		cfg.MCP.PaginationChunkSize = 8_000
+	}
+	if cfg.MCP.PaginationTTL == "" {
+		cfg.MCP.PaginationTTL = "15m"
 	}
 
 	return nil
@@ -172,17 +239,22 @@ func CreateDefault(rootPath string) *Config {
 	cfg = &Config{
 		RootPath: rootPath,
 		DB: DBConfig{
-			Host:     "localhost",
-			Port:     5435,
-			Database: "codebase",
-			User:     "postgres",
-			Password: "",
-			SSLMode:       "disable",
-			ConnectTimeout: 10,
+			Host:            "localhost",
+			Port:            5435,
+			Database:        "codebase",
+			User:            "postgres",
+			Password:        "",
+			SSLMode:         "disable",
+			ConnectTimeout:  10,
+			MaxOpenConns:    25,
+			MaxIdleConns:    25,
+			ConnMaxLifetime: "5m",
 		},
 		Indexer: IndexerConfig{
-			Parallel:  4,
-			BatchSize: 100,
+			Parallel:           4,
+			BatchSize:          100,
+			BatchInsertSize:    50000,
+			ProgressIntervalMs: 250,
 			IncludePatterns: []string{
 				"*.sql", "*.h", "*.pas", "*.inc", "*.js", "*.smf", "*.dfm", "*.tpr", "*.rpt",
 			},
@@ -190,11 +262,25 @@ func CreateDefault(rootPath string) *Config {
 				"*/.*", "*~", "*.bak", "*.old",
 			},
 		},
+		Query: QueryConfig{
+			DefaultLimit: 100,
+			MaxLimit:     1000,
+		},
+		RTI: RTIConfig{
+			SlowThresholdMs: 100,
+			TopSlowCount:    10,
+		},
+		TRC: TRCConfig{
+			SlowThresholdMs:           100,
+			MaxEnrichWorkers:          16,
+			MinProcsForParallelEnrich: 16,
+		},
 		Logging: LoggingConfig{
 			CommandEnabled: boolPtr(true),
 		},
 		MCP: MCPConfig{
 			PaginationChunkSize: 8_000,
+			PaginationTTL:       "15m",
 		},
 	}
 	return cfg

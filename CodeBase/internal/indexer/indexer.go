@@ -26,6 +26,15 @@ import (
 	"github.com/codebase/internal/store"
 )
 
+var progressInterval = 250 * time.Millisecond
+
+// SetProgressInterval устанавливает интервал вывода прогресса (мс).
+func SetProgressInterval(ms int) {
+	if ms > 0 {
+		progressInterval = time.Duration(ms) * time.Millisecond
+	}
+}
+
 // Indexer индексатор файлов
 type Indexer struct {
 	db          *store.DB
@@ -1645,7 +1654,7 @@ func startProgressReporter(mode string, snapshot func() model.ScanStats) func() 
 	frames := []rune{'|', '/', '-', '\\'}
 
 	go func() {
-		ticker := time.NewTicker(250 * time.Millisecond)
+		ticker := time.NewTicker(progressInterval)
 		defer ticker.Stop()
 		frameIndex := 0
 

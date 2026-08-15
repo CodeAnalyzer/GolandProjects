@@ -11,8 +11,16 @@ import (
 
 const (
 	defaultChunkSize = 8_000
-	paginationTTL    = 15 * time.Minute
 )
+
+var paginationTTL = 15 * time.Minute
+
+// SetPaginationTTL устанавливает TTL для пагинированных ответов.
+func SetPaginationTTL(d time.Duration) {
+	if d > 0 {
+		paginationTTL = d
+	}
+}
 
 // rawMCPText возвращается verbatim как TextContent.Text:
 // без JSON-маршалинга и без повторной пагинации.

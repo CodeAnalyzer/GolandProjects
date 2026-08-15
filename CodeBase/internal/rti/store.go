@@ -622,8 +622,15 @@ func ListSessions(db *store.DB, limit int) ([]RTISession, error) {
 	return sessions, rows.Err()
 }
 
-// batchDeleteSize — размер батча для построчного удаления.
-const batchDeleteSize = 50000
+// rtiBatchSize — размер батча для построчного удаления.
+var rtiBatchSize = 50000
+
+// SetBatchSize устанавливает размер батча для delete операций.
+func SetBatchSize(size int) {
+	if size > 0 {
+		rtiBatchSize = size
+	}
+}
 
 // DeleteSession удаляет сессию по ID. Сначала батчами удаляются дочерние
 // таблицы (чтобы избежать длительного CASCADE-удаления в одной транзакции),
@@ -635,7 +642,7 @@ func DeleteSession(db *store.DB, sessionID int64) error {
 			`DELETE FROM rti_calls WHERE session_id = $1 AND id IN (
 				SELECT id FROM rti_calls WHERE session_id = $1 LIMIT $2
 			)`,
-			sessionID, batchDeleteSize,
+			sessionID, rtiBatchSize,
 		)
 		if err != nil {
 			return fmt.Errorf("batch delete rti_calls: %w", err)
@@ -651,7 +658,7 @@ func DeleteSession(db *store.DB, sessionID int64) error {
 			`DELETE FROM rti_client_events WHERE session_id = $1 AND id IN (
 				SELECT id FROM rti_client_events WHERE session_id = $1 LIMIT $2
 			)`,
-			sessionID, batchDeleteSize,
+			sessionID, rtiBatchSize,
 		)
 		if err != nil {
 			return fmt.Errorf("batch delete rti_client_events: %w", err)
@@ -667,7 +674,7 @@ func DeleteSession(db *store.DB, sessionID int64) error {
 			`DELETE FROM rti_blog_blocks WHERE session_id = $1 AND id IN (
 				SELECT id FROM rti_blog_blocks WHERE session_id = $1 LIMIT $2
 			)`,
-			sessionID, batchDeleteSize,
+			sessionID, rtiBatchSize,
 		)
 		if err != nil {
 			return fmt.Errorf("batch delete rti_blog_blocks: %w", err)
@@ -683,7 +690,7 @@ func DeleteSession(db *store.DB, sessionID int64) error {
 			`DELETE FROM rti_blog_tables WHERE session_id = $1 AND id IN (
 				SELECT id FROM rti_blog_tables WHERE session_id = $1 LIMIT $2
 			)`,
-			sessionID, batchDeleteSize,
+			sessionID, rtiBatchSize,
 		)
 		if err != nil {
 			return fmt.Errorf("batch delete rti_blog_tables: %w", err)
@@ -748,7 +755,7 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 				`DELETE FROM rti_calls WHERE session_id = $1 AND id IN (
 					SELECT id FROM rti_calls WHERE session_id = $1 LIMIT $2
 				)`,
-				sid, batchDeleteSize,
+				sid, rtiBatchSize,
 			)
 			if err != nil {
 				return 0, fmt.Errorf("batch delete rti_calls for session %d: %w", sid, err)
@@ -764,7 +771,7 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 				`DELETE FROM rti_client_events WHERE session_id = $1 AND id IN (
 					SELECT id FROM rti_client_events WHERE session_id = $1 LIMIT $2
 				)`,
-				sid, batchDeleteSize,
+				sid, rtiBatchSize,
 			)
 			if err != nil {
 				return 0, fmt.Errorf("batch delete rti_client_events for session %d: %w", sid, err)
@@ -780,7 +787,7 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 				`DELETE FROM rti_blog_blocks WHERE session_id = $1 AND id IN (
 					SELECT id FROM rti_blog_blocks WHERE session_id = $1 LIMIT $2
 				)`,
-				sid, batchDeleteSize,
+				sid, rtiBatchSize,
 			)
 			if err != nil {
 				return 0, fmt.Errorf("batch delete rti_blog_blocks for session %d: %w", sid, err)
@@ -796,7 +803,7 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 				`DELETE FROM rti_blog_tables WHERE session_id = $1 AND id IN (
 					SELECT id FROM rti_blog_tables WHERE session_id = $1 LIMIT $2
 				)`,
-				sid, batchDeleteSize,
+				sid, rtiBatchSize,
 			)
 			if err != nil {
 				return 0, fmt.Errorf("batch delete rti_blog_tables for session %d: %w", sid, err)

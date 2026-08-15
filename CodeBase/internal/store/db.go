@@ -117,9 +117,13 @@ func NewDB(cfg config.DBConfig) (*DB, error) {
 	// Пул соединений: indexer держит parallel воркеров, каждый делает серию
 	// батчей подряд. MaxIdleConns = MaxOpenConns, чтобы установленные соединения
 	// переиспользовались, а не закрывались/открывались заново между батчами.
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(25)
-	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetMaxOpenConns(cfg.MaxOpenConns)
+	db.SetMaxIdleConns(cfg.MaxIdleConns)
+	lifetime, err := time.ParseDuration(cfg.ConnMaxLifetime)
+	if err != nil || lifetime <= 0 {
+		lifetime = 5 * time.Minute
+	}
+	db.SetConnMaxLifetime(lifetime)
 
 	return &DB{DB: db}, nil
 }

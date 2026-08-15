@@ -668,10 +668,10 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				limit, _ := optionalInt(args, "limit")
 				if limit <= 0 {
-					limit = 100
+					limit = queryDefaultLimit
 				}
-				if limit > 1000 {
-					limit = 1000
+				if limit > queryMaxLimit {
+					limit = queryMaxLimit
 				}
 				type callSlim struct {
 					*rti.RTICall
@@ -759,14 +759,14 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				threshold, _ := optionalInt(args, "threshold_ms")
 				if threshold <= 0 {
-					threshold = 100
+					threshold = rti.GetSlowThresholdMs()
 				}
 				limit, _ := optionalInt(args, "limit")
 				if limit <= 0 {
-					limit = 100
+					limit = queryDefaultLimit
 				}
-				if limit > 1000 {
-					limit = 1000
+				if limit > queryMaxLimit {
+					limit = queryMaxLimit
 				}
 				sessionID, err := resolveRTISessionID(args)
 				if err != nil {
@@ -857,10 +857,10 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				limit, _ := optionalInt(args, "limit")
 				if limit <= 0 {
-					limit = 100
+					limit = queryDefaultLimit
 				}
-				if limit > 1000 {
-					limit = 1000
+				if limit > queryMaxLimit {
+					limit = queryMaxLimit
 				}
 				sessionID, err := resolveRTISessionID(args)
 				if err != nil {
@@ -961,10 +961,10 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				limit, _ := optionalInt(args, "limit")
 				if limit <= 0 {
-					limit = 100
+					limit = queryDefaultLimit
 				}
-				if limit > 1000 {
-					limit = 1000
+				if limit > queryMaxLimit {
+					limit = queryMaxLimit
 				}
 				sessionID, err := resolveRTISessionID(args)
 				if err != nil {
@@ -1032,10 +1032,10 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				limit, _ := optionalInt(args, "limit")
 				if limit <= 0 {
-					limit = 100
+					limit = queryDefaultLimit
 				}
-				if limit > 1000 {
-					limit = 1000
+				if limit > queryMaxLimit {
+					limit = queryMaxLimit
 				}
 
 				// Build filter from optional args
@@ -1153,10 +1153,10 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				limit, _ := optionalInt(args, "limit")
 				if limit <= 0 {
-					limit = 100
+					limit = queryDefaultLimit
 				}
-				if limit > 1000 {
-					limit = 1000
+				if limit > queryMaxLimit {
+					limit = queryMaxLimit
 				}
 
 				// Build filter from optional args
@@ -1360,8 +1360,8 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			Definition: toolDefinition{Name: "codebase_trc_events", Description: "List decoded events from a trc session, with optional filters. Returns event class, name, procedure, params, duration, and full decoded columns. Supports server-side filtering by SPID, procedure, and event_name with limit.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spid": intProp("Optional SPID filter"), "procedure": stringProp("Optional procedure name filter (exact match)"), "event_name": stringProp("Optional event name filter (e.g. RPC:Completed)"), "limit": intProp("Max events to return (default 100, max 1000)")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				limit := optionalLimit(args)
-				if limit > 1000 {
-					limit = 1000
+				if limit > queryMaxLimit {
+					limit = queryMaxLimit
 				}
 				spidFilter, _ := optionalInt(args, "spid")
 				procFilter, _ := optionalString(args, "procedure")
@@ -1515,11 +1515,11 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				threshold, _ := optionalInt(args, "threshold_ms")
 				if threshold <= 0 {
-					threshold = 100
+					threshold = trc.GetSlowThresholdMs()
 				}
 				limit := optionalLimit(args)
-				if limit > 1000 {
-					limit = 1000
+				if limit > queryMaxLimit {
+					limit = queryMaxLimit
 				}
 
 				sessionID, err := resolveTRCSessionID(args)
@@ -1565,8 +1565,8 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			Definition: toolDefinition{Name: "codebase_trc_errors", Description: "Find events with a non-zero Error(31) column in a trc session. Uses server-side SQL when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "limit": intProp("Max events to return (default 100, max 1000)")})},
 			Handler: func(args map[string]interface{}) (interface{}, error) {
 				limit := optionalLimit(args)
-				if limit > 1000 {
-					limit = 1000
+				if limit > queryMaxLimit {
+					limit = queryMaxLimit
 				}
 
 				sessionID, err := resolveTRCSessionID(args)
@@ -1767,25 +1767,39 @@ func optionalBool(args map[string]interface{}, key string) (bool, error) {
 	return boolean, nil
 }
 
+var (
+	queryDefaultLimit = 100
+	queryMaxLimit     = 1000
+)
+
+// SetQueryLimits устанавливает лимиты для query-вызовов из конфига.
+func SetQueryLimits(defaultLimit, maxLimit int) {
+	if defaultLimit > 0 {
+		queryDefaultLimit = defaultLimit
+	}
+	if maxLimit > 0 {
+		queryMaxLimit = maxLimit
+	}
+}
+
 func optionalLimit(args map[string]interface{}) int {
-	const defaultLimit = 100
 	value, ok := args["limit"]
 	if !ok || value == nil {
-		return defaultLimit
+		return queryDefaultLimit
 	}
 	switch v := value.(type) {
 	case float64:
 		if int(v) <= 0 {
-			return defaultLimit
+			return queryDefaultLimit
 		}
 		return int(v)
 	case int:
 		if v <= 0 {
-			return defaultLimit
+			return queryDefaultLimit
 		}
 		return v
 	default:
-		return defaultLimit
+		return queryDefaultLimit
 	}
 }
 
