@@ -154,3 +154,25 @@ func TestValidateExecArguments(t *testing.T) {
 	}
 }
 
+func TestCachedRegexp_SamePatternReturnsSamePointer(t *testing.T) {
+	re1 := cachedRegexp(`(?i)\bfoo\b`)
+	re2 := cachedRegexp(`(?i)\bfoo\b`)
+	if re1 != re2 {
+		t.Error("cachedRegexp should return same *regexp.Regexp for identical pattern")
+	}
+}
+
+func TestCachedRegexp_DifferentPatternReturnsDifferentPointer(t *testing.T) {
+	re1 := cachedRegexp(`(?i)\bfoo\b`)
+	re2 := cachedRegexp(`(?i)\bbar\b`)
+	if re1 == re2 {
+		t.Error("cachedRegexp should return different *regexp.Regexp for different patterns")
+	}
+}
+
+func TestCachedRegexp_FunctionalMatch(t *testing.T) {
+	re := cachedRegexp(`(?i)@\w+\b`)
+	if !re.MatchString("select @a from t") {
+		t.Error("cachedRegexp returned regexp that does not match expected input")
+	}
+}

@@ -11,7 +11,13 @@ import (
 	"github.com/codebase/internal/encoding"
 	"github.com/codebase/internal/model"
 	sqlparser "github.com/codebase/internal/parser/sql"
+	"github.com/codebase/internal/util"
 )
+
+// cachedRegexp делегирует в общий кэш util.CachedRegexp.
+func cachedRegexp(pattern string) *regexp.Regexp {
+	return util.CachedRegexp(pattern)
+}
 
 // Precompiled regexes for hot-path helper functions
 var (
@@ -567,7 +573,7 @@ func collectColumnsFromConditionBranch(branch string, tables []tableFromClause) 
 			if identifier == "" {
 				continue
 			}
-			re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(identifier) + `\.([a-zA-Z_][a-zA-Z0-9_]*)\b`)
+			re := cachedRegexp(`(?i)\b` + regexp.QuoteMeta(identifier) + `\.([a-zA-Z_][a-zA-Z0-9_]*)\b`)
 			for _, match := range re.FindAllStringSubmatch(branch, -1) {
 				if len(match) < 2 {
 					continue
@@ -2381,7 +2387,7 @@ func containsVarReference(expr, varName string) bool {
 	if v == "" {
 		return false
 	}
-	re := regexp.MustCompile(`(?i)@` + regexp.QuoteMeta(v) + `\b`)
+	re := cachedRegexp(`(?i)@` + regexp.QuoteMeta(v) + `\b`)
 	return re.MatchString(expr)
 }
 

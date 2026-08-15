@@ -7,6 +7,7 @@ import (
 
 	"github.com/codebase/internal/encoding"
 	"github.com/codebase/internal/model"
+	"github.com/codebase/internal/util"
 )
 
 var (
@@ -237,17 +238,17 @@ func (p *Parser) extractFunctionContent(content string, start, end int) string {
 // isObjectUsedInFunction проверяет использование объекта в функции
 func (p *Parser) isObjectUsedInFunction(fnContent, objectName string) bool {
 	// Ищем вызовы методов объекта: objectName.MethodName(...)
-	methodRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(objectName) + `\.\w+\s*\(`)
+	methodRe := util.CachedRegexp(`\b` + regexp.QuoteMeta(objectName) + `\.\w+\s*\(`)
 
 	// Ищем доступ к свойствам: objectName.PropertyName
-	propRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(objectName) + `\.\w+\s*[^(\s]`)
+	propRe := util.CachedRegexp(`\b` + regexp.QuoteMeta(objectName) + `\.\w+\s*[^(\s]`)
 
 	return methodRe.MatchString(fnContent) || propRe.MatchString(fnContent)
 }
 
 // isObjectCreatedInFunction проверяет, создаётся ли объект локально внутри функции
 func (p *Parser) isObjectCreatedInFunction(fnContent, objectName, objectType string) bool {
-	createRe := regexp.MustCompile(`\b(?:var\s+)?` + regexp.QuoteMeta(objectName) + `\s*=\s*Sys\.CreateObject\(\s*"` + regexp.QuoteMeta(objectType) + `"\s*\)`)
+	createRe := util.CachedRegexp(`\b(?:var\s+)?` + regexp.QuoteMeta(objectName) + `\s*=\s*Sys\.CreateObject\(\s*"` + regexp.QuoteMeta(objectType) + `"\s*\)`)
 	return createRe.MatchString(fnContent)
 }
 

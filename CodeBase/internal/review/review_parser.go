@@ -1010,7 +1010,7 @@ func replaceIdentifierToken(text string, token string, replacement string) strin
 		return text
 	}
 
-	re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(trimmedToken) + `\b`)
+	re := cachedRegexp(`(?i)\b` + regexp.QuoteMeta(trimmedToken) + `\b`)
 	return re.ReplaceAllString(text, replacement)
 }
 

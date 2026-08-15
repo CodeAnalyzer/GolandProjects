@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+var reTestWithBlock = regexp.MustCompile(`with\s*\(\s*Instrument\s*\)\s*\{`)
+
 func TestParseContent_ParsesXMLJobInstrumentAndScript(t *testing.T) {
 	content := `<job>
 <description>Test job</description>
@@ -178,7 +180,7 @@ func TestSMFHelpers(t *testing.T) {
   Name = "Credit";
   Brief = "Brief";
 }`
-	re := regexp.MustCompile(`with\s*\(\s*Instrument\s*\)\s*\{`)
+	re := reTestWithBlock
 	if got := parser.extractWithBlock(script, re); got == "" {
 		t.Fatalf("extractWithBlock should return non-empty for correct block")
 	}

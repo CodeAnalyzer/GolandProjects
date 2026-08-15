@@ -13,6 +13,17 @@ import (
 	"github.com/codebase/internal/parser/retcode"
 	sqlparser "github.com/codebase/internal/parser/sql"
 	"github.com/codebase/internal/store"
+	"github.com/codebase/internal/util"
+)
+
+// Precompiled regexps for indexer_sql_pas (static patterns).
+var (
+	reIdxAliasFromJoin    = regexp.MustCompile(`(?i)\b(?:from|join)\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_]*)\b`)
+	reIdxAsAliasSuffix    = regexp.MustCompile(`(?i)\bas\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*$`)
+	reIdxStripAsAlias     = regexp.MustCompile(`(?i)\s+as\s+[A-Za-z_#][A-Za-z0-9_#]*\s*$`)
+	reIdxDirectColRef     = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*$`)
+	reIdxIsnullCoalesce   = regexp.MustCompile(`(?i)^\s*(?:isnull|coalesce)\s*\(`)
+	reIdxQualifiedColRef  = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)`)
 )
 
 // parseSQLFile парсит SQL-файл с использованием batch-вставки
@@ -486,7 +497,7 @@ func findSelectIntoFragment(fragments []*model.QueryFragment, lineNumber int, ta
 	if lineNumber <= 0 || strings.TrimSpace(tableName) == "" {
 		return nil
 	}
-	tablePattern := regexp.MustCompile(`(?i)\binto\s+` + regexp.QuoteMeta(strings.TrimSpace(tableName)) + `\b`)
+	tablePattern := util.CachedRegexp(`(?i)\binto\s+` + regexp.QuoteMeta(strings.TrimSpace(tableName)) + `\b`)
 	for _, fragment := range fragments {
 		if fragment == nil {
 			continue
@@ -515,7 +526,7 @@ func parseSelectIntoFragmentInfo(queryText string, targetTable string) (*selectI
 		return nil, false
 	}
 	aliasToTable := make(map[string]string)
-	aliasMatches := regexp.MustCompile(`(?i)\b(?:from|join)\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_]*)\b`).FindAllStringSubmatch(tail, -1)
+	aliasMatches := reIdxAliasFromJoin.FindAllStringSubmatch(tail, -1)
 	for _, match := range aliasMatches {
 		if len(match) < 3 {
 			continue
@@ -663,7 +674,7 @@ func inferSelectIntoOutputName(segment string) string {
 	if value == "" {
 		return ""
 	}
-	if matches := regexp.MustCompile(`(?i)\bas\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*$`).FindStringSubmatch(value); len(matches) > 1 {
+	if matches := reIdxAsAliasSuffix.FindStringSubmatch(value); len(matches) > 1 {
 		return strings.TrimSpace(matches[1])
 	}
 	parts := strings.Fields(value)
@@ -696,12 +707,12 @@ func extractSimpleSourceColumn(segment string) (string, string, bool) {
 	if value == "" {
 		return "", "", false
 	}
-	value = regexp.MustCompile(`(?i)\s+as\s+[A-Za-z_#][A-Za-z0-9_#]*\s*$`).ReplaceAllString(value, "")
-	if direct := regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*$`).FindStringSubmatch(value); len(direct) == 3 {
+	value = reIdxStripAsAlias.ReplaceAllString(value, "")
+	if direct := reIdxDirectColRef.FindStringSubmatch(value); len(direct) == 3 {
 		return strings.TrimSpace(direct[1]), strings.TrimSpace(direct[2]), true
 	}
-	if regexp.MustCompile(`(?i)^\s*(?:isnull|coalesce)\s*\(`).MatchString(value) {
-		if ref := regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)`).FindStringSubmatch(value); len(ref) == 3 {
+	if reIdxIsnullCoalesce.MatchString(value) {
+		if ref := reIdxQualifiedColRef.FindStringSubmatch(value); len(ref) == 3 {
 			return strings.TrimSpace(ref[1]), strings.TrimSpace(ref[2]), true
 		}
 	}

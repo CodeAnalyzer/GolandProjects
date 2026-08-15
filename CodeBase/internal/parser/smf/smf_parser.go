@@ -11,6 +11,7 @@ import (
 	"github.com/codebase/internal/encoding"
 	"github.com/codebase/internal/model"
 	"github.com/codebase/internal/parser/js"
+	"github.com/codebase/internal/util"
 )
 
 var (
@@ -866,7 +867,7 @@ func (p *Parser) extractActions(script string, includeFiles []string, basePath s
 }
 
 func (p *Parser) findHelperFunctionBody(helperName string, sources []string) string {
-	pattern := regexp.MustCompile(`function\s+` + regexp.QuoteMeta(helperName) + `\s*\([^)]*\)\s*\{`)
+	pattern := util.CachedRegexp(`function\s+` + regexp.QuoteMeta(helperName) + `\s*\([^)]*\)\s*\{`)
 
 	for _, source := range sources {
 		loc := pattern.FindStringIndex(source)
