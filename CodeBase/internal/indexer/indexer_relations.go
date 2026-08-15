@@ -152,6 +152,12 @@ func (idx *Indexer) saveRelations(relations []*model.Relation, path string, stat
 func (idx *Indexer) buildJSProcedureCallRelations(fileID int64, calls []*model.JSProcedureCall) ([]*model.Relation, error) {
 	pendingRefs := make([]*PendingJSCallRef, 0, len(calls))
 
+	// Preload JS function ranges for local resolution (avoids N+1 DB queries)
+	funcRanges, err := idx.db.FindJSFunctionIDRangesByFile(fileID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load JS function ranges: %w", err)
+	}
+
 	for _, call := range calls {
 		if call == nil {
 			continue
@@ -163,7 +169,7 @@ func (idx *Indexer) buildJSProcedureCallRelations(fileID int64, calls []*model.J
 		if call.LineNumber <= 0 {
 			continue
 		}
-		sourceID, err := idx.db.FindJSFunctionIDByFileAndLine(fileID, call.LineNumber)
+		sourceID, err := resolveJSFunctionByLine(funcRanges, call.LineNumber)
 		if err != nil {
 			if err == dbsql.ErrNoRows {
 				continue
@@ -595,4 +601,15 @@ func (idx *Indexer) buildQueryFragmentRelations(fileID int64, fragments []*model
 
 	idx.addPendingFragmentRefs(pendingRefs)
 	return relations, nil
+}
+
+// resolveJSFunctionByLine находит ID JS-функции, в диапазон которой попадает lineNumber,
+// по предзагруженному списку диапазонов (без обращения к БД).
+func resolveJSFunctionByLine(ranges []store.JSFuncRange, lineNumber int) (int64, error) {
+	for _, r := range ranges {
+		if lineNumber >= r.LineStart && lineNumber <= r.LineEnd {
+			return r.ID, nil
+		}
+	}
+	return 0, dbsql.ErrNoRows
 }

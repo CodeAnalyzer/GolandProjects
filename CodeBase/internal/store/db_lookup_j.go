@@ -83,6 +83,38 @@ func (db *DB) FindJSConstantIDsByFile(fileID int64) (map[string]int64, error) {
 	return result, nil
 }
 
+// JSFuncRange описывает JS-функцию с её line-диапазоном для локального резолва.
+type JSFuncRange struct {
+	ID        int64
+	LineStart int
+	LineEnd   int
+}
+
+// FindJSFunctionIDRangesByFile возвращает все JS-функции файла с их line-диапазонами.
+// Один запрос вместо N запросов FindJSFunctionIDByFileAndLine.
+func (db *DB) FindJSFunctionIDRangesByFile(fileID int64) ([]JSFuncRange, error) {
+	rows, err := db.Query(`
+		SELECT id, line_start, line_end
+		FROM js_functions
+		WHERE file_id = $1
+		ORDER BY line_start DESC, id DESC
+	`, fileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []JSFuncRange
+	for rows.Next() {
+		var r JSFuncRange
+		if err := rows.Scan(&r.ID, &r.LineStart, &r.LineEnd); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
 // FindLatestSMFInstrumentIDByFile возвращает последний id SMF инструмента файла.
 func (db *DB) FindLatestSMFInstrumentIDByFile(fileID int64) (int64, error) {
 	var id int64

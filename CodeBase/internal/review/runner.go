@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/codebase/internal/encoding"
+	"github.com/codebase/internal/model"
 	sqlparser "github.com/codebase/internal/parser/sql"
 	"github.com/codebase/internal/store"
 )
@@ -29,6 +30,10 @@ type Runner struct {
 	indexCandMu     sync.Mutex
 	indexFieldsCache map[string][]string
 	onProgress      func(completed, total int)
+	// prewarm caches for batch-loaded DB data (nil = not prewarmed, fallback to per-call)
+	procParamsCache     map[string][]model.SQLParam
+	procProductIDCache  map[string]int64
+	tableProductIDCache map[string]map[int64]struct{}
 }
 
 type reviewExecContext struct {
@@ -44,7 +49,7 @@ type ruleTask struct {
 }
 
 func NewRunner(db *store.DB) *Runner {
-	return &Runner{db: db, parser: sqlparser.NewParser(), colTypeCache: make(map[string]string), macroTypeCache: make(map[string]string), indexCandCache: make(map[string][]tableIndexCandidate), indexFieldsCache: make(map[string][]string)}
+	return &Runner{db: db, parser: sqlparser.NewParser(), colTypeCache: make(map[string]string), macroTypeCache: make(map[string]string), indexCandCache: make(map[string][]tableIndexCandidate), indexFieldsCache: make(map[string][]string), procParamsCache: nil, procProductIDCache: nil, tableProductIDCache: nil}
 }
 
 func (r *Runner) SetOnProgress(fn func(completed, total int)) {
@@ -71,6 +76,11 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 	r.indexCandCache = make(map[string][]tableIndexCandidate)
 	r.indexFieldsCache = make(map[string][]string)
 	r.indexCandMu.Unlock()
+
+	// Сбрасываем prewarm-кэши
+	r.procParamsCache = nil
+	r.procProductIDCache = nil
+	r.tableProductIDCache = nil
 
 	normalizedPath := normalizePath(path)
 	file, err := r.getIndexedFile(normalizedPath)
@@ -118,6 +128,11 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 	if err := r.prewarmIndexCache(r.exec.lines); err != nil {
 		return nil, err
 	}
+
+	// Предзагружаем параметры процедур, productID процедур и productID таблиц
+	// одним batch-запросом каждый, чтобы избежать N+1 DB-запросов в правилах.
+	r.prewarmProcCaches(parsed)
+	r.prewarmTableProductIDs(parsed)
 
 	ruleSet := enabledRuleSet(opts.Rules)
 	tasks := r.buildRuleTasks(ruleSet, parsed, file)

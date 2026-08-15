@@ -689,10 +689,16 @@ func (idx *Indexer) parseJSFile(file fswalk.FileInfo, fileID int64, stats *model
 		})
 	}
 
+	// Preload JS function ranges for local resolution (avoids N+1 DB queries)
+	funcRanges, err := idx.db.FindJSFunctionIDRangesByFile(fileID)
+	if err != nil {
+		return fmt.Errorf("failed to load JS function ranges: %w", err)
+	}
+
 	for _, query := range result.QueryCalls {
 		parentType := "js_file"
 		parentID := int64(0)
-		functionID, err := idx.db.FindJSFunctionIDByFileAndLine(fileID, query.LineNumber)
+		functionID, err := resolveJSFunctionByLine(funcRanges, query.LineNumber)
 		if err == nil {
 			parentType = "js_function"
 			parentID = functionID

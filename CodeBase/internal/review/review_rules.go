@@ -55,10 +55,7 @@ func (r *Runner) checkForeignTables(parsed *sqlparser.ParseResult, file *indexed
 		if strings.EqualFold(prefix, "t") && isSharedTTable(table.Name) {
 			continue
 		}
-		targetProductIDs, err := r.lookupTableProductIDs(table.Name)
-		if err != nil {
-			return nil, err
-		}
+		targetProductIDs := r.cachedLookupTableProductIDs(table.Name)
 		if len(targetProductIDs) == 0 {
 			continue
 		}
@@ -1523,10 +1520,7 @@ func (r *Runner) checkForeignPTables(parsed *sqlparser.ParseResult, file *indexe
 	}
 	findings := make([]Finding, 0)
 	for _, table := range filtered {
-		targetProductIDs, err := r.lookupTableProductIDs(table.Name)
-		if err != nil {
-			return nil, err
-		}
+		targetProductIDs := r.cachedLookupTableProductIDs(table.Name)
 		if len(targetProductIDs) == 0 {
 			continue
 		}
@@ -1556,12 +1550,9 @@ func (r *Runner) checkForeignProcedures(parsed *sqlparser.ParseResult, file *ind
 	calls := dedupeProcedureCalls(parsed.Calls)
 	findings := make([]Finding, 0)
 	for _, call := range calls {
-		targetProductID, err := r.lookupProcedureProductID(call.Name)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				continue
-			}
-			return nil, err
+		targetProductID, ok := r.cachedLookupProcedureProductID(call.Name)
+		if !ok {
+			continue
 		}
 		if targetProductID == 0 || targetProductID == file.DsProductID {
 			continue
@@ -1584,12 +1575,9 @@ func (r *Runner) checkExecNotExistsProcedures(parsed *sqlparser.ParseResult, fil
 	calls := dedupeProcedureCalls(parsed.Calls)
 	findings := make([]Finding, 0)
 	for _, call := range calls {
-		_, err := r.lookupProcedureProductID(call.Name)
-		if err == nil {
+		_, ok := r.cachedLookupProcedureProductID(call.Name)
+		if ok {
 			continue
-		}
-		if err != sql.ErrNoRows {
-			return nil, err
 		}
 
 		findings = append(findings, Finding{
@@ -2011,13 +1999,7 @@ func (r *Runner) checkDatatypeExecParams(parsed *sqlparser.ParseResult, file *in
 
 	calls := dedupeProcedureCalls(parsed.Calls)
 	for _, call := range calls {
-		params, err := r.lookupProcedureParams(call.Name)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				continue
-			}
-			return nil, err
-		}
+		params := r.cachedLookupProcedureParams(call.Name)
 		if len(params) == 0 {
 			continue
 		}
@@ -4654,12 +4636,9 @@ func (r *Runner) checkExcessProcParams(parsed *sqlparser.ParseResult, file *inde
 	findings := make([]Finding, 0)
 
 	for _, call := range calls {
-		params, err := r.lookupProcedureParams(call.Name)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				continue // Процедура отсутствует в БД — это ловит execNotExistsProc
-			}
-			return nil, err
+		params := r.cachedLookupProcedureParams(call.Name)
+		if len(params) == 0 {
+			continue // Процедура отсутствует в БД — это ловит execNotExistsProc
 		}
 
 		if call.Line < 1 || call.Line > len(r.exec.lines) {
@@ -4695,10 +4674,7 @@ func (r *Runner) checkDuplicateOutputVariable(parsed *sqlparser.ParseResult, fil
 
 		args := parseExecArguments(callText, call.Name)
 
-		params, err := r.lookupProcedureParams(call.Name)
-		if err != nil && err != sql.ErrNoRows {
-			return nil, err
-		}
+		params := r.cachedLookupProcedureParams(call.Name)
 
 		paramMap := make(map[string]model.SQLParam)
 		for _, p := range params {

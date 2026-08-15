@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/codebase/internal/model"
+	sqlparser "github.com/codebase/internal/parser/sql"
 	"github.com/lib/pq"
 )
 
@@ -53,6 +54,70 @@ func (r *Runner) getIndexedFile(path string) (*indexedFile, error) {
 		}
 	}
 	return nil, sql.ErrNoRows
+}
+
+// cachedLookupProcedureParams возвращает параметры процедуры из prewarm-кэша,
+// или делает индивидуальный запрос при cache miss (fallback для unit-тестов без БД).
+func (r *Runner) cachedLookupProcedureParams(procName string) []model.SQLParam {
+	key := strings.ToLower(strings.TrimSpace(procName))
+	if r.procParamsCache != nil {
+		if params, ok := r.procParamsCache[key]; ok {
+			return params
+		}
+	}
+	if r.db == nil {
+		return nil
+	}
+	params, err := r.lookupProcedureParams(procName)
+	if err != nil || len(params) == 0 {
+		return nil
+	}
+	return params
+}
+
+// cachedLookupProcedureProductID возвращает (productID, true) из prewarm-кэша,
+// или делает индивидуальный запрос при cache miss.
+// Возвращает (0, false) если процедура не найдена.
+func (r *Runner) cachedLookupProcedureProductID(procName string) (int64, bool) {
+	key := strings.ToLower(strings.TrimSpace(procName))
+	if r.procProductIDCache != nil {
+		if productID, ok := r.procProductIDCache[key]; ok {
+			return productID, true
+		}
+	}
+	if r.db == nil {
+		return 0, false
+	}
+	productID, err := r.lookupProcedureProductID(procName)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, false
+		}
+		return 0, false
+	}
+	if productID == 0 {
+		return 0, false
+	}
+	return productID, true
+}
+
+// cachedLookupTableProductIDs возвращает productIDs для таблицы из prewarm-кэша,
+// или делает индивидуальный запрос при cache miss.
+func (r *Runner) cachedLookupTableProductIDs(tableName string) map[int64]struct{} {
+	key := strings.ToLower(strings.TrimSpace(tableName))
+	if r.tableProductIDCache != nil {
+		if ids, ok := r.tableProductIDCache[key]; ok {
+			return ids
+		}
+	}
+	if r.db == nil {
+		return nil
+	}
+	ids, err := r.lookupTableProductIDs(tableName)
+	if err != nil {
+		return nil
+	}
+	return ids
 }
 
 func (r *Runner) lookupTableProductIDs(tableName string) (map[int64]struct{}, error) {
@@ -305,6 +370,72 @@ func (r *Runner) prewarmIndexCache(fileLines []string) error {
 		tableNames = append(tableNames, t)
 	}
 	return r.batchLoadIndexCandidates(tableNames)
+}
+
+// prewarmProcCaches загружает параметры и productID всех уникальных процедур
+// из parsed.Calls одним batch-запросом каждый, чтобы избежать N+1 в правилах.
+func (r *Runner) prewarmProcCaches(parsed *sqlparser.ParseResult) {
+	if r == nil || r.db == nil {
+		return
+	}
+	seen := make(map[string]struct{})
+	names := make([]string, 0)
+	for _, call := range parsed.Calls {
+		if call == nil {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(call.CalleeName))
+		if name == "" {
+			continue
+		}
+		if _, isKeyword := nonProcedureCallKeywords[name]; isKeyword {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return
+	}
+	if params, err := r.db.BatchLookupProcedureParams(names); err == nil {
+		r.procParamsCache = params
+	}
+	if productIDs, err := r.db.BatchLookupProcedureProductIDs(names); err == nil {
+		r.procProductIDCache = productIDs
+	}
+}
+
+// prewarmTableProductIDs загружает productID всех уникальных таблиц из parsed.Tables
+// одним batch-запросом, чтобы избежать N+1 в checkForeignTables/checkForeignPTables.
+func (r *Runner) prewarmTableProductIDs(parsed *sqlparser.ParseResult) {
+	if r == nil || r.db == nil {
+		return
+	}
+	seen := make(map[string]struct{})
+	names := make([]string, 0)
+	for _, table := range parsed.Tables {
+		if table == nil {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(table.TableName))
+		if name == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return
+	}
+	if result, err := r.db.BatchLookupTableProductIDs(names); err == nil {
+		r.tableProductIDCache = result
+	}
 }
 
 // batchLoadIndexCandidates загружает все индексы (из sql_index_definitions и API)
