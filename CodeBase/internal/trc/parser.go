@@ -400,9 +400,5 @@ func decodeColumnValue(propID int, value []byte) (any, error) {
 // здесь код units не ограничен ASCII-печатным диапазоном, как в
 // findNextUTF16String, поэтому декодируется отдельно.
 func decodeUTF16(b []byte) string {
-	units := make([]uint16, 0, len(b)/2)
-	for k := 0; k+2 <= len(b); k += 2 {
-		units = append(units, binary.LittleEndian.Uint16(b[k:k+2]))
-	}
-	return utf16ToString(units)
+	return decodeUTF16LEBytes(b)
 }

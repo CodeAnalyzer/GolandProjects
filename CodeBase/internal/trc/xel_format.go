@@ -1,6 +1,9 @@
 package trc
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"sync"
+)
 
 //go:generate go run gen_xel_mapping.go
 
@@ -116,13 +119,30 @@ var xelKnownActionNames = map[xelActionKey]string{
 	{2, 36}: "client_app_name",
 }
 
+var actionFieldsPool = sync.Pool{
+	New: func() any {
+		s := make([]xelActionField, 0, 8)
+		return &s
+	},
+}
+
+// releaseActionFields возвращает слайс, полученный из consumeActionTLVs, в pool.
+// После вызова слайс больше не должен использоваться.
+func releaseActionFields(fields []xelActionField) {
+	fields = fields[:0]
+	actionFieldsPool.Put(&fields)
+}
+
 // consumeActionTLVs жадно разбирает подряд идущие TLV-записи actions
 // начиная с start, останавливаясь на первом байте, не соответствующем
 // формату TLV (что естественным образом совпадает с концом списка actions —
 // см. Phase 0 вывод "события пакуются впритык"). Возвращает разобранные
 // поля и абсолютное смещение конца списка (первый непрочитанный байт).
+// Возвращённый слайс получен из sync.Pool — вызывающий код должен вернуть
+// его через releaseActionFields после использования.
 func consumeActionTLVs(data []byte, start int) ([]xelActionField, int) {
-	var fields []xelActionField
+	fieldsP := actionFieldsPool.Get().(*[]xelActionField)
+	fields := (*fieldsP)[:0]
 	p := start
 	for p+8 <= len(data) {
 		pkg := data[p]
@@ -147,33 +167,8 @@ func consumeActionTLVs(data []byte, start int) ([]xelActionField, int) {
 	return fields, p
 }
 
-// decodeUTF16LE декодирует байтовый срез как UTF-16LE строку (без BOM). Не
-// обрабатывает суррогатные пары самостоятельно (см. utf16Decode) —
-// достаточно для значений трейса.
+// decodeUTF16LE декодирует байтовый срез как UTF-16LE строку (без BOM)
+// через single-pass декодер decodeUTF16LEBytes.
 func decodeUTF16LE(b []byte) string {
-	if len(b)%2 != 0 {
-		b = b[:len(b)-1]
-	}
-	runes := make([]uint16, len(b)/2)
-	for i := range runes {
-		runes[i] = binary.LittleEndian.Uint16(b[i*2 : i*2+2])
-	}
-	return string(utf16Decode(runes))
-}
-
-func utf16Decode(s []uint16) []rune {
-	out := make([]rune, 0, len(s))
-	for i := 0; i < len(s); i++ {
-		r := s[i]
-		if r >= 0xD800 && r <= 0xDBFF && i+1 < len(s) {
-			r2 := s[i+1]
-			if r2 >= 0xDC00 && r2 <= 0xDFFF {
-				out = append(out, ((rune(r)-0xD800)<<10)|(rune(r2)-0xDC00)+0x10000)
-				i++
-				continue
-			}
-		}
-		out = append(out, rune(r))
-	}
-	return out
+	return decodeUTF16LEBytes(b)
 }

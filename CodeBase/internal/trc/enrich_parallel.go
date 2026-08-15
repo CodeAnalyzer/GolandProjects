@@ -124,6 +124,16 @@ func serializeSequential(events []TRCEvent, columnsJSONs [][]byte, paramsJSONs [
 // sanitizeParams возвращает копию params с очищенными от нулевых байтов (0x00)
 // строковыми значениями. PostgreSQL jsonb не принимает \u0000 в строках.
 func sanitizeParams(params []TRCParam) []TRCParam {
+	hasNull := false
+	for _, p := range params {
+		if strings.IndexByte(p.Name, 0) >= 0 || strings.IndexByte(p.Value, 0) >= 0 {
+			hasNull = true
+			break
+		}
+	}
+	if !hasNull {
+		return params
+	}
 	out := make([]TRCParam, len(params))
 	for i, p := range params {
 		out[i] = TRCParam{

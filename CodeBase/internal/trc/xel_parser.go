@@ -467,6 +467,7 @@ func parseXELCB(data []byte, header *XELHeader, cb func(*TRCEvent) error) error 
 				e.Columns[13] = int64(wd.Duration)
 				e.Columns[15] = SystemTimeFromLocalParts(xelRawTimestampToUTC(wd.Timestamp, header))
 				applyActionColumns(&e, fields)
+				releaseActionFields(fields)
 				enrichEvent(&e)
 				if err := cb(&e); err != nil {
 					return err
@@ -479,6 +480,7 @@ func parseXELCB(data []byte, header *XELHeader, cb func(*TRCEvent) error) error 
 		fields, afterActions := consumeActionTLVs(data, pos)
 		if len(fields) > 0 {
 			if _, ev, dataEnd, ok := tryDecodeActionThenDataEvent(data, afterActions, fields, header); ok && dataEnd > pos {
+				releaseActionFields(fields)
 				enrichEvent(&ev)
 				if err := cb(&ev); err != nil {
 					return err
@@ -487,8 +489,50 @@ func parseXELCB(data []byte, header *XELHeader, cb func(*TRCEvent) error) error 
 				continue
 			}
 		}
+		releaseActionFields(fields)
 
-		pos++
+		// Быстрый поиск следующего потенциального события вместо побайтового pos++.
+		// Ищем ближайший из двух маркеров: wait_completed (12-байтовый) или
+		// action-then-data anchor (байт pkg=0x01 или 0x02 с валидным TLV).
+		nextPos := -1
+
+		if idx := bytes.Index(data[pos+1:], xelWaitCompletedMarker); idx >= 0 {
+			nextPos = pos + 1 + idx
+		}
+
+		// Поиск action-then-data: перебираем pkg-байты 0x01/0x02.
+		// Используем bytes.IndexByte для быстрого скачка к кандидату,
+		// затем валидируем TLV-структуру (data[p+3] == 0x10).
+		for p := pos + 1; p+8 <= len(data); {
+			idx1 := bytes.IndexByte(data[p:], 0x01)
+			idx2 := bytes.IndexByte(data[p:], 0x02)
+			var idx int
+			if idx1 < 0 {
+				idx = idx2
+			} else if idx2 < 0 {
+				idx = idx1
+			} else if idx1 < idx2 {
+				idx = idx1
+			} else {
+				idx = idx2
+			}
+			if idx < 0 {
+				break
+			}
+			candidate := p + idx
+			if candidate+8 <= len(data) && data[candidate+3] == 0x10 {
+				if nextPos < 0 || candidate < nextPos {
+					nextPos = candidate
+				}
+				break
+			}
+			p = candidate + 1
+		}
+
+		if nextPos < 0 {
+			break
+		}
+		pos = nextPos
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/codebase/internal/store"
@@ -146,7 +147,7 @@ type jsonColumn struct {
 func marshalColumns(columns map[int]any) ([]byte, error) {
 	out := make(map[string]jsonColumn, len(columns))
 	for id, v := range columns {
-		key := fmt.Sprintf("%d", id)
+		key := strconv.Itoa(id)
 		switch val := v.(type) {
 		case string:
 			// PostgreSQL jsonb не принимает нулевые байты (0x00) в строках.
@@ -177,8 +178,8 @@ func unmarshalColumns(data []byte) (map[int]any, error) {
 	}
 	columns := make(map[int]any, len(raw))
 	for key, entry := range raw {
-		var id int
-		if _, err := fmt.Sscanf(key, "%d", &id); err != nil {
+		id, err := strconv.Atoi(key)
+		if err != nil {
 			continue
 		}
 		switch entry.Type {

@@ -10,8 +10,9 @@ import (
 )
 
 // streamBatchSize — размер батча событий для streaming-записи в БД.
-// 10000 событий × ~2KB/event ≈ 20MB на батч — комфортно для RAM.
-const streamBatchSize = 10000
+// Выровнен с batchInsertSize в store.go для минимизации overhead на
+// goroutine spawn/sync в serializeParallel. 50000 событий × ~2KB/event ≈ 100MB на батч.
+const streamBatchSize = 50000
 
 // ParseFileToDB парсит файл трейса (.trc бинарный, .trc XML-экспорт, .xel
 // Extended Events) и стримит события напрямую в БД батчами по
