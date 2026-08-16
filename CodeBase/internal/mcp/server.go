@@ -26,6 +26,8 @@ func RunStdio(serverVersion string, logger *log.Logger) error {
 	if cfg.MCP.PaginationChunkSize > 0 {
 		globalPages = newPageStore(cfg.MCP.PaginationChunkSize)
 	}
+	globalPages.startGCLoop()
+	defer globalPages.stopGCLoop()
 
 	db, err := store.NewDB(cfg.DB)
 	if err != nil {

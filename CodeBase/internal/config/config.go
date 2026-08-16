@@ -69,10 +69,11 @@ type LoggingConfig struct {
 
 // MCPConfig конфигурация MCP-сервера
 type MCPConfig struct {
-	PaginationChunkSize int    `toml:"pagination_chunk_size"`
-	PaginationTTL       string `toml:"pagination_ttl"` // Go duration: "15m", "30m"
-	QueryTimeoutSec     int    `toml:"query_timeout_sec"`  // default 30
-	ReviewTimeoutSec    int    `toml:"review_timeout_sec"` // default 120
+	PaginationChunkSize   int    `toml:"pagination_chunk_size"`
+	PaginationTTL         string `toml:"pagination_ttl"` // Go duration: "15m", "30m"
+	QueryTimeoutSec       int    `toml:"query_timeout_sec"`  // default 30
+	ReviewTimeoutSec      int    `toml:"review_timeout_sec"` // default 120
+	RegexpCacheMaxEntries int    `toml:"regexp_cache_max_entries"`
 }
 
 var (
@@ -196,6 +197,9 @@ func Load() error {
 	if cfg.MCP.PaginationChunkSize == 0 {
 		cfg.MCP.PaginationChunkSize = 8_000
 	}
+	if cfg.MCP.RegexpCacheMaxEntries <= 0 {
+		cfg.MCP.RegexpCacheMaxEntries = 2048
+	}
 	if cfg.MCP.PaginationTTL == "" {
 		cfg.MCP.PaginationTTL = "15m"
 	}
@@ -287,10 +291,11 @@ func CreateDefault(rootPath string) *Config {
 			CommandEnabled: boolPtr(true),
 		},
 		MCP: MCPConfig{
-			PaginationChunkSize: 8_000,
-			PaginationTTL:       "15m",
-			QueryTimeoutSec:     30,
-			ReviewTimeoutSec:    120,
+			PaginationChunkSize:   8_000,
+			PaginationTTL:         "15m",
+			QueryTimeoutSec:       30,
+			ReviewTimeoutSec:      120,
+			RegexpCacheMaxEntries: 2048,
 		},
 	}
 	return cfg

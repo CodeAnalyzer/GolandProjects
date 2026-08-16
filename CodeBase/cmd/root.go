@@ -16,13 +16,14 @@ import (
 	"github.com/codebase/internal/mcp"
 	"github.com/codebase/internal/rti"
 	"github.com/codebase/internal/trc"
+	"github.com/codebase/internal/util"
 	"github.com/spf13/cobra"
 )
 
 var (
 	appName        = "CodeBase"
 	version        = "0.8.7"
-	buildNumber    = "1330"
+	buildNumber    = "1332"
 	copyright      = "Copyright (c) 2026"
 	cfgFile        string
 	commandLogger  *log.Logger
@@ -280,6 +281,9 @@ func applyConfigToPackages() {
 	indexer.SetProgressInterval(cfg.Indexer.ProgressIntervalMs)
 	if ttl, err := time.ParseDuration(cfg.MCP.PaginationTTL); err == nil && ttl > 0 {
 		mcp.SetPaginationTTL(ttl)
+	}
+	if cfg.MCP.RegexpCacheMaxEntries > 0 {
+		util.SetRegexpCacheMaxEntries(cfg.MCP.RegexpCacheMaxEntries)
 	}
 }
 

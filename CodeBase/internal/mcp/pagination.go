@@ -35,6 +35,8 @@ type pageStore struct {
 	chunkSize int
 	mu        sync.Mutex
 	entries   map[string]*pageEntry
+	gcTimerMu sync.Mutex
+	gcTimer   *time.Timer
 }
 
 func newPageStore(chunkSize int) *pageStore {
@@ -91,6 +93,7 @@ func (ps *pageStore) readChunk(id string, chunkIdx int) (rawMCPText, error) {
 		delete(ps.entries, id)
 	}
 	ps.mu.Unlock()
+	ps.gc()
 
 	var header string
 	if isLast {
@@ -142,4 +145,39 @@ func newEntryID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// startGCLoop запускает периодическую фоновую очистку просроченных записей.
+// Интервал = TTL / 2 (минимум 1 секунда). Останавливается через stopGCLoop.
+func (ps *pageStore) startGCLoop() {
+	ps.stopGCLoop()
+	interval := paginationTTL / 2
+	if interval < time.Second {
+		interval = time.Second
+	}
+	ps.gcTimerMu.Lock()
+	ps.gcTimer = time.AfterFunc(interval, ps.gcTick)
+	ps.gcTimerMu.Unlock()
+}
+
+func (ps *pageStore) gcTick() {
+	ps.gc()
+	ps.gcTimerMu.Lock()
+	defer ps.gcTimerMu.Unlock()
+	if ps.gcTimer != nil {
+		interval := paginationTTL / 2
+		if interval < time.Second {
+			interval = time.Second
+		}
+		ps.gcTimer.Reset(interval)
+	}
+}
+
+func (ps *pageStore) stopGCLoop() {
+	ps.gcTimerMu.Lock()
+	defer ps.gcTimerMu.Unlock()
+	if ps.gcTimer != nil {
+		ps.gcTimer.Stop()
+		ps.gcTimer = nil
+	}
 }

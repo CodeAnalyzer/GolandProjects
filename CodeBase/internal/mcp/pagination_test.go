@@ -265,6 +265,88 @@ func TestSdkToolPagedResult_LargeJSON_GetsPaginated(t *testing.T) {
 	}
 }
 
+// --- proactive GC on readChunk ---
+
+func TestPageStore_GCOnReadChunk(t *testing.T) {
+	ps := newPageStore(100)
+	// Inject an expired entry manually
+	ps.mu.Lock()
+	ps.entries["expired"] = &pageEntry{
+		chunks:    []string{"old"},
+		createdAt: time.Now().Add(-paginationTTL - time.Second),
+	}
+	ps.mu.Unlock()
+
+	// Create a valid paginated entry
+	text := strings.Repeat("z", 250)
+	first := ps.maybePaginate(text)
+	id := extractContinuationID(t, first)
+
+	// readChunk should trigger gc() and remove the expired entry
+	_, err := ps.readChunk(id, 2)
+	if err != nil {
+		t.Fatalf("readChunk(2): %v", err)
+	}
+
+	ps.mu.Lock()
+	_, expiredExists := ps.entries["expired"]
+	ps.mu.Unlock()
+	if expiredExists {
+		t.Fatal("expired entry should have been removed by gc() during readChunk")
+	}
+}
+
+// --- background GC loop ---
+
+func TestPageStore_GCLoopCleansExpired(t *testing.T) {
+	savedTTL := paginationTTL
+	paginationTTL = 100 * time.Millisecond
+	defer func() { paginationTTL = savedTTL }()
+
+	ps := newPageStore(100)
+	ps.startGCLoop()
+	defer ps.stopGCLoop()
+
+	// Inject an entry that will expire
+	ps.mu.Lock()
+	ps.entries["will-expire"] = &pageEntry{
+		chunks:    []string{"data"},
+		createdAt: time.Now(),
+	}
+	ps.mu.Unlock()
+
+	// Wait for TTL + gc interval (min 1s) to pass
+	time.Sleep(1500 * time.Millisecond)
+
+	ps.mu.Lock()
+	_, exists := ps.entries["will-expire"]
+	ps.mu.Unlock()
+	if exists {
+		t.Fatal("expired entry should have been cleaned by background gc loop")
+	}
+}
+
+func TestPageStore_StopGCLoop(t *testing.T) {
+	ps := newPageStore(100)
+	ps.startGCLoop()
+
+	ps.gcTimerMu.Lock()
+	timerActive := ps.gcTimer != nil
+	ps.gcTimerMu.Unlock()
+	if !timerActive {
+		t.Fatal("gcTimer should be set after startGCLoop")
+	}
+
+	ps.stopGCLoop()
+
+	ps.gcTimerMu.Lock()
+	timerNil := ps.gcTimer == nil
+	ps.gcTimerMu.Unlock()
+	if !timerNil {
+		t.Fatal("gcTimer should be nil after stopGCLoop")
+	}
+}
+
 // --- helpers ---
 
 func extractContinuationID(t *testing.T, header string) string {
