@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -16,7 +17,7 @@ import (
 var (
 	// commentRegexes используются для удаления SQL-комментариев.
 	reLookupCommentBlock = regexp.MustCompile(`(?s)/\*.*?\*/`)
-	reLookupCommentLine    = regexp.MustCompile(`(?m)--.*$`)
+	reLookupCommentLine  = regexp.MustCompile(`(?m)--.*$`)
 
 	// indexHintRegexes используются при парсинге from/join частей.
 	reLookupIndexHintExtract = regexp.MustCompile(`(?i)\s+(M_\w+_INDEX)\s*\(\s*([^\s,)]+)`)
@@ -30,12 +31,12 @@ var (
 	reLookupOn           = regexp.MustCompile(`(?i)\s+on\s+`)
 )
 
-func (r *Runner) getIndexedFile(path string) (*indexedFile, error) {
+func (r *Runner) getIndexedFile(ctx context.Context, path string) (*indexedFile, error) {
 	variants := []string{path, filepath.ToSlash(path), strings.ReplaceAll(path, "/", `\`)}
 	for _, candidate := range variants {
 		var item indexedFile
 		var dsProduct sql.NullInt64
-		err := r.db.QueryRow(`
+		err := r.db.QueryRowContext(ctx, `
 			SELECT id, path, rel_path, ds_product_id
 			FROM files
 			WHERE LOWER(path) = LOWER($1) OR LOWER(rel_path) = LOWER($1)
@@ -58,7 +59,7 @@ func (r *Runner) getIndexedFile(path string) (*indexedFile, error) {
 
 // cachedLookupProcedureParams возвращает параметры процедуры из prewarm-кэша,
 // или делает индивидуальный запрос при cache miss (fallback для unit-тестов без БД).
-func (r *Runner) cachedLookupProcedureParams(procName string) []model.SQLParam {
+func (r *Runner) cachedLookupProcedureParams(ctx context.Context, procName string) []model.SQLParam {
 	key := strings.ToLower(strings.TrimSpace(procName))
 	if r.procParamsCache != nil {
 		if params, ok := r.procParamsCache[key]; ok {
@@ -68,7 +69,7 @@ func (r *Runner) cachedLookupProcedureParams(procName string) []model.SQLParam {
 	if r.db == nil {
 		return nil
 	}
-	params, err := r.lookupProcedureParams(procName)
+	params, err := r.lookupProcedureParams(ctx, procName)
 	if err != nil || len(params) == 0 {
 		return nil
 	}
@@ -78,7 +79,7 @@ func (r *Runner) cachedLookupProcedureParams(procName string) []model.SQLParam {
 // cachedLookupProcedureProductID возвращает (productID, true) из prewarm-кэша,
 // или делает индивидуальный запрос при cache miss.
 // Возвращает (0, false) если процедура не найдена.
-func (r *Runner) cachedLookupProcedureProductID(procName string) (int64, bool) {
+func (r *Runner) cachedLookupProcedureProductID(ctx context.Context, procName string) (int64, bool) {
 	key := strings.ToLower(strings.TrimSpace(procName))
 	if r.procProductIDCache != nil {
 		if productID, ok := r.procProductIDCache[key]; ok {
@@ -88,7 +89,7 @@ func (r *Runner) cachedLookupProcedureProductID(procName string) (int64, bool) {
 	if r.db == nil {
 		return 0, false
 	}
-	productID, err := r.lookupProcedureProductID(procName)
+	productID, err := r.lookupProcedureProductID(ctx, procName)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return 0, false
@@ -103,7 +104,7 @@ func (r *Runner) cachedLookupProcedureProductID(procName string) (int64, bool) {
 
 // cachedLookupTableProductIDs возвращает productIDs для таблицы из prewarm-кэша,
 // или делает индивидуальный запрос при cache miss.
-func (r *Runner) cachedLookupTableProductIDs(tableName string) map[int64]struct{} {
+func (r *Runner) cachedLookupTableProductIDs(ctx context.Context, tableName string) map[int64]struct{} {
 	key := strings.ToLower(strings.TrimSpace(tableName))
 	if r.tableProductIDCache != nil {
 		if ids, ok := r.tableProductIDCache[key]; ok {
@@ -113,19 +114,19 @@ func (r *Runner) cachedLookupTableProductIDs(tableName string) map[int64]struct{
 	if r.db == nil {
 		return nil
 	}
-	ids, err := r.lookupTableProductIDs(tableName)
+	ids, err := r.lookupTableProductIDs(ctx, tableName)
 	if err != nil {
 		return nil
 	}
 	return ids
 }
 
-func (r *Runner) lookupTableProductIDs(tableName string) (map[int64]struct{}, error) {
+func (r *Runner) lookupTableProductIDs(ctx context.Context, tableName string) (map[int64]struct{}, error) {
 	result := make(map[int64]struct{})
 	name := strings.TrimSpace(tableName)
 
 	scanRows := func(query string) error {
-		rows, err := r.db.Query(query, name)
+		rows, err := r.db.QueryContext(ctx, query, name)
 		if err != nil {
 			return err
 		}
@@ -186,9 +187,9 @@ func (r *Runner) lookupTableProductIDs(tableName string) (map[int64]struct{}, er
 	return result, nil
 }
 
-func (r *Runner) lookupProcedureProductID(procName string) (int64, error) {
+func (r *Runner) lookupProcedureProductID(ctx context.Context, procName string) (int64, error) {
 	var productID int64
-	err := r.db.QueryRow(`
+	err := r.db.QueryRowContext(ctx, `
 		SELECT f.ds_product_id
 		FROM sql_procedures p
 		JOIN files f ON f.id = p.file_id
@@ -203,8 +204,8 @@ func (r *Runner) lookupProcedureProductID(procName string) (int64, error) {
 	return productID, nil
 }
 
-func (r *Runner) lookupProcedureCreateFiles(procName string) ([]int64, error) {
-	rows, err := r.db.Query(`
+func (r *Runner) lookupProcedureCreateFiles(ctx context.Context, procName string) ([]int64, error) {
+	rows, err := r.db.QueryContext(ctx, `
 		SELECT DISTINCT f.id
 		FROM sql_procedures p
 		JOIN files f ON f.id = p.file_id
@@ -229,7 +230,7 @@ func (r *Runner) lookupProcedureCreateFiles(procName string) ([]int64, error) {
 	return ids, rows.Err()
 }
 
-func (r *Runner) lookupIndexExists(tableName, indexName string) (bool, error) {
+func (r *Runner) lookupIndexExists(ctx context.Context, tableName, indexName string) (bool, error) {
 	normalizedTable := strings.ToLower(strings.TrimSpace(tableName))
 	normalizedIndex := strings.ToLower(strings.TrimSpace(normalizeIdentifier(indexName)))
 	if normalizedTable == "" || normalizedIndex == "" {
@@ -250,7 +251,7 @@ func (r *Runner) lookupIndexExists(tableName, indexName string) (bool, error) {
 	r.indexCandMu.Unlock()
 
 	// Cache miss: грузим и кэшируем
-	if err := r.batchLoadIndexCandidates([]string{normalizedTable}); err != nil {
+	if err := r.batchLoadIndexCandidates(ctx, []string{normalizedTable}); err != nil {
 		return false, err
 	}
 	r.indexCandMu.Lock()
@@ -264,7 +265,7 @@ func (r *Runner) lookupIndexExists(tableName, indexName string) (bool, error) {
 	return false, nil
 }
 
-func (r *Runner) lookupIndexFieldsByName(indexName string) ([]string, error) {
+func (r *Runner) lookupIndexFieldsByName(ctx context.Context, indexName string) ([]string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(normalizeIdentifier(indexName)))
 	if normalized == "" {
 		return nil, nil
@@ -277,7 +278,7 @@ func (r *Runner) lookupIndexFieldsByName(indexName string) ([]string, error) {
 	}
 	r.indexCandMu.Unlock()
 
-	rows, err := r.db.Query(`
+	rows, err := r.db.QueryContext(ctx, `
 		SELECT f.field_name
 		FROM sql_index_definitions i
 		LEFT JOIN sql_index_definition_fields f ON f.table_index_id = i.id
@@ -305,7 +306,7 @@ func (r *Runner) lookupIndexFieldsByName(indexName string) ([]string, error) {
 
 	// Также проверяем API-индексы
 	if len(fields) == 0 {
-		rows2, err := r.db.Query(`
+		rows2, err := r.db.QueryContext(ctx, `
 			SELECT f.field_name
 			FROM api_business_object_table_indexes i
 			JOIN api_business_object_tables t ON t.id = i.business_table_id
@@ -348,7 +349,7 @@ func (r *Runner) lookupIndexFieldsByName(indexName string) ([]string, error) {
 // prewarmIndexCache сканирует файл на наличие index-хинтов (WITH (INDEX=...)),
 // собирает уникальные имена таблиц и batch-загружает все их индексы в indexCandCache
 // и indexFieldsCache до запуска правил.
-func (r *Runner) prewarmIndexCache(fileLines []string) error {
+func (r *Runner) prewarmIndexCache(ctx context.Context, fileLines []string) error {
 	tableSet := make(map[string]struct{})
 	for _, line := range fileLines {
 		ll := strings.ToLower(line)
@@ -369,12 +370,13 @@ func (r *Runner) prewarmIndexCache(fileLines []string) error {
 	for t := range tableSet {
 		tableNames = append(tableNames, t)
 	}
-	return r.batchLoadIndexCandidates(tableNames)
+	return r.batchLoadIndexCandidates(ctx, tableNames)
 }
 
 // prewarmProcCaches загружает параметры и productID всех уникальных процедур
 // из parsed.Calls одним batch-запросом каждый, чтобы избежать N+1 в правилах.
-func (r *Runner) prewarmProcCaches(parsed *sqlparser.ParseResult) {
+func (r *Runner) prewarmProcCaches(ctx context.Context, parsed *sqlparser.ParseResult) {
+	_ = ctx
 	if r == nil || r.db == nil {
 		return
 	}
@@ -400,17 +402,18 @@ func (r *Runner) prewarmProcCaches(parsed *sqlparser.ParseResult) {
 	if len(names) == 0 {
 		return
 	}
-	if params, err := r.db.BatchLookupProcedureParams(names); err == nil {
+	if params, err := r.db.BatchLookupProcedureParams(context.Background(), names); err == nil {
 		r.procParamsCache = params
 	}
-	if productIDs, err := r.db.BatchLookupProcedureProductIDs(names); err == nil {
+	if productIDs, err := r.db.BatchLookupProcedureProductIDs(context.Background(), names); err == nil {
 		r.procProductIDCache = productIDs
 	}
 }
 
 // prewarmTableProductIDs загружает productID всех уникальных таблиц из parsed.Tables
 // одним batch-запросом, чтобы избежать N+1 в checkForeignTables/checkForeignPTables.
-func (r *Runner) prewarmTableProductIDs(parsed *sqlparser.ParseResult) {
+func (r *Runner) prewarmTableProductIDs(ctx context.Context, parsed *sqlparser.ParseResult) {
+	_ = ctx
 	if r == nil || r.db == nil {
 		return
 	}
@@ -433,14 +436,14 @@ func (r *Runner) prewarmTableProductIDs(parsed *sqlparser.ParseResult) {
 	if len(names) == 0 {
 		return
 	}
-	if result, err := r.db.BatchLookupTableProductIDs(names); err == nil {
+	if result, err := r.db.BatchLookupTableProductIDs(context.Background(), names); err == nil {
 		r.tableProductIDCache = result
 	}
 }
 
 // batchLoadIndexCandidates загружает все индексы (из sql_index_definitions и API)
 // для переданного набора таблиц и заполняет indexCandCache и indexFieldsCache.
-func (r *Runner) batchLoadIndexCandidates(tableNames []string) error {
+func (r *Runner) batchLoadIndexCandidates(ctx context.Context, tableNames []string) error {
 	if len(tableNames) == 0 {
 		return nil
 	}
@@ -486,7 +489,7 @@ func (r *Runner) batchLoadIndexCandidates(tableNames []string) error {
 		return rows.Err()
 	}
 
-	rows, err := r.db.Query(`
+	rows, err := r.db.QueryContext(ctx, `
 		SELECT LOWER(i.table_name), i.id, i.index_name, f.field_name, f.field_order
 		FROM sql_index_definitions i
 		LEFT JOIN sql_index_definition_fields f ON f.table_index_id = i.id
@@ -500,7 +503,7 @@ func (r *Runner) batchLoadIndexCandidates(tableNames []string) error {
 		return err
 	}
 
-	rows2, err := r.db.Query(`
+	rows2, err := r.db.QueryContext(ctx, `
 		SELECT LOWER(t.table_name), i.id, i.index_name, f.field_name, f.field_order
 		FROM api_business_object_table_indexes i
 		JOIN api_business_object_tables t ON t.id = i.business_table_id
@@ -551,7 +554,7 @@ func (r *Runner) batchLoadIndexCandidates(tableNames []string) error {
 	return nil
 }
 
-func (r *Runner) lookupTableIndexCandidates(tableName string) ([]tableIndexCandidate, error) {
+func (r *Runner) lookupTableIndexCandidates(ctx context.Context, tableName string) ([]tableIndexCandidate, error) {
 	normalizedTable := strings.ToLower(strings.TrimSpace(tableName))
 	if normalizedTable == "" {
 		return nil, nil
@@ -565,7 +568,7 @@ func (r *Runner) lookupTableIndexCandidates(tableName string) ([]tableIndexCandi
 	r.indexCandMu.Unlock()
 
 	// Cache miss: загружаем для этой таблицы
-	if err := r.batchLoadIndexCandidates([]string{normalizedTable}); err != nil {
+	if err := r.batchLoadIndexCandidates(ctx, []string{normalizedTable}); err != nil {
 		return nil, err
 	}
 	r.indexCandMu.Lock()
@@ -574,7 +577,7 @@ func (r *Runner) lookupTableIndexCandidates(tableName string) ([]tableIndexCandi
 	return cands, nil
 }
 
-func (r *Runner) findAPITableNames(names []string) (map[string]struct{}, error) {
+func (r *Runner) findAPITableNames(ctx context.Context, names []string) (map[string]struct{}, error) {
 	result := make(map[string]struct{})
 	normalized := make([]string, 0, len(names))
 	seen := map[string]struct{}{}
@@ -594,7 +597,7 @@ func (r *Runner) findAPITableNames(names []string) (map[string]struct{}, error) 
 	}
 
 	load := func(query string) error {
-		rows, err := r.db.Query(query, pq.Array(normalized))
+		rows, err := r.db.QueryContext(ctx, query, pq.Array(normalized))
 		if err != nil {
 			return err
 		}
@@ -1410,9 +1413,9 @@ func findStatementStartHint(lower string) (string, int) {
 	return "", -1
 }
 
-func (r *Runner) lookupProcedureParams(procName string) ([]model.SQLParam, error) {
+func (r *Runner) lookupProcedureParams(ctx context.Context, procName string) ([]model.SQLParam, error) {
 	var paramsJSON []byte
-	err := r.db.QueryRow(`
+	err := r.db.QueryRowContext(ctx, `
 		SELECT parameters
 		FROM sql_procedures
 		WHERE LOWER(proc_name) = LOWER($1)
@@ -1432,12 +1435,12 @@ func (r *Runner) lookupProcedureParams(procName string) ([]model.SQLParam, error
 		}
 	}
 	// fallback: API-контракты, где параметры живут в api_contract_params
-	return r.lookupAPIContractParams(procName)
+	return r.lookupAPIContractParams(ctx, procName)
 }
 
-func (r *Runner) lookupAPIContractParams(procName string) ([]model.SQLParam, error) {
+func (r *Runner) lookupAPIContractParams(ctx context.Context, procName string) ([]model.SQLParam, error) {
 	var contractID int64
-	err := r.db.QueryRow(`
+	err := r.db.QueryRowContext(ctx, `
 		SELECT id FROM api_contracts
 		WHERE LOWER(contract_name) = LOWER($1)
 		ORDER BY id DESC LIMIT 1
@@ -1449,7 +1452,7 @@ func (r *Runner) lookupAPIContractParams(procName string) ([]model.SQLParam, err
 		return nil, err
 	}
 
-	rows, err := r.db.Query(`
+	rows, err := r.db.QueryContext(ctx, `
 		SELECT param_name, COALESCE(type_name,''), direction
 		FROM api_contract_params
 		WHERE contract_id = $1
@@ -1485,7 +1488,8 @@ func (r *Runner) lookupAPIContractParams(procName string) ([]model.SQLParam, err
 
 // filterKnownNames фильтрует список имён, удаляя известные Diasoft макросы (M_*)
 // и константы из H-файлов (h_files_defines).
-func (r *Runner) filterKnownNames(names []string) []string {
+func (r *Runner) filterKnownNames(ctx context.Context, names []string) []string {
+	_ = ctx
 	if len(names) == 0 {
 		return names
 	}
@@ -1497,7 +1501,7 @@ func (r *Runner) filterKnownNames(names []string) []string {
 		}
 		// Проверяем в h_files_defines только если есть подключение к БД
 		if r.db != nil {
-			exists, err := r.db.FindHDefineExistsByName(name)
+			exists, err := r.db.FindHDefineExistsByName(context.Background(), name)
 			if err == nil && exists {
 				continue
 			}
@@ -1507,13 +1511,13 @@ func (r *Runner) filterKnownNames(names []string) []string {
 	return result
 }
 
-func (r *Runner) lookupMacroSignature(macroName string) (string, error) {
+func (r *Runner) lookupMacroSignature(ctx context.Context, macroName string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(macroName))
 	if normalized == "" {
 		return "", nil
 	}
 	var signature string
-	err := r.db.QueryRow(`
+	err := r.db.QueryRowContext(ctx, `
 		SELECT define_value
 		FROM h_files_defines
 		WHERE LOWER(define_name) = $1
@@ -1527,7 +1531,7 @@ func (r *Runner) lookupMacroSignature(macroName string) (string, error) {
 	return signature, err
 }
 
-func (r *Runner) cachedLookupMacroType(macroName string) string {
+func (r *Runner) cachedLookupMacroType(ctx context.Context, macroName string) string {
 	key := strings.ToLower(strings.TrimSpace(macroName))
 	r.macroTypeMu.Lock()
 	if v, ok := r.macroTypeCache[key]; ok {
@@ -1536,7 +1540,7 @@ func (r *Runner) cachedLookupMacroType(macroName string) string {
 	}
 	r.macroTypeMu.Unlock()
 
-	sig, err := r.lookupMacroSignature(macroName)
+	sig, err := r.lookupMacroSignature(ctx, macroName)
 	if err != nil || sig == "" {
 		r.macroTypeMu.Lock()
 		r.macroTypeCache[key] = ""

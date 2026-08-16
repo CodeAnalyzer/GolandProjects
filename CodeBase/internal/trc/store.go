@@ -1,6 +1,7 @@
 package trc
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -13,14 +14,14 @@ import (
 
 // SaveSession сохраняет результат разбора .trc файла в БД. Возвращает ID
 // созданной сессии.
-func SaveSession(db *store.DB, result *TRCParseResult, filePath string, fileSize int64) (int64, error) {
+func SaveSession(ctx context.Context, db *store.DB, result *TRCParseResult, filePath string, fileSize int64) (int64, error) {
 	var sessionID int64
 	h := result.Header
 	sourceFormat := result.SourceFormat
 	if sourceFormat == "" {
 		sourceFormat = "trc_binary"
 	}
-	err := db.QueryRow(
+	err := db.QueryRowContext(ctx, 
 		`INSERT INTO trc_sessions (file_path, file_size, total_events, provider_name, server_name, major_version, minor_version, build_number, source_format)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
 		filePath, fileSize, len(result.Events),
@@ -31,7 +32,7 @@ func SaveSession(db *store.DB, result *TRCParseResult, filePath string, fileSize
 		return 0, fmt.Errorf("failed to insert trc_sessions: %w", err)
 	}
 
-	if err := insertTRCEvents(db, result.Events, sessionID); err != nil {
+	if err := insertTRCEvents(ctx, db, result.Events, sessionID); err != nil {
 		return 0, fmt.Errorf("failed to insert trc_events: %w", err)
 	}
 
@@ -61,7 +62,7 @@ func SetBatchSize(size int) {
 	}
 }
 
-func insertTRCEvents(db *store.DB, events []TRCEvent, sessionID int64) error {
+func insertTRCEvents(ctx context.Context, db *store.DB, events []TRCEvent, sessionID int64) error {
 	if len(events) == 0 {
 		return nil
 	}
@@ -81,12 +82,12 @@ func insertTRCEvents(db *store.DB, events []TRCEvent, sessionID int64) error {
 			batchEnd = len(events)
 		}
 
-		tx, err := db.Begin()
+		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
 
-		stmt, err := tx.Prepare(pq.CopyIn("trc_events",
+		stmt, err := tx.PrepareContext(ctx, pq.CopyIn("trc_events",
 			"session_id", "event_class", "event_name", "text_data", "procedure",
 			"spid", "database_id", "database_name", "application_name", "login_name", "host_name",
 			"start_time", "end_time", "duration_ms", "cpu", "reads", "writes", "row_counts",
@@ -269,11 +270,11 @@ func nullableTime(v any) interface{} {
 }
 
 // ListSessions возвращает список сессий из БД.
-func ListSessions(db *store.DB, limit int) ([]TRCSession, error) {
+func ListSessions(ctx context.Context, db *store.DB, limit int) ([]TRCSession, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx, 
 		`SELECT id, file_path, file_size, parsed_at, total_events, provider_name, server_name, major_version, minor_version, build_number
 		 FROM trc_sessions ORDER BY parsed_at DESC LIMIT $1`,
 		limit,
@@ -299,10 +300,10 @@ func ListSessions(db *store.DB, limit int) ([]TRCSession, error) {
 }
 
 // GetSession возвращает информацию о сессии по ID.
-func GetSession(db *store.DB, sessionID int64) (*TRCSession, error) {
+func GetSession(ctx context.Context, db *store.DB, sessionID int64) (*TRCSession, error) {
 	var s TRCSession
 	var provider, server sql.NullString
-	err := db.QueryRow(
+	err := db.QueryRowContext(ctx, 
 		`SELECT id, file_path, file_size, parsed_at, total_events, provider_name, server_name, major_version, minor_version, build_number
 		 FROM trc_sessions WHERE id = $1`,
 		sessionID,
@@ -317,9 +318,9 @@ func GetSession(db *store.DB, sessionID int64) (*TRCSession, error) {
 }
 
 // GetLatestSessionID возвращает ID последней сессии.
-func GetLatestSessionID(db *store.DB) (int64, error) {
+func GetLatestSessionID(ctx context.Context, db *store.DB) (int64, error) {
 	var id int64
-	err := db.QueryRow(`SELECT id FROM trc_sessions ORDER BY parsed_at DESC LIMIT 1`).Scan(&id)
+	err := db.QueryRowContext(ctx, `SELECT id FROM trc_sessions ORDER BY parsed_at DESC LIMIT 1`).Scan(&id)
 	return id, err
 }
 
@@ -329,10 +330,10 @@ func GetLatestSessionID(db *store.DB) (int64, error) {
 // DeleteSession удаляет сессию по ID. Сначала батчами удаляются trc_events
 // (чтобы избежать длительного CASCADE-удаления в одной транзакции), затем
 // удаляется сама сессия.
-func DeleteSession(db *store.DB, sessionID int64) error {
+func DeleteSession(ctx context.Context, db *store.DB, sessionID int64) error {
 	// Пакетное удаление событий из trc_events
 	for {
-		res, err := db.Exec(
+		res, err := db.ExecContext(ctx, 
 			`DELETE FROM trc_events WHERE session_id = $1 AND id IN (
 				SELECT id FROM trc_events WHERE session_id = $1 LIMIT $2
 			)`,
@@ -347,7 +348,7 @@ func DeleteSession(db *store.DB, sessionID int64) error {
 		}
 	}
 	// Удаление сессии (CASCADE уже нечего удалять)
-	_, err := db.Exec(`DELETE FROM trc_sessions WHERE id = $1`, sessionID)
+	_, err := db.ExecContext(ctx, `DELETE FROM trc_sessions WHERE id = $1`, sessionID)
 	return err
 }
 
@@ -355,24 +356,24 @@ func DeleteSession(db *store.DB, sessionID int64) error {
 // При keepLast=0 используется TRUNCATE (мгновенная очистка независимо от
 // объёма данных). При keepLast>0 — пакетное удаление событий с последующим
 // удалением сессий.
-func PruneSessions(db *store.DB, keepLast int) (int64, error) {
+func PruneSessions(ctx context.Context, db *store.DB, keepLast int) (int64, error) {
 	if keepLast == 0 {
 		// Подсчитать количество сессий до TRUNCATE
 		var count int64
-		if err := db.QueryRow(`SELECT count(*) FROM trc_sessions`).Scan(&count); err != nil {
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM trc_sessions`).Scan(&count); err != nil {
 			return 0, fmt.Errorf("count trc_sessions: %w", err)
 		}
 		// TRUNCATE мгновенно очищает таблицы без построчного удаления
-		if _, err := db.Exec(`TRUNCATE trc_events, trc_sessions RESTART IDENTITY CASCADE`); err != nil {
+		if _, err := db.ExecContext(ctx, `TRUNCATE trc_events, trc_sessions RESTART IDENTITY CASCADE`); err != nil {
 			return 0, fmt.Errorf("truncate trc tables: %w", err)
 		}
 		// VACUUM ANALYZE после массового удаления (ошибка не критична)
-		_, _ = db.Exec(`VACUUM ANALYZE trc_events, trc_sessions`)
+		_, _ = db.ExecContext(ctx, `VACUUM ANALYZE trc_events, trc_sessions`)
 		return count, nil
 	}
 
 	// Найти ID сессий на удаление
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx, 
 		`SELECT id FROM trc_sessions WHERE id NOT IN (
 			SELECT id FROM trc_sessions ORDER BY parsed_at DESC LIMIT $1
 		)`,
@@ -398,7 +399,7 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 	// Пакетное удаление событий для каждой сессии
 	for _, sid := range ids {
 		for {
-			res, err := db.Exec(
+			res, err := db.ExecContext(ctx, 
 				`DELETE FROM trc_events WHERE session_id = $1 AND id IN (
 					SELECT id FROM trc_events WHERE session_id = $1 LIMIT $2
 				)`,
@@ -415,7 +416,7 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 	}
 
 	// Удаление сессий (CASCADE уже нечего удалять)
-	result, err := db.Exec(
+	result, err := db.ExecContext(ctx, 
 		`DELETE FROM trc_sessions WHERE id NOT IN (
 			SELECT id FROM trc_sessions ORDER BY parsed_at DESC LIMIT $1
 		)`,
@@ -426,14 +427,14 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 	}
 	deleted, _ := result.RowsAffected()
 	// VACUUM ANALYZE после массового удаления (ошибка не критична)
-	_, _ = db.Exec(`VACUUM ANALYZE trc_events, trc_sessions`)
+	_, _ = db.ExecContext(ctx, `VACUUM ANALYZE trc_events, trc_sessions`)
 	return deleted, nil
 }
 
 // LoadEvents загружает события сессии из БД, восстанавливая полный набор
 // декодированных Columns из JSONB-снапшота (см. marshalColumns).
-func LoadEvents(db *store.DB, sessionID int64) ([]TRCEvent, error) {
-	rows, err := db.Query(
+func LoadEvents(ctx context.Context, db *store.DB, sessionID int64) ([]TRCEvent, error) {
+	rows, err := db.QueryContext(ctx, 
 		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
 		        parent_id, depth
 		 FROM trc_events WHERE session_id = $1 ORDER BY id`,
@@ -498,7 +499,7 @@ type TRCEventFilter struct {
 }
 
 // LoadEventsFiltered загружает события сессии с серверной фильтрацией и лимитом.
-func LoadEventsFiltered(db *store.DB, sessionID int64, f TRCEventFilter, limit int) ([]TRCEvent, error) {
+func LoadEventsFiltered(ctx context.Context, db *store.DB, sessionID int64, f TRCEventFilter, limit int) ([]TRCEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -529,7 +530,7 @@ func LoadEventsFiltered(db *store.DB, sessionID int64, f TRCEventFilter, limit i
 	query += fmt.Sprintf(" ORDER BY id LIMIT $%d", argIdx)
 	args = append(args, limit)
 
-	rows, err := db.Query(query, args...)
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load filtered events: %w", err)
 	}
@@ -547,14 +548,14 @@ func LoadEventsFiltered(db *store.DB, sessionID int64, f TRCEventFilter, limit i
 }
 
 // LoadSlowEvents загружает самые медленные события сессии.
-func LoadSlowEvents(db *store.DB, sessionID int64, thresholdMs int, limit int) ([]TRCEvent, error) {
+func LoadSlowEvents(ctx context.Context, db *store.DB, sessionID int64, thresholdMs int, limit int) ([]TRCEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	if limit > 1000 {
 		limit = 1000
 	}
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx, 
 		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
 		        parent_id, depth
 		 FROM trc_events
@@ -579,14 +580,14 @@ func LoadSlowEvents(db *store.DB, sessionID int64, thresholdMs int, limit int) (
 }
 
 // LoadErrorEvents загружает события с ненулевым Error.
-func LoadErrorEvents(db *store.DB, sessionID int64, limit int) ([]TRCEvent, error) {
+func LoadErrorEvents(ctx context.Context, db *store.DB, sessionID int64, limit int) ([]TRCEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	if limit > 1000 {
 		limit = 1000
 	}
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx, 
 		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
 		        parent_id, depth
 		 FROM trc_events
@@ -611,14 +612,14 @@ func LoadErrorEvents(db *store.DB, sessionID int64, limit int) ([]TRCEvent, erro
 }
 
 // LoadEventsByProcedure загружает события конкретной процедуры.
-func LoadEventsByProcedure(db *store.DB, sessionID int64, procName string, limit int) ([]TRCEvent, error) {
+func LoadEventsByProcedure(ctx context.Context, db *store.DB, sessionID int64, procName string, limit int) ([]TRCEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	if limit > 1000 {
 		limit = 1000
 	}
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx, 
 		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
 		        parent_id, depth
 		 FROM trc_events
@@ -643,9 +644,9 @@ func LoadEventsByProcedure(db *store.DB, sessionID int64, procName string, limit
 }
 
 // LoadEventCount возвращает количество событий в сессии без их загрузки.
-func LoadEventCount(db *store.DB, sessionID int64) (int, error) {
+func LoadEventCount(ctx context.Context, db *store.DB, sessionID int64) (int, error) {
 	var count int
-	err := db.QueryRow(
+	err := db.QueryRowContext(ctx, 
 		`SELECT count(*) FROM trc_events WHERE session_id = $1`,
 		sessionID,
 	).Scan(&count)
@@ -653,8 +654,8 @@ func LoadEventCount(db *store.DB, sessionID int64) (int, error) {
 }
 
 // LoadProceduresAggregated агрегирует статистику по процедурам на стороне БД.
-func LoadProceduresAggregated(db *store.DB, sessionID int64) ([]TRCProcAgg, error) {
-	rows, err := db.Query(
+func LoadProceduresAggregated(ctx context.Context, db *store.DB, sessionID int64) ([]TRCProcAgg, error) {
+	rows, err := db.QueryContext(ctx, 
 		`SELECT procedure,
 		        count(*) AS cnt,
 		        COALESCE(sum(duration_ms), 0) AS total_ms,
@@ -689,10 +690,10 @@ func LoadProceduresAggregated(db *store.DB, sessionID int64) ([]TRCProcAgg, erro
 // spid: 0 = выбрать SPID с наибольшим числом событий.
 // maxDepth: 0 = без ограничения глубины.
 // maxNodes: 0 = без ограничения количества узлов.
-func LoadEventsForTree(db *store.DB, sessionID int64, spid, maxDepth, maxNodes int) ([]TRCEvent, error) {
+func LoadEventsForTree(ctx context.Context, db *store.DB, sessionID int64, spid, maxDepth, maxNodes int) ([]TRCEvent, error) {
 	// Если SPID не указан, выбираем SPID с наибольшим числом корневых событий.
 	if spid <= 0 {
-		err := db.QueryRow(
+		err := db.QueryRowContext(ctx, 
 			`SELECT spid FROM trc_events
 			 WHERE session_id = $1 AND parent_id IS NULL AND spid IS NOT NULL
 			 GROUP BY spid ORDER BY count(*) DESC LIMIT 1`,
@@ -734,7 +735,7 @@ func LoadEventsForTree(db *store.DB, sessionID int64, spid, maxDepth, maxNodes i
 		args = append(args, maxNodes)
 	}
 
-	rows, err := db.Query(query, args...)
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load tree events: %w", err)
 	}

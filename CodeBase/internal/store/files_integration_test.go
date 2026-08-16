@@ -3,6 +3,7 @@
 package store_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -27,7 +28,7 @@ func insertNamedFile(t *testing.T, db *store.DB, scanID int64, path, hash string
 
 func TestDeleteFilesByPathsExcept_KeepsNewIDAndCascades(t *testing.T) {
 	db := testutil.Open(t)
-	scanID, err := db.CreateScanRun("/repo")
+	scanID, err := db.CreateScanRun(context.Background(), "/repo")
 	if err != nil {
 		t.Fatalf("CreateScanRun: %v", err)
 	}
@@ -36,14 +37,14 @@ func TestDeleteFilesByPathsExcept_KeepsNewIDAndCascades(t *testing.T) {
 	newID := insertNamedFile(t, db, scanID, "/repo/a.sql", "new")
 	otherID := insertNamedFile(t, db, scanID, "/repo/b.sql", "b")
 
-	if err := db.BatchInsertSQLProcedures([]*model.SQLProcedure{
+	if err := db.BatchInsertSQLProcedures(context.Background(), []*model.SQLProcedure{
 		{FileID: oldID, ProcName: "OldProc", LineStart: 1, LineEnd: 2},
 		{FileID: newID, ProcName: "NewProc", LineStart: 1, LineEnd: 2},
 	}, 100); err != nil {
 		t.Fatalf("insert procs: %v", err)
 	}
 
-	if err := db.DeleteFilesByPathsExcept([]string{"/repo/a.sql", "/repo/missing.sql"}, map[string]int64{"/repo/a.sql": newID}); err != nil {
+	if err := db.DeleteFilesByPathsExcept(context.Background(), []string{"/repo/a.sql", "/repo/missing.sql"}, map[string]int64{"/repo/a.sql": newID}); err != nil {
 		t.Fatalf("DeleteFilesByPathsExcept: %v", err)
 	}
 
@@ -61,10 +62,10 @@ func TestDeleteFilesByPathsExcept_KeepsNewIDAndCascades(t *testing.T) {
 		t.Fatal("old procedure must cascade-delete")
 	}
 
-	if err := db.DeleteFilesByPaths(nil); err != nil {
+	if err := db.DeleteFilesByPaths(context.Background(), nil); err != nil {
 		t.Fatalf("empty DeleteFilesByPaths: %v", err)
 	}
-	if err := db.DeleteFilesByPaths([]string{"/repo/b.sql"}); err != nil {
+	if err := db.DeleteFilesByPaths(context.Background(), []string{"/repo/b.sql"}); err != nil {
 		t.Fatalf("DeleteFilesByPaths: %v", err)
 	}
 	_ = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM files WHERE id=$1)`, otherID).Scan(&otherExists)
@@ -75,14 +76,14 @@ func TestDeleteFilesByPathsExcept_KeepsNewIDAndCascades(t *testing.T) {
 
 func TestGetLatestFilesByRootPath_PicksLatestID(t *testing.T) {
 	db := testutil.Open(t)
-	scanID, err := db.CreateScanRun("/repo")
+	scanID, err := db.CreateScanRun(context.Background(), "/repo")
 	if err != nil {
 		t.Fatalf("CreateScanRun: %v", err)
 	}
 	_ = insertNamedFile(t, db, scanID, "/repo/a.sql", "old")
 	newID := insertNamedFile(t, db, scanID, "/repo/a.sql", "new")
 
-	files, err := db.GetLatestFilesByRootPath("/repo")
+	files, err := db.GetLatestFilesByRootPath(context.Background(), "/repo")
 	if err != nil {
 		t.Fatalf("GetLatestFilesByRootPath: %v", err)
 	}

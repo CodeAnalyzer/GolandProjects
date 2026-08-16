@@ -1,6 +1,7 @@
 package trc
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -12,7 +13,7 @@ type mockLookup struct {
 	procs map[string]*query.SQLProcedureResult
 }
 
-func (m *mockLookup) GetProcedureResult(name string) (*query.SQLProcedureResult, error) {
+func (m *mockLookup) GetProcedureResult(ctx context.Context, name string) (*query.SQLProcedureResult, error) {
 	if proc, ok := m.procs[name]; ok {
 		return proc, nil
 	}
@@ -31,7 +32,7 @@ func TestEnrichProcedure_Found(t *testing.T) {
 			},
 		},
 	}
-	enrich, err := EnrichProcedure(mock, "MyProc")
+	enrich, err := EnrichProcedure(context.Background(), mock, "MyProc")
 	if err != nil {
 		t.Fatalf("EnrichProcedure: %v", err)
 	}
@@ -49,7 +50,7 @@ func TestEnrichProcedure_Found(t *testing.T) {
 // TestEnrichProcedure_NotFound — процедура не найдена, возвращается ошибка.
 func TestEnrichProcedure_NotFound(t *testing.T) {
 	mock := &mockLookup{procs: map[string]*query.SQLProcedureResult{}}
-	_, err := EnrichProcedure(mock, "UnknownProc")
+	_, err := EnrichProcedure(context.Background(), mock, "UnknownProc")
 	if err == nil {
 		t.Fatal("expected error for unknown procedure")
 	}
@@ -62,7 +63,7 @@ func TestEnrichProcedure_HashSuffix(t *testing.T) {
 			"BaseProc": {ProcName: "BaseProc", File: "/path/BaseProc.sql"},
 		},
 	}
-	enrich, err := EnrichProcedure(mock, "BaseProc#123")
+	enrich, err := EnrichProcedure(context.Background(), mock, "BaseProc#123")
 	if err != nil {
 		t.Fatalf("EnrichProcedure: %v", err)
 	}
@@ -88,7 +89,7 @@ func TestEnrichEvents_Dedup(t *testing.T) {
 		{Procedure: "ProcA"},
 		{Procedure: ""},
 	}
-	enrichMap := EnrichEvents(mock, events)
+	enrichMap := EnrichEvents(context.Background(), mock, events)
 	if len(enrichMap) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(enrichMap))
 	}

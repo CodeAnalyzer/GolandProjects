@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -9,11 +10,11 @@ import (
 	"github.com/lib/pq"
 )
 
-// GetLatestFilesByRootPath возвращает последнее известное состояние файлов для указанного root path.
-func (db *DB) GetLatestFilesByRootPath(rootPath string) (map[string]*model.File, error) {
+// GetLatestFilesByRootPath РІРѕР·РІСЂР°С‰Р°РµС‚ РїРѕСЃР»РµРґРЅРµРµ РёР·РІРµСЃС‚РЅРѕРµ СЃРѕСЃС‚РѕСЏРЅРёРµ С„Р°Р№Р»РѕРІ РґР»СЏ СѓРєР°Р·Р°РЅРЅРѕРіРѕ root path.
+func (db *DB) GetLatestFilesByRootPath(ctx context.Context, rootPath string) (map[string]*model.File, error) {
 	normalizedRoot := strings.ReplaceAll(strings.TrimSpace(rootPath), `\`, "/")
 	normalizedRoot = strings.TrimSuffix(normalizedRoot, "/")
-	rows, err := db.Query(`
+	rows, err := db.QueryContext(ctx, `
 		SELECT DISTINCT ON (path)
 			id, scan_run_id, ds_product_id, path, rel_path, extension, size_bytes,
 			hash_sha256, modified_at, encoding, language, created_at, updated_at
@@ -60,26 +61,26 @@ func (db *DB) GetLatestFilesByRootPath(rootPath string) (map[string]*model.File,
 	return files, nil
 }
 
-// DeleteFilesByPath удаляет все записи файла по path вместе с зависимыми сущностями.
-func (db *DB) DeleteFilesByPath(path string) error {
-	_, err := db.Exec(`DELETE FROM files WHERE path = $1`, path)
+// DeleteFilesByPath СѓРґР°Р»СЏРµС‚ РІСЃРµ Р·Р°РїРёСЃРё С„Р°Р№Р»Р° РїРѕ path РІРјРµСЃС‚Рµ СЃ Р·Р°РІРёСЃРёРјС‹РјРё СЃСѓС‰РЅРѕСЃС‚СЏРјРё.
+func (db *DB) DeleteFilesByPath(ctx context.Context, path string) error {
+	_, err := db.execCtx(ctx, `DELETE FROM files WHERE path = $1`, path)
 	if err != nil {
 		return fmt.Errorf("failed to delete file by path: %w", err)
 	}
 	return nil
 }
 
-// DeleteFilesByPathExcept удаляет все записи файла по path, кроме указанной.
-func (db *DB) DeleteFilesByPathExcept(path string, keepID int64) error {
-	_, err := db.Exec(`DELETE FROM files WHERE path = $1 AND id <> $2`, path, keepID)
+// DeleteFilesByPathExcept СѓРґР°Р»СЏРµС‚ РІСЃРµ Р·Р°РїРёСЃРё С„Р°Р№Р»Р° РїРѕ path, РєСЂРѕРјРµ СѓРєР°Р·Р°РЅРЅРѕР№.
+func (db *DB) DeleteFilesByPathExcept(ctx context.Context, path string, keepID int64) error {
+	_, err := db.execCtx(ctx, `DELETE FROM files WHERE path = $1 AND id <> $2`, path, keepID)
 	if err != nil {
 		return fmt.Errorf("failed to delete outdated file rows: %w", err)
 	}
 	return nil
 }
 
-// DeleteFilesByPaths удаляет все записи файлов по списку path одним батчем.
-func (db *DB) DeleteFilesByPaths(paths []string) error {
+// DeleteFilesByPaths СѓРґР°Р»СЏРµС‚ РІСЃРµ Р·Р°РїРёСЃРё С„Р°Р№Р»РѕРІ РїРѕ СЃРїРёСЃРєСѓ path РѕРґРЅРёРј Р±Р°С‚С‡РµРј.
+func (db *DB) DeleteFilesByPaths(ctx context.Context, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
@@ -90,16 +91,16 @@ func (db *DB) DeleteFilesByPaths(paths []string) error {
 			end = len(paths)
 		}
 		chunk := paths[i:end]
-		if _, err := db.Exec(`DELETE FROM files WHERE path = ANY($1)`, pq.Array(chunk)); err != nil {
+		if _, err := db.execCtx(ctx, `DELETE FROM files WHERE path = ANY($1)`, pq.Array(chunk)); err != nil {
 			return fmt.Errorf("failed to delete files by paths: %w", err)
 		}
 	}
 	return nil
 }
 
-// DeleteFilesByPathsExcept удаляет все записи файлов по списку path, кроме указанных ID.
-// keepIDs — map[path]id, которые нужно сохранить.
-func (db *DB) DeleteFilesByPathsExcept(paths []string, keepIDs map[string]int64) error {
+// DeleteFilesByPathsExcept СѓРґР°Р»СЏРµС‚ РІСЃРµ Р·Р°РїРёСЃРё С„Р°Р№Р»РѕРІ РїРѕ СЃРїРёСЃРєСѓ path, РєСЂРѕРјРµ СѓРєР°Р·Р°РЅРЅС‹С… ID.
+// keepIDs вЂ” map[path]id, РєРѕС‚РѕСЂС‹Рµ РЅСѓР¶РЅРѕ СЃРѕС…СЂР°РЅРёС‚СЊ.
+func (db *DB) DeleteFilesByPathsExcept(ctx context.Context, paths []string, keepIDs map[string]int64) error {
 	if len(paths) == 0 {
 		return nil
 	}
@@ -111,7 +112,7 @@ func (db *DB) DeleteFilesByPathsExcept(paths []string, keepIDs map[string]int64)
 		}
 		withKeep, withoutKeep := splitPathsByKeepIDs(paths[i:end], keepIDs)
 		if len(withoutKeep) > 0 {
-			if _, err := db.Exec(`DELETE FROM files WHERE path = ANY($1)`, pq.Array(withoutKeep)); err != nil {
+			if _, err := db.execCtx(ctx, `DELETE FROM files WHERE path = ANY($1)`, pq.Array(withoutKeep)); err != nil {
 				return fmt.Errorf("failed to delete files by paths: %w", err)
 			}
 		}
@@ -122,7 +123,7 @@ func (db *DB) DeleteFilesByPathsExcept(paths []string, keepIDs map[string]int64)
 				keepPathArr[j] = p
 				keepIDArr[j] = keepIDs[p]
 			}
-			if _, err := db.Exec(`
+			if _, err := db.execCtx(ctx, `
 				DELETE FROM files
 				WHERE path = ANY($1) AND NOT (id = ANY($2))
 			`, pq.Array(keepPathArr), pq.Array(keepIDArr)); err != nil {
@@ -161,8 +162,8 @@ func chunkStrings(values []string, chunkSize int) [][]string {
 	return chunks
 }
 
-// FindLatestFileIDByPaths возвращает последний file id, найденный по одному из path/rel_path кандидатов.
-func (db *DB) FindLatestFileIDByPaths(paths []string) (int64, error) {
+// FindLatestFileIDByPaths РІРѕР·РІСЂР°С‰Р°РµС‚ РїРѕСЃР»РµРґРЅРёР№ file id, РЅР°Р№РґРµРЅРЅС‹Р№ РїРѕ РѕРґРЅРѕРјСѓ РёР· path/rel_path РєР°РЅРґРёРґР°С‚РѕРІ.
+func (db *DB) FindLatestFileIDByPaths(ctx context.Context, paths []string) (int64, error) {
 	if len(paths) == 0 {
 		return 0, sql.ErrNoRows
 	}
@@ -186,7 +187,7 @@ func (db *DB) FindLatestFileIDByPaths(paths []string) (int64, error) {
 	}
 
 	var id int64
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT id
 		FROM files
 		WHERE LOWER(path) = ANY($1) OR LOWER(rel_path) = ANY($1)

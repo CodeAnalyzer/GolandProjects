@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -45,13 +46,13 @@ func (idx *Indexer) postProcessFragmentRelations(collector *statsCollector) {
 		}
 	}
 
-	tableIDMap, err := idx.db.FindLatestSQLTableIDsByNames(tableNames)
+	tableIDMap, err := idx.db.FindLatestSQLTableIDsByNames(context.Background(), tableNames)
 	if err != nil {
 		idx.logError("<post-processing>", "Error resolving fragment table refs: %v", err)
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		return
 	}
-	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(procNames)
+	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(context.Background(), procNames)
 	if err != nil {
 		idx.logError("<post-processing>", "Error resolving fragment proc refs: %v", err)
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
@@ -145,7 +146,7 @@ func (idx *Indexer) postProcessJSCallRelations(collector *statsCollector) {
 		}
 	}
 
-	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(procNames)
+	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(context.Background(), procNames)
 	if err != nil {
 		idx.logError("<post-processing>", "Error resolving JS call targets: %v", err)
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
@@ -217,7 +218,7 @@ func (idx *Indexer) postProcessT01SubscriberRelations(collector *statsCollector)
 		}
 	}
 
-	calleeIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(calleeNames)
+	calleeIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(context.Background(), calleeNames)
 	if err != nil {
 		idx.logError("<post-processing>", "Error resolving T01 subscriber targets: %v", err)
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
@@ -299,7 +300,7 @@ func (idx *Indexer) postProcessAPIMacroRelations(collector *statsCollector) {
 		}
 	}
 
-	contractIDMap, err := idx.db.FindLatestAPIContractIDsByNamesAndKinds(contractPairs)
+	contractIDMap, err := idx.db.FindLatestAPIContractIDsByNamesAndKinds(context.Background(), contractPairs)
 	if err != nil {
 		contractIDMap = map[string]int64{}
 	}
@@ -309,7 +310,7 @@ func (idx *Indexer) postProcessAPIMacroRelations(collector *statsCollector) {
 			procNames = append(procNames, name)
 		}
 	}
-	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(procNames)
+	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(context.Background(), procNames)
 	if err != nil {
 		procIDMap = map[string]int64{}
 	}

@@ -1,6 +1,7 @@
 package rti
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -13,10 +14,10 @@ import (
 
 // SaveSession сохраняет результат парсинга RTI-лога в БД.
 // Возвращает ID созданной сессии.
-func SaveSession(db *store.DB, result *RTIParseResult, filePath string) (int64, error) {
+func SaveSession(ctx context.Context, db *store.DB, result *RTIParseResult, filePath string) (int64, error) {
 	// 1. Создать rti_sessions запись
 	var sessionID int64
-	err := db.QueryRow(
+	err := db.QueryRowContext(ctx, 
 		`INSERT INTO rti_sessions (file_path, file_size, total_calls, errors_count, max_nest_level, unparsed_lines, client_events_count)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
 		filePath, result.Summary.FileSize, result.Summary.TotalCalls,
@@ -28,33 +29,33 @@ func SaveSession(db *store.DB, result *RTIParseResult, filePath string) (int64, 
 	}
 
 	// 2. Batch insert rti_calls
-	callIDs, err := insertRTICalls(db, result.Calls, sessionID)
+	callIDs, err := insertRTICalls(ctx, db, result.Calls, sessionID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert rti_calls: %w", err)
 	}
 
 	// 3. Batch insert rti_params
-	if err := insertRTIParams(db, result.Calls, callIDs); err != nil {
+	if err := insertRTIParams(ctx, db, result.Calls, callIDs); err != nil {
 		return 0, fmt.Errorf("failed to insert rti_params: %w", err)
 	}
 
 	// 4. Batch insert rti_checkpoints
-	if err := insertRTICheckpoints(db, result.Calls, callIDs); err != nil {
+	if err := insertRTICheckpoints(ctx, db, result.Calls, callIDs); err != nil {
 		return 0, fmt.Errorf("failed to insert rti_checkpoints: %w", err)
 	}
 
 	// 5. Batch insert rti_blog_blocks
-	if err := insertRTIBLogBlocks(db, result.Calls, callIDs, sessionID); err != nil {
+	if err := insertRTIBLogBlocks(ctx, db, result.Calls, callIDs, sessionID); err != nil {
 		return 0, fmt.Errorf("failed to insert rti_blog_blocks: %w", err)
 	}
 
 	// 6. Batch insert rti_blog_tables
-	if err := insertRTIBLogTables(db, result.Calls, callIDs, sessionID); err != nil {
+	if err := insertRTIBLogTables(ctx, db, result.Calls, callIDs, sessionID); err != nil {
 		return 0, fmt.Errorf("failed to insert rti_blog_tables: %w", err)
 	}
 
 	// 7. Batch insert rti_client_events
-	if _, err := insertRTIClientEvents(db, result.ClientEvents, sessionID, callIDs); err != nil {
+	if _, err := insertRTIClientEvents(ctx, db, result.ClientEvents, sessionID, callIDs); err != nil {
 		return 0, fmt.Errorf("failed to insert rti_client_events: %w", err)
 	}
 
@@ -74,19 +75,19 @@ type clientEventPayload struct {
 	RawBody    string             `json:"raw_body,omitempty"`
 }
 
-func insertRTIClientEvents(db *store.DB, events []*RTIClientEvent, sessionID int64, callIDs map[int64]int64) (map[int64]int64, error) {
+func insertRTIClientEvents(ctx context.Context, db *store.DB, events []*RTIClientEvent, sessionID int64, callIDs map[int64]int64) (map[int64]int64, error) {
 	eventIDs := make(map[int64]int64)
 	if len(events) == 0 {
 		return eventIDs, nil
 	}
 
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	stmt, err := tx.Prepare(pq.CopyIn("rti_client_events",
+	stmt, err := tx.PrepareContext(ctx, pq.CopyIn("rti_client_events",
 		"session_id", "timestamp", "level", "category", "class_name", "method_name",
 		"pid", "seq_no", "line_no", "kind", "elapsed_ms", "payload", "server_call_id",
 	))
@@ -142,7 +143,7 @@ func insertRTIClientEvents(db *store.DB, events []*RTIClientEvent, sessionID int
 
 	// Сопоставляем оригинальные ID событий (в памяти) с ID, назначенными БД,
 	// по ключу (session_id, line_no, pid, kind) — аналогично insertRTICalls.
-	rows, err := tx.Query(
+	rows, err := tx.QueryContext(ctx, 
 		`SELECT id, line_no, pid, kind FROM rti_client_events WHERE session_id = $1 ORDER BY id`,
 		sessionID,
 	)
@@ -182,19 +183,19 @@ func insertRTIClientEvents(db *store.DB, events []*RTIClientEvent, sessionID int
 	return eventIDs, nil
 }
 
-func insertRTICalls(db *store.DB, calls []*RTICall, sessionID int64) (map[int64]int64, error) {
+func insertRTICalls(ctx context.Context, db *store.DB, calls []*RTICall, sessionID int64) (map[int64]int64, error) {
 	callIDs := make(map[int64]int64)
 	if len(calls) == 0 {
 		return callIDs, nil
 	}
 
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	stmt, err := tx.Prepare(pq.CopyIn("rti_calls",
+	stmt, err := tx.PrepareContext(ctx, pq.CopyIn("rti_calls",
 		"session_id", "procedure", "enter_line", "exit_line",
 		"enter_time", "exit_time", "elapsed_ms", "nest_level",
 		"module_id", "module_name", "tran_count", "begin_cnt",
@@ -236,7 +237,7 @@ func insertRTICalls(db *store.DB, calls []*RTICall, sessionID int64) (map[int64]
 	stmt.Close()
 
 	// Получить ID вставленных записей
-	rows, err := tx.Query(
+	rows, err := tx.QueryContext(ctx, 
 		`SELECT id, enter_line, procedure, spid FROM rti_calls WHERE session_id = $1 ORDER BY id`,
 		sessionID,
 	)
@@ -311,7 +312,7 @@ func insertRTICalls(db *store.DB, calls []*RTICall, sessionID int64) (map[int64]
 		}
 		sb.WriteString(fmt.Sprintf(") AS v(id, parent_id) WHERE t.id = v.id AND t.session_id = $%d", len(batch)*2+1))
 		args = append(args, sessionID)
-		if _, err := tx.Exec(sb.String(), args...); err != nil {
+		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
 			return nil, err
 		}
 	}
@@ -323,7 +324,7 @@ func insertRTICalls(db *store.DB, calls []*RTICall, sessionID int64) (map[int64]
 	return callIDs, nil
 }
 
-func insertRTIParams(db *store.DB, calls []*RTICall, callIDs map[int64]int64) error {
+func insertRTIParams(ctx context.Context, db *store.DB, calls []*RTICall, callIDs map[int64]int64) error {
 	var params []struct {
 		callID int64
 		name   string
@@ -348,13 +349,13 @@ func insertRTIParams(db *store.DB, calls []*RTICall, callIDs map[int64]int64) er
 		return nil
 	}
 
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	stmt, err := tx.Prepare(pq.CopyIn("rti_params", "call_id", "name", "type", "value"))
+	stmt, err := tx.PrepareContext(ctx, pq.CopyIn("rti_params", "call_id", "name", "type", "value"))
 	if err != nil {
 		return err
 	}
@@ -375,7 +376,7 @@ func insertRTIParams(db *store.DB, calls []*RTICall, callIDs map[int64]int64) er
 	return tx.Commit()
 }
 
-func insertRTICheckpoints(db *store.DB, calls []*RTICall, callIDs map[int64]int64) error {
+func insertRTICheckpoints(ctx context.Context, db *store.DB, calls []*RTICall, callIDs map[int64]int64) error {
 	var checkpoints []struct {
 		callID    int64
 		label     string
@@ -402,13 +403,13 @@ func insertRTICheckpoints(db *store.DB, calls []*RTICall, callIDs map[int64]int6
 		return nil
 	}
 
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	stmt, err := tx.Prepare(pq.CopyIn("rti_checkpoints", "call_id", "label", "timestamp", "elapsed_ms", "line_no"))
+	stmt, err := tx.PrepareContext(ctx, pq.CopyIn("rti_checkpoints", "call_id", "label", "timestamp", "elapsed_ms", "line_no"))
 	if err != nil {
 		return err
 	}
@@ -429,7 +430,7 @@ func insertRTICheckpoints(db *store.DB, calls []*RTICall, callIDs map[int64]int6
 	return tx.Commit()
 }
 
-func insertRTIBLogBlocks(db *store.DB, calls []*RTICall, callIDs map[int64]int64, sessionID int64) error {
+func insertRTIBLogBlocks(ctx context.Context, db *store.DB, calls []*RTICall, callIDs map[int64]int64, sessionID int64) error {
 	type row struct {
 		callID    int64
 		blockName string
@@ -453,13 +454,13 @@ func insertRTIBLogBlocks(db *store.DB, calls []*RTICall, callIDs map[int64]int64
 		return nil
 	}
 
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	stmt, err := tx.Prepare(pq.CopyIn("rti_blog_blocks",
+	stmt, err := tx.PrepareContext(ctx, pq.CopyIn("rti_blog_blocks",
 		"session_id", "call_id", "block_name", "enter_time", "exit_time", "elapsed_ms", "enter_line", "exit_line"))
 	if err != nil {
 		return err
@@ -484,7 +485,7 @@ func insertRTIBLogBlocks(db *store.DB, calls []*RTICall, callIDs map[int64]int64
 	return tx.Commit()
 }
 
-func insertRTIBLogTables(db *store.DB, calls []*RTICall, callIDs map[int64]int64, sessionID int64) error {
+func insertRTIBLogTables(ctx context.Context, db *store.DB, calls []*RTICall, callIDs map[int64]int64, sessionID int64) error {
 	type row struct {
 		callID    int64
 		tableName string
@@ -513,13 +514,13 @@ func insertRTIBLogTables(db *store.DB, calls []*RTICall, callIDs map[int64]int64
 		return nil
 	}
 
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	stmt, err := tx.Prepare(pq.CopyIn("rti_blog_tables",
+	stmt, err := tx.PrepareContext(ctx, pq.CopyIn("rti_blog_tables",
 		"session_id", "call_id", "table_name", "columns_header", "row_count", "rows_data", "enter_line"))
 	if err != nil {
 		return err
@@ -538,8 +539,8 @@ func insertRTIBLogTables(db *store.DB, calls []*RTICall, callIDs map[int64]int64
 }
 
 // LoadBLogBlocks загружает BLog-блоки вызова из БД.
-func LoadBLogBlocks(db *store.DB, sessionID int64, callID int64) ([]RTIBLogBlock, error) {
-	rows, err := db.Query(
+func LoadBLogBlocks(ctx context.Context, db *store.DB, sessionID int64, callID int64) ([]RTIBLogBlock, error) {
+	rows, err := db.QueryContext(ctx, 
 		`SELECT block_name, enter_time, exit_time, elapsed_ms, enter_line, exit_line
 		 FROM rti_blog_blocks WHERE session_id = $1 AND call_id = $2 ORDER BY id`,
 		sessionID, callID)
@@ -567,8 +568,8 @@ func LoadBLogBlocks(db *store.DB, sessionID int64, callID int64) ([]RTIBLogBlock
 }
 
 // LoadBLogTables загружает BLog-дампы таблиц вызова из БД.
-func LoadBLogTables(db *store.DB, sessionID int64, callID int64) ([]RTIBLogTable, error) {
-	rows, err := db.Query(
+func LoadBLogTables(ctx context.Context, db *store.DB, sessionID int64, callID int64) ([]RTIBLogTable, error) {
+	rows, err := db.QueryContext(ctx, 
 		`SELECT table_name, columns_header, row_count, rows_data, enter_line
 		 FROM rti_blog_tables WHERE session_id = $1 AND call_id = $2 ORDER BY id`,
 		sessionID, callID)
@@ -596,11 +597,11 @@ func LoadBLogTables(db *store.DB, sessionID int64, callID int64) ([]RTIBLogTable
 }
 
 // ListSessions возвращает список сессий из БД.
-func ListSessions(db *store.DB, limit int) ([]RTISession, error) {
+func ListSessions(ctx context.Context, db *store.DB, limit int) ([]RTISession, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx, 
 		`SELECT id, file_path, file_size, parsed_at, total_calls, errors_count, max_nest_level, unparsed_lines, client_events_count
 		 FROM rti_sessions ORDER BY parsed_at DESC LIMIT $1`,
 		limit,
@@ -635,10 +636,10 @@ func SetBatchSize(size int) {
 // DeleteSession удаляет сессию по ID. Сначала батчами удаляются дочерние
 // таблицы (чтобы избежать длительного CASCADE-удаления в одной транзакции),
 // затем удаляется сама сессия.
-func DeleteSession(db *store.DB, sessionID int64) error {
+func DeleteSession(ctx context.Context, db *store.DB, sessionID int64) error {
 	// 1. Батч-удаление rti_calls (CASCADE → rti_params, rti_checkpoints)
 	for {
-		res, err := db.Exec(
+		res, err := db.ExecContext(ctx, 
 			`DELETE FROM rti_calls WHERE session_id = $1 AND id IN (
 				SELECT id FROM rti_calls WHERE session_id = $1 LIMIT $2
 			)`,
@@ -654,7 +655,7 @@ func DeleteSession(db *store.DB, sessionID int64) error {
 	}
 	// 2. Батч-удаление rti_client_events (по session_id)
 	for {
-		res, err := db.Exec(
+		res, err := db.ExecContext(ctx, 
 			`DELETE FROM rti_client_events WHERE session_id = $1 AND id IN (
 				SELECT id FROM rti_client_events WHERE session_id = $1 LIMIT $2
 			)`,
@@ -670,7 +671,7 @@ func DeleteSession(db *store.DB, sessionID int64) error {
 	}
 	// 3. Батч-удаление rti_blog_blocks (по session_id)
 	for {
-		res, err := db.Exec(
+		res, err := db.ExecContext(ctx, 
 			`DELETE FROM rti_blog_blocks WHERE session_id = $1 AND id IN (
 				SELECT id FROM rti_blog_blocks WHERE session_id = $1 LIMIT $2
 			)`,
@@ -686,7 +687,7 @@ func DeleteSession(db *store.DB, sessionID int64) error {
 	}
 	// 4. Батч-удаление rti_blog_tables (по session_id)
 	for {
-		res, err := db.Exec(
+		res, err := db.ExecContext(ctx, 
 			`DELETE FROM rti_blog_tables WHERE session_id = $1 AND id IN (
 				SELECT id FROM rti_blog_tables WHERE session_id = $1 LIMIT $2
 			)`,
@@ -701,7 +702,7 @@ func DeleteSession(db *store.DB, sessionID int64) error {
 		}
 	}
 	// 5. Удаление сессии (CASCADE уже нечего удалять)
-	_, err := db.Exec(`DELETE FROM rti_sessions WHERE id = $1`, sessionID)
+	_, err := db.ExecContext(ctx, `DELETE FROM rti_sessions WHERE id = $1`, sessionID)
 	return err
 }
 
@@ -709,22 +710,22 @@ func DeleteSession(db *store.DB, sessionID int64) error {
 // При keepLast=0 используется TRUNCATE (мгновенная очистка независимо от
 // объёма данных). При keepLast>0 — пакетное удаление дочерних таблиц с
 // последующим удалением сессий.
-func PruneSessions(db *store.DB, keepLast int) (int64, error) {
+func PruneSessions(ctx context.Context, db *store.DB, keepLast int) (int64, error) {
 	if keepLast == 0 {
 		var count int64
-		if err := db.QueryRow(`SELECT count(*) FROM rti_sessions`).Scan(&count); err != nil {
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM rti_sessions`).Scan(&count); err != nil {
 			return 0, fmt.Errorf("count rti_sessions: %w", err)
 		}
-		if _, err := db.Exec(`TRUNCATE rti_client_events, rti_blog_tables, rti_blog_blocks, rti_checkpoints, rti_params, rti_calls, rti_sessions RESTART IDENTITY CASCADE`); err != nil {
+		if _, err := db.ExecContext(ctx, `TRUNCATE rti_client_events, rti_blog_tables, rti_blog_blocks, rti_checkpoints, rti_params, rti_calls, rti_sessions RESTART IDENTITY CASCADE`); err != nil {
 			return 0, fmt.Errorf("truncate rti tables: %w", err)
 		}
 		// VACUUM ANALYZE после массового удаления (ошибка не критична)
-		_, _ = db.Exec(`VACUUM ANALYZE rti_calls, rti_sessions, rti_client_events, rti_blog_blocks, rti_blog_tables`)
+		_, _ = db.ExecContext(ctx, `VACUUM ANALYZE rti_calls, rti_sessions, rti_client_events, rti_blog_blocks, rti_blog_tables`)
 		return count, nil
 	}
 
 	// Найти ID сессий на удаление
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx, 
 		`SELECT id FROM rti_sessions WHERE id NOT IN (
 			SELECT id FROM rti_sessions ORDER BY parsed_at DESC LIMIT $1
 		)`,
@@ -751,7 +752,7 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 	for _, sid := range ids {
 		// rti_calls (CASCADE → rti_params, rti_checkpoints)
 		for {
-			res, err := db.Exec(
+			res, err := db.ExecContext(ctx, 
 				`DELETE FROM rti_calls WHERE session_id = $1 AND id IN (
 					SELECT id FROM rti_calls WHERE session_id = $1 LIMIT $2
 				)`,
@@ -767,7 +768,7 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 		}
 		// rti_client_events
 		for {
-			res, err := db.Exec(
+			res, err := db.ExecContext(ctx, 
 				`DELETE FROM rti_client_events WHERE session_id = $1 AND id IN (
 					SELECT id FROM rti_client_events WHERE session_id = $1 LIMIT $2
 				)`,
@@ -783,7 +784,7 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 		}
 		// rti_blog_blocks
 		for {
-			res, err := db.Exec(
+			res, err := db.ExecContext(ctx, 
 				`DELETE FROM rti_blog_blocks WHERE session_id = $1 AND id IN (
 					SELECT id FROM rti_blog_blocks WHERE session_id = $1 LIMIT $2
 				)`,
@@ -799,7 +800,7 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 		}
 		// rti_blog_tables
 		for {
-			res, err := db.Exec(
+			res, err := db.ExecContext(ctx, 
 				`DELETE FROM rti_blog_tables WHERE session_id = $1 AND id IN (
 					SELECT id FROM rti_blog_tables WHERE session_id = $1 LIMIT $2
 				)`,
@@ -816,7 +817,7 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 	}
 
 	// Удаление сессий (CASCADE уже нечего удалять)
-	result, err := db.Exec(
+	result, err := db.ExecContext(ctx, 
 		`DELETE FROM rti_sessions WHERE id NOT IN (
 			SELECT id FROM rti_sessions ORDER BY parsed_at DESC LIMIT $1
 		)`,
@@ -827,14 +828,14 @@ func PruneSessions(db *store.DB, keepLast int) (int64, error) {
 	}
 	deleted, _ := result.RowsAffected()
 	// VACUUM ANALYZE после массового удаления (ошибка не критична)
-	_, _ = db.Exec(`VACUUM ANALYZE rti_calls, rti_sessions, rti_client_events, rti_blog_blocks, rti_blog_tables`)
+	_, _ = db.ExecContext(ctx, `VACUUM ANALYZE rti_calls, rti_sessions, rti_client_events, rti_blog_blocks, rti_blog_tables`)
 	return deleted, nil
 }
 
 // GetSession возвращает информацию о сессии по ID.
-func GetSession(db *store.DB, sessionID int64) (*RTISession, error) {
+func GetSession(ctx context.Context, db *store.DB, sessionID int64) (*RTISession, error) {
 	var s RTISession
-	err := db.QueryRow(
+	err := db.QueryRowContext(ctx, 
 		`SELECT id, file_path, file_size, parsed_at, total_calls, errors_count, max_nest_level, unparsed_lines, client_events_count
 		 FROM rti_sessions WHERE id = $1`,
 		sessionID,
@@ -847,8 +848,8 @@ func GetSession(db *store.DB, sessionID int64) (*RTISession, error) {
 }
 
 // LoadCalls загружает вызовы из БД для сессии.
-func LoadCalls(db *store.DB, sessionID int64) ([]*RTICall, error) {
-	rows, err := db.Query(
+func LoadCalls(ctx context.Context, db *store.DB, sessionID int64) ([]*RTICall, error) {
+	rows, err := db.QueryContext(ctx, 
 		`SELECT id, procedure, enter_line, exit_line, enter_time, exit_time,
 		        elapsed_ms, nest_level, module_id, module_name, tran_count,
 		        begin_cnt, ret_val, ret_val_context, parent_id, spid
@@ -910,22 +911,22 @@ func LoadCalls(db *store.DB, sessionID int64) ([]*RTICall, error) {
 	}
 
 	// Load BLogBlocks for all calls in one query
-	if err := loadAllBLogBlocks(db, sessionID, calls); err != nil {
+	if err := loadAllBLogBlocks(ctx, db, sessionID, calls); err != nil {
 		return nil, fmt.Errorf("failed to load blog blocks: %w", err)
 	}
 
 	// Load BLogTables for all calls in one query
-	if err := loadAllBLogTables(db, sessionID, calls); err != nil {
+	if err := loadAllBLogTables(ctx, db, sessionID, calls); err != nil {
 		return nil, fmt.Errorf("failed to load blog tables: %w", err)
 	}
 
 	// Load params for all calls in one query
-	if err := loadAllParams(db, sessionID, calls); err != nil {
+	if err := loadAllParams(ctx, db, sessionID, calls); err != nil {
 		return nil, fmt.Errorf("failed to load params: %w", err)
 	}
 
 	// Load checkpoints for all calls in one query
-	if err := loadAllCheckpoints(db, sessionID, calls); err != nil {
+	if err := loadAllCheckpoints(ctx, db, sessionID, calls); err != nil {
 		return nil, fmt.Errorf("failed to load checkpoints: %w", err)
 	}
 
@@ -933,8 +934,8 @@ func LoadCalls(db *store.DB, sessionID int64) ([]*RTICall, error) {
 }
 
 // loadAllBLogBlocks загружает BLog-блоки для всех вызовов сессии одним запросом.
-func loadAllBLogBlocks(db *store.DB, sessionID int64, calls []*RTICall) error {
-	rows, err := db.Query(
+func loadAllBLogBlocks(ctx context.Context, db *store.DB, sessionID int64, calls []*RTICall) error {
+	rows, err := db.QueryContext(ctx, 
 		`SELECT call_id, block_name, enter_time, exit_time, elapsed_ms, enter_line, exit_line
 		 FROM rti_blog_blocks WHERE session_id = $1 ORDER BY id`,
 		sessionID)
@@ -969,8 +970,8 @@ func loadAllBLogBlocks(db *store.DB, sessionID int64, calls []*RTICall) error {
 }
 
 // loadAllBLogTables загружает BLog-дампы таблиц для всех вызовов сессии одним запросом.
-func loadAllBLogTables(db *store.DB, sessionID int64, calls []*RTICall) error {
-	rows, err := db.Query(
+func loadAllBLogTables(ctx context.Context, db *store.DB, sessionID int64, calls []*RTICall) error {
+	rows, err := db.QueryContext(ctx, 
 		`SELECT call_id, table_name, columns_header, row_count, rows_data, enter_line
 		 FROM rti_blog_tables WHERE session_id = $1 ORDER BY id`,
 		sessionID)
@@ -1005,15 +1006,15 @@ func loadAllBLogTables(db *store.DB, sessionID int64, calls []*RTICall) error {
 }
 
 // GetLatestSessionID возвращает ID последней сессии.
-func GetLatestSessionID(db *store.DB) (int64, error) {
+func GetLatestSessionID(ctx context.Context, db *store.DB) (int64, error) {
 	var id int64
-	err := db.QueryRow(`SELECT id FROM rti_sessions ORDER BY parsed_at DESC LIMIT 1`).Scan(&id)
+	err := db.QueryRowContext(ctx, `SELECT id FROM rti_sessions ORDER BY parsed_at DESC LIMIT 1`).Scan(&id)
 	return id, err
 }
 
 // LoadClientEvents загружает клиентские события из БД для сессии.
-func LoadClientEvents(db *store.DB, sessionID int64) ([]*RTIClientEvent, error) {
-	rows, err := db.Query(
+func LoadClientEvents(ctx context.Context, db *store.DB, sessionID int64) ([]*RTIClientEvent, error) {
+	rows, err := db.QueryContext(ctx, 
 		`SELECT id, timestamp, level, category, class_name, method_name,
 		        pid, seq_no, line_no, kind, elapsed_ms, payload, server_call_id
 		 FROM rti_client_events WHERE session_id = $1 ORDER BY id`,
@@ -1071,8 +1072,8 @@ func LoadClientEvents(db *store.DB, sessionID int64) ([]*RTIClientEvent, error) 
 }
 
 // loadAllParams загружает параметры для всех вызовов сессии одним запросом.
-func loadAllParams(db *store.DB, sessionID int64, calls []*RTICall) error {
-	rows, err := db.Query(
+func loadAllParams(ctx context.Context, db *store.DB, sessionID int64, calls []*RTICall) error {
+	rows, err := db.QueryContext(ctx, 
 		`SELECT call_id, name, type, value
 		 FROM rti_params
 		 WHERE call_id IN (SELECT id FROM rti_calls WHERE session_id = $1)
@@ -1103,8 +1104,8 @@ func loadAllParams(db *store.DB, sessionID int64, calls []*RTICall) error {
 }
 
 // loadAllCheckpoints загружает чекпоинты для всех вызовов сессии одним запросом.
-func loadAllCheckpoints(db *store.DB, sessionID int64, calls []*RTICall) error {
-	rows, err := db.Query(
+func loadAllCheckpoints(ctx context.Context, db *store.DB, sessionID int64, calls []*RTICall) error {
+	rows, err := db.QueryContext(ctx, 
 		`SELECT call_id, label, timestamp, elapsed_ms, line_no
 		 FROM rti_checkpoints
 		 WHERE call_id IN (SELECT id FROM rti_calls WHERE session_id = $1)
@@ -1223,8 +1224,8 @@ func scanClientEventColumns(rows *sql.Rows) (*RTIClientEvent, error) {
 
 // LoadSummary загружает сводку по сессии напрямую из БД через SQL-агрегаты,
 // без загрузки всех вызовов в память.
-func LoadSummary(db *store.DB, sessionID int64) (*RTISummary, error) {
-	session, err := GetSession(db, sessionID)
+func LoadSummary(ctx context.Context, db *store.DB, sessionID int64) (*RTISummary, error) {
+	session, err := GetSession(ctx, db, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
 	}
@@ -1240,7 +1241,7 @@ func LoadSummary(db *store.DB, sessionID int64) (*RTISummary, error) {
 
 	// Агрегаты из rti_calls
 	var totalCalls, errorsCount, maxNest, slowCalls int
-	err = db.QueryRow(
+	err = db.QueryRowContext(ctx, 
 		`SELECT count(*),
 		        count(*) FILTER (WHERE ret_val IS NOT NULL AND ret_val != 0),
 		        COALESCE(max(nest_level), 0),
@@ -1257,7 +1258,7 @@ func LoadSummary(db *store.DB, sessionID int64) (*RTISummary, error) {
 	summary.SlowCallsCount = slowCalls
 
 	// Top 10 slow calls (без params/checkpoints/blog)
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx, 
 		`SELECT `+callSelectColumns+`
 		 FROM rti_calls WHERE session_id = $1 ORDER BY elapsed_ms DESC LIMIT 10`,
 		sessionID,
@@ -1281,7 +1282,7 @@ func LoadSummary(db *store.DB, sessionID int64) (*RTISummary, error) {
 
 	// Клиентские агрегаты
 	var clientCount, clientErrors, clientSlowSQL int
-	err = db.QueryRow(
+	err = db.QueryRowContext(ctx, 
 		`SELECT count(*),
 		        count(*) FILTER (WHERE kind = 'error' AND payload->>'error_text' != ''),
 		        count(*) FILTER (WHERE kind = 'sql_block' AND elapsed_ms >= 100)
@@ -1296,7 +1297,7 @@ func LoadSummary(db *store.DB, sessionID int64) (*RTISummary, error) {
 	summary.ClientSlowSQLCount = clientSlowSQL
 
 	// Top 10 slow client SQL blocks
-	clientRows, err := db.Query(
+	clientRows, err := db.QueryContext(ctx, 
 		`SELECT id, timestamp, level, category, class_name, method_name,
 		        pid, seq_no, line_no, kind, elapsed_ms, payload, server_call_id
 		 FROM rti_client_events
@@ -1324,14 +1325,14 @@ func LoadSummary(db *store.DB, sessionID int64) (*RTISummary, error) {
 
 // LoadSlowCalls загружает медленные вызовы из БД с фильтрацией и лимитом на стороне SQL.
 // Не загружает params/checkpoints/blog — только базовые поля вызова.
-func LoadSlowCalls(db *store.DB, sessionID int64, thresholdMs int, limit int) ([]*RTICall, error) {
+func LoadSlowCalls(ctx context.Context, db *store.DB, sessionID int64, thresholdMs int, limit int) ([]*RTICall, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	if limit > 1000 {
 		limit = 1000
 	}
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx, 
 		`SELECT `+callSelectColumns+`
 		 FROM rti_calls
 		 WHERE session_id = $1 AND elapsed_ms >= $2
@@ -1355,14 +1356,14 @@ func LoadSlowCalls(db *store.DB, sessionID int64, thresholdMs int, limit int) ([
 }
 
 // LoadErrorCalls загружает вызовы с ненулевым ret_val из БД с лимитом.
-func LoadErrorCalls(db *store.DB, sessionID int64, limit int) ([]*RTICall, error) {
+func LoadErrorCalls(ctx context.Context, db *store.DB, sessionID int64, limit int) ([]*RTICall, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	if limit > 1000 {
 		limit = 1000
 	}
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx, 
 		`SELECT `+callSelectColumns+`
 		 FROM rti_calls
 		 WHERE session_id = $1 AND ret_val IS NOT NULL AND ret_val != 0
@@ -1386,14 +1387,14 @@ func LoadErrorCalls(db *store.DB, sessionID int64, limit int) ([]*RTICall, error
 }
 
 // LoadClientErrors загружает клиентские ошибки из БД с лимитом.
-func LoadClientErrors(db *store.DB, sessionID int64, limit int) ([]*RTIClientEvent, error) {
+func LoadClientErrors(ctx context.Context, db *store.DB, sessionID int64, limit int) ([]*RTIClientEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	if limit > 1000 {
 		limit = 1000
 	}
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx, 
 		`SELECT id, timestamp, level, category, class_name, method_name,
 		        pid, seq_no, line_no, kind, elapsed_ms, payload, server_call_id
 		 FROM rti_client_events
@@ -1418,14 +1419,14 @@ func LoadClientErrors(db *store.DB, sessionID int64, limit int) ([]*RTIClientEve
 }
 
 // LoadSlowClientSQL загружает медленные клиентские SQL-блоки из БД с лимитом.
-func LoadSlowClientSQL(db *store.DB, sessionID int64, thresholdMs int, limit int) ([]*RTIClientEvent, error) {
+func LoadSlowClientSQL(ctx context.Context, db *store.DB, sessionID int64, thresholdMs int, limit int) ([]*RTIClientEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	if limit > 1000 {
 		limit = 1000
 	}
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx, 
 		`SELECT id, timestamp, level, category, class_name, method_name,
 		        pid, seq_no, line_no, kind, elapsed_ms, payload, server_call_id
 		 FROM rti_client_events
@@ -1451,14 +1452,14 @@ func LoadSlowClientSQL(db *store.DB, sessionID int64, thresholdMs int, limit int
 
 // LoadCallsByProcedure загружает вызовы конкретной процедуры из БД с лимитом.
 // Загружает params/checkpoints/blog только для найденных вызовов.
-func LoadCallsByProcedure(db *store.DB, sessionID int64, procName string, limit int) ([]*RTICall, error) {
+func LoadCallsByProcedure(ctx context.Context, db *store.DB, sessionID int64, procName string, limit int) ([]*RTICall, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	if limit > 1000 {
 		limit = 1000
 	}
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx, 
 		`SELECT `+callSelectColumns+`
 		 FROM rti_calls
 		 WHERE session_id = $1 AND procedure = $2
@@ -1494,7 +1495,7 @@ func LoadCallsByProcedure(db *store.DB, sessionID int64, procName string, limit 
 	}
 
 	// Load params, checkpoints, blog for these calls only
-	if err := loadDetailsForCallIDs(db, sessionID, callIDs, callMap); err != nil {
+	if err := loadDetailsForCallIDs(ctx, db, sessionID, callIDs, callMap); err != nil {
 		return nil, err
 	}
 
@@ -1502,13 +1503,13 @@ func LoadCallsByProcedure(db *store.DB, sessionID int64, procName string, limit 
 }
 
 // loadDetailsForCallIDs загружает params/checkpoints/blog для указанных call IDs.
-func loadDetailsForCallIDs(db *store.DB, sessionID int64, callIDs []int64, callMap map[int64]*RTICall) error {
+func loadDetailsForCallIDs(ctx context.Context, db *store.DB, sessionID int64, callIDs []int64, callMap map[int64]*RTICall) error {
 	if len(callIDs) == 0 {
 		return nil
 	}
 
 	// Params
-	paramRows, err := db.Query(
+	paramRows, err := db.QueryContext(ctx, 
 		`SELECT call_id, name, type, value
 		 FROM rti_params
 		 WHERE call_id = ANY($1)
@@ -1534,7 +1535,7 @@ func loadDetailsForCallIDs(db *store.DB, sessionID int64, callIDs []int64, callM
 	}
 
 	// Checkpoints
-	cpRows, err := db.Query(
+	cpRows, err := db.QueryContext(ctx, 
 		`SELECT call_id, label, timestamp, elapsed_ms, line_no
 		 FROM rti_checkpoints
 		 WHERE call_id = ANY($1)
@@ -1564,7 +1565,7 @@ func loadDetailsForCallIDs(db *store.DB, sessionID int64, callIDs []int64, callM
 	}
 
 	// BLog blocks
-	bbRows, err := db.Query(
+	bbRows, err := db.QueryContext(ctx, 
 		`SELECT call_id, block_name, enter_time, exit_time, elapsed_ms, enter_line, exit_line
 		 FROM rti_blog_blocks
 		 WHERE session_id = $1 AND call_id = ANY($2)
@@ -1597,7 +1598,7 @@ func loadDetailsForCallIDs(db *store.DB, sessionID int64, callIDs []int64, callM
 	}
 
 	// BLog tables
-	btRows, err := db.Query(
+	btRows, err := db.QueryContext(ctx, 
 		`SELECT call_id, table_name, columns_header, row_count, rows_data, enter_line
 		 FROM rti_blog_tables
 		 WHERE session_id = $1 AND call_id = ANY($2)
@@ -1631,7 +1632,7 @@ func loadDetailsForCallIDs(db *store.DB, sessionID int64, callIDs []int64, callM
 // LoadCallsForTree загружает вызовы для построения дерева через recursive CTE.
 // Если rootProcedure пустой, автоматически выбирает корень (NestLevel=1 с наибольшим числом потомков).
 // maxTreeNodes ограничивает общее количество загружаемых узлов (default 5000).
-func LoadCallsForTree(db *store.DB, sessionID int64, rootProcedure string, maxDepth int, maxTreeNodes int) ([]*RTICall, error) {
+func LoadCallsForTree(ctx context.Context, db *store.DB, sessionID int64, rootProcedure string, maxDepth int, maxTreeNodes int) ([]*RTICall, error) {
 	if maxTreeNodes <= 0 {
 		maxTreeNodes = 5000
 	}
@@ -1640,7 +1641,7 @@ func LoadCallsForTree(db *store.DB, sessionID int64, rootProcedure string, maxDe
 	var err error
 
 	if rootProcedure != "" {
-		rows, err = db.Query(
+		rows, err = db.QueryContext(ctx, 
 			`WITH RECURSIVE call_tree AS (
 				(SELECT `+callSelectColumns+`, 1 AS depth
 				FROM rti_calls
@@ -1661,7 +1662,7 @@ func LoadCallsForTree(db *store.DB, sessionID int64, rootProcedure string, maxDe
 			sessionID, rootProcedure, maxDepth, maxTreeNodes,
 		)
 	} else {
-		rows, err = db.Query(
+		rows, err = db.QueryContext(ctx, 
 			`WITH RECURSIVE call_tree AS (
 				SELECT `+callSelectColumns+`, 1 AS depth
 				FROM rti_calls
@@ -1724,7 +1725,7 @@ func LoadCallsForTree(db *store.DB, sessionID int64, rootProcedure string, maxDe
 }
 
 // LoadTimelineCalls загружает серверные вызовы для timeline с серверной фильтрацией и лимитом.
-func LoadTimelineCalls(db *store.DB, sessionID int64, filter TimelineFilter, limit int) ([]*RTICall, error) {
+func LoadTimelineCalls(ctx context.Context, db *store.DB, sessionID int64, filter TimelineFilter, limit int) ([]*RTICall, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -1753,7 +1754,7 @@ func LoadTimelineCalls(db *store.DB, sessionID int64, filter TimelineFilter, lim
 	sb.WriteString(fmt.Sprintf(" ORDER BY enter_time ASC LIMIT $%d", argIdx))
 	args = append(args, limit)
 
-	rows, err := db.Query(sb.String(), args...)
+	rows, err := db.QueryContext(ctx, sb.String(), args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load timeline calls: %w", err)
 	}
@@ -1771,7 +1772,7 @@ func LoadTimelineCalls(db *store.DB, sessionID int64, filter TimelineFilter, lim
 }
 
 // LoadTimelineClientEvents загружает клиентские события для timeline с серверной фильтрацией и лимитом.
-func LoadTimelineClientEvents(db *store.DB, sessionID int64, filter TimelineFilter, limit int) ([]*RTIClientEvent, error) {
+func LoadTimelineClientEvents(ctx context.Context, db *store.DB, sessionID int64, filter TimelineFilter, limit int) ([]*RTIClientEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -1812,7 +1813,7 @@ func LoadTimelineClientEvents(db *store.DB, sessionID int64, filter TimelineFilt
 	sb.WriteString(fmt.Sprintf(" ORDER BY timestamp ASC LIMIT $%d", argIdx))
 	args = append(args, limit)
 
-	rows, err := db.Query(sb.String(), args...)
+	rows, err := db.QueryContext(ctx, sb.String(), args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load timeline client events: %w", err)
 	}
@@ -1830,6 +1831,6 @@ func LoadTimelineClientEvents(db *store.DB, sessionID int64, filter TimelineFilt
 }
 
 // LoadClientEventsFiltered загружает клиентские события для client_tree с серверной фильтрацией и лимитом.
-func LoadClientEventsFiltered(db *store.DB, sessionID int64, filter TimelineFilter, limit int) ([]*RTIClientEvent, error) {
-	return LoadTimelineClientEvents(db, sessionID, filter, limit)
+func LoadClientEventsFiltered(ctx context.Context, db *store.DB, sessionID int64, filter TimelineFilter, limit int) ([]*RTIClientEvent, error) {
+	return LoadTimelineClientEvents(ctx, db, sessionID, filter, limit)
 }

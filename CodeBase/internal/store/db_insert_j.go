@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 
@@ -8,30 +9,30 @@ import (
 	"github.com/lib/pq"
 )
 
-func (db *DB) BatchInsertJSConstants(constants []*model.JSConstant, batchSize int) error {
+func (db *DB) BatchInsertJSConstants(ctx context.Context, constants []*model.JSConstant, batchSize int) error {
 	if len(constants) == 0 {
 		return nil
 	}
 	if len(constants) <= batchSize {
-		return db.insertJSConstantsBatch(constants)
+		return db.insertJSConstantsBatch(ctx, constants)
 	}
 	for i := 0; i < len(constants); i += batchSize {
 		end := i + batchSize
 		if end > len(constants) {
 			end = len(constants)
 		}
-		if err := db.insertJSConstantsBatch(constants[i:end]); err != nil {
+		if err := db.insertJSConstantsBatch(ctx, constants[i:end]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (db *DB) insertJSConstantsBatch(constants []*model.JSConstant) error {
+func (db *DB) insertJSConstantsBatch(ctx context.Context, constants []*model.JSConstant) error {
 	if len(constants) == 0 {
 		return nil
 	}
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("js_constants", "file_id", "constant_name", "constant_value", "line_number"))
 		if err != nil {
 			return err
@@ -47,14 +48,14 @@ func (db *DB) insertJSConstantsBatch(constants []*model.JSConstant) error {
 	})
 }
 
-// BatchInsertJSFunctions пакетная вставка JS функций
-func (db *DB) BatchInsertJSFunctions(functions []*model.JSFunction, batchSize int) error {
+// BatchInsertJSFunctions РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° JS С„СѓРЅРєС†РёР№
+func (db *DB) BatchInsertJSFunctions(ctx context.Context, functions []*model.JSFunction, batchSize int) error {
 	if len(functions) == 0 {
 		return nil
 	}
 
 	if len(functions) <= batchSize {
-		return db.insertJSFunctionsBatch(functions)
+		return db.insertJSFunctionsBatch(ctx, functions)
 	}
 
 	for i := 0; i < len(functions); i += batchSize {
@@ -64,19 +65,19 @@ func (db *DB) BatchInsertJSFunctions(functions []*model.JSFunction, batchSize in
 		}
 
 		batch := functions[i:end]
-		if err := db.insertJSFunctionsBatch(batch); err != nil {
+		if err := db.insertJSFunctionsBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (db *DB) insertJSFunctionsBatch(functions []*model.JSFunction) error {
+func (db *DB) insertJSFunctionsBatch(ctx context.Context, functions []*model.JSFunction) error {
 	if len(functions) == 0 {
 		return nil
 	}
 
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("js_functions", "file_id", "function_name", "signature", "line_start", "line_end", "scenario_type", "parent_object"))
 		if err != nil {
 			return err
@@ -103,14 +104,14 @@ func (db *DB) insertJSFunctionsBatch(functions []*model.JSFunction) error {
 	})
 }
 
-// BatchInsertSymbols пакетная вставка символов
-func (db *DB) BatchInsertSymbols(symbols []*model.Symbol, batchSize int) error {
+// BatchInsertSymbols РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° СЃРёРјРІРѕР»РѕРІ
+func (db *DB) BatchInsertSymbols(ctx context.Context, symbols []*model.Symbol, batchSize int) error {
 	if len(symbols) == 0 {
 		return nil
 	}
 
 	if len(symbols) <= batchSize {
-		return db.insertSymbolsBatch(symbols)
+		return db.insertSymbolsBatch(ctx, symbols)
 	}
 
 	for i := 0; i < len(symbols); i += batchSize {
@@ -120,20 +121,20 @@ func (db *DB) BatchInsertSymbols(symbols []*model.Symbol, batchSize int) error {
 		}
 
 		batch := symbols[i:end]
-		if err := db.insertSymbolsBatch(batch); err != nil {
+		if err := db.insertSymbolsBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// insertSymbolsBatch вставляет одну пачку символов
-func (db *DB) insertSymbolsBatch(symbols []*model.Symbol) error {
+// insertSymbolsBatch РІСЃС‚Р°РІР»СЏРµС‚ РѕРґРЅСѓ РїР°С‡РєСѓ СЃРёРјРІРѕР»РѕРІ
+func (db *DB) insertSymbolsBatch(ctx context.Context, symbols []*model.Symbol) error {
 	if len(symbols) == 0 {
 		return nil
 	}
 
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("symbols", "file_id", "symbol_name", "symbol_type", "entity_type", "entity_id", "line_number", "signature"))
 		if err != nil {
 			return err
@@ -160,14 +161,14 @@ func (db *DB) insertSymbolsBatch(symbols []*model.Symbol) error {
 	})
 }
 
-// BatchInsertSMFInstruments пакетная вставка SMF инструментов
-func (db *DB) BatchInsertSMFInstruments(instruments []*model.SMFInstrument, batchSize int) error {
+// BatchInsertSMFInstruments РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° SMF РёРЅСЃС‚СЂСѓРјРµРЅС‚РѕРІ
+func (db *DB) BatchInsertSMFInstruments(ctx context.Context, instruments []*model.SMFInstrument, batchSize int) error {
 	if len(instruments) == 0 {
 		return nil
 	}
 
 	if len(instruments) <= batchSize {
-		return db.insertSMFInstrumentsBatch(instruments)
+		return db.insertSMFInstrumentsBatch(ctx, instruments)
 	}
 
 	for i := 0; i < len(instruments); i += batchSize {
@@ -177,19 +178,19 @@ func (db *DB) BatchInsertSMFInstruments(instruments []*model.SMFInstrument, batc
 		}
 
 		batch := instruments[i:end]
-		if err := db.insertSMFInstrumentsBatch(batch); err != nil {
+		if err := db.insertSMFInstrumentsBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (db *DB) insertSMFInstrumentsBatch(instruments []*model.SMFInstrument) error {
+func (db *DB) insertSMFInstrumentsBatch(ctx context.Context, instruments []*model.SMFInstrument) error {
 	if len(instruments) == 0 {
 		return nil
 	}
 
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("smf_instruments", "file_id", "instrument_name", "brief", "deal_object_id", "ds_module_id", "start_state", "scenario_type", "states", "actions", "accounts"))
 		if err != nil {
 			return err

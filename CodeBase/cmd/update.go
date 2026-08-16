@@ -22,6 +22,7 @@ var updateCmd = &cobra.Command{
 	Long: `Scans files and updates only changed entries in the index.
 Uses file hashes to detect changes.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
 		// update опирается на уже сохранённый root_path в config,
 		// потому что должен обновлять тот же индекс, который был создан init-ом.
 		cfg := config.Get()
@@ -58,7 +59,7 @@ Uses file hashes to detect changes.`,
 		startedAt := time.Now()
 		fmt.Printf("\nUpdating started: %s\n", startedAt.Format("2006-01-02 15:04:05"))
 		fmt.Printf("rootPath=%s parallel=%d\n", rootPath, effectiveParallel)
-		stats, err := idx.Update(rootPath, onlyModified, effectiveParallel)
+		stats, err := idx.UpdateCtx(ctx, rootPath, onlyModified, effectiveParallel)
 		if err != nil {
 			return fmt.Errorf("update failed: %w", err)
 		}

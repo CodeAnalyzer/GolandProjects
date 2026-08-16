@@ -1,6 +1,7 @@
 package reviewsvc
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/codebase/internal/config"
@@ -8,19 +9,23 @@ import (
 	"github.com/codebase/internal/store"
 )
 
-func ExecuteWith(db *store.DB, path string, opts review.Options, onProgress func(completed, total int)) (*review.Result, error) {
+func ExecuteWithCtx(ctx context.Context, db *store.DB, path string, opts review.Options, onProgress func(completed, total int)) (*review.Result, error) {
 	runner := review.NewRunner(db)
 	if onProgress != nil {
 		runner.SetOnProgress(onProgress)
 	}
-	result, err := runner.RunSQLFile(path, opts)
+	result, err := runner.RunSQLFileCtx(ctx, path, opts)
 	if err != nil {
 		return nil, fmt.Errorf("review failed: %w", err)
 	}
 	return result, nil
 }
 
-func Execute(path string, opts review.Options, onProgress func(completed, total int)) (*review.Result, error) {
+func ExecuteWith(db *store.DB, path string, opts review.Options, onProgress func(completed, total int)) (*review.Result, error) {
+	return ExecuteWithCtx(context.Background(), db, path, opts, onProgress)
+}
+
+func ExecuteCtx(ctx context.Context, path string, opts review.Options, onProgress func(completed, total int)) (*review.Result, error) {
 	cfg := config.Get()
 	if cfg == nil {
 		return nil, fmt.Errorf("config not loaded")
@@ -36,5 +41,9 @@ func Execute(path string, opts review.Options, onProgress func(completed, total 
 		return nil, fmt.Errorf("failed to init schema: %w", err)
 	}
 
-	return ExecuteWith(db, path, opts, onProgress)
+	return ExecuteWithCtx(ctx, db, path, opts, onProgress)
+}
+
+func Execute(path string, opts review.Options, onProgress func(completed, total int)) (*review.Result, error) {
+	return ExecuteCtx(context.Background(), path, opts, onProgress)
 }

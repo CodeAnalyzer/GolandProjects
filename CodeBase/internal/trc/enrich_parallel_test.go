@@ -1,6 +1,7 @@
 package trc
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -185,7 +186,7 @@ func TestEnrichEvents_ConcurrentSameResult(t *testing.T) {
 		events[i].Procedure = procNames[i%20]
 	}
 
-	result := EnrichEvents(mock, events)
+	result := EnrichEvents(context.Background(), mock, events)
 
 	if len(result) != 20 {
 		t.Fatalf("expected 20 entries, got %d", len(result))
@@ -221,7 +222,7 @@ func TestEnrichEvents_SmallDataset_Sequential(t *testing.T) {
 		{Procedure: ""},
 	}
 
-	result := EnrichEvents(mock, events)
+	result := EnrichEvents(context.Background(), mock, events)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(result))
 	}
@@ -245,7 +246,7 @@ func TestEnrichEvents_NotFoundConcurrent(t *testing.T) {
 		events[i].Procedure = fmt.Sprintf("UnknownProc%02d", i%20)
 	}
 
-	result := EnrichEvents(mock, events)
+	result := EnrichEvents(context.Background(), mock, events)
 	if len(result) != 20 {
 		t.Fatalf("expected 20 entries, got %d", len(result))
 	}
@@ -267,7 +268,7 @@ type countingLookup struct {
 	procs map[string]*query.SQLProcedureResult
 }
 
-func (c *countingLookup) GetProcedureResult(name string) (*query.SQLProcedureResult, error) {
+func (c *countingLookup) GetProcedureResult(ctx context.Context, name string) (*query.SQLProcedureResult, error) {
 	c.mu.Lock()
 	c.calls++
 	c.mu.Unlock()
@@ -298,7 +299,7 @@ func TestEnrichEvents_ConcurrentSafety(t *testing.T) {
 		events[i].Procedure = fmt.Sprintf("Proc%02d", i%20)
 	}
 
-	result := EnrichEvents(mock, events)
+	result := EnrichEvents(context.Background(), mock, events)
 	if len(result) != 20 {
 		t.Fatalf("expected 20 entries, got %d", len(result))
 	}

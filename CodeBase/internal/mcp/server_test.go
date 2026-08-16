@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -36,7 +37,7 @@ func TestPingHandlerReturnsOK(t *testing.T) {
 	if !ok {
 		t.Fatal("codebase_ping not in toolRegistry")
 	}
-	result, err := tool.Handler(map[string]interface{}{})
+	result, err := tool.Handler(context.Background(), map[string]interface{}{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -126,7 +127,7 @@ func TestRTIParseHandlerRequiresFilePath(t *testing.T) {
 	if !ok {
 		t.Fatal("codebase_rti_parse not in toolRegistry")
 	}
-	_, err := tool.Handler(map[string]interface{}{})
+	_, err := tool.Handler(context.Background(), map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error for missing file_path")
 	}
@@ -137,7 +138,7 @@ func TestRTISlowHandlerRequiresSessionOrFile(t *testing.T) {
 	if !ok {
 		t.Fatal("codebase_rti_slow not in toolRegistry")
 	}
-	_, err := tool.Handler(map[string]interface{}{})
+	_, err := tool.Handler(context.Background(), map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error for missing session_id and file_path")
 	}
@@ -148,7 +149,7 @@ func TestRTIDetailsHandlerRequiresProcedure(t *testing.T) {
 	if !ok {
 		t.Fatal("codebase_rti_details not in toolRegistry")
 	}
-	_, err := tool.Handler(map[string]interface{}{})
+	_, err := tool.Handler(context.Background(), map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error for missing procedure")
 	}
@@ -165,7 +166,7 @@ func TestRetCodeHandlerRequiresArg(t *testing.T) {
 	if !ok {
 		t.Fatal("codebase_query_retcode not in toolRegistry")
 	}
-	_, err := tool.Handler(map[string]interface{}{})
+	_, err := tool.Handler(context.Background(), map[string]interface{}{})
 	// Without DB, runQueryOpt returns "database not available"
 	if err == nil {
 		t.Fatal("expected error for no args without DB")
@@ -193,7 +194,7 @@ func TestReadMoreHandlerRequiresContinuationID(t *testing.T) {
 	if !ok {
 		t.Fatal("codebase_read_more not in toolRegistry")
 	}
-	_, err := tool.Handler(map[string]interface{}{})
+	_, err := tool.Handler(context.Background(), map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error for missing continuation_id")
 	}
@@ -204,7 +205,7 @@ func TestReadMoreHandlerUnknownID(t *testing.T) {
 	if !ok {
 		t.Fatal("codebase_read_more not in toolRegistry")
 	}
-	_, err := tool.Handler(map[string]interface{}{
+	_, err := tool.Handler(context.Background(), map[string]interface{}{
 		"continuation_id": "does-not-exist",
 		"chunk":           float64(2),
 	})
@@ -218,7 +219,7 @@ func TestReadMoreHandlerRequiresChunk(t *testing.T) {
 	if !ok {
 		t.Fatal("codebase_read_more not in toolRegistry")
 	}
-	_, err := tool.Handler(map[string]interface{}{
+	_, err := tool.Handler(context.Background(), map[string]interface{}{
 		"continuation_id": "abc123",
 	})
 	if err == nil {
@@ -231,7 +232,7 @@ func TestReadMoreHandlerChunkWrongType(t *testing.T) {
 	if !ok {
 		t.Fatal("codebase_read_more not in toolRegistry")
 	}
-	_, err := tool.Handler(map[string]interface{}{
+	_, err := tool.Handler(context.Background(), map[string]interface{}{
 		"continuation_id": "abc123",
 		"chunk":           "abc",
 	})
@@ -245,7 +246,7 @@ func TestRTIPruneHandlerRejectsNegativeKeepLast(t *testing.T) {
 	if !ok {
 		t.Fatal("codebase_rti_prune not in toolRegistry")
 	}
-	_, err := tool.Handler(map[string]interface{}{
+	_, err := tool.Handler(context.Background(), map[string]interface{}{
 		"keep_last": float64(-1),
 	})
 	if err == nil {
@@ -260,7 +261,7 @@ func TestRTIPruneHandlerAcceptsZeroKeepLast(t *testing.T) {
 	}
 	// keep_last=0 is now valid (TRUNCATE all). Without DB, it will fail
 	// with "database not available", but NOT with "keep_last must be positive".
-	_, err := tool.Handler(map[string]interface{}{
+	_, err := tool.Handler(context.Background(), map[string]interface{}{
 		"keep_last": float64(0),
 	})
 	if err != nil && err.Error() == "keep_last must be >= 0" {
@@ -293,7 +294,7 @@ func TestTRCPruneHandlerRejectsNegativeKeepLast(t *testing.T) {
 	if !ok {
 		t.Fatal("codebase_trc_prune not in toolRegistry")
 	}
-	_, err := tool.Handler(map[string]interface{}{
+	_, err := tool.Handler(context.Background(), map[string]interface{}{
 		"keep_last": float64(-1),
 	})
 	if err == nil {
@@ -308,7 +309,7 @@ func TestTRCPruneHandlerAcceptsZeroKeepLast(t *testing.T) {
 	}
 	// keep_last=0 is now valid (TRUNCATE all). Without DB, it will fail
 	// with "database not available", but NOT with "keep_last must be positive".
-	_, err := tool.Handler(map[string]interface{}{
+	_, err := tool.Handler(context.Background(), map[string]interface{}{
 		"keep_last": float64(0),
 	})
 	if err != nil && err.Error() == "keep_last must be >= 0" {

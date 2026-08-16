@@ -72,3 +72,5 @@ min_procs_for_parallel_enrich = 16  # Порог параллельного об
 [mcp]
 pagination_chunk_size = 8000  # Максимальный размер чанка (байт) для пагинации больших ответов
 pagination_ttl = "15m"  # Время жизни пагинированных ответов
+query_timeout_sec = 30  # Таймаут для query-инструментов (секунды, 0 = без таймаута)
+review_timeout_sec = 120  # Таймаут для codebase_review_sql (секунды, 0 = без таймаута)

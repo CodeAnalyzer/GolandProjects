@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -67,7 +68,7 @@ from tSource M_NOLOCK_INDEX(XPKtSource)`,
 				macroResult: replaceMacros(tc.content),
 			}
 
-			findings, err := runner.checkTableHintExists(file)
+			findings, err := runner.checkTableHintExists(context.Background(), file)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -738,7 +739,7 @@ func TestAnalyzeStatementForPTableSpid_MissingSpid(t *testing.T) {
 	lines := []string{"select * from pTmpObject t where t.OtherCol = 1"}
 	file := &indexedFile{Path: "test.sql", DsProductID: 1}
 
-	findings, err := (&Runner{}).analyzeStatementForPTableSpid(lines, 1, file)
+	findings, err := (&Runner{}).analyzeStatementForPTableSpid(context.Background(), lines, 1, file)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -754,7 +755,7 @@ func TestAnalyzeStatementForPTableSpid_WithSpidCondition(t *testing.T) {
 	lines := []string{"select * from pTmpObject t where t.SPID = @SPID"}
 	file := &indexedFile{Path: "test.sql", DsProductID: 1}
 
-	findings, err := (&Runner{}).analyzeStatementForPTableSpid(lines, 1, file)
+	findings, err := (&Runner{}).analyzeStatementForPTableSpid(context.Background(), lines, 1, file)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -801,7 +802,7 @@ func TestCheckTableFullScan_UpdateWithStringLiteralSemicolon_NoFinding(t *testin
 		macroResult: replaceMacros(content),
 		lines:       lines,
 	}
-	findings, err := runner.checkTableFullScan(file)
+	findings, err := runner.checkTableFullScan(context.Background(), file)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1566,7 +1567,7 @@ delete pTmpObjectAccount
 				macroResult: replaceMacros(tc.content),
 			}
 
-			findings, err := runner.checkAnsiInJoin(file)
+			findings, err := runner.checkAnsiInJoin(context.Background(), file)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1631,7 +1632,7 @@ select @CorrAccountID = r.ResourceID
 		macroResult: replaceMacros(content),
 	}
 
-	findings, err := runner.checkAnsiInJoin(file)
+	findings, err := runner.checkAnsiInJoin(context.Background(), file)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1822,7 +1823,7 @@ end`,
 				macroResult: replaceMacros(tc.content),
 			}
 
-			findings, err := runner.checkInsertRowLock(file)
+			findings, err := runner.checkInsertRowLock(context.Background(), file)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1985,7 +1986,7 @@ if @ContractID is not null
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := runner.hasDefaultAssignmentInBody(tc.procBody, tc.paramName)
+			result := runner.hasDefaultAssignmentInBody(context.Background(), tc.procBody, tc.paramName)
 			if result != tc.expectFound {
 				t.Fatalf("hasDefaultAssignmentInBody(%q, %q) = %v, want %v", tc.procBody, tc.paramName, result, tc.expectFound)
 			}
@@ -2050,7 +2051,7 @@ func TestExtractProcedureBody(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := runner.extractProcedureBody(lines, tc.lineStart, tc.lineEnd)
+			result := runner.extractProcedureBody(context.Background(), lines, tc.lineStart, tc.lineEnd)
 			if result != tc.expect {
 				t.Fatalf("extractProcedureBody(lines, %d, %d) = %q, want %q", tc.lineStart, tc.lineEnd, result, tc.expect)
 			}
@@ -2103,7 +2104,7 @@ func TestCheckModifyOutProc(t *testing.T) {
 		r := &Runner{}
 		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
 		parsed := &sqlparser.ParseResult{Procedures: procs}
-		findings, err := r.checkModifyOutProc(parsed, &indexedFile{Path: path, DsProductID: 1})
+		findings, err := r.checkModifyOutProc(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
 		r.exec = nil
 		if err != nil {
 			t.Fatal(err)
@@ -2214,7 +2215,7 @@ func TestCheckModifyOutProc(t *testing.T) {
 		r := &Runner{}
 		r.exec = &reviewExecContext{filePath: normalizePath(dataPath), content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
 		parsed := &sqlparser.ParseResult{}
-		findings, err := r.checkModifyOutProc(parsed, &indexedFile{Path: dataPath, DsProductID: 1})
+		findings, err := r.checkModifyOutProc(context.Background(), parsed, &indexedFile{Path: dataPath, DsProductID: 1})
 		r.exec = nil
 		if err != nil {
 			t.Fatal(err)
@@ -2253,7 +2254,7 @@ func TestCheckMaxProcParam(t *testing.T) {
 					{ProcName: "TestProc", LineStart: 10, Params: tc.params},
 				},
 			}
-			findings, err := r.checkMaxProcParam(parsed, &indexedFile{Path: "test.sql", DsProductID: 1})
+			findings, err := r.checkMaxProcParam(context.Background(), parsed, &indexedFile{Path: "test.sql", DsProductID: 1})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2282,7 +2283,7 @@ func TestCheckMaxProcParam(t *testing.T) {
 				{ProcName: "ProcBig", LineStart: 100, Params: makeParams(95)},
 			},
 		}
-		findings, err := r.checkMaxProcParam(parsed, &indexedFile{Path: "test.sql", DsProductID: 1})
+		findings, err := r.checkMaxProcParam(context.Background(), parsed, &indexedFile{Path: "test.sql", DsProductID: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2359,7 +2360,7 @@ func TestCheckTooManyJoins(t *testing.T) {
 		defer os.Remove(path)
 		r := &Runner{}
 		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
-		findings, err := r.checkTooManyJoins(&indexedFile{Path: path, DsProductID: 1})
+		findings, err := r.checkTooManyJoins(context.Background(), &indexedFile{Path: path, DsProductID: 1})
 		r.exec = nil
 		if err != nil {
 			t.Fatal(err)
@@ -2375,7 +2376,7 @@ func TestCheckTooManyJoins(t *testing.T) {
 		defer os.Remove(path)
 		r := &Runner{}
 		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
-		findings, err := r.checkTooManyJoins(&indexedFile{Path: path, DsProductID: 1})
+		findings, err := r.checkTooManyJoins(context.Background(), &indexedFile{Path: path, DsProductID: 1})
 		r.exec = nil
 		if err != nil {
 			t.Fatal(err)
@@ -2394,7 +2395,7 @@ func TestCheckTooManyJoins(t *testing.T) {
 		defer os.Remove(path)
 		r := &Runner{}
 		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
-		findings, err := r.checkTooManyJoins(&indexedFile{Path: path, DsProductID: 1})
+		findings, err := r.checkTooManyJoins(context.Background(), &indexedFile{Path: path, DsProductID: 1})
 		r.exec = nil
 		if err != nil {
 			t.Fatal(err)
@@ -2450,7 +2451,7 @@ func TestCheckShouldBeCP866(t *testing.T) {
 		// 0x80–0x9F — маркеры CP866
 		path := writeTemp(t, []byte{0x53, 0x45, 0x4C, 0x80, 0x81, 0x82})
 		defer os.Remove(path)
-		findings, err := runner.checkShouldBeCP866(&indexedFile{Path: path, DsProductID: 1})
+		findings, err := runner.checkShouldBeCP866(context.Background(), &indexedFile{Path: path, DsProductID: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2462,7 +2463,7 @@ func TestCheckShouldBeCP866(t *testing.T) {
 	t.Run("ASCII no finding", func(t *testing.T) {
 		path := writeTemp(t, []byte("SELECT 1"))
 		defer os.Remove(path)
-		findings, err := runner.checkShouldBeCP866(&indexedFile{Path: path, DsProductID: 1})
+		findings, err := runner.checkShouldBeCP866(context.Background(), &indexedFile{Path: path, DsProductID: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2474,7 +2475,7 @@ func TestCheckShouldBeCP866(t *testing.T) {
 	t.Run("UTF-8 finding", func(t *testing.T) {
 		path := writeTemp(t, []byte("-- комментарий"))
 		defer os.Remove(path)
-		findings, err := runner.checkShouldBeCP866(&indexedFile{Path: path, DsProductID: 1})
+		findings, err := runner.checkShouldBeCP866(context.Background(), &indexedFile{Path: path, DsProductID: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2490,7 +2491,7 @@ func TestCheckShouldBeCP866(t *testing.T) {
 		// 0xC0–0xDF доминируют — CP1251
 		path := writeTemp(t, []byte{0x53, 0x45, 0x4C, 0xC0, 0xC1, 0xC2, 0xC3, 0xC4})
 		defer os.Remove(path)
-		findings, err := runner.checkShouldBeCP866(&indexedFile{Path: path, DsProductID: 1})
+		findings, err := runner.checkShouldBeCP866(context.Background(), &indexedFile{Path: path, DsProductID: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2566,7 +2567,7 @@ func TestCheckNullComparison_Detects(t *testing.T) {
 				lines:       strings.Split(tc.content, "\n"),
 				macroResult: replaceMacros(tc.content),
 			}
-			findings, err := runner.checkNullComparison(file)
+			findings, err := runner.checkNullComparison(context.Background(), file)
 			runner.exec = nil
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -2626,7 +2627,7 @@ func TestCheckNullComparison_NoFalsePositive(t *testing.T) {
 				lines:       strings.Split(tc.content, "\n"),
 				macroResult: replaceMacros(tc.content),
 			}
-			findings, err := runner.checkNullComparison(file)
+			findings, err := runner.checkNullComparison(context.Background(), file)
 			runner.exec = nil
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -2676,7 +2677,7 @@ func TestCheckEmptyReturn(t *testing.T) {
 				lines:       strings.Split(tc.content, "\n"),
 				macroResult: replaceMacros(tc.content),
 			}
-			findings, err := runner.checkEmptyReturn(file)
+			findings, err := runner.checkEmptyReturn(context.Background(), file)
 			runner.exec = nil
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -2741,7 +2742,7 @@ func TestCheckRawTransactionControl(t *testing.T) {
 				lines:       strings.Split(tc.content, "\n"),
 				macroResult: replaceMacros(tc.content),
 			}
-			findings, err := runner.checkRawTransactionControl(file)
+			findings, err := runner.checkRawTransactionControl(context.Background(), file)
 			runner.exec = nil
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -2957,7 +2958,7 @@ func TestCheckPostgreLabelGotoLevel(t *testing.T) {
 				macroResult: replaceMacros(tc.content),
 			}
 
-			findings, err := runner.checkPostgreLabelGotoLevel(&indexedFile{Path: f.Name(), DsProductID: 1})
+			findings, err := runner.checkPostgreLabelGotoLevel(context.Background(), &indexedFile{Path: f.Name(), DsProductID: 1})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3129,7 +3130,7 @@ select @IntVar = getdate()
 				Procedures: tc.procs,
 				Fragments:  tc.fragments,
 			}
-			findings, err := r.checkDateIntoString(parsed, &indexedFile{Path: path, DsProductID: 1})
+			findings, err := r.checkDateIntoString(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
 			r.exec = nil
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -3162,7 +3163,7 @@ as
 	r := &Runner{}
 	path := normalizePath("test.sql")
 	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
-	findings, err := r.checkVarUseAfterCursor(&indexedFile{Path: path, DsProductID: 1})
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
 	r.exec = nil
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -3191,7 +3192,7 @@ as
 	r := &Runner{}
 	path := normalizePath("test.sql")
 	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
-	findings, err := r.checkVarUseAfterCursor(&indexedFile{Path: path, DsProductID: 1})
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
 	r.exec = nil
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -3215,7 +3216,7 @@ as
 	r := &Runner{}
 	path := normalizePath("test.sql")
 	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
-	findings, err := r.checkVarUseAfterCursor(&indexedFile{Path: path, DsProductID: 1})
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
 	r.exec = nil
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -3246,7 +3247,7 @@ as
 	r := &Runner{}
 	path := normalizePath("test.sql")
 	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
-	findings, err := r.checkVarUseAfterCursor(&indexedFile{Path: path, DsProductID: 1})
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
 	r.exec = nil
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -3274,7 +3275,7 @@ as
 	r := &Runner{}
 	path := normalizePath("test.sql")
 	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
-	findings, err := r.checkVarUseAfterCursor(&indexedFile{Path: path, DsProductID: 1})
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
 	r.exec = nil
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -3317,7 +3318,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUseOnlyDeclaredCursors(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3348,7 +3349,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUseOnlyDeclaredCursors(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3385,7 +3386,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUseOnlyDeclaredCursors(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3422,7 +3423,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUseOnlyDeclaredCursors(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3454,7 +3455,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUseOnlyDeclaredCursors(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3486,7 +3487,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUseOnlyDeclaredCursors(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3521,7 +3522,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUseOnlyDeclaredCursors(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3556,7 +3557,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUseOnlyDeclaredCursors(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3595,7 +3596,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUseOnlyDeclaredCursors(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3672,7 +3673,7 @@ as
 		macroResult: replaceMacros(content),
 	}
 
-	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3713,7 +3714,7 @@ as
 		macroResult: replaceMacros(content),
 	}
 
-	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3756,7 +3757,7 @@ as
 		macroResult: replaceMacros(content),
 	}
 
-	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3798,7 +3799,7 @@ as
 		macroResult: replaceMacros(content),
 	}
 
-	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3850,7 +3851,7 @@ as
 		macroResult: replaceMacros(content),
 	}
 
-	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3891,7 +3892,7 @@ as
 		macroResult: replaceMacros(content),
 	}
 
-	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3922,7 +3923,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUsageVarInSameSelect(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUsageVarInSameSelect(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3953,7 +3954,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUsageVarInSameSelect(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUsageVarInSameSelect(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3990,7 +3991,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUsageVarInSameSelect(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUsageVarInSameSelect(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4021,7 +4022,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUsageVarInSameSelect(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUsageVarInSameSelect(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4054,7 +4055,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUsageVarInSameSelect(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUsageVarInSameSelect(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4088,7 +4089,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUsageVarInSameSelect(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUsageVarInSameSelect(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4123,7 +4124,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkUsageVarInSameSelect(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkUsageVarInSameSelect(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4157,7 +4158,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkVarAssignInUpdate(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkVarAssignInUpdate(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4194,7 +4195,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkVarAssignInUpdate(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkVarAssignInUpdate(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4225,7 +4226,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkVarAssignInUpdate(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkVarAssignInUpdate(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4256,7 +4257,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkVarAssignInUpdate(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkVarAssignInUpdate(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4291,7 +4292,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkVarAssignInUpdate(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkVarAssignInUpdate(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4325,7 +4326,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkStatementsWithJoinsRequireAliases(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4356,7 +4357,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkStatementsWithJoinsRequireAliases(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4393,7 +4394,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkStatementsWithJoinsRequireAliases(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4424,7 +4425,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkStatementsWithJoinsRequireAliases(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4455,7 +4456,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkStatementsWithJoinsRequireAliases(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4486,7 +4487,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkStatementsWithJoinsRequireAliases(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4517,7 +4518,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkStatementsWithJoinsRequireAliases(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4546,7 +4547,7 @@ as
 		t.Fatalf("parse error: %v", err)
 	}
 
-	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: "test.sql", DsProductID: 1})
+	findings, err := r.checkStatementsWithJoinsRequireAliases(context.Background(), parsed, &indexedFile{Path: "test.sql", DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4577,7 +4578,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkStatementsWithJoinsRequireAliases(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4609,7 +4610,7 @@ as
 	}
 	tmpFile.Close()
 
-	findings, err := r.checkStatementsWithJoinsRequireAliases(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	findings, err := r.checkStatementsWithJoinsRequireAliases(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5146,7 +5147,7 @@ func TestSqlMacrosMap_ContainsKnownMacros(t *testing.T) {
 func TestFilterKnownNames_FiltersMacros(t *testing.T) {
 	r := &Runner{}
 	names := []string{"M_FORCEORDER", "M_KEEPPLAN", "col1", "M_DELETE_PTABLE", "col2"}
-	filtered := r.filterKnownNames(names)
+	filtered := r.filterKnownNames(context.Background(), names)
 	if len(filtered) != 2 {
 		t.Fatalf("expected 2 names after filtering, got %d: %v", len(filtered), filtered)
 	}
@@ -5326,7 +5327,7 @@ func TestCachedLookupMacroType_CacheHit(t *testing.T) {
 	r := &Runner{macroTypeCache: make(map[string]string)}
 	r.macroTypeCache["_convert_date_to_int_"] = "int"
 
-	got := r.cachedLookupMacroType("_CONVERT_DATE_TO_INT_")
+	got := r.cachedLookupMacroType(context.Background(), "_CONVERT_DATE_TO_INT_")
 	if got != "int" {
 		t.Fatalf("expected 'int' from cache, got %q", got)
 	}
@@ -5336,7 +5337,7 @@ func TestCachedLookupMacroType_NegativeCache(t *testing.T) {
 	r := &Runner{macroTypeCache: make(map[string]string)}
 	r.macroTypeCache["_unknown_macro_"] = ""
 
-	got := r.cachedLookupMacroType("_UNKNOWN_MACRO_")
+	got := r.cachedLookupMacroType(context.Background(), "_UNKNOWN_MACRO_")
 	if got != "" {
 		t.Fatalf("expected empty string from negative cache, got %q", got)
 	}
@@ -5344,7 +5345,7 @@ func TestCachedLookupMacroType_NegativeCache(t *testing.T) {
 
 func TestResolveArgType_ConvertNumeric(t *testing.T) {
 	r := &Runner{macroTypeCache: make(map[string]string)}
-	got := r.resolveArgType("convert(numeric(15, 0), @CurrID + MAX_COUNT_ID)", map[string]string{}, map[string]string{})
+	got := r.resolveArgType(context.Background(), "convert(numeric(15, 0), @CurrID + MAX_COUNT_ID)", map[string]string{}, map[string]string{})
 	if got != "numeric(15, 0)" {
 		t.Fatalf("expected 'numeric(15, 0)', got %q", got)
 	}
@@ -5352,7 +5353,7 @@ func TestResolveArgType_ConvertNumeric(t *testing.T) {
 
 func TestResolveArgType_ConvertDatetime(t *testing.T) {
 	r := &Runner{macroTypeCache: make(map[string]string)}
-	got := r.resolveArgType("convert(datetime, @SomeDate)", map[string]string{}, map[string]string{})
+	got := r.resolveArgType(context.Background(), "convert(datetime, @SomeDate)", map[string]string{}, map[string]string{})
 	if got != "datetime" {
 		t.Fatalf("expected 'datetime', got %q", got)
 	}
@@ -5360,7 +5361,7 @@ func TestResolveArgType_ConvertDatetime(t *testing.T) {
 
 func TestResolveArgType_CastAsInt(t *testing.T) {
 	r := &Runner{macroTypeCache: make(map[string]string)}
-	got := r.resolveArgType("cast(@x as int)", map[string]string{}, map[string]string{})
+	got := r.resolveArgType(context.Background(), "cast(@x as int)", map[string]string{}, map[string]string{})
 	if got != "int" {
 		t.Fatalf("expected 'int', got %q", got)
 	}
@@ -5368,7 +5369,7 @@ func TestResolveArgType_CastAsInt(t *testing.T) {
 
 func TestResolveArgType_ConvertNumericEquivalDSIdentifier(t *testing.T) {
 	r := &Runner{macroTypeCache: make(map[string]string)}
-	t1 := r.resolveArgType("convert(numeric(15, 0), @CurrID + MAX_COUNT_ID)", map[string]string{}, map[string]string{})
+	t1 := r.resolveArgType(context.Background(), "convert(numeric(15, 0), @CurrID + MAX_COUNT_ID)", map[string]string{}, map[string]string{})
 	t2 := "DSIDENTIFIER"
 	if !areEquivalentTypes(t1, t2) {
 		t.Fatalf("convert(numeric(15,0)) type %q should be equivalent to DSIDENTIFIER", t1)
@@ -5377,7 +5378,7 @@ func TestResolveArgType_ConvertNumericEquivalDSIdentifier(t *testing.T) {
 
 func TestResolveArgType_SubstringWithArithmetic_ReturnsVarchar(t *testing.T) {
 	r := &Runner{macroTypeCache: make(map[string]string)}
-	got := r.resolveArgType("substring(M_CONVERT_NCHAR(otc.Comment), otc.PosTag + 8, otc.LenTag - 9)", map[string]string{}, map[string]string{})
+	got := r.resolveArgType(context.Background(), "substring(M_CONVERT_NCHAR(otc.Comment), otc.PosTag + 8, otc.LenTag - 9)", map[string]string{}, map[string]string{})
 	if got != "varchar" {
 		t.Fatalf("expected 'varchar' for substring(), got %q", got)
 	}
@@ -5505,7 +5506,7 @@ func TestCheckDatatypeExecParams_NoDB_NoPanic(t *testing.T) {
 		macroResult: replaceMacros(content),
 	}
 	parsed := &sqlparser.ParseResult{}
-	findings, err := runner.checkDatatypeExecParams(parsed, file)
+	findings, err := runner.checkDatatypeExecParams(context.Background(), parsed, file)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5520,7 +5521,7 @@ func TestResolveArithmeticExprType_DSIDentifierMinusInt(t *testing.T) {
 		"maxid": "DSIDENTIFIER",
 		"minid": "DSIDENTIFIER",
 	}
-	got := r.resolveArgType("@MaxID - @MinID + 1", varTypes, map[string]string{})
+	got := r.resolveArgType(context.Background(), "@MaxID - @MinID + 1", varTypes, map[string]string{})
 	if got != "DSIDENTIFIER" {
 		t.Fatalf("expected DSIDENTIFIER, got %q", got)
 	}
@@ -5531,7 +5532,7 @@ func TestResolveArithmeticExprType_DSIntKeyPlusInt(t *testing.T) {
 	varTypes := map[string]string{
 		"delta": "DSINT_KEY",
 	}
-	got := r.resolveArgType("@Delta + 1", varTypes, map[string]string{})
+	got := r.resolveArgType(context.Background(), "@Delta + 1", varTypes, map[string]string{})
 	if got != "DSINT_KEY" {
 		t.Fatalf("expected DSINT_KEY, got %q", got)
 	}
@@ -5806,7 +5807,7 @@ func TestEnrichVariableTypesFromAPI_NilDB_NoOp(t *testing.T) {
 	r := &Runner{}
 	vt := map[string]string{"existingvar": "DSINT"}
 	content := "API_CREATE_PROC(SomeProc)"
-	r.enrichVariableTypesFromAPI(vt, &sqlparser.ParseResult{}, content)
+	r.enrichVariableTypesFromAPI(context.Background(), vt, &sqlparser.ParseResult{}, content)
 	if len(vt) != 1 {
 		t.Fatalf("expected 1 entry (no-op with nil db), got %d", len(vt))
 	}
@@ -5817,7 +5818,7 @@ func TestEnrichVariableTypesFromAPI_DoesNotOverwriteExisting(t *testing.T) {
 	// Simulate: declare says DSOPERDAY, API says DSOPERDAY too — no overwrite needed.
 	// This test just verifies the guard logic with nil db (no-op).
 	r := &Runner{}
-	r.enrichVariableTypesFromAPI(vt, &sqlparser.ParseResult{}, "API_CREATE_PROC(Test)")
+	r.enrichVariableTypesFromAPI(context.Background(), vt, &sqlparser.ParseResult{}, "API_CREATE_PROC(Test)")
 	if vt["agreementdate"] != "DSOPERDAY" {
 		t.Fatalf("existing type should not be changed, got %q", vt["agreementdate"])
 	}

@@ -1,6 +1,7 @@
 package trc
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"strings"
@@ -15,7 +16,7 @@ import (
 // импортом пакета rti, чтобы не создавать межпакетную зависимость
 // internal/trc -> internal/rti).
 type ProcedureLookup interface {
-	GetProcedureResult(name string) (*query.SQLProcedureResult, error)
+	GetProcedureResult(ctx context.Context, name string) (*query.SQLProcedureResult, error)
 }
 
 // ProcedureEnrichment — результат обогащения процедуры данными из CodeBase.
@@ -31,9 +32,9 @@ type ProcedureEnrichment struct {
 // EnrichProcedure ищет процедуру в CodeBase DB и возвращает enrichment.
 // Отбрасывает завершающий суффикс "#" от имени процедуры (встречается в
 // TextData для параметризованных вызовов) перед поиском.
-func EnrichProcedure(q ProcedureLookup, procName string) (*ProcedureEnrichment, error) {
+func EnrichProcedure(ctx context.Context, q ProcedureLookup, procName string) (*ProcedureEnrichment, error) {
 	name := trimHashSuffix(procName)
-	proc, err := q.GetProcedureResult(name)
+	proc, err := q.GetProcedureResult(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("procedure %q not found: %w", procName, err)
 	}
@@ -85,7 +86,7 @@ func GetSlowThresholdMs() int {
 // procedure name (как в TRCEvent.Procedure) → enrichment.
 // Параллельно обрабатывает уникальные имена процедур через chunk-based
 // паттерн (sync.WaitGroup + sync.Mutex для map), лимит — maxEnrichWorkers.
-func EnrichEvents(q ProcedureLookup, events []TRCEvent) map[string]*ProcedureEnrichment {
+func EnrichEvents(ctx context.Context, q ProcedureLookup, events []TRCEvent) map[string]*ProcedureEnrichment {
 	uniqueProcs := make(map[string]struct{})
 	for _, ev := range events {
 		if ev.Procedure != "" {
@@ -104,7 +105,7 @@ func EnrichEvents(q ProcedureLookup, events []TRCEvent) map[string]*ProcedureEnr
 	if len(procs) < minProcsForParallelEnrich {
 		result := make(map[string]*ProcedureEnrichment, len(procs))
 		for _, procName := range procs {
-			result[procName] = enrichSingle(q, procName)
+			result[procName] = enrichSingle(ctx, q, procName)
 		}
 		return result
 	}
@@ -131,7 +132,7 @@ func EnrichEvents(q ProcedureLookup, events []TRCEvent) map[string]*ProcedureEnr
 		go func(chunk []string) {
 			defer wg.Done()
 			for _, procName := range chunk {
-				e := enrichSingle(q, procName)
+				e := enrichSingle(ctx, q, procName)
 				mu.Lock()
 				result[procName] = e
 				mu.Unlock()
@@ -144,8 +145,8 @@ func EnrichEvents(q ProcedureLookup, events []TRCEvent) map[string]*ProcedureEnr
 
 // enrichSingle — helper для переиспользования между последовательным и
 // параллельным путями EnrichEvents.
-func enrichSingle(q ProcedureLookup, procName string) *ProcedureEnrichment {
-	enrich, err := EnrichProcedure(q, procName)
+func enrichSingle(ctx context.Context, q ProcedureLookup, procName string) *ProcedureEnrichment {
+	enrich, err := EnrichProcedure(ctx, q, procName)
 	if err != nil {
 		return &ProcedureEnrichment{
 			Procedure:  procName,

@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -272,7 +273,7 @@ func buildSymbolLookupCondition(symbolType string, like bool, argPosition int) s
 }
 
 // SearchSymbol ищет сущность по имени
-func (q *Query) SearchSymbol(name string, symbolType string, like bool, limit int) ([]SymbolResult, error) {
+func (q *Query) SearchSymbol(ctx context.Context, name string, symbolType string, like bool, limit int) ([]SymbolResult, error) {
 	lookupValue := buildLookupValue(name, like)
 	lookupCondition := buildSymbolLookupCondition(symbolType, like, 1)
 	// symbols — это unified index (унифицированный индекс), поэтому этот метод
@@ -302,7 +303,7 @@ func (q *Query) SearchSymbol(name string, symbolType string, like bool, limit in
 
 	query += fmt.Sprintf(" ORDER BY s.symbol_name LIMIT %d", limit)
 
-	rows, err := q.db.Query(query, args...)
+	rows, err := q.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +327,7 @@ func (q *Query) SearchSymbol(name string, symbolType string, like bool, limit in
 }
 
 // GetFileByPath получает файл по пути
-func (q *Query) GetFileByPath(path string) (*model.File, error) {
+func (q *Query) GetFileByPath(ctx context.Context, path string) (*model.File, error) {
 	// Поддерживаем поиск и по абсолютному path, и по rel_path,
 	// чтобы API было удобно использовать и из CLI, и из внешних интеграций.
 	query := `
@@ -336,7 +337,7 @@ func (q *Query) GetFileByPath(path string) (*model.File, error) {
 		WHERE path = $1 OR rel_path = $1
 	`
 
-	row := q.db.QueryRow(query, path)
+	row := q.db.QueryRowContext(ctx, query, path)
 
 	var f model.File
 	var dsProductID sql.NullInt64
@@ -353,7 +354,7 @@ func (q *Query) GetFileByPath(path string) (*model.File, error) {
 }
 
 // SearchInContent ищет текст в содержимом файлов
-func (q *Query) SearchInContent(pattern string, limit int) ([]SymbolResult, error) {
+func (q *Query) SearchInContent(ctx context.Context, pattern string, limit int) ([]SymbolResult, error) {
 	// Сейчас это не full-text search по сырому содержимому файлов,
 	// а поиск по уже извлечённым symbol names/signatures в unified index.
 	query := `
@@ -373,7 +374,7 @@ func (q *Query) SearchInContent(pattern string, limit int) ([]SymbolResult, erro
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, "%"+pattern+"%", limit)
+	rows, err := q.db.QueryContext(ctx, query, "%"+pattern+"%", limit)
 	if err != nil {
 		return nil, err
 	}
@@ -396,7 +397,7 @@ func (q *Query) SearchInContent(pattern string, limit int) ([]SymbolResult, erro
 }
 
 // SearchReportForm поиск report forms
-func (q *Query) SearchReportForm(name string, like bool, limit int) ([]ReportFormResult, error) {
+func (q *Query) SearchReportForm(ctx context.Context, name string, like bool, limit int) ([]ReportFormResult, error) {
 	lookupValue := buildLookupValue(name, like)
 	lookupCondition := buildNameLookupCondition([]string{"rf.report_name", "rf.form_name"}, like, 1)
 	query := `
@@ -417,7 +418,7 @@ func (q *Query) SearchReportForm(name string, like bool, limit int) ([]ReportFor
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, lookupValue, limit)
+	rows, err := q.db.QueryContext(ctx, query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -442,7 +443,7 @@ func (q *Query) SearchReportForm(name string, like bool, limit int) ([]ReportFor
 	return results, rows.Err()
 }
 
-func (q *Query) SearchDFMForm(name string, like bool, limit int) ([]DFMFormResult, error) {
+func (q *Query) SearchDFMForm(ctx context.Context, name string, like bool, limit int) ([]DFMFormResult, error) {
 	lookupValue := buildLookupValue(name, like)
 	lookupCondition := buildNameLookupCondition([]string{"df.form_name", "df.form_class", "df.caption"}, like, 1)
 	query := `
@@ -462,7 +463,7 @@ func (q *Query) SearchDFMForm(name string, like bool, limit int) ([]DFMFormResul
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, lookupValue, limit)
+	rows, err := q.db.QueryContext(ctx, query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -484,7 +485,7 @@ func (q *Query) SearchDFMForm(name string, like bool, limit int) ([]DFMFormResul
 	return results, rows.Err()
 }
 
-func (q *Query) SearchDFMComponent(name string, like bool, limit int) ([]DFMComponentResult, error) {
+func (q *Query) SearchDFMComponent(ctx context.Context, name string, like bool, limit int) ([]DFMComponentResult, error) {
 	lookupValue := buildLookupValue(name, like)
 	lookupCondition := buildNameLookupCondition([]string{"dc.component_name", "dc.component_type", "dc.caption", "df.form_name", "df.form_class"}, like, 1)
 	query := `
@@ -512,7 +513,7 @@ func (q *Query) SearchDFMComponent(name string, like bool, limit int) ([]DFMComp
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, lookupValue, limit)
+	rows, err := q.db.QueryContext(ctx, query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -543,8 +544,8 @@ func (q *Query) SearchDFMComponent(name string, like bool, limit int) ([]DFMComp
 	return results, rows.Err()
 }
 
-func (q *Query) SearchQueryFragment(text string, limit int) ([]QueryFragmentResult, error) {
-	idRows, err := q.db.Query(`
+func (q *Query) SearchQueryFragment(ctx context.Context, text string, limit int) ([]QueryFragmentResult, error) {
+	idRows, err := q.db.QueryContext(ctx, `
 		SELECT qf.id
 		FROM query_fragments qf
 		WHERE qf.query_text ILIKE $1
@@ -598,7 +599,7 @@ func (q *Query) SearchQueryFragment(text string, limit int) ([]QueryFragmentResu
 		WHERE qf.id IN (` + strings.Join(placeholders, ",") + `)
 	`
 
-	rows, err := q.db.Query(query, args...)
+	rows, err := q.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -623,7 +624,7 @@ func (q *Query) SearchQueryFragment(text string, limit int) ([]QueryFragmentResu
 }
 
 // SearchReportField поиск report fields
-func (q *Query) SearchReportField(name string, like bool, limit int) ([]ReportFieldResult, error) {
+func (q *Query) SearchReportField(ctx context.Context, name string, like bool, limit int) ([]ReportFieldResult, error) {
 	lookupValue := buildLookupValue(name, like)
 	lookupCondition := buildNameLookupCondition([]string{"rfld.field_name", "rfld.source_name", "rf.report_name", "COALESCE(rfld.raw_text, '')"}, like, 1)
 	query := `
@@ -647,7 +648,7 @@ func (q *Query) SearchReportField(name string, like bool, limit int) ([]ReportFi
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, lookupValue, limit)
+	rows, err := q.db.QueryContext(ctx, query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -680,7 +681,7 @@ func (q *Query) SearchReportField(name string, like bool, limit int) ([]ReportFi
 }
 
 // SearchReportParam поиск report params
-func (q *Query) SearchReportParam(name string, like bool, limit int) ([]ReportParamResult, error) {
+func (q *Query) SearchReportParam(ctx context.Context, name string, like bool, limit int) ([]ReportParamResult, error) {
 	lookupValue := buildLookupValue(name, like)
 	lookupCondition := buildNameLookupCondition([]string{"rp.param_name", "COALESCE(rp.lookup_table, '')", "COALESCE(rp.lookup_column, '')", "COALESCE(rp.raw_text, '')"}, like, 1)
 	query := `
@@ -710,7 +711,7 @@ func (q *Query) SearchReportParam(name string, like bool, limit int) ([]ReportPa
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, lookupValue, limit)
+	rows, err := q.db.QueryContext(ctx, query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -754,7 +755,7 @@ func (q *Query) SearchReportParam(name string, like bool, limit int) ([]ReportPa
 }
 
 // SearchVBFunction поиск VB функций
-func (q *Query) SearchVBFunction(name string, like bool, limit int) ([]VBFunctionResult, error) {
+func (q *Query) SearchVBFunction(ctx context.Context, name string, like bool, limit int) ([]VBFunctionResult, error) {
 	lookupValue := buildLookupValue(name, like)
 	lookupCondition := buildNameLookupCondition([]string{"vf.function_name"}, like, 1)
 	query := `
@@ -776,7 +777,7 @@ func (q *Query) SearchVBFunction(name string, like bool, limit int) ([]VBFunctio
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, lookupValue, limit)
+	rows, err := q.db.QueryContext(ctx, query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -811,7 +812,7 @@ type JSFunctionResult struct {
 }
 
 // SearchJSFunction поиск JS-функции
-func (q *Query) SearchJSFunction(name string, like bool, limit int) ([]JSFunctionResult, error) {
+func (q *Query) SearchJSFunction(ctx context.Context, name string, like bool, limit int) ([]JSFunctionResult, error) {
 	lookupValue := buildLookupValue(name, like)
 	lookupCondition := buildNameLookupCondition([]string{"j.function_name"}, like, 1)
 	query := `
@@ -831,7 +832,7 @@ func (q *Query) SearchJSFunction(name string, like bool, limit int) ([]JSFunctio
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, lookupValue, limit)
+	rows, err := q.db.QueryContext(ctx, query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -874,7 +875,7 @@ type SMFInstrumentResult struct {
 }
 
 // SearchSMFInstrument поиск SMF инструмента
-func (q *Query) SearchSMFInstrument(name string, like bool, limit int) ([]SMFInstrumentResult, error) {
+func (q *Query) SearchSMFInstrument(ctx context.Context, name string, like bool, limit int) ([]SMFInstrumentResult, error) {
 	lookupValue := buildLookupValue(name, like)
 	lookupCondition := buildNameLookupCondition([]string{"s.instrument_name", "s.brief", "f.rel_path"}, like, 1)
 	query := `
@@ -898,7 +899,7 @@ func (q *Query) SearchSMFInstrument(name string, like bool, limit int) ([]SMFIns
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, lookupValue, limit)
+	rows, err := q.db.QueryContext(ctx, query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -952,7 +953,7 @@ func (q *Query) SearchSMFInstrument(name string, like bool, limit int) ([]SMFIns
 }
 
 // SearchSMFByType поиск SMF по типу сценария
-func (q *Query) SearchSMFByType(scenarioType string, limit int) ([]SMFInstrumentResult, error) {
+func (q *Query) SearchSMFByType(ctx context.Context, scenarioType string, limit int) ([]SMFInstrumentResult, error) {
 	query := `
 		SELECT
 			s.id,
@@ -974,7 +975,7 @@ func (q *Query) SearchSMFByType(scenarioType string, limit int) ([]SMFInstrument
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, scenarioType, limit)
+	rows, err := q.db.QueryContext(ctx, query, scenarioType, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1036,8 +1037,8 @@ type RetCodeResult struct {
 }
 
 // LookupRetCode ищет описание кода возврата по числовому значению.
-func (q *Query) LookupRetCode(retCode int64) (*RetCodeResult, error) {
-	r, err := q.db.LookupRetCode(retCode)
+func (q *Query) LookupRetCode(ctx context.Context, retCode int64) (*RetCodeResult, error) {
+	r, err := q.db.LookupRetCode(ctx, retCode)
 	if err != nil {
 		return nil, err
 	}
@@ -1053,8 +1054,8 @@ func (q *Query) LookupRetCode(retCode int64) (*RetCodeResult, error) {
 }
 
 // LookupRetCodeByMessage ищет коды возврата по фрагменту текста сообщения.
-func (q *Query) LookupRetCodeByMessage(messagePattern string, limit int) ([]RetCodeResult, error) {
-	items, err := q.db.LookupRetCodeByMessage(messagePattern, limit)
+func (q *Query) LookupRetCodeByMessage(ctx context.Context, messagePattern string, limit int) ([]RetCodeResult, error) {
+	items, err := q.db.LookupRetCodeByMessage(ctx, messagePattern, limit)
 	if err != nil {
 		return nil, err
 	}

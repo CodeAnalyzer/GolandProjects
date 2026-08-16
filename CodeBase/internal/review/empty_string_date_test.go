@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -115,7 +116,7 @@ func TestCheckEmptyStringDate(t *testing.T) {
 				Procedures: tc.procs,
 				Fragments:  tc.fragments,
 			}
-			findings, err := r.checkEmptyStringDate(parsed, &indexedFile{Path: path, DsProductID: 1})
+			findings, err := r.checkEmptyStringDate(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
 			r.exec = nil
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)

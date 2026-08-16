@@ -71,6 +71,8 @@ type LoggingConfig struct {
 type MCPConfig struct {
 	PaginationChunkSize int    `toml:"pagination_chunk_size"`
 	PaginationTTL       string `toml:"pagination_ttl"` // Go duration: "15m", "30m"
+	QueryTimeoutSec     int    `toml:"query_timeout_sec"`  // default 30
+	ReviewTimeoutSec    int    `toml:"review_timeout_sec"` // default 120
 }
 
 var (
@@ -197,6 +199,12 @@ func Load() error {
 	if cfg.MCP.PaginationTTL == "" {
 		cfg.MCP.PaginationTTL = "15m"
 	}
+	if cfg.MCP.QueryTimeoutSec <= 0 {
+		cfg.MCP.QueryTimeoutSec = 30
+	}
+	if cfg.MCP.ReviewTimeoutSec <= 0 {
+		cfg.MCP.ReviewTimeoutSec = 120
+	}
 
 	return nil
 }
@@ -281,6 +289,8 @@ func CreateDefault(rootPath string) *Config {
 		MCP: MCPConfig{
 			PaginationChunkSize: 8_000,
 			PaginationTTL:       "15m",
+			QueryTimeoutSec:     30,
+			ReviewTimeoutSec:    120,
 		},
 	}
 	return cfg

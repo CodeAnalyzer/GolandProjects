@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -10,7 +11,7 @@ type relationEntityMatch struct {
 	ID   int64
 }
 
-func (q *Query) SearchRelationsByEntity(sourceType string, sourceID int64, targetType string, targetID int64, relationType string, limit int) ([]RelationResult, error) {
+func (q *Query) SearchRelationsByEntity(ctx context.Context, sourceType string, sourceID int64, targetType string, targetID int64, relationType string, limit int) ([]RelationResult, error) {
 	conditions := make([]string, 0, 5)
 	args := make([]interface{}, 0, 6)
 	argPos := 1
@@ -44,7 +45,7 @@ func (q *Query) SearchRelationsByEntity(sourceType string, sourceID int64, targe
 	if len(conditions) == 0 {
 		return nil, fmt.Errorf("at least one relation filter must be provided")
 	}
-	relationIDs, err := q.selectRelationIDs(conditions, args, argPos, limit)
+	relationIDs, err := q.selectRelationIDs(ctx, conditions, args, argPos, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +54,7 @@ func (q *Query) SearchRelationsByEntity(sourceType string, sourceID int64, targe
 	}
 
 	queryText, queryArgs := buildRelationDetailsQueryByIDs(relationIDs)
-	rows, err := q.db.Query(queryText, queryArgs...)
+	rows, err := q.db.QueryContext(ctx, queryText, queryArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -88,14 +89,14 @@ func (q *Query) SearchRelationsByEntity(sourceType string, sourceID int64, targe
 	return results, rows.Err()
 }
 
-func (q *Query) selectRelationIDs(conditions []string, args []interface{}, argPos int, limit int) ([]int64, error) {
+func (q *Query) selectRelationIDs(ctx context.Context, conditions []string, args []interface{}, argPos int, limit int) ([]int64, error) {
 	queryText := "SELECT r.id FROM relations r WHERE " + strings.Join(conditions, " AND ")
 	queryText += fmt.Sprintf(" ORDER BY r.id DESC LIMIT $%d", argPos)
 	queryArgs := make([]interface{}, 0, len(args)+1)
 	queryArgs = append(queryArgs, args...)
 	queryArgs = append(queryArgs, limit)
 
-	rows, err := q.db.Query(queryText, queryArgs...)
+	rows, err := q.db.QueryContext(ctx, queryText, queryArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -214,12 +215,12 @@ func buildRelationAnyNameExistsCondition(side string, argPos int) string {
 	)
 }
 
-func (q *Query) SearchRelations(sourceType string, sourceName string, targetType string, targetName string, relationType string, limit int) ([]RelationResult, error) {
+func (q *Query) SearchRelations(ctx context.Context, sourceType string, sourceName string, targetType string, targetName string, relationType string, limit int) ([]RelationResult, error) {
 	if sourceName != "" && sourceType == "" && targetName == "" {
-		return q.searchRelationsByNameMatches("source", sourceName, targetType, relationType, limit)
+		return q.searchRelationsByNameMatches(ctx, "source", sourceName, targetType, relationType, limit)
 	}
 	if targetName != "" && targetType == "" && sourceName == "" {
-		return q.searchRelationsByNameMatches("target", targetName, sourceType, relationType, limit)
+		return q.searchRelationsByNameMatches(ctx, "target", targetName, sourceType, relationType, limit)
 	}
 
 	conditions := make([]string, 0, 5)
@@ -271,7 +272,7 @@ func (q *Query) SearchRelations(sourceType string, sourceName string, targetType
 	if len(conditions) == 0 {
 		return nil, fmt.Errorf("at least one relation filter must be provided")
 	}
-	relationIDs, err := q.selectRelationIDs(conditions, args, argPos, limit)
+	relationIDs, err := q.selectRelationIDs(ctx, conditions, args, argPos, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +281,7 @@ func (q *Query) SearchRelations(sourceType string, sourceName string, targetType
 	}
 
 	queryText, queryArgs := buildRelationDetailsQueryByIDs(relationIDs)
-	rows, err := q.db.Query(queryText, queryArgs...)
+	rows, err := q.db.QueryContext(ctx, queryText, queryArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -315,8 +316,8 @@ func (q *Query) SearchRelations(sourceType string, sourceName string, targetType
 	return results, rows.Err()
 }
 
-func (q *Query) searchRelationsByNameMatches(side string, name string, oppositeType string, relationType string, limit int) ([]RelationResult, error) {
-	matches, err := q.findRelationEntityMatches(name, "", relationEntityMatchLimit(limit))
+func (q *Query) searchRelationsByNameMatches(ctx context.Context, side string, name string, oppositeType string, relationType string, limit int) ([]RelationResult, error) {
+	matches, err := q.findRelationEntityMatches(ctx, name, "", relationEntityMatchLimit(limit))
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +325,7 @@ func (q *Query) searchRelationsByNameMatches(side string, name string, oppositeT
 		return []RelationResult{}, nil
 	}
 
-	relationIDs, err := q.selectRelationIDsByEntityMatches(side, matches, oppositeType, relationType, limit)
+	relationIDs, err := q.selectRelationIDsByEntityMatches(ctx, side, matches, oppositeType, relationType, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -333,7 +334,7 @@ func (q *Query) searchRelationsByNameMatches(side string, name string, oppositeT
 	}
 
 	queryText, queryArgs := buildRelationDetailsQueryByIDs(relationIDs)
-	rows, err := q.db.Query(queryText, queryArgs...)
+	rows, err := q.db.QueryContext(ctx, queryText, queryArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -379,18 +380,18 @@ func relationEntityMatchLimit(limit int) int {
 	return matchLimit
 }
 
-func (q *Query) findRelationEntityMatches(name string, entityType string, limit int) ([]relationEntityMatch, error) {
-	matches, err := q.findRelationEntityMatchesWithCondition(name, entityType, limit, true)
+func (q *Query) findRelationEntityMatches(ctx context.Context, name string, entityType string, limit int) ([]relationEntityMatch, error) {
+	matches, err := q.findRelationEntityMatchesWithCondition(ctx, name, entityType, limit, true)
 	if err != nil {
 		return nil, err
 	}
 	if len(matches) > 0 {
 		return matches, nil
 	}
-	return q.findRelationEntityMatchesWithCondition("%"+name+"%", entityType, limit, false)
+	return q.findRelationEntityMatchesWithCondition(ctx, "%"+name+"%", entityType, limit, false)
 }
 
-func (q *Query) findRelationEntityMatchesWithCondition(value string, entityType string, limit int, exact bool) ([]relationEntityMatch, error) {
+func (q *Query) findRelationEntityMatchesWithCondition(ctx context.Context, value string, entityType string, limit int, exact bool) ([]relationEntityMatch, error) {
 	queryParts, ok := relationEntityMatchQueryParts(entityType, exact)
 	if !ok {
 		return nil, fmt.Errorf("unsupported relation entity type for name filter: %s", entityType)
@@ -398,7 +399,7 @@ func (q *Query) findRelationEntityMatchesWithCondition(value string, entityType 
 	queryText := strings.Join(queryParts, "\nUNION ALL\n")
 	queryText += "\nLIMIT $2"
 
-	rows, err := q.db.Query(queryText, value, limit)
+	rows, err := q.db.QueryContext(ctx, queryText, value, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -453,7 +454,7 @@ func relationEntityMatchQueryParts(entityType string, exact bool) ([]string, boo
 	return parts, true
 }
 
-func (q *Query) selectRelationIDsByEntityMatches(side string, matches []relationEntityMatch, oppositeType string, relationType string, limit int) ([]int64, error) {
+func (q *Query) selectRelationIDsByEntityMatches(ctx context.Context, side string, matches []relationEntityMatch, oppositeType string, relationType string, limit int) ([]int64, error) {
 	typeColumn := "r.source_type"
 	idColumn := "r.source_id"
 	oppositeTypeColumn := "r.target_type"
@@ -497,7 +498,7 @@ func (q *Query) selectRelationIDsByEntityMatches(side string, matches []relation
 	queryText += fmt.Sprintf(" ORDER BY r.id DESC LIMIT $%d", argPos)
 	args = append(args, limit)
 
-	rows, err := q.db.Query(queryText, args...)
+	rows, err := q.db.QueryContext(ctx, queryText, args...)
 	if err != nil {
 		return nil, err
 	}

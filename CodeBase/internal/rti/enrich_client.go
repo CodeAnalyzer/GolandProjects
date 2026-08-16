@@ -1,6 +1,7 @@
 package rti
 
 import (
+	"context"
 	"regexp"
 	"strings"
 
@@ -11,9 +12,9 @@ import (
 // из CodeBase (PAS-методы/классы, DFM-формы, query_fragments). Реализуется
 // *query.Query.
 type ClientLookup interface {
-	FindPASMethodsByName(methodName string, like bool, limit int) ([]query.MethodResult, error)
-	SearchDFMForm(name string, like bool, limit int) ([]query.DFMFormResult, error)
-	SearchQueryFragment(text string, limit int) ([]query.QueryFragmentResult, error)
+	FindPASMethodsByName(ctx context.Context, methodName string, like bool, limit int) ([]query.MethodResult, error)
+	SearchDFMForm(ctx context.Context, name string, like bool, limit int) ([]query.DFMFormResult, error)
+	SearchQueryFragment(ctx context.Context, text string, limit int) ([]query.QueryFragmentResult, error)
 }
 
 // ClientEnrichment — результат обогащения клиентского события цепочкой
@@ -47,7 +48,7 @@ var reExecParamNameOnly = regexp.MustCompile(`(?i)@(\w+)\s*=\s*[^,\r\n]+`)
 // EnrichClientEvents обогащает клиентские события данными из CodeBase.
 // Возвращает map: "ClassName.MethodName" → enrichment (дедупликация запросов
 // по этому ключу, аналогично EnrichCalls для серверных вызовов).
-func EnrichClientEvents(q ClientLookup, events []*RTIClientEvent) map[string]*ClientEnrichment {
+func EnrichClientEvents(ctx context.Context, q ClientLookup, events []*RTIClientEvent) map[string]*ClientEnrichment {
 	result := make(map[string]*ClientEnrichment)
 	for _, ev := range events {
 		if ev.ClassName == "" && ev.MethodName == "" {
@@ -57,7 +58,7 @@ func EnrichClientEvents(q ClientLookup, events []*RTIClientEvent) map[string]*Cl
 		if _, ok := result[key]; ok {
 			continue
 		}
-		result[key] = EnrichClientEvent(q, ev)
+		result[key] = EnrichClientEvent(ctx, q, ev)
 	}
 	return result
 }
@@ -65,7 +66,7 @@ func EnrichClientEvents(q ClientLookup, events []*RTIClientEvent) map[string]*Cl
 // EnrichClientEvent обогащает одно клиентское событие цепочкой
 // DFM-форма → PAS-метод → (для sql_block) query_fragment.
 // Best-effort: при отсутствии совпадений возвращает Found=false без ошибки.
-func EnrichClientEvent(q ClientLookup, ev *RTIClientEvent) *ClientEnrichment {
+func EnrichClientEvent(ctx context.Context, q ClientLookup, ev *RTIClientEvent) *ClientEnrichment {
 	enrich := &ClientEnrichment{
 		ClassName:  ev.ClassName,
 		MethodName: ev.MethodName,
@@ -76,7 +77,7 @@ func EnrichClientEvent(q ClientLookup, ev *RTIClientEvent) *ClientEnrichment {
 
 	// Шаг 1: класс/метод -> pas_methods/pas_units.
 	if ev.MethodName != "" {
-		methods, err := q.FindPASMethodsByName(ev.MethodName, false, clientEnrichLookupLimit)
+		methods, err := q.FindPASMethodsByName(ctx, ev.MethodName, false, clientEnrichLookupLimit)
 		if err == nil {
 			for _, m := range methods {
 				if ev.ClassName != "" && !strings.EqualFold(m.ClassName, ev.ClassName) {
@@ -95,7 +96,7 @@ func EnrichClientEvent(q ClientLookup, ev *RTIClientEvent) *ClientEnrichment {
 	// классы вроде DsADORecordset/TCodeProtection формой не являются — это
 	// ожидаемо и не считается ошибкой).
 	if ev.ClassName != "" {
-		forms, err := q.SearchDFMForm(ev.ClassName, false, 1)
+		forms, err := q.SearchDFMForm(ctx, ev.ClassName, false, 1)
 		if err == nil && len(forms) > 0 {
 			enrich.DFMFormName = forms[0].FormName
 			enrich.DFMCaption = forms[0].Caption
@@ -105,7 +106,7 @@ func EnrichClientEvent(q ClientLookup, ev *RTIClientEvent) *ClientEnrichment {
 	// Шаг 3: для exec-блоков — поиск похожего текста в query_fragments,
 	// чтобы найти PAS-метод/JS-функцию, сгенерировавшую этот SQL-вызов.
 	if ev.Kind == "sql_block" && ev.SQL != nil && ev.SQL.ExecProcedure != "" {
-		fragments, err := q.SearchQueryFragment(ev.SQL.ExecProcedure, clientEnrichLookupLimit)
+		fragments, err := q.SearchQueryFragment(ctx, ev.SQL.ExecProcedure, clientEnrichLookupLimit)
 		if err == nil {
 			normalizedLog := normalizeExecSegmentForCompare(ev.SQL.Text)
 			for _, f := range fragments {

@@ -3,6 +3,7 @@
 package store_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/codebase/internal/store/testutil"
@@ -10,7 +11,7 @@ import (
 
 func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 	db := testutil.Open(t)
-	if err := db.InitSchema(); err != nil {
+	if err := db.InitSchemaCtx(context.Background()); err != nil {
 		t.Fatalf("second InitSchema: %v", err)
 	}
 
@@ -104,7 +105,7 @@ func TestInitSchema_AddsMissingColumns(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create stub trc_events: %v", err)
 	}
-	if err := db.InitSchema(); err != nil {
+	if err := db.InitSchemaCtx(context.Background()); err != nil {
 		t.Fatalf("InitSchema after stubs: %v", err)
 	}
 

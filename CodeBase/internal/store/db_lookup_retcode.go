@@ -1,8 +1,11 @@
 package store
 
-import "database/sql"
+import (
+	"context"
+	"database/sql"
+)
 
-// RetCodeLookup — результат поиска кода возврата в ds_return_codes
+// RetCodeLookup вЂ” СЂРµР·СѓР»СЊС‚Р°С‚ РїРѕРёСЃРєР° РєРѕРґР° РІРѕР·РІСЂР°С‚Р° РІ ds_return_codes
 type RetCodeLookup struct {
 	RetCode  int64
 	Message  string
@@ -10,9 +13,9 @@ type RetCodeLookup struct {
 	ModuleID int
 }
 
-// LookupRetCode ищет описание кода возврата в таблице ds_return_codes.
-func (db *DB) LookupRetCode(retCode int64) (*RetCodeLookup, error) {
-	row := db.QueryRow(
+// LookupRetCode РёС‰РµС‚ РѕРїРёСЃР°РЅРёРµ РєРѕРґР° РІРѕР·РІСЂР°С‚Р° РІ С‚Р°Р±Р»РёС†Рµ ds_return_codes.
+func (db *DB) LookupRetCode(ctx context.Context, retCode int64) (*RetCodeLookup, error) {
+	row := db.QueryRowContext(ctx, 
 		`SELECT ret_code, message, proc_name, module_id FROM ds_return_codes WHERE ret_code = $1`,
 		retCode)
 
@@ -31,15 +34,15 @@ func (db *DB) LookupRetCode(retCode int64) (*RetCodeLookup, error) {
 	return &r, nil
 }
 
-// LookupRetCodes — batch-lookup для нескольких кодов возврата.
-// Возвращает map[retCode]*RetCodeLookup.
-func (db *DB) LookupRetCodes(retCodes []int64) (map[int64]*RetCodeLookup, error) {
+// LookupRetCodes вЂ” batch-lookup РґР»СЏ РЅРµСЃРєРѕР»СЊРєРёС… РєРѕРґРѕРІ РІРѕР·РІСЂР°С‚Р°.
+// Р’РѕР·РІСЂР°С‰Р°РµС‚ map[retCode]*RetCodeLookup.
+func (db *DB) LookupRetCodes(ctx context.Context, retCodes []int64) (map[int64]*RetCodeLookup, error) {
 	result := make(map[int64]*RetCodeLookup)
 	if len(retCodes) == 0 {
 		return result, nil
 	}
 
-	// Уникальные коды
+	// РЈРЅРёРєР°Р»СЊРЅС‹Рµ РєРѕРґС‹
 	seen := make(map[int64]bool)
 	codes := make([]int64, 0, len(retCodes))
 	for _, c := range retCodes {
@@ -50,7 +53,7 @@ func (db *DB) LookupRetCodes(retCodes []int64) (map[int64]*RetCodeLookup, error)
 	}
 
 	for _, code := range codes {
-		r, err := db.LookupRetCode(code)
+		r, err := db.LookupRetCode(ctx, code)
 		if err != nil {
 			return nil, err
 		}
@@ -61,13 +64,13 @@ func (db *DB) LookupRetCodes(retCodes []int64) (map[int64]*RetCodeLookup, error)
 	return result, nil
 }
 
-// LookupRetCodeByMessage ищет коды возврата по фрагменту текста сообщения (ILIKE).
-// Возвращает список всех совпадений.
-func (db *DB) LookupRetCodeByMessage(messagePattern string, limit int) ([]RetCodeLookup, error) {
+// LookupRetCodeByMessage РёС‰РµС‚ РєРѕРґС‹ РІРѕР·РІСЂР°С‚Р° РїРѕ С„СЂР°РіРјРµРЅС‚Сѓ С‚РµРєСЃС‚Р° СЃРѕРѕР±С‰РµРЅРёСЏ (ILIKE).
+// Р’РѕР·РІСЂР°С‰Р°РµС‚ СЃРїРёСЃРѕРє РІСЃРµС… СЃРѕРІРїР°РґРµРЅРёР№.
+func (db *DB) LookupRetCodeByMessage(ctx context.Context, messagePattern string, limit int) ([]RetCodeLookup, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx, 
 		`SELECT ret_code, message, proc_name, module_id
 		 FROM ds_return_codes
 		 WHERE message ILIKE '%' || $1 || '%'

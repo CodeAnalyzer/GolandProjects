@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 
@@ -8,14 +9,14 @@ import (
 	"github.com/lib/pq"
 )
 
-// BatchInsertReportForms пакетная вставка report forms.
-func (db *DB) BatchInsertReportForms(forms []*model.ReportForm, batchSize int) error {
+// BatchInsertReportForms РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° report forms.
+func (db *DB) BatchInsertReportForms(ctx context.Context, forms []*model.ReportForm, batchSize int) error {
 	if len(forms) == 0 {
 		return nil
 	}
 
 	if len(forms) <= batchSize {
-		return db.insertReportFormsBatch(forms)
+		return db.insertReportFormsBatch(ctx, forms)
 	}
 
 	for i := 0; i < len(forms); i += batchSize {
@@ -25,19 +26,19 @@ func (db *DB) BatchInsertReportForms(forms []*model.ReportForm, batchSize int) e
 		}
 
 		batch := forms[i:end]
-		if err := db.insertReportFormsBatch(batch); err != nil {
+		if err := db.insertReportFormsBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (db *DB) insertReportFormsBatch(forms []*model.ReportForm) error {
+func (db *DB) insertReportFormsBatch(ctx context.Context, forms []*model.ReportForm) error {
 	if len(forms) == 0 {
 		return nil
 	}
 
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("report_forms", "file_id", "report_name", "report_type", "form_name", "form_class", "line_start", "line_end"))
 		if err != nil {
 			return err
@@ -64,14 +65,14 @@ func (db *DB) insertReportFormsBatch(forms []*model.ReportForm) error {
 	})
 }
 
-// BatchInsertReportFields пакетная вставка report fields.
-func (db *DB) BatchInsertReportFields(fields []*model.ReportField, batchSize int) error {
+// BatchInsertReportFields РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° report fields.
+func (db *DB) BatchInsertReportFields(ctx context.Context, fields []*model.ReportField, batchSize int) error {
 	if len(fields) == 0 {
 		return nil
 	}
 
 	if len(fields) <= batchSize {
-		return db.insertReportFieldsBatch(fields)
+		return db.insertReportFieldsBatch(ctx, fields)
 	}
 
 	for i := 0; i < len(fields); i += batchSize {
@@ -81,19 +82,19 @@ func (db *DB) BatchInsertReportFields(fields []*model.ReportField, batchSize int
 		}
 
 		batch := fields[i:end]
-		if err := db.insertReportFieldsBatch(batch); err != nil {
+		if err := db.insertReportFieldsBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (db *DB) insertReportFieldsBatch(fields []*model.ReportField) error {
+func (db *DB) insertReportFieldsBatch(ctx context.Context, fields []*model.ReportField) error {
 	if len(fields) == 0 {
 		return nil
 	}
 
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("report_fields", "report_form_id", "field_name", "source_name", "format_mask", "options", "line_number", "raw_text"))
 		if err != nil {
 			return err
@@ -129,14 +130,14 @@ func (db *DB) insertReportFieldsBatch(fields []*model.ReportField) error {
 	})
 }
 
-// BatchInsertReportParams пакетная вставка report params.
-func (db *DB) BatchInsertReportParams(params []*model.ReportParam, batchSize int) error {
+// BatchInsertReportParams РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° report params.
+func (db *DB) BatchInsertReportParams(ctx context.Context, params []*model.ReportParam, batchSize int) error {
 	if len(params) == 0 {
 		return nil
 	}
 
 	if len(params) <= batchSize {
-		return db.insertReportParamsBatch(params)
+		return db.insertReportParamsBatch(ctx, params)
 	}
 
 	for i := 0; i < len(params); i += batchSize {
@@ -146,19 +147,19 @@ func (db *DB) BatchInsertReportParams(params []*model.ReportParam, batchSize int
 		}
 
 		batch := params[i:end]
-		if err := db.insertReportParamsBatch(batch); err != nil {
+		if err := db.insertReportParamsBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (db *DB) insertReportParamsBatch(params []*model.ReportParam) error {
+func (db *DB) insertReportParamsBatch(ctx context.Context, params []*model.ReportParam) error {
 	if len(params) == 0 {
 		return nil
 	}
 
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("report_params", "report_form_id", "param_name", "param_kind", "component_type", "data_type", "lookup_form", "lookup_table", "lookup_column", "key_column", "required", "default_value", "line_number", "raw_text"))
 		if err != nil {
 			return err
@@ -191,14 +192,14 @@ func (db *DB) insertReportParamsBatch(params []*model.ReportParam) error {
 	})
 }
 
-// BatchInsertVBFunctions пакетная вставка vb functions.
-func (db *DB) BatchInsertVBFunctions(functions []*model.VBFunction, batchSize int) error {
+// BatchInsertVBFunctions РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° vb functions.
+func (db *DB) BatchInsertVBFunctions(ctx context.Context, functions []*model.VBFunction, batchSize int) error {
 	if len(functions) == 0 {
 		return nil
 	}
 
 	if len(functions) <= batchSize {
-		return db.insertVBFunctionsBatch(functions)
+		return db.insertVBFunctionsBatch(ctx, functions)
 	}
 
 	for i := 0; i < len(functions); i += batchSize {
@@ -208,19 +209,19 @@ func (db *DB) BatchInsertVBFunctions(functions []*model.VBFunction, batchSize in
 		}
 
 		batch := functions[i:end]
-		if err := db.insertVBFunctionsBatch(batch); err != nil {
+		if err := db.insertVBFunctionsBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (db *DB) insertVBFunctionsBatch(functions []*model.VBFunction) error {
+func (db *DB) insertVBFunctionsBatch(ctx context.Context, functions []*model.VBFunction) error {
 	if len(functions) == 0 {
 		return nil
 	}
 
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("vb_functions", "report_form_id", "function_name", "function_type", "signature", "body_text", "line_start", "line_end", "body_hash"))
 		if err != nil {
 			return err

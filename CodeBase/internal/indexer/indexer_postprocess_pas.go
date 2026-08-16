@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"context"
 	"strings"
 
 	"github.com/codebase/internal/model"
@@ -91,7 +92,7 @@ func (idx *Indexer) postProcessPASPending(collector *statsCollector) {
 	}
 
 	// Batch-resolve PAS class IDs.
-	classIDMap, err := idx.db.FindLatestPASClassIDsByNames(classNames)
+	classIDMap, err := idx.db.FindLatestPASClassIDsByNames(context.Background(), classNames)
 	if err != nil {
 		idx.logError("<post-processing>", "Error batch-resolving PAS class IDs: %v", err)
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
@@ -99,7 +100,7 @@ func (idx *Indexer) postProcessPASPending(collector *statsCollector) {
 	}
 
 	// Batch-resolve DFM form IDs by class names.
-	dfmFormIDMap, err := idx.db.FindLatestDFMFormIDsByClassNames(classNames)
+	dfmFormIDMap, err := idx.db.FindLatestDFMFormIDsByClassNames(context.Background(), classNames)
 	if err != nil {
 		idx.logError("<post-processing>", "Error batch-resolving DFM form IDs: %v", err)
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
@@ -117,7 +118,7 @@ func (idx *Indexer) postProcessPASPending(collector *statsCollector) {
 		classDFMPairs = append(classDFMPairs, store.PASUpdatePair{ID: pending.ClassID, ValueID: dfmFormID})
 	}
 	if len(classDFMPairs) > 0 {
-		if err := idx.db.BatchUpdatePASClassDFMForm(classDFMPairs); err != nil {
+		if err := idx.db.BatchUpdatePASClassDFMForm(context.Background(), classDFMPairs); err != nil {
 			idx.logError("<post-processing>", "Error batch updating DFM form links for PAS classes: %v", err)
 			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		}
@@ -135,7 +136,7 @@ func (idx *Indexer) postProcessPASPending(collector *statsCollector) {
 		methodClassPairs = append(methodClassPairs, store.PASUpdatePair{ID: pending.MethodID, ValueID: classID})
 	}
 	if len(methodClassPairs) > 0 {
-		if err := idx.db.BatchUpdatePASMethodClass(methodClassPairs); err != nil {
+		if err := idx.db.BatchUpdatePASMethodClass(context.Background(), methodClassPairs); err != nil {
 			idx.logError("<post-processing>", "Error batch updating class links for PAS methods: %v", err)
 			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		}
@@ -153,14 +154,14 @@ func (idx *Indexer) postProcessPASPending(collector *statsCollector) {
 		fieldClassPairs = append(fieldClassPairs, store.PASUpdatePair{ID: pending.FieldID, ValueID: classID})
 	}
 	if len(fieldClassPairs) > 0 {
-		if err := idx.db.BatchUpdatePASFieldClass(fieldClassPairs); err != nil {
+		if err := idx.db.BatchUpdatePASFieldClass(context.Background(), fieldClassPairs); err != nil {
 			idx.logError("<post-processing>", "Error batch updating class links for PAS fields: %v", err)
 			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		}
 	}
 
 	// DFM component linking for PAS fields.
-	fieldCandidates, err := idx.db.FindPASFieldDFMLinkCandidates()
+	fieldCandidates, err := idx.db.FindPASFieldDFMLinkCandidates(context.Background())
 	if err != nil {
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		idx.logError("<post-processing>", "Error loading PAS field DFM link candidates: %v", err)
@@ -178,7 +179,7 @@ func (idx *Indexer) postProcessPASPending(collector *statsCollector) {
 		for _, c := range candidates {
 			fieldNames = append(fieldNames, c.FieldName)
 		}
-		componentIDMap, err := idx.db.FindLatestDFMComponentIDsByFormAndNames(formID, fieldNames)
+		componentIDMap, err := idx.db.FindLatestDFMComponentIDsByFormAndNames(context.Background(), formID, fieldNames)
 		if err != nil {
 			idx.logError("<post-processing>", "Error batch-resolving DFM components for form %d: %v", formID, err)
 			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
@@ -194,7 +195,7 @@ func (idx *Indexer) postProcessPASPending(collector *statsCollector) {
 			componentPairs = append(componentPairs, store.PASUpdatePair{ID: candidate.FieldID, ValueID: dfmComponentID})
 		}
 		if len(componentPairs) > 0 {
-			if err := idx.db.BatchUpdatePASFieldDFMComponent(componentPairs); err != nil {
+			if err := idx.db.BatchUpdatePASFieldDFMComponent(context.Background(), componentPairs); err != nil {
 				idx.logError("<post-processing>", "Error batch updating DFM component links for form %d: %v", formID, err)
 				collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 			}

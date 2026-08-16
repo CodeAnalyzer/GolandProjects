@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 
@@ -8,14 +9,14 @@ import (
 	"github.com/lib/pq"
 )
 
-// BatchInsertPASUnits пакетная вставка PAS юнитов
-func (db *DB) BatchInsertPASUnits(units []*model.PASUnit, batchSize int) error {
+// BatchInsertPASUnits РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° PAS СЋРЅРёС‚РѕРІ
+func (db *DB) BatchInsertPASUnits(ctx context.Context, units []*model.PASUnit, batchSize int) error {
 	if len(units) == 0 {
 		return nil
 	}
 
 	if len(units) <= batchSize {
-		return db.insertPASUnitsBatch(units)
+		return db.insertPASUnitsBatch(ctx, units)
 	}
 
 	for i := 0; i < len(units); i += batchSize {
@@ -25,20 +26,20 @@ func (db *DB) BatchInsertPASUnits(units []*model.PASUnit, batchSize int) error {
 		}
 
 		batch := units[i:end]
-		if err := db.insertPASUnitsBatch(batch); err != nil {
+		if err := db.insertPASUnitsBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// insertPASUnitsBatch вставляет одну пачку PAS юнитов
-func (db *DB) insertPASUnitsBatch(units []*model.PASUnit) error {
+// insertPASUnitsBatch РІСЃС‚Р°РІР»СЏРµС‚ РѕРґРЅСѓ РїР°С‡РєСѓ PAS СЋРЅРёС‚РѕРІ
+func (db *DB) insertPASUnitsBatch(ctx context.Context, units []*model.PASUnit) error {
 	if len(units) == 0 {
 		return nil
 	}
 
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("pas_units", "file_id", "unit_name", "interface_uses", "implementation_uses", "line_start", "line_end"))
 		if err != nil {
 			return err
@@ -81,14 +82,14 @@ func (db *DB) insertPASUnitsBatch(units []*model.PASUnit) error {
 	})
 }
 
-// BatchInsertPASClasses пакетная вставка PAS классов
-func (db *DB) BatchInsertPASClasses(classes []*model.PASClass, batchSize int) error {
+// BatchInsertPASClasses РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° PAS РєР»Р°СЃСЃРѕРІ
+func (db *DB) BatchInsertPASClasses(ctx context.Context, classes []*model.PASClass, batchSize int) error {
 	if len(classes) == 0 {
 		return nil
 	}
 
 	if len(classes) <= batchSize {
-		return db.insertPASClassesBatch(classes)
+		return db.insertPASClassesBatch(ctx, classes)
 	}
 
 	for i := 0; i < len(classes); i += batchSize {
@@ -98,19 +99,19 @@ func (db *DB) BatchInsertPASClasses(classes []*model.PASClass, batchSize int) er
 		}
 
 		batch := classes[i:end]
-		if err := db.insertPASClassesBatch(batch); err != nil {
+		if err := db.insertPASClassesBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (db *DB) insertPASClassesBatch(classes []*model.PASClass) error {
+func (db *DB) insertPASClassesBatch(ctx context.Context, classes []*model.PASClass) error {
 	if len(classes) == 0 {
 		return nil
 	}
 
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("pas_classes", "unit_id", "class_name", "parent_class", "dfm_form_id", "line_start", "line_end"))
 		if err != nil {
 			return err
@@ -136,14 +137,14 @@ func (db *DB) insertPASClassesBatch(classes []*model.PASClass) error {
 	})
 }
 
-// BatchInsertPASMethods пакетная вставка PAS методов
-func (db *DB) BatchInsertPASMethods(methods []*model.PASMethod, batchSize int) error {
+// BatchInsertPASMethods РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° PAS РјРµС‚РѕРґРѕРІ
+func (db *DB) BatchInsertPASMethods(ctx context.Context, methods []*model.PASMethod, batchSize int) error {
 	if len(methods) == 0 {
 		return nil
 	}
 
 	if len(methods) <= batchSize {
-		return db.insertPASMethodsBatch(methods)
+		return db.insertPASMethodsBatch(ctx, methods)
 	}
 
 	for i := 0; i < len(methods); i += batchSize {
@@ -153,19 +154,19 @@ func (db *DB) BatchInsertPASMethods(methods []*model.PASMethod, batchSize int) e
 		}
 
 		batch := methods[i:end]
-		if err := db.insertPASMethodsBatch(batch); err != nil {
+		if err := db.insertPASMethodsBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (db *DB) insertPASMethodsBatch(methods []*model.PASMethod) error {
+func (db *DB) insertPASMethodsBatch(ctx context.Context, methods []*model.PASMethod) error {
 	if len(methods) == 0 {
 		return nil
 	}
 
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("pas_methods", "class_id", "unit_id", "method_name", "signature", "visibility", "line_number"))
 		if err != nil {
 			return err
@@ -191,14 +192,14 @@ func (db *DB) insertPASMethodsBatch(methods []*model.PASMethod) error {
 	})
 }
 
-// BatchInsertPASFields пакетная вставка PAS полей
-func (db *DB) BatchInsertPASFields(fields []*model.PASField, batchSize int) error {
+// BatchInsertPASFields РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° PAS РїРѕР»РµР№
+func (db *DB) BatchInsertPASFields(ctx context.Context, fields []*model.PASField, batchSize int) error {
 	if len(fields) == 0 {
 		return nil
 	}
 
 	if len(fields) <= batchSize {
-		return db.insertPASFieldsBatch(fields)
+		return db.insertPASFieldsBatch(ctx, fields)
 	}
 
 	for i := 0; i < len(fields); i += batchSize {
@@ -208,19 +209,19 @@ func (db *DB) BatchInsertPASFields(fields []*model.PASField, batchSize int) erro
 		}
 
 		batch := fields[i:end]
-		if err := db.insertPASFieldsBatch(batch); err != nil {
+		if err := db.insertPASFieldsBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (db *DB) insertPASFieldsBatch(fields []*model.PASField) error {
+func (db *DB) insertPASFieldsBatch(ctx context.Context, fields []*model.PASField) error {
 	if len(fields) == 0 {
 		return nil
 	}
 
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("pas_fields", "class_id", "field_name", "field_type", "dfm_component_id", "visibility", "line_number"))
 		if err != nil {
 			return err

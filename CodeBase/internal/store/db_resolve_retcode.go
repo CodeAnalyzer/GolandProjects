@@ -1,13 +1,16 @@
 package store
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
-// ResolveRetCodeConstants обновляет message в ds_return_codes,
-// заменяя имена констант вида LOC_RETCODE_<N> на их значения из h_files_defines.
-// Выполняется одним SQL-запросом UPDATE ... FROM.
-func (db *DB) ResolveRetCodeConstants() (int, error) {
-	// Один запрос: UPDATE с подзапросом, выбирающим лучшие значения из h_files_defines
-	tag, err := db.Exec(`
+// ResolveRetCodeConstants РѕР±РЅРѕРІР»СЏРµС‚ message РІ ds_return_codes,
+// Р·Р°РјРµРЅСЏСЏ РёРјРµРЅР° РєРѕРЅСЃС‚Р°РЅС‚ РІРёРґР° LOC_RETCODE_<N> РЅР° РёС… Р·РЅР°С‡РµРЅРёСЏ РёР· h_files_defines.
+// Р’С‹РїРѕР»РЅСЏРµС‚СЃСЏ РѕРґРЅРёРј SQL-Р·Р°РїСЂРѕСЃРѕРј UPDATE ... FROM.
+func (db *DB) ResolveRetCodeConstants(ctx context.Context) (int, error) {
+	// РћРґРёРЅ Р·Р°РїСЂРѕСЃ: UPDATE СЃ РїРѕРґР·Р°РїСЂРѕСЃРѕРј, РІС‹Р±РёСЂР°СЋС‰РёРј Р»СѓС‡С€РёРµ Р·РЅР°С‡РµРЅРёСЏ РёР· h_files_defines
+	tag, err := db.execCtx(ctx, `
 		UPDATE ds_return_codes rc
 		SET message = dv.define_value
 		FROM (

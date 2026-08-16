@@ -5,13 +5,13 @@ import (
 	"database/sql"
 )
 
-func (db *DB) withCopyInTx(fn func(tx *sql.Tx) error) (err error) {
+func (db *DB) withCopyInTxCtx(ctx context.Context, fn func(tx *sql.Tx) error) (err error) {
 	// В связанной транзакции (WithBatchTx) не открываем свою: все batch-вставки
 	// файла идут в одной tx, commit делает внешний вызов.
 	if db.boundTx != nil {
 		return fn(db.boundTx)
 	}
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -25,11 +25,12 @@ func (db *DB) withCopyInTx(fn func(tx *sql.Tx) error) (err error) {
 	return fn(tx)
 }
 
-// WithBatchTx выполняет fn с DB-обёрткой, у которой все batch-вставки
+
+// WithBatchTxCtx выполняет fn с DB-обёрткой, у которой все batch-вставки
 // (и exec) идут в одной транзакции: один COMMIT на файл вместо COMMIT
 // на каждый BatchInsert*. Commit при успехе, rollback при ошибке.
-func (db *DB) WithBatchTx(fn func(txdb *DB) error) (err error) {
-	tx, err := db.Begin()
+func (db *DB) WithBatchTxCtx(ctx context.Context, fn func(txdb *DB) error) (err error) {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -43,17 +44,24 @@ func (db *DB) WithBatchTx(fn func(txdb *DB) error) (err error) {
 	return fn(&DB{DB: db.DB, boundTx: tx})
 }
 
-// exec выполняет запрос в boundTx, если она задана, иначе напрямую.
-func (db *DB) exec(query string, args ...interface{}) (sql.Result, error) {
-	if db.boundTx != nil {
-		return db.boundTx.Exec(query, args...)
-	}
-	return db.DB.Exec(query, args...)
+// WithBatchTx — deprecated thin wrapper, использует context.Background().
+func (db *DB) WithBatchTx(fn func(txdb *DB) error) (err error) {
+	return db.WithBatchTxCtx(context.Background(), fn)
 }
+
+// execCtx выполняет запрос в boundTx, если она задана, иначе напрямую.
+func (db *DB) execCtx(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	if db.boundTx != nil {
+		return db.boundTx.ExecContext(ctx, query, args...)
+	}
+	return db.DB.ExecContext(ctx, query, args...)
+}
+
 
 // Query выполняет SELECT в boundTx, если она задана, иначе напрямую.
 // Это критично для Фазы 3: SELECT должен видеть незафиксированные INSERT'ы
 // из той же транзакции (иначе FK-резолвы возвращают 0 → FK violations).
+// Deprecated: использовать QueryContext с ctx.
 func (db *DB) Query(query string, args ...interface{}) (*sql.Rows, error) {
 	if db.boundTx != nil {
 		return db.boundTx.Query(query, args...)
@@ -62,6 +70,7 @@ func (db *DB) Query(query string, args ...interface{}) (*sql.Rows, error) {
 }
 
 // QueryRow выполняет SELECT (одна строка) в boundTx, если она задана.
+// Deprecated: использовать QueryRowContext с ctx.
 func (db *DB) QueryRow(query string, args ...interface{}) *sql.Row {
 	if db.boundTx != nil {
 		return db.boundTx.QueryRow(query, args...)

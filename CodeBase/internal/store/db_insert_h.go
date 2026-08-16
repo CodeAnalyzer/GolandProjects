@@ -1,20 +1,21 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 
 	"github.com/codebase/internal/model"
 	"github.com/lib/pq"
 )
 
-// BatchInsertHDefines пакетная вставка H define-ов
-func (db *DB) BatchInsertHDefines(defines []*model.HDefine, batchSize int) error {
+// BatchInsertHDefines РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° H define-РѕРІ
+func (db *DB) BatchInsertHDefines(ctx context.Context, defines []*model.HDefine, batchSize int) error {
 	if len(defines) == 0 {
 		return nil
 	}
 
 	if len(defines) <= batchSize {
-		return db.insertHDefinesBatch(defines)
+		return db.insertHDefinesBatch(ctx, defines)
 	}
 
 	for i := 0; i < len(defines); i += batchSize {
@@ -24,19 +25,19 @@ func (db *DB) BatchInsertHDefines(defines []*model.HDefine, batchSize int) error
 		}
 
 		batch := defines[i:end]
-		if err := db.insertHDefinesBatch(batch); err != nil {
+		if err := db.insertHDefinesBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (db *DB) insertHDefinesBatch(defines []*model.HDefine) error {
+func (db *DB) insertHDefinesBatch(ctx context.Context, defines []*model.HDefine) error {
 	if len(defines) == 0 {
 		return nil
 	}
 
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("h_files_defines", "file_id", "define_name", "define_value", "define_type", "line_number"))
 		if err != nil {
 			return err
@@ -61,14 +62,14 @@ func (db *DB) insertHDefinesBatch(defines []*model.HDefine) error {
 	})
 }
 
-// BatchInsertAPIMacroInvocations пакетная вставка APIMacroInvocations
-func (db *DB) BatchInsertAPIMacroInvocations(invocations []*model.APIMacroInvocation, batchSize int) error {
+// BatchInsertAPIMacroInvocations РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° APIMacroInvocations
+func (db *DB) BatchInsertAPIMacroInvocations(ctx context.Context, invocations []*model.APIMacroInvocation, batchSize int) error {
 	if len(invocations) == 0 {
 		return nil
 	}
 
 	if len(invocations) <= batchSize {
-		return db.insertAPIMacroInvocationsBatch(invocations)
+		return db.insertAPIMacroInvocationsBatch(ctx, invocations)
 	}
 
 	for i := 0; i < len(invocations); i += batchSize {
@@ -78,19 +79,19 @@ func (db *DB) BatchInsertAPIMacroInvocations(invocations []*model.APIMacroInvoca
 		}
 
 		batch := invocations[i:end]
-		if err := db.insertAPIMacroInvocationsBatch(batch); err != nil {
+		if err := db.insertAPIMacroInvocationsBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (db *DB) insertAPIMacroInvocationsBatch(invocations []*model.APIMacroInvocation) error {
+func (db *DB) insertAPIMacroInvocationsBatch(ctx context.Context, invocations []*model.APIMacroInvocation) error {
 	if len(invocations) == 0 {
 		return nil
 	}
 
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("api_macro_invocations", "file_id", "procedure_name", "macro_type", "target_name", "target_kind", "line_number", "raw_text"))
 		if err != nil {
 			return err

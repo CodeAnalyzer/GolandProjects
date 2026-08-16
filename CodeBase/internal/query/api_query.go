@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -106,10 +107,10 @@ type APIRelatedProcedureResult struct {
 	ViaProcedure  string `json:"via_procedure,omitempty"`
 }
 
-func (q *Query) SearchAPIContract(name string, like bool, limit int) ([]APIContractResult, error) {
+func (q *Query) SearchAPIContract(ctx context.Context, name string, like bool, limit int) ([]APIContractResult, error) {
 	lookupValue := buildLookupValue(name, like)
 	lookupCondition := buildNameLookupCondition([]string{"c.contract_name"}, like, 1)
-	rows, err := q.db.Query(`
+	rows, err := q.db.QueryContext(ctx, `
 		SELECT c.id, c.file_id, COALESCE(c.business_object,''), c.contract_name, c.contract_kind,
 		       COALESCE(c.object_type_id,0), COALESCE(c.owner_module,''), COALESCE(c.used_object_name,''),
 		       COALESCE(c.used_module_sys_name,''), COALESCE(c.short_description,''), COALESCE(c.full_description,''),
@@ -130,11 +131,11 @@ func (q *Query) SearchAPIContract(name string, like bool, limit int) ([]APIContr
 		if err := rows.Scan(&item.ID, &item.FileID, &item.BusinessObject, &item.ContractName, &item.ContractKind, &item.ObjectTypeID, &item.OwnerModule, &item.UsedObjectName, &item.UsedModuleSysName, &item.ShortDescription, &item.FullDescription, &item.File, &item.LineStart, &item.LineEnd); err != nil {
 			return nil, err
 		}
-		params, err := q.loadAPIContractParams(item.ID)
+		params, err := q.loadAPIContractParams(ctx, item.ID)
 		if err != nil {
 			return nil, err
 		}
-		tables, err := q.loadAPIContractTables(item.ID)
+		tables, err := q.loadAPIContractTables(ctx, item.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -145,7 +146,7 @@ func (q *Query) SearchAPIContract(name string, like bool, limit int) ([]APIContr
 	return items, rows.Err()
 }
 
-func (q *Query) SearchAPITable(name string, like bool, limit int) ([]APITableResult, error) {
+func (q *Query) SearchAPITable(ctx context.Context, name string, like bool, limit int) ([]APITableResult, error) {
 	lookupValue := buildLookupValue(name, like)
 	lookupCondition1 := buildNameLookupCondition([]string{"t.table_name"}, like, 1)
 	lookupCondition2 := buildNameLookupCondition([]string{"bt.table_name"}, like, 1)
@@ -170,7 +171,7 @@ func (q *Query) SearchAPITable(name string, like bool, limit int) ([]APITableRes
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(queryText, lookupValue, limit)
+	rows, err := q.db.QueryContext(ctx, queryText, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -186,9 +187,9 @@ func (q *Query) SearchAPITable(name string, like bool, limit int) ([]APITableRes
 		var err error
 
 		if item.Source == "contract" {
-			fieldRows, err = q.db.Query(`SELECT field_name, COALESCE(type_name,''), required, COALESCE(description,''), line_number FROM api_contract_table_fields WHERE contract_table_id = $1 ORDER BY param_order, id`, item.ID)
+			fieldRows, err = q.db.QueryContext(ctx, `SELECT field_name, COALESCE(type_name,''), required, COALESCE(description,''), line_number FROM api_contract_table_fields WHERE contract_table_id = $1 ORDER BY param_order, id`, item.ID)
 		} else {
-			fieldRows, err = q.db.Query(`SELECT field_name, COALESCE(type_name,''), FALSE, COALESCE(description,''), line_number FROM api_business_object_table_fields WHERE business_table_id = $1 ORDER BY param_order, id`, item.ID)
+			fieldRows, err = q.db.QueryContext(ctx, `SELECT field_name, COALESCE(type_name,''), FALSE, COALESCE(description,''), line_number FROM api_business_object_table_fields WHERE business_table_id = $1 ORDER BY param_order, id`, item.ID)
 		}
 
 		if err != nil {
@@ -208,7 +209,7 @@ func (q *Query) SearchAPITable(name string, like bool, limit int) ([]APITableRes
 	return items, rows.Err()
 }
 
-func (q *Query) SearchAPITableIndex(name string, likeSearch bool, limit int) ([]APITableIndexResult, error) {
+func (q *Query) SearchAPITableIndex(ctx context.Context, name string, likeSearch bool, limit int) ([]APITableIndexResult, error) {
 	queryText := `
 		SELECT i.id, i.business_table_id, t.business_object, t.table_name, i.index_name,
 		       COALESCE(i.index_fields,''), i.index_type, i.is_clustered, COALESCE(f.rel_path,''), i.line_number
@@ -228,7 +229,7 @@ func (q *Query) SearchAPITableIndex(name string, likeSearch bool, limit int) ([]
 	}
 	queryText = fmt.Sprintf(queryText, whereClause)
 
-	rows, err := q.db.Query(queryText, searchValue, limit)
+	rows, err := q.db.QueryContext(ctx, queryText, searchValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +240,7 @@ func (q *Query) SearchAPITableIndex(name string, likeSearch bool, limit int) ([]
 		if err := rows.Scan(&item.ID, &item.BusinessTableID, &item.BusinessObject, &item.TableName, &item.IndexName, &item.IndexFields, &item.IndexType, &item.IsClustered, &item.File, &item.LineNumber); err != nil {
 			return nil, err
 		}
-		fieldRows, err := q.db.Query(`SELECT field_name, field_order, line_number FROM api_business_object_table_index_fields WHERE table_index_id = $1 ORDER BY field_order, id`, item.ID)
+		fieldRows, err := q.db.QueryContext(ctx, `SELECT field_name, field_order, line_number FROM api_business_object_table_index_fields WHERE table_index_id = $1 ORDER BY field_order, id`, item.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -257,10 +258,10 @@ func (q *Query) SearchAPITableIndex(name string, likeSearch bool, limit int) ([]
 	return items, rows.Err()
 }
 
-func (q *Query) SearchAPIParam(name string, like bool, limit int) ([]APIParamResult, error) {
+func (q *Query) SearchAPIParam(ctx context.Context, name string, like bool, limit int) ([]APIParamResult, error) {
 	lookupValue := buildLookupValue(name, like)
 	lookupCondition := buildNameLookupCondition([]string{"p.param_name"}, like, 1)
-	rows, err := q.db.Query(`
+	rows, err := q.db.QueryContext(ctx, `
 		SELECT p.id, p.contract_id, COALESCE(c.business_object,''), COALESCE(c.contract_name,''), COALESCE(c.contract_kind,''),
 		       p.direction, p.param_name, COALESCE(p.type_name,''), p.required, COALESCE(p.description,''), COALESCE(f.rel_path,''), p.line_number
 		FROM api_contract_params p
@@ -285,8 +286,8 @@ func (q *Query) SearchAPIParam(name string, like bool, limit int) ([]APIParamRes
 	return items, rows.Err()
 }
 
-func (q *Query) SearchAPIImplementations(name string, limit int) ([]APIImplementationResult, error) {
-	rows, err := q.db.Query(`
+func (q *Query) SearchAPIImplementations(ctx context.Context, name string, limit int) ([]APIImplementationResult, error) {
+	rows, err := q.db.QueryContext(ctx, `
 		SELECT *
 		FROM (
 			SELECT c.id, c.contract_name, c.contract_kind, p.id, p.proc_name AS procedure_name, f.rel_path, r.relation_type,
@@ -331,8 +332,8 @@ func (q *Query) SearchAPIImplementations(name string, limit int) ([]APIImplement
 	return items, rows.Err()
 }
 
-func (q *Query) SearchAPIPublishers(name string, limit int) ([]APIRelatedProcedureResult, error) {
-	rows, err := q.db.Query(`
+func (q *Query) SearchAPIPublishers(ctx context.Context, name string, limit int) ([]APIRelatedProcedureResult, error) {
+	rows, err := q.db.QueryContext(ctx, `
 		SELECT *
 		FROM (
 			SELECT c.id, c.contract_name, p.id, p.proc_name AS procedure_name, f.rel_path, r.relation_type,
@@ -390,12 +391,12 @@ func (q *Query) SearchAPIPublishers(name string, limit int) ([]APIRelatedProcedu
 	return items, rows.Err()
 }
 
-func (q *Query) SearchAPIConsumers(name string, limit int) ([]APIRelatedProcedureResult, error) {
-	return q.searchAPIRelatedProcedures(name, "executes_contract", limit)
+func (q *Query) SearchAPIConsumers(ctx context.Context, name string, limit int) ([]APIRelatedProcedureResult, error) {
+	return q.searchAPIRelatedProcedures(ctx, name, "executes_contract", limit)
 }
 
-func (q *Query) searchAPIRelatedProcedures(name string, relationType string, limit int) ([]APIRelatedProcedureResult, error) {
-	rows, err := q.db.Query(`
+func (q *Query) searchAPIRelatedProcedures(ctx context.Context, name string, relationType string, limit int) ([]APIRelatedProcedureResult, error) {
+	rows, err := q.db.QueryContext(ctx, `
 		SELECT *
 		FROM (
 			SELECT c.id, c.contract_name, p.id, p.proc_name AS procedure_name, f.rel_path, r.relation_type,
@@ -440,8 +441,8 @@ func (q *Query) searchAPIRelatedProcedures(name string, relationType string, lim
 	return items, rows.Err()
 }
 
-func (q *Query) loadAPIContractParams(contractID int64) ([]APIParamResult, error) {
-	rows, err := q.db.Query(`SELECT id, contract_id, direction, param_name, COALESCE(type_name,''), required, COALESCE(description,''), line_number FROM api_contract_params WHERE contract_id = $1 ORDER BY direction, param_order, id`, contractID)
+func (q *Query) loadAPIContractParams(ctx context.Context, contractID int64) ([]APIParamResult, error) {
+	rows, err := q.db.QueryContext(ctx, `SELECT id, contract_id, direction, param_name, COALESCE(type_name,''), required, COALESCE(description,''), line_number FROM api_contract_params WHERE contract_id = $1 ORDER BY direction, param_order, id`, contractID)
 	if err != nil {
 		return nil, err
 	}
@@ -457,8 +458,8 @@ func (q *Query) loadAPIContractParams(contractID int64) ([]APIParamResult, error
 	return items, rows.Err()
 }
 
-func (q *Query) loadAPIContractTables(contractID int64) ([]APITableResult, error) {
-	rows, err := q.db.Query(`SELECT id, contract_id, direction, table_name, COALESCE(description,''), line_number FROM api_contract_tables WHERE contract_id = $1 ORDER BY direction, param_order, id`, contractID)
+func (q *Query) loadAPIContractTables(ctx context.Context, contractID int64) ([]APITableResult, error) {
+	rows, err := q.db.QueryContext(ctx, `SELECT id, contract_id, direction, table_name, COALESCE(description,''), line_number FROM api_contract_tables WHERE contract_id = $1 ORDER BY direction, param_order, id`, contractID)
 	if err != nil {
 		return nil, err
 	}
@@ -471,7 +472,7 @@ func (q *Query) loadAPIContractTables(contractID int64) ([]APITableResult, error
 			return nil, err
 		}
 		item.ContractID = &contractIDVal
-		fieldRows, err := q.db.Query(`SELECT field_name, COALESCE(type_name,''), required, COALESCE(description,''), line_number FROM api_contract_table_fields WHERE contract_table_id = $1 ORDER BY param_order, id`, item.ID)
+		fieldRows, err := q.db.QueryContext(ctx, `SELECT field_name, COALESCE(type_name,''), required, COALESCE(description,''), line_number FROM api_contract_table_fields WHERE contract_table_id = $1 ORDER BY param_order, id`, item.ID)
 		if err != nil {
 			return nil, err
 		}

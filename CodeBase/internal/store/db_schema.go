@@ -1,9 +1,12 @@
 package store
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
-// InitSchema создаёт схему БД если она не существует
-func (db *DB) InitSchema() error {
+// InitSchema СЃРѕР·РґР°С‘С‚ СЃС…РµРјСѓ Р‘Р” РµСЃР»Рё РѕРЅР° РЅРµ СЃСѓС‰РµСЃС‚РІСѓРµС‚
+func (db *DB) InitSchemaCtx(ctx context.Context) error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS scan_runs (
 			id BIGSERIAL PRIMARY KEY,
@@ -495,8 +498,8 @@ func (db *DB) InitSchema() error {
 			rows_data      TEXT,
 			enter_line     INTEGER NOT NULL DEFAULT 0
 		)`,
-		// ALTER для существующих БД, созданных до появления client_events_count
-		// (CREATE TABLE IF NOT EXISTS не добавляет колонки в уже существующую таблицу).
+		// ALTER РґР»СЏ СЃСѓС‰РµСЃС‚РІСѓСЋС‰РёС… Р‘Р”, СЃРѕР·РґР°РЅРЅС‹С… РґРѕ РїРѕСЏРІР»РµРЅРёСЏ client_events_count
+		// (CREATE TABLE IF NOT EXISTS РЅРµ РґРѕР±Р°РІР»СЏРµС‚ РєРѕР»РѕРЅРєРё РІ СѓР¶Рµ СЃСѓС‰РµСЃС‚РІСѓСЋС‰СѓСЋ С‚Р°Р±Р»РёС†Сѓ).
 		`ALTER TABLE rti_sessions ADD COLUMN IF NOT EXISTS client_events_count INTEGER NOT NULL DEFAULT 0`,
 		`CREATE TABLE IF NOT EXISTS trc_sessions (
 			id BIGSERIAL PRIMARY KEY,
@@ -545,7 +548,7 @@ func (db *DB) InitSchema() error {
 			parent_id      BIGINT,
 			depth          INTEGER NOT NULL DEFAULT 0
 		)`,
-		// ALTER для существующих БД, созданных до добавления parent_id/depth
+		// ALTER РґР»СЏ СЃСѓС‰РµСЃС‚РІСѓСЋС‰РёС… Р‘Р”, СЃРѕР·РґР°РЅРЅС‹С… РґРѕ РґРѕР±Р°РІР»РµРЅРёСЏ parent_id/depth
 		`ALTER TABLE trc_events ADD COLUMN IF NOT EXISTS parent_id BIGINT`,
 		`ALTER TABLE trc_events ADD COLUMN IF NOT EXISTS depth INTEGER NOT NULL DEFAULT 0`,
 		`CREATE TABLE IF NOT EXISTS rti_client_events (
@@ -659,7 +662,7 @@ func (db *DB) InitSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_rti_client_events_server_call_id ON rti_client_events(server_call_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_client_events_session_ts ON rti_client_events(session_id, timestamp)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_calls_session_entertime ON rti_calls(session_id, enter_time)`,
-		// Удаление избыточных standalone-индексов, дублируемых составными с session_id
+		// РЈРґР°Р»РµРЅРёРµ РёР·Р±С‹С‚РѕС‡РЅС‹С… standalone-РёРЅРґРµРєСЃРѕРІ, РґСѓР±Р»РёСЂСѓРµРјС‹С… СЃРѕСЃС‚Р°РІРЅС‹РјРё СЃ session_id
 		`DROP INDEX IF EXISTS idx_rti_calls_session_id`,
 		`DROP INDEX IF EXISTS idx_rti_calls_procedure`,
 		`DROP INDEX IF EXISTS idx_rti_calls_elapsed_ms`,
@@ -671,27 +674,33 @@ func (db *DB) InitSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_parent ON trc_events(session_id, parent_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_error ON trc_events(session_id) WHERE error IS NOT NULL AND error <> 0`,
 		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_event_name ON trc_events(session_id, event_name)`,
-		// Удаление избыточных standalone-индексов, дублируемых составными с session_id
+		// РЈРґР°Р»РµРЅРёРµ РёР·Р±С‹С‚РѕС‡РЅС‹С… standalone-РёРЅРґРµРєСЃРѕРІ, РґСѓР±Р»РёСЂСѓРµРјС‹С… СЃРѕСЃС‚Р°РІРЅС‹РјРё СЃ session_id
 		`DROP INDEX IF EXISTS idx_trc_events_session_id`,
 		`DROP INDEX IF EXISTS idx_trc_events_procedure`,
 		`DROP INDEX IF EXISTS idx_trc_events_duration_ms`,
 		`DROP INDEX IF EXISTS idx_trc_events_spid`,
 		`DROP INDEX IF EXISTS idx_trc_events_event_sequence`,
-		// Удаление избыточных standalone-индексов, дублируемых составными (leftmost-prefix)
+		// РЈРґР°Р»РµРЅРёРµ РёР·Р±С‹С‚РѕС‡РЅС‹С… standalone-РёРЅРґРµРєСЃРѕРІ, РґСѓР±Р»РёСЂСѓРµРјС‹С… СЃРѕСЃС‚Р°РІРЅС‹РјРё (leftmost-prefix)
 		`DROP INDEX IF EXISTS idx_symbols_symbol_name_lower`,
 		`DROP INDEX IF EXISTS idx_query_fragments_file_id`,
 		`DROP INDEX IF EXISTS idx_rti_client_events_session_id`,
-		// Удаление мёртвых индексов (0 сканов по pg_stat_user_indexes)
+		// РЈРґР°Р»РµРЅРёРµ РјС‘СЂС‚РІС‹С… РёРЅРґРµРєСЃРѕРІ (0 СЃРєР°РЅРѕРІ РїРѕ pg_stat_user_indexes)
 		`DROP INDEX IF EXISTS idx_api_contracts_name_kind`,
 		`DROP INDEX IF EXISTS idx_api_contracts_contract_name_lower`,
 		`DROP INDEX IF EXISTS idx_relations_relation_type`,
 	}
 
 	for _, stmt := range statements {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := db.execCtx(ctx, stmt); err != nil {
 			return fmt.Errorf("failed to initialize schema: %w", err)
 		}
 	}
 
 	return nil
+}
+
+
+// InitSchema - deprecated thin wrapper, uses context.Background().
+func (db *DB) InitSchema() error {
+	return db.InitSchemaCtx(context.Background())
 }

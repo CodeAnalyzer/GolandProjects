@@ -63,7 +63,17 @@ func registerSDKCoreTools(server *mcpsdk.Server, registry map[string]registeredT
 				return sdkToolErrorResult(err), nil
 			}
 
-			result, err := tool.Handler(args)
+			cfg := config.Get()
+			timeout := time.Duration(cfg.MCP.QueryTimeoutSec) * time.Second
+			if tool.Definition.Name == "codebase_review_sql" {
+				timeout = time.Duration(cfg.MCP.ReviewTimeoutSec) * time.Second
+			}
+			if timeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, timeout)
+				defer cancel()
+			}
+			result, err := tool.Handler(ctx, args)
 			elapsed := time.Since(start)
 			logMCPToolCall(logger, tool.Definition.Name, args, elapsed, err)
 			if err != nil {

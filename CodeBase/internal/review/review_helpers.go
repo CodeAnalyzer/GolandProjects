@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -2085,7 +2086,7 @@ func extractCurrentProcName(parsed *sqlparser.ParseResult, content string) strin
 // enrichVariableTypesFromAPI дополняет карту variableTypes параметрами процедуры,
 // полученными из БД индекса (включая fallback к API-контрактам).
 // Не перезаписывает типы, уже определённые через declare-блоки или параметры парсера.
-func (r *Runner) enrichVariableTypesFromAPI(variableTypes map[string]string, parsed *sqlparser.ParseResult, content string) {
+func (r *Runner) enrichVariableTypesFromAPI(ctx context.Context, variableTypes map[string]string, parsed *sqlparser.ParseResult, content string) {
 	if r == nil || r.db == nil {
 		return
 	}
@@ -2093,7 +2094,7 @@ func (r *Runner) enrichVariableTypesFromAPI(variableTypes map[string]string, par
 	if procName == "" {
 		return
 	}
-	params, err := r.lookupProcedureParams(procName)
+	params, err := r.lookupProcedureParams(ctx, procName)
 	if err != nil || len(params) == 0 {
 		return
 	}

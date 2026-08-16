@@ -1,6 +1,7 @@
 package rti
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/codebase/internal/query"
@@ -9,7 +10,7 @@ import (
 // ProcedureLookup — узкий интерфейс для получения данных о процедуре из CodeBase.
 // Реализуется *query.Query.
 type ProcedureLookup interface {
-	GetProcedureResult(name string) (*query.SQLProcedureResult, error)
+	GetProcedureResult(ctx context.Context, name string) (*query.SQLProcedureResult, error)
 }
 
 // ProcedureEnrichment — результат обогащения процедуры данными из CodeBase
@@ -25,13 +26,13 @@ type ProcedureEnrichment struct {
 
 // EnrichCalls обогащает вызовы данными из CodeBase DB.
 // Возвращает map: procedure name → enrichment.
-func EnrichCalls(q ProcedureLookup, calls []*RTICall) map[string]*ProcedureEnrichment {
+func EnrichCalls(ctx context.Context, q ProcedureLookup, calls []*RTICall) map[string]*ProcedureEnrichment {
 	result := make(map[string]*ProcedureEnrichment)
 	for _, c := range calls {
 		if _, ok := result[c.Procedure]; ok {
 			continue
 		}
-		enrich, err := EnrichProcedure(q, c.Procedure)
+		enrich, err := EnrichProcedure(ctx, q, c.Procedure)
 		if err != nil {
 			result[c.Procedure] = &ProcedureEnrichment{
 				Procedure:  c.Procedure,
@@ -46,8 +47,8 @@ func EnrichCalls(q ProcedureLookup, calls []*RTICall) map[string]*ProcedureEnric
 }
 
 // EnrichProcedure ищет процедуру в CodeBase DB и возвращает enrichment.
-func EnrichProcedure(q ProcedureLookup, procName string) (*ProcedureEnrichment, error) {
-	proc, err := q.GetProcedureResult(procName)
+func EnrichProcedure(ctx context.Context, q ProcedureLookup, procName string) (*ProcedureEnrichment, error) {
+	proc, err := q.GetProcedureResult(ctx, procName)
 	if err != nil {
 		return nil, fmt.Errorf("procedure %q not found: %w", procName, err)
 	}

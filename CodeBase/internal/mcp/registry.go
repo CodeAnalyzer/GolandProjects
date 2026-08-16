@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -18,7 +19,7 @@ import (
 	"github.com/codebase/internal/trc"
 )
 
-type toolHandler func(args map[string]interface{}) (interface{}, error)
+type toolHandler func(ctx context.Context, args map[string]interface{}) (interface{}, error)
 
 type registeredTool struct {
 	Definition toolDefinition
@@ -97,7 +98,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return s
 				}(),
 			},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				id, err := requiredString(args, "continuation_id")
 				if err != nil {
 					return nil, err
@@ -115,7 +116,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				Description: "Verify that the MCP transport and codebase server process are alive. Use this as a first step to confirm the server is reachable before calling any other tool.",
 				InputSchema: objectSchema(map[string]interface{}{}),
 			},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				return map[string]interface{}{"ok": true, "service": "codebase-mcp"}, nil
 			},
 		},
@@ -125,7 +126,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				Description: "Check whether the CodeBase index database is connected and ready to serve queries. Returns status and DB connection info. Use before running queries if you are unsure whether the index is available.",
 				InputSchema: objectSchema(map[string]interface{}{}),
 			},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				return systemsvc.ExecuteHealth(db)
 			},
 		},
@@ -135,13 +136,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				Description: "Return index statistics: total counts of indexed files, SQL procedures, tables, PAS methods, JS/VB functions, DFM forms, SMF instruments, API contracts, report forms, and relations. Use to understand the scope of the indexed codebase.",
 				InputSchema: objectSchema(map[string]interface{}{}),
 			},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				return systemsvc.ExecuteStats(db)
 			},
 		},
 		"codebase_review_sql": {
 			Definition: toolDefinition{Name: "codebase_review_sql", Description: "Run static analysis (lint) checks on a single SQL file and return a list of findings with rule ID, severity, line number and message. Requires absolute file path. Available rule IDs: foreignTablesUsing, foreignPTablesUsing, foreignProcedureUsing, execNotExistsProc, procDuplicate, procParamDefValue, procElseCase, useSelectAll, truncTbl, datatype, ansiInJoin, insertRowLock, useEqColumn, tableFullScan, tableHintExists, tableHintIsRight, indexExistsInDB, indexWrong, updateOnlyVar, pTableSpid, forceOrder2Tbl, saveTran, useDrop, mathOperations, existsWithAndInIf, nullComparison, shouldBeCP866, tooManyJoins, maxProcParam, modifyOutProc, emptyReturn, rawTransactionControl, deferredUpdate, inSubQuery, varcharSize, columnInsert, postgreLabelGotoLevel, dateIntoString, emptyStringDate, excessProcParams, duplicateOutputVariable, useOnlyDeclaredCursors, cursorFetchArguments, usageVarInSameSelect, varAssignInUpdate, statementsWithJoinsRequireAliases, useFuncInIndCol, isNullSameTypes, diffTypesComparison, floatToStringConvert, selectAfterSetRowcount, aliasWhenUsingUnion. Omit rules to run all enabled rules.", InputSchema: objectSchema(map[string]interface{}{"file_path": stringProp("Full SQL file path"), "rules": map[string]interface{}{"type": "array", "description": "Optional rule ids", "items": map[string]interface{}{"type": "string"}}, "min_severity": intProp("Minimum severity")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				filePath, err := requiredString(args, "file_path")
 				if err != nil {
 					return nil, err
@@ -166,14 +167,14 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				opts := review.Options{Rules: rules, MinSeverity: minSeverity}
 				if db != nil {
-					return reviewsvc.ExecuteWith(db, filePath, opts, nil)
+					return reviewsvc.ExecuteWithCtx(ctx, db, filePath, opts, nil)
 				}
 				return reviewsvc.Execute(filePath, opts, nil)
 			},
 		},
 		"codebase_query_symbol": {
 			Definition: toolDefinition{Name: "codebase_query_symbol", Description: "Search across all indexed entity types by name: SQL procedures, SQL tables, PAS methods, JS functions, VB functions, DFM forms, DFM components, SMF instruments, API contracts, report forms. Use 'type' to narrow to a specific entity type (e.g. 'sql_procedure', 'sql_table', 'pas_method', 'js_function', 'vb_function', 'dfm_form', 'dfm_component', 'smf_instrument', 'api_contract', 'report_form'). Set like=true for partial name match. Prefer this tool for initial discovery when you do not know the exact entity type.", InputSchema: querySchema("name", stringProp("Symbol name"), map[string]interface{}{"type": stringProp("Symbol type"), "like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -182,13 +183,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchSymbol(name, typeName, like, limit)
+					return q.SearchSymbol(ctx, name, typeName, like, limit)
 				})
 			},
 		},
 		"codebase_query_table": {
 			Definition: toolDefinition{Name: "codebase_query_table", Description: "Search SQL tables by table name. Returns table name, file path, line number and definition metadata. Use when you need to find a specific DB table definition or check if a table exists in the index.", InputSchema: querySchema("name", stringProp("Table name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -196,26 +197,26 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchTable(name, like, limit)
+					return q.SearchTable(ctx, name, like, limit)
 				})
 			},
 		},
 		"codebase_query_table_schema": {
 			Definition: toolDefinition{Name: "codebase_query_table_schema", Description: "Return the column definitions (schema) for a SQL table: column name, data type, nullability, default value, line number. Use when you need to inspect table structure or check column data types for impact analysis or type compatibility review.", InputSchema: querySchema("name", stringProp("Table name"), map[string]interface{}{"limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
 				}
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchTableSchema(name, limit)
+					return q.SearchTableSchema(ctx, name, limit)
 				})
 			},
 		},
 		"codebase_query_table_index": {
 			Definition: toolDefinition{Name: "codebase_query_table_index", Description: "Search SQL index definitions by index name or table name. Returns index name, table name, index fields, index type (clustered/nonclustered), uniqueness flag and file location. Use when analysing query performance hints or verifying that expected indexes exist.", InputSchema: querySchema("name", stringProp("Table/index name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -223,51 +224,51 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchSQLTableIndex(name, like, limit)
+					return q.SearchSQLTableIndex(ctx, name, like, limit)
 				})
 			},
 		},
 		"codebase_query_procedure": {
 			Definition: toolDefinition{Name: "codebase_query_procedure", Description: "Get detailed information about a SQL stored procedure by exact name: file path, line range, parameter list with data types and default values, and the full body text. Use when you need to inspect a specific procedure's signature or source code. For fuzzy search use codebase_query_symbol with type='sql_procedure'.", InputSchema: querySchema("name", stringProp("Procedure name"), map[string]interface{}{})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
 				}
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.GetProcedureResult(name)
+					return q.GetProcedureResult(ctx, name)
 				})
 			},
 		},
 		"codebase_query_callers": {
 			Definition: toolDefinition{Name: "codebase_query_callers", Description: "Find all callers of a SQL stored procedure. Returns direct callers (sql_procedure, pas_method, js_function, report_form, vb_function, query_fragment) and indirect callers up to 2 hops via calls_procedure/dispatches_to/dispatches_to_subscriber chains. Use for impact analysis: who calls this procedure and what code will be affected by its change.", InputSchema: querySchema("procedure", stringProp("Procedure name"), map[string]interface{}{"limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "procedure")
 				if err != nil {
 					return nil, err
 				}
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.FindCallers(name, limit)
+					return q.FindCallers(ctx, name, limit)
 				})
 			},
 		},
 		"codebase_query_methods": {
 			Definition: toolDefinition{Name: "codebase_query_methods", Description: "Find all PAS (Delphi/Pascal) methods that reference a specific SQL table through their query fragments. Returns method name, class name, unit name, file path and line number. Use for DB impact analysis: which Object Pascal code reads/writes this table.", InputSchema: querySchema("table", stringProp("Table name"), map[string]interface{}{"limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				table, err := requiredString(args, "table")
 				if err != nil {
 					return nil, err
 				}
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.FindMethodsByTable(table, limit)
+					return q.FindMethodsByTable(ctx, table, limit)
 				})
 			},
 		},
 		"codebase_query_method": {
 			Definition: toolDefinition{Name: "codebase_query_method", Description: "Search PAS (Delphi/Pascal) methods by method name. Returns method name, class name, unit name, file path and line number. Set like=true for partial match. Use when navigating Object Pascal source code or finding all implementations of a method name pattern.", InputSchema: querySchema("name", stringProp("Method name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -275,13 +276,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.FindPASMethodsByName(name, like, limit)
+					return q.FindPASMethodsByName(ctx, name, like, limit)
 				})
 			},
 		},
 		"codebase_query_form": {
 			Definition: toolDefinition{Name: "codebase_query_form", Description: "Search DFM (Delphi Form) definitions by form name. Returns form name, class name, caption, file path and line range. Use when looking for a UI form definition in a Delphi codebase.", InputSchema: querySchema("name", stringProp("Form name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -289,13 +290,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchDFMForm(name, like, limit)
+					return q.SearchDFMForm(ctx, name, like, limit)
 				})
 			},
 		},
 		"codebase_query_form_component": {
 			Definition: toolDefinition{Name: "codebase_query_form_component", Description: "Search DFM form components (buttons, grids, datasources, etc.) by component name. Returns component name, component type, parent form name, file path and line number. Use when locating a specific UI control within Delphi forms.", InputSchema: querySchema("name", stringProp("Component name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -303,26 +304,26 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchDFMComponent(name, like, limit)
+					return q.SearchDFMComponent(ctx, name, like, limit)
 				})
 			},
 		},
 		"codebase_query_sql_fragment": {
 			Definition: toolDefinition{Name: "codebase_query_sql_fragment", Description: "Search indexed SQL query fragments (inline SQL embedded in PAS/JS/VB/SMF/DFM source files) by text content. Returns the fragment text, parent entity (method/function), file path and line number. Use when looking for ad-hoc queries that reference a table or procedure name but are not standalone SQL procedures.", InputSchema: querySchema("text", stringProp("Text fragment"), map[string]interface{}{"limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				text, err := requiredString(args, "text")
 				if err != nil {
 					return nil, err
 				}
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchQueryFragment(text, limit)
+					return q.SearchQueryFragment(ctx, text, limit)
 				})
 			},
 		},
 		"codebase_query_relations": {
 			Definition: toolDefinition{Name: "codebase_query_relations", Description: "Search the dependency/relation graph by source entity, target entity, and/or relation type. All parameters are optional but at least one must be provided. Entity types: sql_procedure, sql_table, pas_method, js_function, vb_function, api_contract, report_form, report_field, report_param, smf_instrument, query_fragment. Relation types: calls_procedure, dispatches_to, dispatches_to_subscriber, selects_from, inserts_into, updates, deletes_from, references_table, executes_query, builds_query, implements_contract, executes_contract, publishes_event, subscribes_to_event, has_field, has_param, uses_param. Use for arbitrary graph traversal when the dedicated tools (callers, methods, api_*) do not cover the needed relation type.", InputSchema: objectSchema(map[string]interface{}{"source_type": stringProp("Source entity type"), "source_name": stringProp("Source entity name"), "target_type": stringProp("Target entity type"), "target_name": stringProp("Target entity name"), "relation_type": stringProp("Relation type"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				sourceType, _ := optionalString(args, "source_type")
 				sourceName, _ := optionalString(args, "source_name")
 				targetType, _ := optionalString(args, "target_type")
@@ -330,13 +331,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				relationType, _ := optionalString(args, "relation_type")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchRelations(sourceType, sourceName, targetType, targetName, relationType, limit)
+					return q.SearchRelations(ctx, sourceType, sourceName, targetType, targetName, relationType, limit)
 				})
 			},
 		},
 		"codebase_query_inspect": {
 			Definition: toolDefinition{Name: "codebase_query_inspect", Description: "Deep-inspect a symbol by name: find the symbol, then fetch all incoming and outgoing relations in the dependency graph, and collect neighboring symbols. Returns symbol metadata plus full relation context (incoming, outgoing, neighbors). Use this as an all-in-one exploration starting point when you need to understand both what a symbol does and how it is connected. Differs from codebase_query_symbol (returns only symbol metadata) and codebase_query_relations (requires explicit entity IDs/types).", InputSchema: querySchema("name", stringProp("Symbol name"), map[string]interface{}{"type": stringProp("Symbol type"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -344,13 +345,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				typeName, _ := optionalString(args, "type")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return querysvc.RunInspectQuery(q, name, typeName, limit)
+					return querysvc.RunInspectQuery(ctx, q, name, typeName, limit)
 				})
 			},
 		},
 		"codebase_query_js_function": {
 			Definition: toolDefinition{Name: "codebase_query_js_function", Description: "Search JavaScript functions indexed from JS/SMF source files by function name. Returns function name, file path and line number. Set like=true for partial match. Use when tracing client-side or scenario (SMF) logic.", InputSchema: querySchema("name", stringProp("Function name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -358,13 +359,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchJSFunction(name, like, limit)
+					return q.SearchJSFunction(ctx, name, like, limit)
 				})
 			},
 		},
 		"codebase_query_smf_instrument": {
 			Definition: toolDefinition{Name: "codebase_query_smf_instrument", Description: "Search SMF (Scenario/Workflow) instruments by instrument name. Returns instrument name, scenario type, file path and line number. Set like=true for partial match. Use when exploring business process automation scenarios in Diasoft 5NT.", InputSchema: querySchema("name", stringProp("Instrument name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -372,26 +373,26 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchSMFInstrument(name, like, limit)
+					return q.SearchSMFInstrument(ctx, name, like, limit)
 				})
 			},
 		},
 		"codebase_query_smf_type": {
 			Definition: toolDefinition{Name: "codebase_query_smf_type", Description: "Search SMF (Scenario/Workflow) instruments filtered by scenario type string. Returns all instruments matching the given type. Use when you need to enumerate all scenarios of a given process category rather than searching by name.", InputSchema: querySchema("type", stringProp("Scenario type"), map[string]interface{}{"limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				smfType, err := requiredString(args, "type")
 				if err != nil {
 					return nil, err
 				}
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchSMFByType(smfType, limit)
+					return q.SearchSMFByType(ctx, smfType, limit)
 				})
 			},
 		},
 		"codebase_query_report_form": {
 			Definition: toolDefinition{Name: "codebase_query_report_form", Description: "Search report definitions (TPR/RPT report forms) by report name. Returns report name, report type, file path and line range. Set like=true for partial match. Use when locating a report template or analysing report dependencies.", InputSchema: querySchema("name", stringProp("Report form name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -399,13 +400,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchReportForm(name, like, limit)
+					return q.SearchReportForm(ctx, name, like, limit)
 				})
 			},
 		},
 		"codebase_query_report_field": {
 			Definition: toolDefinition{Name: "codebase_query_report_field", Description: "Search report field definitions by field name across all indexed report forms. Returns field name, data type, parent report name, file path and line number. Use when checking what fields a report exposes or when tracing a column name across reports.", InputSchema: querySchema("name", stringProp("Report field name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -413,13 +414,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchReportField(name, like, limit)
+					return q.SearchReportField(ctx, name, like, limit)
 				})
 			},
 		},
 		"codebase_query_report_param": {
 			Definition: toolDefinition{Name: "codebase_query_report_param", Description: "Search report parameter definitions by parameter name across all indexed report forms. Returns parameter name, data type, parent report name, file path and line number. Use when verifying which parameters a report accepts or finding reports that use a specific parameter.", InputSchema: querySchema("name", stringProp("Report param name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -427,13 +428,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchReportParam(name, like, limit)
+					return q.SearchReportParam(ctx, name, like, limit)
 				})
 			},
 		},
 		"codebase_query_vb_function": {
 			Definition: toolDefinition{Name: "codebase_query_vb_function", Description: "Search VBA/VBScript functions indexed from report source files by function name. Returns function name, parent report form, file path and line number. Set like=true for partial match. Use when tracing report calculation logic written in Visual Basic.", InputSchema: querySchema("name", stringProp("Function name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -441,13 +442,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchVBFunction(name, like, limit)
+					return q.SearchVBFunction(ctx, name, like, limit)
 				})
 			},
 		},
 		"codebase_query_api_contract": {
 			Definition: toolDefinition{Name: "codebase_query_api_contract", Description: "Search Diasoft API contracts by contract name. Returns contract name, contract kind (service, event, callback_event, used_service), file path and line number. Set like=true for partial match. Use as the entry point when exploring inter-module API surface.", InputSchema: querySchema("name", stringProp("Contract name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -455,13 +456,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchAPIContract(name, like, limit)
+					return q.SearchAPIContract(ctx, name, like, limit)
 				})
 			},
 		},
 		"codebase_query_api_table": {
 			Definition: toolDefinition{Name: "codebase_query_api_table", Description: "Search tables declared inside Diasoft API contracts by table name. Returns table name, column list, parent contract name, file path and line number. Use when you need to inspect the data structure that an API contract operates on.", InputSchema: querySchema("name", stringProp("Table name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -469,13 +470,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchAPITable(name, like, limit)
+					return q.SearchAPITable(ctx, name, like, limit)
 				})
 			},
 		},
 		"codebase_query_api_table_index": {
 			Definition: toolDefinition{Name: "codebase_query_api_table_index", Description: "Search index definitions declared inside Diasoft API contracts by index or table name. Returns index name, table name, fields and parent contract. Use when verifying API-level index expectations versus actual DB indexes.", InputSchema: querySchema("name", stringProp("Table/index name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -483,13 +484,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchAPITableIndex(name, like, limit)
+					return q.SearchAPITableIndex(ctx, name, like, limit)
 				})
 			},
 		},
 		"codebase_query_api_param": {
 			Definition: toolDefinition{Name: "codebase_query_api_param", Description: "Search parameters declared in Diasoft API contracts by parameter name. Returns parameter name, data type, direction, parent contract name, file path and line number. Use when checking the API signature or finding contracts that expose a specific parameter.", InputSchema: querySchema("name", stringProp("Param name"), map[string]interface{}{"like": boolProp("Use partial match"), "limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
@@ -497,59 +498,59 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchAPIParam(name, like, limit)
+					return q.SearchAPIParam(ctx, name, like, limit)
 				})
 			},
 		},
 		"codebase_query_api_impl": {
 			Definition: toolDefinition{Name: "codebase_query_api_impl", Description: "Find SQL stored procedures that implement a given API contract (relation type implements_contract). Returns direct and indirect (via calls_procedure/dispatches_to) implementing procedures with file paths. Use when you need to find the server-side SQL implementation behind an API contract name.", InputSchema: querySchema("name", stringProp("Contract name"), map[string]interface{}{"limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
 				}
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchAPIImplementations(name, limit)
+					return q.SearchAPIImplementations(ctx, name, limit)
 				})
 			},
 		},
 		"codebase_query_api_publishers": {
 			Definition: toolDefinition{Name: "codebase_query_api_publishers", Description: "Find SQL stored procedures that publish (raise) a given API event contract (relation type publishes_event) and callback contracts that subscribe to it. Returns direct and indirect publishers with file paths. Use when tracing the origin of an event in the Diasoft API event bus.", InputSchema: querySchema("event", stringProp("Event name"), map[string]interface{}{"limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				eventName, err := requiredString(args, "event")
 				if err != nil {
 					return nil, err
 				}
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchAPIPublishers(eventName, limit)
+					return q.SearchAPIPublishers(ctx, eventName, limit)
 				})
 			},
 		},
 		"codebase_query_api_consumers": {
 			Definition: toolDefinition{Name: "codebase_query_api_consumers", Description: "Find SQL stored procedures that consume (call via exec_contract) a given API service contract (relation type executes_contract). Returns direct and indirect consumers with file paths. Use when analysing which modules depend on a given API service and would be affected by its change.", InputSchema: querySchema("name", stringProp("Contract name"), map[string]interface{}{"limit": intProp("Max results")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
 				}
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.SearchAPIConsumers(name, limit)
+					return q.SearchAPIConsumers(ctx, name, limit)
 				})
 			},
 		},
 		"codebase_query_retcode": {
 			Definition: toolDefinition{Name: "codebase_query_retcode", Description: "Look up return code descriptions from ds_return_codes. Supports two modes: (1) search by ret_code (integer) — returns a single match with message, proc_name, module_id; (2) search by message text fragment (string, case-insensitive ILIKE) — returns all matching codes. Use when you need to decode a numeric return value from a stored procedure or find which error code corresponds to an error message.", InputSchema: objectSchema(map[string]interface{}{"ret_code": intProp("Return code to look up (exact match)"), "message": stringProp("Message text fragment to search (case-insensitive partial match)"), "limit": intProp("Max results for message search (default 50)")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
 					retCode, err := optionalInt64(args, "ret_code")
 					if err != nil {
 						return nil, err
 					}
 					if retCode != 0 {
-						r, err := q.LookupRetCode(retCode)
+						r, err := q.LookupRetCode(ctx, retCode)
 						if err != nil {
 							return nil, err
 						}
@@ -566,13 +567,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 						return nil, fmt.Errorf("either ret_code or message is required")
 					}
 					limit := optionalLimit(args)
-					return q.LookupRetCodeByMessage(msgPattern, limit)
+					return q.LookupRetCodeByMessage(ctx, msgPattern, limit)
 				})
 			},
 		},
 		"codebase_rti_parse": {
 			Definition: toolDefinition{Name: "codebase_rti_parse", Description: "Parse an RTI trace log file and save the session to the database. Returns summary statistics (total calls, errors, max nest level, top slowest calls) and the saved session ID. Use this as the first step before querying RTI data via other rti tools.", InputSchema: objectSchema(map[string]interface{}{"file_path": stringProp("Absolute path to .rti file")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				filePath, err := requiredString(args, "file_path")
 				if err != nil {
 					return nil, err
@@ -583,7 +584,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				var sessionID int64
 				if db != nil {
-					sessionID, err = rti.SaveSession(db, result, filePath)
+					sessionID, err = rti.SaveSession(ctx, db, result, filePath)
 					if err != nil {
 						return nil, fmt.Errorf("failed to save session: %w", err)
 					}
@@ -596,12 +597,12 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_rti_list": {
 			Definition: toolDefinition{Name: "codebase_rti_list", Description: "List saved RTI parsing sessions from the database, ordered by most recent first. Returns session ID, file path, call counts, error counts, file size, and parse timestamp.", InputSchema: objectSchema(map[string]interface{}{"limit": intProp("Max sessions to return (default 20)")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				if db == nil {
 					return nil, fmt.Errorf("database not available")
 				}
 				limit := optionalLimit(args)
-				sessions, err := rti.ListSessions(db, limit)
+				sessions, err := rti.ListSessions(ctx, db, limit)
 				if err != nil {
 					return nil, err
 				}
@@ -610,15 +611,15 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_rti_summary": {
 			Definition: toolDefinition{Name: "codebase_rti_summary", Description: "Get summary statistics for an RTI session: total calls, errors, max nest level, unparsed lines, top 10 slowest calls. Requires either a saved session ID or a file path to parse on the fly.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file to parse on the fly")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				sessionID, err := resolveRTISessionID(args)
 				if err != nil {
 					return nil, err
 				}
 				if sessionID > 0 && db != nil {
-					return rti.LoadSummary(db, sessionID)
+					return rti.LoadSummary(ctx, db, sessionID)
 				}
-				result, err := loadRTIFromArgs(db, args)
+				result, err := loadRTIFromArgs(ctx, db, args)
 				if err != nil {
 					return nil, err
 				}
@@ -627,7 +628,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_rti_tree": {
 			Definition: toolDefinition{Name: "codebase_rti_tree", Description: "Build and return a call tree from an RTI session. The tree shows nested procedure calls with elapsed time, return values, module info, and source file locations (enriched from CodeBase index). If procedure is omitted, auto-selects the root call with the most descendants.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "procedure": stringProp("Root procedure name (default: auto-select)"), "max_depth": intProp("Max tree depth (0 = unlimited)")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				procName, _ := optionalString(args, "procedure")
 				maxDepth, _ := optionalInt(args, "max_depth")
 				sessionID, err := resolveRTISessionID(args)
@@ -637,12 +638,12 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				var calls []*rti.RTICall
 				if sessionID > 0 && db != nil {
 					maxTreeNodes := 5000
-					calls, err = rti.LoadCallsForTree(db, sessionID, procName, maxDepth, maxTreeNodes)
+					calls, err = rti.LoadCallsForTree(ctx, db, sessionID, procName, maxDepth, maxTreeNodes)
 					if err != nil {
 						return nil, err
 					}
 				} else {
-					result, err := loadRTIFromArgs(db, args)
+					result, err := loadRTIFromArgs(ctx, db, args)
 					if err != nil {
 						return nil, err
 					}
@@ -655,7 +656,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				var enrichMap map[string]*rti.ProcedureEnrichment
 				if db != nil {
 					q := query.New(db)
-					enrichMap = rti.EnrichCalls(q, calls)
+					enrichMap = rti.EnrichCalls(ctx, q, calls)
 				}
 				return map[string]interface{}{
 					"tree":       tree,
@@ -665,7 +666,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_rti_errors": {
 			Definition: toolDefinition{Name: "codebase_rti_errors", Description: "Find all calls with non-zero RetVal in an RTI session. Returns server errors (procedure name, line number, return value, error context, elapsed time, nest level, module info, error code description, source file) and client errors (ClassName.MethodName, error text, source file from CodeBase enrichment).", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "limit": intProp("Maximum number of errors to return (default 100, max 1000)")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				limit, _ := optionalInt(args, "limit")
 				if limit <= 0 {
 					limit = queryDefaultLimit
@@ -685,16 +686,16 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				if sessionID > 0 && db != nil {
-					errorCalls, err = rti.LoadErrorCalls(db, sessionID, limit)
+					errorCalls, err = rti.LoadErrorCalls(ctx, db, sessionID, limit)
 					if err != nil {
 						return nil, err
 					}
-					clientErrors, err = rti.LoadClientErrors(db, sessionID, limit)
+					clientErrors, err = rti.LoadClientErrors(ctx, db, sessionID, limit)
 					if err != nil {
 						return nil, err
 					}
 				} else {
-					result, err := loadRTIFromArgs(db, args)
+					result, err := loadRTIFromArgs(ctx, db, args)
 					if err != nil {
 						return nil, err
 					}
@@ -728,10 +729,10 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 						for _, s := range serverErrors {
 							callsForEnrich = append(callsForEnrich, s.RTICall)
 						}
-						serverEnrich = rti.EnrichCalls(q, callsForEnrich)
+						serverEnrich = rti.EnrichCalls(ctx, q, callsForEnrich)
 						for _, s := range serverErrors {
 							if s.RetVal != nil {
-								retCode, err := q.LookupRetCode(int64(*s.RetVal))
+								retCode, err := q.LookupRetCode(ctx, int64(*s.RetVal))
 								if err == nil && retCode != nil {
 									s.RetValMeaning = retCode.Message
 									s.ErrorConstant = retCode.ProcName
@@ -740,7 +741,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 						}
 					}
 					if len(clientErrors) > 0 {
-						clientEnrich = rti.EnrichClientEvents(q, clientErrors)
+						clientEnrich = rti.EnrichClientEvents(ctx, q, clientErrors)
 					}
 				}
 				return map[string]interface{}{
@@ -756,7 +757,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_rti_slow": {
 			Definition: toolDefinition{Name: "codebase_rti_slow", Description: "Find the slowest calls in an RTI session above a threshold. Returns server calls sorted by elapsed time descending, and client SQL blocks sorted by duration. Includes enrichment data (source files, SQL origin) from CodeBase index.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "threshold_ms": intProp("Minimum elapsed milliseconds (default 100)"), "limit": intProp("Maximum number of calls to return (default 100, max 1000)")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				threshold, _ := optionalInt(args, "threshold_ms")
 				if threshold <= 0 {
 					threshold = rti.GetSlowThresholdMs()
@@ -780,16 +781,16 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				var slowCalls []*rti.RTICall
 				var slowClientSQL []*rti.RTIClientEvent
 				if sessionID > 0 && db != nil {
-					slowCalls, err = rti.LoadSlowCalls(db, sessionID, threshold, limit)
+					slowCalls, err = rti.LoadSlowCalls(ctx, db, sessionID, threshold, limit)
 					if err != nil {
 						return nil, err
 					}
-					slowClientSQL, err = rti.LoadSlowClientSQL(db, sessionID, threshold, limit)
+					slowClientSQL, err = rti.LoadSlowClientSQL(ctx, db, sessionID, threshold, limit)
 					if err != nil {
 						return nil, err
 					}
 				} else {
-					result, err := loadRTIFromArgs(db, args)
+					result, err := loadRTIFromArgs(ctx, db, args)
 					if err != nil {
 						return nil, err
 					}
@@ -830,10 +831,10 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 						for _, s := range slow {
 							callsForEnrich = append(callsForEnrich, s.RTICall)
 						}
-						serverEnrich = rti.EnrichCalls(q, callsForEnrich)
+						serverEnrich = rti.EnrichCalls(ctx, q, callsForEnrich)
 					}
 					if len(slowClientSQL) > 0 {
-						clientEnrich = rti.EnrichClientEvents(q, slowClientSQL)
+						clientEnrich = rti.EnrichClientEvents(ctx, q, slowClientSQL)
 					}
 				}
 				return map[string]interface{}{
@@ -850,7 +851,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_rti_details": {
 			Definition: toolDefinition{Name: "codebase_rti_details", Description: "Get enriched details for a specific procedure in an RTI session: source file path, line range, parameter definitions (name, type, direction) from CodeBase index, all call instances with timing, return values, error descriptions, and context.", InputSchema: objectSchema(map[string]interface{}{"procedure": stringProp("Procedure name"), "session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "limit": intProp("Maximum number of call instances to return (default 100, max 1000)")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				procName, err := requiredString(args, "procedure")
 				if err != nil {
 					return nil, err
@@ -868,12 +869,12 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				var calls []*rti.RTICall
 				if sessionID > 0 && db != nil {
-					calls, err = rti.LoadCallsByProcedure(db, sessionID, procName, limit)
+					calls, err = rti.LoadCallsByProcedure(ctx, db, sessionID, procName, limit)
 					if err != nil {
 						return nil, err
 					}
 				} else {
-					result, err := loadRTIFromArgs(db, args)
+					result, err := loadRTIFromArgs(ctx, db, args)
 					if err != nil {
 						return nil, err
 					}
@@ -892,7 +893,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				var enrich *rti.ProcedureEnrichment
 				if db != nil {
 					q := query.New(db)
-					enrich, _ = rti.EnrichProcedure(q, procName)
+					enrich, _ = rti.EnrichProcedure(ctx, q, procName)
 				}
 				return map[string]interface{}{
 					"procedure":  procName,
@@ -904,7 +905,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_rti_delete": {
 			Definition: toolDefinition{Name: "codebase_rti_delete", Description: "Delete a saved RTI session by ID. Cascades to delete all associated calls, parameters, and checkpoints.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Session ID to delete")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				if db == nil {
 					return nil, fmt.Errorf("database not available")
 				}
@@ -915,11 +916,11 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if sessionID <= 0 {
 					return nil, fmt.Errorf("session_id is required")
 				}
-				session, err := rti.GetSession(db, sessionID)
+				session, err := rti.GetSession(ctx, db, sessionID)
 				if err != nil {
 					return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
 				}
-				if err := rti.DeleteSession(db, sessionID); err != nil {
+				if err := rti.DeleteSession(ctx, db, sessionID); err != nil {
 					return nil, err
 				}
 				return map[string]interface{}{
@@ -931,7 +932,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_rti_prune": {
 			Definition: toolDefinition{Name: "codebase_rti_prune", Description: "Delete old RTI sessions, keeping only the most recent N. Use keep_last=0 to delete all sessions (uses TRUNCATE for instant cleanup). Returns the number of deleted sessions.", InputSchema: objectSchema(map[string]interface{}{"keep_last": intProp("Number of most recent sessions to keep")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				if db == nil {
 					return nil, fmt.Errorf("database not available")
 				}
@@ -942,7 +943,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if keepLast < 0 {
 					return nil, fmt.Errorf("keep_last must be >= 0")
 				}
-				deleted, err := rti.PruneSessions(db, keepLast)
+				deleted, err := rti.PruneSessions(ctx, db, keepLast)
 				if err != nil {
 					return nil, err
 				}
@@ -954,7 +955,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_rti_blog": {
 			Definition: toolDefinition{Name: "codebase_rti_blog", Description: "Get business log data for a specific procedure in an RTI session: business log blocks (BLOCK_BEGIN/END with names and timing), checkpoints with timestamps, and table dumps (M_LOG_TABLE/M_LOG_TABLE_LISTID). Requires either a saved session ID or a file path.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "procedure": stringProp("Procedure name"), "limit": intProp("Maximum number of call instances to return (default 100, max 1000)")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				procName, err := requiredString(args, "procedure")
 				if err != nil {
 					return nil, err
@@ -972,12 +973,12 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				var calls []*rti.RTICall
 				if sessionID > 0 && db != nil {
-					calls, err = rti.LoadCallsByProcedure(db, sessionID, procName, limit)
+					calls, err = rti.LoadCallsByProcedure(ctx, db, sessionID, procName, limit)
 					if err != nil {
 						return nil, err
 					}
 				} else {
-					result, err := loadRTIFromArgs(db, args)
+					result, err := loadRTIFromArgs(ctx, db, args)
 					if err != nil {
 						return nil, err
 					}
@@ -1029,7 +1030,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				"format":      stringProp("Output format: full (default) or short. Short omits BPL, Connection, SQL, Memory, ErrorText, RawBody."),
 				"limit":       intProp("Maximum number of events to return (default 100, max 1000)"),
 			})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				limit, _ := optionalInt(args, "limit")
 				if limit <= 0 {
 					limit = queryDefaultLimit
@@ -1093,12 +1094,12 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				if sessionID > 0 && db != nil {
-					filteredEvents, err = rti.LoadClientEventsFiltered(db, sessionID, filter, limit)
+					filteredEvents, err = rti.LoadClientEventsFiltered(ctx, db, sessionID, filter, limit)
 					if err != nil {
 						return nil, err
 					}
 				} else {
-					result, err := loadRTIFromArgs(db, args)
+					result, err := loadRTIFromArgs(ctx, db, args)
 					if err != nil {
 						return nil, err
 					}
@@ -1116,7 +1117,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				var clientEnrich map[string]*rti.ClientEnrichment
 				if db != nil && len(filteredEvents) > 0 {
 					q := query.New(db)
-					clientEnrich = rti.EnrichClientEvents(q, filteredEvents)
+					clientEnrich = rti.EnrichClientEvents(ctx, q, filteredEvents)
 				}
 
 				// Convert to short format if requested
@@ -1150,7 +1151,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				"format":      stringProp("Output format: full (default) or short. Short omits params, checkpoints, blog_*, SQL text."),
 				"limit":       intProp("Maximum number of items to return per type (default 100, max 1000)"),
 			})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				limit, _ := optionalInt(args, "limit")
 				if limit <= 0 {
 					limit = queryDefaultLimit
@@ -1220,16 +1221,16 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				if sessionID > 0 && db != nil {
-					filteredCalls, err = rti.LoadTimelineCalls(db, sessionID, filter, limit)
+					filteredCalls, err = rti.LoadTimelineCalls(ctx, db, sessionID, filter, limit)
 					if err != nil {
 						return nil, err
 					}
-					filteredEvents, err = rti.LoadTimelineClientEvents(db, sessionID, filter, limit)
+					filteredEvents, err = rti.LoadTimelineClientEvents(ctx, db, sessionID, filter, limit)
 					if err != nil {
 						return nil, err
 					}
 				} else {
-					result, err := loadRTIFromArgs(db, args)
+					result, err := loadRTIFromArgs(ctx, db, args)
 					if err != nil {
 						return nil, err
 					}
@@ -1246,7 +1247,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				var clientEnrich map[string]*rti.ClientEnrichment
 				if db != nil && len(filteredEvents) > 0 {
 					q := query.New(db)
-					clientEnrich = rti.EnrichClientEvents(q, filteredEvents)
+					clientEnrich = rti.EnrichClientEvents(ctx, q, filteredEvents)
 				}
 
 				// Build response
@@ -1277,7 +1278,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_trc_parse": {
 			Definition: toolDefinition{Name: "codebase_trc_parse", Description: "Parse a SQL Server trace file (.trc binary, .trc XML export, or .xel Extended Events) and save the session to the database. Returns total event count and the saved session ID. Use this as the first step before querying trc data via other trc tools.", InputSchema: objectSchema(map[string]interface{}{"file_path": stringProp("Absolute path to .trc or .xel file")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				filePath, err := requiredString(args, "file_path")
 				if err != nil {
 					return nil, err
@@ -1286,7 +1287,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					// Streaming parse-to-DB: не накапливает события в памяти.
 					// Критично для больших файлов (> 1 ГБ).
 					// Поддерживает бинарный .trc, XML-экспорт и .xel (Extended Events).
-					sessionID, totalEvents, perr := trc.ParseFileToDB(filePath, db)
+					sessionID, totalEvents, perr := trc.ParseFileToDB(ctx, filePath, db)
 					if perr != nil {
 						return nil, fmt.Errorf("failed to parse trc file: %w", perr)
 					}
@@ -1308,12 +1309,12 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_trc_list": {
 			Definition: toolDefinition{Name: "codebase_trc_list", Description: "List saved trc parsing sessions from the database, ordered by most recent first. Returns session ID, file path, total events, file size, and parse timestamp.", InputSchema: objectSchema(map[string]interface{}{"limit": intProp("Max sessions to return (default 20)")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				if db == nil {
 					return nil, fmt.Errorf("database not available")
 				}
 				limit := optionalLimit(args)
-				sessions, err := trc.ListSessions(db, limit)
+				sessions, err := trc.ListSessions(ctx, db, limit)
 				if err != nil {
 					return nil, err
 				}
@@ -1322,17 +1323,17 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_trc_summary": {
 			Definition: toolDefinition{Name: "codebase_trc_summary", Description: "Get summary info for a trc session: total events and session metadata (provider/server/version). Requires either a saved session ID or a file path to parse on the fly.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file to parse on the fly")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				sessionID, err := resolveTRCSessionID(args)
 				if err != nil {
 					return nil, err
 				}
 				if sessionID > 0 && db != nil {
-					session, err := trc.GetSession(db, sessionID)
+					session, err := trc.GetSession(ctx, db, sessionID)
 					if err != nil {
 						return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
 					}
-					totalEvents, _ := trc.LoadEventCount(db, sessionID)
+					totalEvents, _ := trc.LoadEventCount(ctx, db, sessionID)
 					return map[string]interface{}{
 						"total_events": totalEvents,
 						"header": map[string]interface{}{
@@ -1346,7 +1347,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					}, nil
 				}
 				// Fallback: parse from file
-				result, err := loadTRCFromArgs(db, args)
+				result, err := loadTRCFromArgs(ctx, db, args)
 				if err != nil {
 					return nil, err
 				}
@@ -1358,7 +1359,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_trc_events": {
 			Definition: toolDefinition{Name: "codebase_trc_events", Description: "List decoded events from a trc session, with optional filters. Returns event class, name, procedure, params, duration, and full decoded columns. Supports server-side filtering by SPID, procedure, and event_name with limit.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spid": intProp("Optional SPID filter"), "procedure": stringProp("Optional procedure name filter (exact match)"), "event_name": stringProp("Optional event name filter (e.g. RPC:Completed)"), "limit": intProp("Max events to return (default 100, max 1000)")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				limit := optionalLimit(args)
 				if limit > queryMaxLimit {
 					limit = queryMaxLimit
@@ -1378,11 +1379,11 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 						Procedure: procFilter,
 						EventName: eventNameFilter,
 					}
-					events, err := trc.LoadEventsFiltered(db, sessionID, f, limit)
+					events, err := trc.LoadEventsFiltered(ctx, db, sessionID, f, limit)
 					if err != nil {
 						return nil, err
 					}
-					totalCount, _ := trc.LoadEventCount(db, sessionID)
+					totalCount, _ := trc.LoadEventCount(ctx, db, sessionID)
 					return map[string]interface{}{
 						"events":         events,
 						"total_count":    totalCount,
@@ -1392,7 +1393,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 
 				// Fallback: parse from file
-				result, err := loadTRCFromArgs(db, args)
+				result, err := loadTRCFromArgs(ctx, db, args)
 				if err != nil {
 					return nil, err
 				}
@@ -1424,13 +1425,13 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_trc_procedures": {
 			Definition: toolDefinition{Name: "codebase_trc_procedures", Description: "Aggregate trc session events by procedure name (extracted from exec-statements in TextData): call count, min/max/avg/total duration. Enriched with source file location from CodeBase index. Sorted by total duration descending. Uses server-side SQL aggregation when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				sessionID, err := resolveTRCSessionID(args)
 				if err != nil {
 					return nil, err
 				}
 				if sessionID > 0 && db != nil {
-					aggs, err := trc.LoadProceduresAggregated(db, sessionID)
+					aggs, err := trc.LoadProceduresAggregated(ctx, db, sessionID)
 					if err != nil {
 						return nil, err
 					}
@@ -1438,9 +1439,9 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					if len(aggs) > 0 {
 						q := query.New(db)
 						// Load a small sample of events to build enrichment map
-						sampleEvents, _ := trc.LoadEventsFiltered(db, sessionID, trc.TRCEventFilter{}, 1000)
+						sampleEvents, _ := trc.LoadEventsFiltered(ctx, db, sessionID, trc.TRCEventFilter{}, 1000)
 						if len(sampleEvents) > 0 {
-							enrichMap := trc.EnrichEvents(q, sampleEvents)
+							enrichMap := trc.EnrichEvents(ctx, q, sampleEvents)
 							trc.EnrichAggregates(aggs, enrichMap)
 						}
 					}
@@ -1450,14 +1451,14 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					}, nil
 				}
 				// Fallback: parse from file
-				result, err := loadTRCFromArgs(db, args)
+				result, err := loadTRCFromArgs(ctx, db, args)
 				if err != nil {
 					return nil, err
 				}
 				aggs := trc.AggregateByProcedure(result.Events)
 				if db != nil && len(aggs) > 0 {
 					q := query.New(db)
-					enrichMap := trc.EnrichEvents(q, result.Events)
+					enrichMap := trc.EnrichEvents(ctx, q, result.Events)
 					trc.EnrichAggregates(aggs, enrichMap)
 				}
 				return map[string]interface{}{
@@ -1468,7 +1469,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_trc_tree": {
 			Definition: toolDefinition{Name: "codebase_trc_tree", Description: "Build call trees from a trc session, grouped by SPID, restoring nesting via Starting/Completed event pairs (RPC, SQL:Batch, SQL:Stmt, SP, SP:Stmt). Uses server-side recursive CTE when session_id is provided. If spid is given, returns only that SPID's tree. max_depth limits tree depth (0 = unlimited). limit caps the number of root nodes and children per node (0 = unlimited).", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spid": intProp("Optional SPID filter (0 = auto-select busiest SPID)"), "max_depth": intProp("Maximum tree depth (0 = unlimited)"), "limit": intProp("Maximum root nodes and children per node (0 = unlimited)")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				maxDepth, _ := optionalInt(args, "max_depth")
 				limit, _ := optionalInt(args, "limit")
 				spidFilter, _ := optionalInt(args, "spid")
@@ -1479,7 +1480,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				if sessionID > 0 && db != nil {
 					// Server-side recursive CTE tree
-					treeEvents, err := trc.LoadEventsForTree(db, sessionID, spidFilter, maxDepth, limit)
+					treeEvents, err := trc.LoadEventsForTree(ctx, db, sessionID, spidFilter, maxDepth, limit)
 					if err != nil {
 						return nil, err
 					}
@@ -1492,7 +1493,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					}, nil
 				}
 				// Fallback: parse from file
-				result, err := loadTRCFromArgs(db, args)
+				result, err := loadTRCFromArgs(ctx, db, args)
 				if err != nil {
 					return nil, err
 				}
@@ -1512,7 +1513,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_trc_slow": {
 			Definition: toolDefinition{Name: "codebase_trc_slow", Description: "Find the slowest events in a trc session above a duration threshold (DurationMs). Sorted by duration descending. Uses server-side SQL when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "threshold_ms": intProp("Minimum duration in milliseconds (default 100)"), "limit": intProp("Max events to return (default 100, max 1000)")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				threshold, _ := optionalInt(args, "threshold_ms")
 				if threshold <= 0 {
 					threshold = trc.GetSlowThresholdMs()
@@ -1527,7 +1528,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				if sessionID > 0 && db != nil {
-					events, err := trc.LoadSlowEvents(db, sessionID, threshold, limit)
+					events, err := trc.LoadSlowEvents(ctx, db, sessionID, threshold, limit)
 					if err != nil {
 						return nil, err
 					}
@@ -1539,7 +1540,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					}, nil
 				}
 				// Fallback: parse from file
-				result, err := loadTRCFromArgs(db, args)
+				result, err := loadTRCFromArgs(ctx, db, args)
 				if err != nil {
 					return nil, err
 				}
@@ -1563,7 +1564,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_trc_errors": {
 			Definition: toolDefinition{Name: "codebase_trc_errors", Description: "Find events with a non-zero Error(31) column in a trc session. Uses server-side SQL when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "limit": intProp("Max events to return (default 100, max 1000)")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				limit := optionalLimit(args)
 				if limit > queryMaxLimit {
 					limit = queryMaxLimit
@@ -1574,7 +1575,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				if sessionID > 0 && db != nil {
-					events, err := trc.LoadErrorEvents(db, sessionID, limit)
+					events, err := trc.LoadErrorEvents(ctx, db, sessionID, limit)
 					if err != nil {
 						return nil, err
 					}
@@ -1585,7 +1586,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					}, nil
 				}
 				// Fallback: parse from file
-				result, err := loadTRCFromArgs(db, args)
+				result, err := loadTRCFromArgs(ctx, db, args)
 				if err != nil {
 					return nil, err
 				}
@@ -1607,7 +1608,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_trc_delete": {
 			Definition: toolDefinition{Name: "codebase_trc_delete", Description: "Delete a saved trc session by ID. Batch-deletes all associated events first, then removes the session.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Session ID to delete")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				if db == nil {
 					return nil, fmt.Errorf("database not available")
 				}
@@ -1618,11 +1619,11 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if sessionID <= 0 {
 					return nil, fmt.Errorf("session_id is required")
 				}
-				session, err := trc.GetSession(db, sessionID)
+				session, err := trc.GetSession(ctx, db, sessionID)
 				if err != nil {
 					return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
 				}
-				if err := trc.DeleteSession(db, sessionID); err != nil {
+				if err := trc.DeleteSession(ctx, db, sessionID); err != nil {
 					return nil, err
 				}
 				return map[string]interface{}{
@@ -1634,7 +1635,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		},
 		"codebase_trc_prune": {
 			Definition: toolDefinition{Name: "codebase_trc_prune", Description: "Delete old trc sessions, keeping only the most recent N. Use keep_last=0 to delete all sessions (uses TRUNCATE for instant cleanup). Returns the number of deleted sessions.", InputSchema: objectSchema(map[string]interface{}{"keep_last": intProp("Number of most recent sessions to keep")})},
-			Handler: func(args map[string]interface{}) (interface{}, error) {
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				if db == nil {
 					return nil, fmt.Errorf("database not available")
 				}
@@ -1645,7 +1646,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if keepLast < 0 {
 					return nil, fmt.Errorf("keep_last must be >= 0")
 				}
-				deleted, err := trc.PruneSessions(db, keepLast)
+				deleted, err := trc.PruneSessions(ctx, db, keepLast)
 				if err != nil {
 					return nil, err
 				}
@@ -1830,7 +1831,7 @@ func resolveTRCSessionID(args map[string]interface{}) (int64, error) {
 	return optionalInt64(args, "session_id")
 }
 
-func loadRTIFromArgs(db *store.DB, args map[string]interface{}) (*rti.RTIParseResult, error) {
+func loadRTIFromArgs(ctx context.Context, db *store.DB, args map[string]interface{}) (*rti.RTIParseResult, error) {
 	sessionID, err := optionalInt64(args, "session_id")
 	if err != nil {
 		return nil, err
@@ -1839,15 +1840,15 @@ func loadRTIFromArgs(db *store.DB, args map[string]interface{}) (*rti.RTIParseRe
 		if db == nil {
 			return nil, fmt.Errorf("database not available")
 		}
-		session, err := rti.GetSession(db, sessionID)
+		session, err := rti.GetSession(ctx, db, sessionID)
 		if err != nil {
 			return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
 		}
-		calls, err := rti.LoadCalls(db, sessionID)
+		calls, err := rti.LoadCalls(ctx, db, sessionID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load calls: %w", err)
 		}
-		clientEvents, err := rti.LoadClientEvents(db, sessionID)
+		clientEvents, err := rti.LoadClientEvents(ctx, db, sessionID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load client events: %w", err)
 		}
@@ -1889,7 +1890,7 @@ func toJSONText(value interface{}) (string, error) {
 // loadTRCFromArgs загружает результат разбора .trc либо из сохранённой в БД
 // сессии (session_id), либо парсит файл на месте (file_path) — аналог
 // loadRTIFromArgs для пакета trc.
-func loadTRCFromArgs(db *store.DB, args map[string]interface{}) (*trc.TRCParseResult, error) {
+func loadTRCFromArgs(ctx context.Context, db *store.DB, args map[string]interface{}) (*trc.TRCParseResult, error) {
 	sessionID, err := optionalInt64(args, "session_id")
 	if err != nil {
 		return nil, err
@@ -1898,11 +1899,11 @@ func loadTRCFromArgs(db *store.DB, args map[string]interface{}) (*trc.TRCParseRe
 		if db == nil {
 			return nil, fmt.Errorf("database not available")
 		}
-		session, err := trc.GetSession(db, sessionID)
+		session, err := trc.GetSession(ctx, db, sessionID)
 		if err != nil {
 			return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
 		}
-		events, err := trc.LoadEvents(db, sessionID)
+		events, err := trc.LoadEvents(ctx, db, sessionID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load events: %w", err)
 		}

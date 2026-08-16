@@ -55,7 +55,7 @@ func (r *Runner) SetOnProgress(fn func(completed, total int)) {
 	r.onProgress = fn
 }
 
-func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
+func (r *Runner) RunSQLFileCtx(ctx context.Context, path string, opts Options) (*Result, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("sql file path is required")
 	}
@@ -82,7 +82,7 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 	r.tableProductIDCache = nil
 
 	normalizedPath := normalizePath(path)
-	file, err := r.getIndexedFile(normalizedPath)
+	file, err := r.getIndexedFile(ctx, normalizedPath)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("file is not indexed: %s", normalizedPath)
@@ -121,22 +121,22 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 	}()
 
 	// Предзагружаем кэши типов колонок и индексов одним batch-запросом каждый.
-	if err := r.prewarmColTypeCache(parsed, r.exec.lines); err != nil {
+	if err := r.prewarmColTypeCache(ctx, parsed, r.exec.lines); err != nil {
 		return nil, err
 	}
-	if err := r.prewarmIndexCache(r.exec.lines); err != nil {
+	if err := r.prewarmIndexCache(ctx, r.exec.lines); err != nil {
 		return nil, err
 	}
 
 	// Предзагружаем параметры процедур, productID процедур и productID таблиц
 	// одним batch-запросом каждый, чтобы избежать N+1 DB-запросов в правилах.
-	r.prewarmProcCaches(parsed)
-	r.prewarmTableProductIDs(parsed)
+	r.prewarmProcCaches(ctx, parsed)
+	r.prewarmTableProductIDs(ctx, parsed)
 
 	ruleSet := enabledRuleSet(opts.Rules)
-	tasks := r.buildRuleTasks(ruleSet, parsed, file)
-	maxWorkers := r.maxRuleWorkers(len(tasks))
-	findings, err := runRuleTasks(tasks, maxWorkers, r.onProgress)
+	tasks := r.buildRuleTasks(ctx, ruleSet, parsed, file)
+	maxWorkers := r.maxRuleWorkers(ctx, len(tasks))
+	findings, err := runRuleTasks(ctx, tasks, maxWorkers, r.onProgress)
 	if err != nil {
 		return nil, err
 	}
@@ -173,277 +173,284 @@ func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 	return result, nil
 }
 
-func (r *Runner) buildRuleTasks(ruleSet map[RuleID]bool, parsed *sqlparser.ParseResult, file *indexedFile) []ruleTask {
+// RunSQLFile - deprecated thin wrapper.
+func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
+	return r.RunSQLFileCtx(context.Background(), path, opts)
+}
+
+func (r *Runner) buildRuleTasks(ctx context.Context, ruleSet map[RuleID]bool, parsed *sqlparser.ParseResult, file *indexedFile) []ruleTask {
+	_ = ctx
 	tasks := make([]ruleTask, 0, len(ruleSet))
 	if ruleSet[RuleForeignTablesUsing] {
 		tasks = append(tasks, ruleTask{rule: RuleForeignTablesUsing, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkForeignTables(parsed, file, "t")
+			return r.checkForeignTables(ctx, parsed, file, "t")
 		}})
 	}
 	if ruleSet[RuleForeignPTablesUsing] {
 		tasks = append(tasks, ruleTask{rule: RuleForeignPTablesUsing, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkForeignPTables(parsed, file)
+			return r.checkForeignPTables(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleForeignProcedureUsing] {
 		tasks = append(tasks, ruleTask{rule: RuleForeignProcedureUsing, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkForeignProcedures(parsed, file)
+			return r.checkForeignProcedures(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleExecNotExistsProc] {
 		tasks = append(tasks, ruleTask{rule: RuleExecNotExistsProc, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkExecNotExistsProcedures(parsed, file)
+			return r.checkExecNotExistsProcedures(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleProcDuplicate] {
 		tasks = append(tasks, ruleTask{rule: RuleProcDuplicate, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkProcDuplicate(parsed, file)
+			return r.checkProcDuplicate(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleProcParamDefValue] {
 		tasks = append(tasks, ruleTask{rule: RuleProcParamDefValue, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkProcParamDefValue(parsed, file)
+			return r.checkProcParamDefValue(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleProcElseCase] {
 		tasks = append(tasks, ruleTask{rule: RuleProcElseCase, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkProcElseCase(file)
+			return r.checkProcElseCase(ctx, file)
 		}})
 	}
 	if ruleSet[RuleUseSelectAll] {
 		tasks = append(tasks, ruleTask{rule: RuleUseSelectAll, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkUseSelectAll(file)
+			return r.checkUseSelectAll(ctx, file)
 		}})
 	}
 	if ruleSet[RuleTruncTbl] {
 		tasks = append(tasks, ruleTask{rule: RuleTruncTbl, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkTruncTbl(file)
+			return r.checkTruncTbl(ctx, file)
 		}})
 	}
 	if ruleSet[RuleAnsiInJoin] {
 		tasks = append(tasks, ruleTask{rule: RuleAnsiInJoin, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkAnsiInJoin(file)
+			return r.checkAnsiInJoin(ctx, file)
 		}})
 	}
 	if ruleSet[RuleDatatype] {
 		tasks = append(tasks, ruleTask{rule: RuleDatatype, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkDatatype(parsed, file)
+			return r.checkDatatype(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleInsertRowLock] {
 		tasks = append(tasks, ruleTask{rule: RuleInsertRowLock, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkInsertRowLock(file)
+			return r.checkInsertRowLock(ctx, file)
 		}})
 	}
 	if ruleSet[RuleUseEqColumn] {
 		tasks = append(tasks, ruleTask{rule: RuleUseEqColumn, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkUseEqColumn(file)
+			return r.checkUseEqColumn(ctx, file)
 		}})
 	}
 	if ruleSet[RuleTableFullScan] {
 		tasks = append(tasks, ruleTask{rule: RuleTableFullScan, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkTableFullScan(file)
+			return r.checkTableFullScan(ctx, file)
 		}})
 	}
 	if ruleSet[RuleTableHintExists] {
 		tasks = append(tasks, ruleTask{rule: RuleTableHintExists, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkTableHintExists(file)
+			return r.checkTableHintExists(ctx, file)
 		}})
 	}
 	if ruleSet[RuleTableHintIsRight] {
 		tasks = append(tasks, ruleTask{rule: RuleTableHintIsRight, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkTableHintIsRight(file)
+			return r.checkTableHintIsRight(ctx, file)
 		}})
 	}
 	if ruleSet[RuleIndexExistsInDB] {
 		tasks = append(tasks, ruleTask{rule: RuleIndexExistsInDB, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkIndexExistsInDB(file)
+			return r.checkIndexExistsInDB(ctx, file)
 		}})
 	}
 	if ruleSet[RuleIndexWrong] {
 		tasks = append(tasks, ruleTask{rule: RuleIndexWrong, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkIndexWrong(file)
+			return r.checkIndexWrong(ctx, file)
 		}})
 	}
 	if ruleSet[RuleUpdateOnlyVar] {
 		tasks = append(tasks, ruleTask{rule: RuleUpdateOnlyVar, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkUpdateOnlyVar(file)
+			return r.checkUpdateOnlyVar(ctx, file)
 		}})
 	}
 	if ruleSet[RulePTableSpid] {
 		tasks = append(tasks, ruleTask{rule: RulePTableSpid, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkPTableSpid(file)
+			return r.checkPTableSpid(ctx, file)
 		}})
 	}
 	if ruleSet[RuleForceOrder2Tbl] {
 		tasks = append(tasks, ruleTask{rule: RuleForceOrder2Tbl, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkForceOrder2Tbl(file)
+			return r.checkForceOrder2Tbl(ctx, file)
 		}})
 	}
 	if ruleSet[RuleSaveTran] {
 		tasks = append(tasks, ruleTask{rule: RuleSaveTran, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkSaveTran(file)
+			return r.checkSaveTran(ctx, file)
 		}})
 	}
 	if ruleSet[RuleUseDrop] {
 		tasks = append(tasks, ruleTask{rule: RuleUseDrop, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkUseDrop(file)
+			return r.checkUseDrop(ctx, file)
 		}})
 	}
 	if ruleSet[RuleMathOperations] {
 		tasks = append(tasks, ruleTask{rule: RuleMathOperations, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkMathOperations(file)
+			return r.checkMathOperations(ctx, file)
 		}})
 	}
 	if ruleSet[RuleExistsWithAndInIf] {
 		tasks = append(tasks, ruleTask{rule: RuleExistsWithAndInIf, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkExistsWithAndInIf(file)
+			return r.checkExistsWithAndInIf(ctx, file)
 		}})
 	}
 	if ruleSet[RuleNullComparison] {
 		tasks = append(tasks, ruleTask{rule: RuleNullComparison, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkNullComparison(file)
+			return r.checkNullComparison(ctx, file)
 		}})
 	}
 	if ruleSet[RuleShouldBeCP866] {
 		tasks = append(tasks, ruleTask{rule: RuleShouldBeCP866, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkShouldBeCP866(file)
+			return r.checkShouldBeCP866(ctx, file)
 		}})
 	}
 	if ruleSet[RuleTooManyJoins] {
 		tasks = append(tasks, ruleTask{rule: RuleTooManyJoins, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkTooManyJoins(file)
+			return r.checkTooManyJoins(ctx, file)
 		}})
 	}
 	if ruleSet[RuleMaxProcParam] {
 		tasks = append(tasks, ruleTask{rule: RuleMaxProcParam, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkMaxProcParam(parsed, file)
+			return r.checkMaxProcParam(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleModifyOutProc] {
 		tasks = append(tasks, ruleTask{rule: RuleModifyOutProc, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkModifyOutProc(parsed, file)
+			return r.checkModifyOutProc(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleEmptyReturn] {
 		tasks = append(tasks, ruleTask{rule: RuleEmptyReturn, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkEmptyReturn(file)
+			return r.checkEmptyReturn(ctx, file)
 		}})
 	}
 	if ruleSet[RuleRawTransactionControl] {
 		tasks = append(tasks, ruleTask{rule: RuleRawTransactionControl, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkRawTransactionControl(file)
+			return r.checkRawTransactionControl(ctx, file)
 		}})
 	}
 	if ruleSet[RuleDeferredUpdate] {
 		tasks = append(tasks, ruleTask{rule: RuleDeferredUpdate, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkDeferredUpdate(file)
+			return r.checkDeferredUpdate(ctx, file)
 		}})
 	}
 	if ruleSet[RuleInSubQuery] {
 		tasks = append(tasks, ruleTask{rule: RuleInSubQuery, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkInSubQuery(file)
+			return r.checkInSubQuery(ctx, file)
 		}})
 	}
 	if ruleSet[RuleVarcharSize] {
 		tasks = append(tasks, ruleTask{rule: RuleVarcharSize, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkVarcharSize(parsed, file)
+			return r.checkVarcharSize(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleColumnInsert] {
 		tasks = append(tasks, ruleTask{rule: RuleColumnInsert, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkColumnInsert(file)
+			return r.checkColumnInsert(ctx, file)
 		}})
 	}
 	if ruleSet[RulePostgreLabelGotoLevel] {
 		tasks = append(tasks, ruleTask{rule: RulePostgreLabelGotoLevel, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkPostgreLabelGotoLevel(file)
+			return r.checkPostgreLabelGotoLevel(ctx, file)
 		}})
 	}
 	if ruleSet[RuleDateIntoString] {
 		tasks = append(tasks, ruleTask{rule: RuleDateIntoString, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkDateIntoString(parsed, file)
+			return r.checkDateIntoString(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleEmptyStringDate] {
 		tasks = append(tasks, ruleTask{rule: RuleEmptyStringDate, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkEmptyStringDate(parsed, file)
+			return r.checkEmptyStringDate(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleVarUseAfterCursor] {
 		tasks = append(tasks, ruleTask{rule: RuleVarUseAfterCursor, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkVarUseAfterCursor(file)
+			return r.checkVarUseAfterCursor(ctx, file)
 		}})
 	}
 	if ruleSet[RuleExcessProcParams] {
 		tasks = append(tasks, ruleTask{rule: RuleExcessProcParams, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkExcessProcParams(parsed, file)
+			return r.checkExcessProcParams(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleDuplicateOutputVariable] {
 		tasks = append(tasks, ruleTask{rule: RuleDuplicateOutputVariable, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkDuplicateOutputVariable(parsed, file)
+			return r.checkDuplicateOutputVariable(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleUseOnlyDeclaredCursors] {
 		tasks = append(tasks, ruleTask{rule: RuleUseOnlyDeclaredCursors, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkUseOnlyDeclaredCursors(parsed, file)
+			return r.checkUseOnlyDeclaredCursors(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleCursorFetchArguments] {
 		tasks = append(tasks, ruleTask{rule: RuleCursorFetchArguments, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkCursorFetchArguments(parsed, file)
+			return r.checkCursorFetchArguments(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleUsageVarInSameSelect] {
 		tasks = append(tasks, ruleTask{rule: RuleUsageVarInSameSelect, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkUsageVarInSameSelect(parsed, file)
+			return r.checkUsageVarInSameSelect(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleVarAssignInUpdate] {
 		tasks = append(tasks, ruleTask{rule: RuleVarAssignInUpdate, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkVarAssignInUpdate(parsed, file)
+			return r.checkVarAssignInUpdate(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleStatementsWithJoinsRequireAliases] {
 		tasks = append(tasks, ruleTask{rule: RuleStatementsWithJoinsRequireAliases, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkStatementsWithJoinsRequireAliases(parsed, file)
+			return r.checkStatementsWithJoinsRequireAliases(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleUseFuncInIndCol] {
 		tasks = append(tasks, ruleTask{rule: RuleUseFuncInIndCol, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkUseFuncInIndCol(file)
+			return r.checkUseFuncInIndCol(ctx, file)
 		}})
 	}
 	if ruleSet[RuleIsNullSameTypes] {
 		tasks = append(tasks, ruleTask{rule: RuleIsNullSameTypes, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkIsNullSameTypes(parsed, file)
+			return r.checkIsNullSameTypes(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleDiffTypesComparison] {
 		tasks = append(tasks, ruleTask{rule: RuleDiffTypesComparison, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkDiffTypesComparison(parsed, file)
+			return r.checkDiffTypesComparison(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleFloatToStringConvert] {
 		tasks = append(tasks, ruleTask{rule: RuleFloatToStringConvert, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkFloatToStringConvert(parsed, file)
+			return r.checkFloatToStringConvert(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleSelectAfterSetRowcount] {
 		tasks = append(tasks, ruleTask{rule: RuleSelectAfterSetRowcount, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkSelectAfterSetRowcount(parsed, file)
+			return r.checkSelectAfterSetRowcount(ctx, parsed, file)
 		}})
 	}
 	if ruleSet[RuleAliasWhenUsingUnion] {
 		tasks = append(tasks, ruleTask{rule: RuleAliasWhenUsingUnion, run: func(ctx context.Context) ([]Finding, error) {
-			return r.checkAliasWhenUsingUnion(parsed, file)
+			return r.checkAliasWhenUsingUnion(ctx, parsed, file)
 		}})
 	}
 	return tasks
 }
 
-func (r *Runner) maxRuleWorkers(enabledRules int) int {
+func (r *Runner) maxRuleWorkers(ctx context.Context, enabledRules int) int {
+	_ = ctx
 	if enabledRules <= 0 {
 		return 1
 	}
@@ -466,7 +473,7 @@ func (r *Runner) maxRuleWorkers(enabledRules int) int {
 	return limit
 }
 
-func runRuleTasks(tasks []ruleTask, maxWorkers int, onProgress func(int, int)) ([]Finding, error) {
+func runRuleTasks(parentCtx context.Context, tasks []ruleTask, maxWorkers int, onProgress func(int, int)) ([]Finding, error) {
 	if len(tasks) == 0 {
 		return nil, nil
 	}
@@ -481,7 +488,7 @@ func runRuleTasks(tasks []ruleTask, maxWorkers int, onProgress func(int, int)) (
 		err      error
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
 	tasksCh := make(chan ruleTask)
@@ -558,7 +565,8 @@ func runRuleTasks(tasks []ruleTask, maxWorkers int, onProgress func(int, int)) (
 	return findings, nil
 }
 
-func (r *Runner) fileContent(path string) ([]byte, error) {
+func (r *Runner) fileContent(ctx context.Context, path string) ([]byte, error) {
+	_ = ctx
 	if r.exec != nil && normalizePath(path) == r.exec.filePath {
 		return r.exec.content, nil
 	}
@@ -576,7 +584,7 @@ var (
 // prewarmColTypeCache собирает все имена таблиц из фрагментов файла и загружает
 // типы всех их колонок одним batch-запросом к БД, заполняя colTypeCache.
 // Это позволяет избежать тысяч отдельных DB-запросов при параллельном запуске правил.
-func (r *Runner) prewarmColTypeCache(parsed *sqlparser.ParseResult, fileLines []string) error {
+func (r *Runner) prewarmColTypeCache(ctx context.Context, parsed *sqlparser.ParseResult, fileLines []string) error {
 	tableSet := make(map[string]struct{})
 
 	for _, frag := range parsed.Fragments {
@@ -620,7 +628,7 @@ func (r *Runner) prewarmColTypeCache(parsed *sqlparser.ParseResult, fileLines []
 		names = append(names, t)
 	}
 
-	batch, err := r.db.BatchFindColumnDefinitionTypes(names)
+	batch, err := r.db.BatchFindColumnDefinitionTypes(ctx, names)
 	if err != nil {
 		return err
 	}
@@ -633,7 +641,7 @@ func (r *Runner) prewarmColTypeCache(parsed *sqlparser.ParseResult, fileLines []
 	return nil
 }
 
-func (r *Runner) cachedFindColumnDefinitionType(tableName, columnName string) (string, error) {
+func (r *Runner) cachedFindColumnDefinitionType(ctx context.Context, tableName, columnName string) (string, error) {
 	key := strings.ToLower(strings.TrimSpace(tableName)) + "|" + strings.ToLower(strings.TrimSpace(columnName))
 	r.colTypeMu.Lock()
 	if v, ok := r.colTypeCache[key]; ok {
@@ -641,11 +649,11 @@ func (r *Runner) cachedFindColumnDefinitionType(tableName, columnName string) (s
 		return v, nil
 	}
 	r.colTypeMu.Unlock()
-	typeName, err := r.db.FindLatestSQLColumnDefinitionType(tableName, columnName)
+	typeName, err := r.db.FindLatestSQLColumnDefinitionType(ctx, tableName, columnName)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// Fallback: ищем тип в API-контрактах и business objects
-			apiType, apiErr := r.db.FindAPIColumnDefinitionType(tableName, columnName)
+			apiType, apiErr := r.db.FindAPIColumnDefinitionType(ctx, tableName, columnName)
 			if apiErr == nil && apiType != "" {
 				r.colTypeMu.Lock()
 				r.colTypeCache[key] = apiType
@@ -665,7 +673,8 @@ func (r *Runner) cachedFindColumnDefinitionType(tableName, columnName string) (s
 	return typeName, nil
 }
 
-func (r *Runner) fileProcessedContent(path string) (macroReplaceResult, error) {
+func (r *Runner) fileProcessedContent(ctx context.Context, path string) (macroReplaceResult, error) {
+	_ = ctx
 	if r.exec != nil && normalizePath(path) == r.exec.filePath {
 		return r.exec.macroResult, nil
 	}

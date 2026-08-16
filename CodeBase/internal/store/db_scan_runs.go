@@ -1,9 +1,11 @@
 package store
 
-// CreateScanRun создаёт запись о запуске сканирования
-func (db *DB) CreateScanRun(rootPath string) (int64, error) {
+import "context"
+
+// CreateScanRun СЃРѕР·РґР°С‘С‚ Р·Р°РїРёСЃСЊ Рѕ Р·Р°РїСѓСЃРєРµ СЃРєР°РЅРёСЂРѕРІР°РЅРёСЏ
+func (db *DB) CreateScanRun(ctx context.Context, rootPath string) (int64, error) {
 	var id int64
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		INSERT INTO scan_runs (root_path, status) 
 		VALUES ($1, 'running') 
 		RETURNING id
@@ -11,10 +13,10 @@ func (db *DB) CreateScanRun(rootPath string) (int64, error) {
 	return id, err
 }
 
-// HasCompletedInit проверяет, была ли уже завершена первичная инициализация индекса.
-func (db *DB) HasCompletedInit() (bool, error) {
+// HasCompletedInit РїСЂРѕРІРµСЂСЏРµС‚, Р±С‹Р»Р° Р»Рё СѓР¶Рµ Р·Р°РІРµСЂС€РµРЅР° РїРµСЂРІРёС‡РЅР°СЏ РёРЅРёС†РёР°Р»РёР·Р°С†РёСЏ РёРЅРґРµРєСЃР°.
+func (db *DB) HasCompletedInit(ctx context.Context) (bool, error) {
 	var exists bool
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1
 			FROM scan_runs
@@ -27,9 +29,9 @@ func (db *DB) HasCompletedInit() (bool, error) {
 	return exists, nil
 }
 
-// UpdateScanRun обновляет статус сканирования
-func (db *DB) UpdateScanRun(id int64, filesScanned, filesIndexed, errorsCount int, status string) error {
-	_, err := db.Exec(`
+// UpdateScanRun РѕР±РЅРѕРІР»СЏРµС‚ СЃС‚Р°С‚СѓСЃ СЃРєР°РЅРёСЂРѕРІР°РЅРёСЏ
+func (db *DB) UpdateScanRun(ctx context.Context, id int64, filesScanned, filesIndexed, errorsCount int, status string) error {
+	_, err := db.execCtx(ctx, `
 		UPDATE scan_runs 
 		SET finished_at = NOW(),
 		    status = $4,

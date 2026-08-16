@@ -1,15 +1,16 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 )
 
-// GetStats возвращает статистику индекса
-func (db *DB) GetStats() (*Stats, error) {
+// GetStats РІРѕР·РІСЂР°С‰Р°РµС‚ СЃС‚Р°С‚РёСЃС‚РёРєСѓ РёРЅРґРµРєСЃР°
+func (db *DB) GetStats(ctx context.Context) (*Stats, error) {
 	stats := &Stats{}
 
-	if err := db.QueryRow(`
+	if err := db.QueryRowContext(ctx, `
 		SELECT
 			COUNT(*) AS total_files,
 			COUNT(*) FILTER (WHERE UPPER(extension) = 'SQL') AS sql_files,
@@ -74,7 +75,7 @@ func (db *DB) GetStats() (*Stats, error) {
 	}
 
 	for _, aggregate := range aggregates {
-		if err := db.QueryRow(aggregate.query).Scan(aggregate.target); err != nil {
+		if err := db.QueryRowContext(ctx, aggregate.query).Scan(aggregate.target); err != nil {
 			return nil, fmt.Errorf("failed to get %s count: %w", aggregate.name, err)
 		}
 	}
@@ -82,7 +83,7 @@ func (db *DB) GetStats() (*Stats, error) {
 	var finishedAt sql.NullTime
 	var status sql.NullString
 	var errorsCount sql.NullInt64
-	if err := db.QueryRow(`
+	if err := db.QueryRowContext(ctx, `
 		SELECT id, started_at, finished_at, status, errors_count
 		FROM scan_runs
 		ORDER BY started_at DESC, id DESC

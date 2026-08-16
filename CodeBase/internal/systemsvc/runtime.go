@@ -1,6 +1,7 @@
 package systemsvc
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/codebase/internal/config"
@@ -32,7 +33,7 @@ func ExecuteHealth(db *store.DB) (HealthResult, error) {
 	result.Checks = append(result.Checks, HealthCheck{Name: "database", Status: "ok"})
 	result.Checks = append(result.Checks, HealthCheck{Name: "schema", Status: "ok"})
 
-	hasIndex, err := db.HasCompletedInit()
+	hasIndex, err := db.HasCompletedInit(context.Background())
 	if err != nil {
 		return result, fmt.Errorf("failed to inspect index readiness: %w", err)
 	}
@@ -56,7 +57,7 @@ func ExecuteStats(db *store.DB) (*store.Stats, error) {
 		return nil, fmt.Errorf("config not loaded")
 	}
 
-	stats, err := db.GetStats()
+	stats, err := db.GetStats(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get stats: %w", err)
 	}

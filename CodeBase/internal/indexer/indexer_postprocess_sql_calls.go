@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -15,7 +16,7 @@ func (idx *Indexer) postProcessSQLProcedureCallRelations(collector *statsCollect
 	}
 
 	calleeNames := collectUniqueSQLCallCalleeNames(pending)
-	targetIDs, err := idx.db.FindLatestSQLProcedureIDsByNames(calleeNames)
+	targetIDs, err := idx.db.FindLatestSQLProcedureIDsByNames(context.Background(), calleeNames)
 	if err != nil {
 		idx.logError("<post-processing>", "Error resolving SQL procedure call targets: %v", err)
 		collector.Add(func(stats *model.ScanStats) {

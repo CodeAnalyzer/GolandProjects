@@ -3,6 +3,7 @@
 package store_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 func insertScanAndFile(t *testing.T, db *store.DB) (scanID, fileID int64) {
 	t.Helper()
 	var err error
-	scanID, err = db.CreateScanRun(t.TempDir())
+	scanID, err = db.CreateScanRun(context.Background(), t.TempDir())
 	if err != nil {
 		t.Fatalf("CreateScanRun: %v", err)
 	}
@@ -33,7 +34,7 @@ func TestBatchInsertSQLProceduresAndLookup(t *testing.T) {
 	db := testutil.Open(t)
 	_, fileID := insertScanAndFile(t, db)
 
-	if err := db.BatchInsertSQLProcedures(nil, 100); err != nil {
+	if err := db.BatchInsertSQLProcedures(context.Background(), nil, 100); err != nil {
 		t.Fatalf("empty batch: %v", err)
 	}
 
@@ -42,11 +43,11 @@ func TestBatchInsertSQLProceduresAndLookup(t *testing.T) {
 		{FileID: fileID, ProcName: "CallerA", LineStart: 1, LineEnd: 10, BodyHash: "h1"},
 		{FileID: fileID, ProcName: invalidName, LineStart: 11, LineEnd: 20, BodyHash: "h2"},
 	}
-	if err := db.BatchInsertSQLProcedures(procs, 100); err != nil {
+	if err := db.BatchInsertSQLProcedures(context.Background(), procs, 100); err != nil {
 		t.Fatalf("BatchInsertSQLProcedures: %v", err)
 	}
 
-	ids, err := db.FindLatestSQLProcedureIDsByNames([]string{"callera", "CalleeB"})
+	ids, err := db.FindLatestSQLProcedureIDsByNames(context.Background(), []string{"callera", "CalleeB"})
 	if err != nil {
 		t.Fatalf("FindLatestSQLProcedureIDsByNames: %v", err)
 	}
@@ -61,12 +62,12 @@ func TestWithBatchTx_SeesUncommittedInsert(t *testing.T) {
 
 	var seenID int64
 	err := db.WithBatchTx(func(txdb *store.DB) error {
-		if err := txdb.BatchInsertSQLProcedures([]*model.SQLProcedure{
+		if err := txdb.BatchInsertSQLProcedures(context.Background(), []*model.SQLProcedure{
 			{FileID: fileID, ProcName: "InTxProc", LineStart: 1, LineEnd: 2},
 		}, 100); err != nil {
 			return err
 		}
-		ids, err := txdb.FindLatestSQLProcedureIDsByNames([]string{"InTxProc"})
+		ids, err := txdb.FindLatestSQLProcedureIDsByNames(context.Background(), []string{"InTxProc"})
 		if err != nil {
 			return err
 		}
@@ -83,7 +84,7 @@ func TestWithBatchTx_SeesUncommittedInsert(t *testing.T) {
 
 func TestBatchInsertRelationsAndScanRun(t *testing.T) {
 	db := testutil.Open(t)
-	if err := db.BatchInsertRelations(nil, 100); err != nil {
+	if err := db.BatchInsertRelations(context.Background(), nil, 100); err != nil {
 		t.Fatalf("empty relations: %v", err)
 	}
 
@@ -91,10 +92,10 @@ func TestBatchInsertRelationsAndScanRun(t *testing.T) {
 		{SourceType: "sql_procedure", SourceID: 1, TargetType: "sql_procedure", TargetID: 2, RelationType: "calls_procedure", Confidence: "ast", LineNumber: 3},
 		{SourceType: "sql_procedure", SourceID: 1, TargetType: "sql_procedure", TargetID: 2, RelationType: "calls_procedure", Confidence: "ast", LineNumber: 3},
 	}
-	if err := db.BatchInsertRelations(rels, 100); err != nil {
+	if err := db.BatchInsertRelations(context.Background(), rels, 100); err != nil {
 		t.Fatalf("BatchInsertRelations: %v", err)
 	}
-	if err := db.BatchInsertRelations(rels, 100); err != nil {
+	if err := db.BatchInsertRelations(context.Background(), rels, 100); err != nil {
 		t.Fatalf("duplicate BatchInsertRelations: %v", err)
 	}
 
@@ -106,21 +107,21 @@ func TestBatchInsertRelationsAndScanRun(t *testing.T) {
 		t.Fatalf("relations count = %d, want 4 (no unique constraint)", count)
 	}
 
-	scanID, err := db.CreateScanRun("/tmp/root")
+	scanID, err := db.CreateScanRun(context.Background(), "/tmp/root")
 	if err != nil {
 		t.Fatalf("CreateScanRun: %v", err)
 	}
-	ok, err := db.HasCompletedInit()
+	ok, err := db.HasCompletedInit(context.Background())
 	if err != nil {
 		t.Fatalf("HasCompletedInit: %v", err)
 	}
 	if ok {
 		t.Fatal("running scan must not count as completed init")
 	}
-	if err := db.UpdateScanRun(scanID, 1, 1, 0, "completed"); err != nil {
+	if err := db.UpdateScanRun(context.Background(), scanID, 1, 1, 0, "completed"); err != nil {
 		t.Fatalf("UpdateScanRun: %v", err)
 	}
-	ok, err = db.HasCompletedInit()
+	ok, err = db.HasCompletedInit(context.Background())
 	if err != nil {
 		t.Fatalf("HasCompletedInit after update: %v", err)
 	}

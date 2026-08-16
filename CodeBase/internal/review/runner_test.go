@@ -17,7 +17,7 @@ func TestRunRuleTasks_SuccessAggregatesFindings(t *testing.T) {
 		}},
 	}
 
-	findings, err := runRuleTasks(tasks, 2, nil)
+	findings, err := runRuleTasks(context.Background(), tasks, 2, nil)
 	if err != nil {
 		t.Fatalf("runRuleTasks(...) unexpected error: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestRunRuleTasks_FirstErrorCancels(t *testing.T) {
 		}},
 	}
 
-	_, err := runRuleTasks(tasks, 2, nil)
+	_, err := runRuleTasks(context.Background(), tasks, 2, nil)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runRuleTasks(...) error = %v, want %v", err, wantErr)
 	}
@@ -527,7 +527,7 @@ func TestCachedFindColumnDefinitionType_CacheHit(t *testing.T) {
 	r := &Runner{colTypeCache: make(map[string]string)}
 
 	r.colTypeCache["mytable|mycol"] = "DSINT"
-	got, err := r.cachedFindColumnDefinitionType("MyTable", "MyCol")
+	got, err := r.cachedFindColumnDefinitionType(context.Background(), "MyTable", "MyCol")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -540,7 +540,7 @@ func TestCachedFindColumnDefinitionType_NegativeCache(t *testing.T) {
 	r := &Runner{colTypeCache: make(map[string]string)}
 
 	r.colTypeCache["notable|nocol"] = ""
-	got, err := r.cachedFindColumnDefinitionType("NoTable", "NoCol")
+	got, err := r.cachedFindColumnDefinitionType(context.Background(), "NoTable", "NoCol")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -577,7 +577,7 @@ func TestFileProcessedContent_ReadOnly(t *testing.T) {
 		},
 	}
 
-	got, err := r.fileProcessedContent(path)
+	got, err := r.fileProcessedContent(context.Background(), path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -595,7 +595,7 @@ func TestFileProcessedContent_ReadOnly(t *testing.T) {
 	// не должен пересчитывать и записывать exec.macroResult (источник гонки,
 	// т.к. правила вызывают его параллельно).
 	r.exec.macroResult = macroReplaceResult{Content: content}
-	if _, err := r.fileProcessedContent(path); err != nil {
+	if _, err := r.fileProcessedContent(context.Background(), path); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(r.exec.macroResult.SourceMap) != 0 {

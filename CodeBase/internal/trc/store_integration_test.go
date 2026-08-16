@@ -3,6 +3,7 @@
 package trc
 
 import (
+	"context"
 	"testing"
 
 	"github.com/codebase/internal/store/testutil"
@@ -32,14 +33,14 @@ func TestPruneAndDeleteTRCSessions(t *testing.T) {
 	id2 := insert("s2.trc")
 	id3 := insert("s3.trc")
 
-	deleted, err := PruneSessions(db, 1)
+	deleted, err := PruneSessions(context.Background(), db, 1)
 	if err != nil {
 		t.Fatalf("PruneSessions(1): %v", err)
 	}
 	if deleted != 2 {
 		t.Fatalf("deleted = %d, want 2", deleted)
 	}
-	sessions, err := ListSessions(db, 10)
+	sessions, err := ListSessions(context.Background(), db, 10)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -54,11 +55,11 @@ func TestPruneAndDeleteTRCSessions(t *testing.T) {
 		t.Fatalf("orphan events = %d", leftover)
 	}
 
-	if err := DeleteSession(db, id3); err != nil {
+	if err := DeleteSession(context.Background(), db, id3); err != nil {
 		t.Fatalf("DeleteSession: %v", err)
 	}
 	id4 := insert("s4.trc")
-	if err := DeleteSession(db, id3); err != nil {
+	if err := DeleteSession(context.Background(), db, id3); err != nil {
 		t.Fatalf("DeleteSession missing: %v", err)
 	}
 	var exists bool
@@ -69,7 +70,7 @@ func TestPruneAndDeleteTRCSessions(t *testing.T) {
 		t.Fatal("unrelated session was deleted")
 	}
 
-	n, err := PruneSessions(db, 0)
+	n, err := PruneSessions(context.Background(), db, 0)
 	if err != nil {
 		t.Fatalf("PruneSessions(0): %v", err)
 	}

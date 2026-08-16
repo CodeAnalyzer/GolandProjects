@@ -1,9 +1,11 @@
 package store
 
-// FindReportFormIDByFileAndLine возвращает id report form, диапазон которой включает строку.
-func (db *DB) FindReportFormIDByFileAndLine(fileID int64, lineNumber int) (int64, error) {
+import "context"
+
+// FindReportFormIDByFileAndLine РІРѕР·РІСЂР°С‰Р°РµС‚ id report form, РґРёР°РїР°Р·РѕРЅ РєРѕС‚РѕСЂРѕР№ РІРєР»СЋС‡Р°РµС‚ СЃС‚СЂРѕРєСѓ.
+func (db *DB) FindReportFormIDByFileAndLine(ctx context.Context, fileID int64, lineNumber int) (int64, error) {
 	var id int64
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT id
 		FROM report_forms
 		WHERE file_id = $1
@@ -19,9 +21,9 @@ func (db *DB) FindReportFormIDByFileAndLine(fileID int64, lineNumber int) (int64
 	return id, nil
 }
 
-// FindReportFieldIDsByForm возвращает id report fields по форме.
-func (db *DB) FindReportFieldIDsByForm(reportFormID int64) (map[string]int64, error) {
-	rows, err := db.Query(`
+// FindReportFieldIDsByForm РІРѕР·РІСЂР°С‰Р°РµС‚ id report fields РїРѕ С„РѕСЂРјРµ.
+func (db *DB) FindReportFieldIDsByForm(ctx context.Context, reportFormID int64) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, field_name, line_number
 		FROM report_fields
 		WHERE report_form_id = $1
@@ -48,9 +50,9 @@ func (db *DB) FindReportFieldIDsByForm(reportFormID int64) (map[string]int64, er
 	return result, rows.Err()
 }
 
-// FindReportParamIDsByForm возвращает id report params по форме.
-func (db *DB) FindReportParamIDsByForm(reportFormID int64) (map[string]int64, error) {
-	rows, err := db.Query(`
+// FindReportParamIDsByForm РІРѕР·РІСЂР°С‰Р°РµС‚ id report params РїРѕ С„РѕСЂРјРµ.
+func (db *DB) FindReportParamIDsByForm(ctx context.Context, reportFormID int64) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, param_name, line_number
 		FROM report_params
 		WHERE report_form_id = $1
@@ -77,9 +79,9 @@ func (db *DB) FindReportParamIDsByForm(reportFormID int64) (map[string]int64, er
 	return result, rows.Err()
 }
 
-// FindVBFunctionIDsByForm возвращает id VB functions по форме.
-func (db *DB) FindVBFunctionIDsByForm(reportFormID int64) (map[string]int64, error) {
-	rows, err := db.Query(`
+// FindVBFunctionIDsByForm РІРѕР·РІСЂР°С‰Р°РµС‚ id VB functions РїРѕ С„РѕСЂРјРµ.
+func (db *DB) FindVBFunctionIDsByForm(ctx context.Context, reportFormID int64) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, function_name, line_start
 		FROM vb_functions
 		WHERE report_form_id = $1

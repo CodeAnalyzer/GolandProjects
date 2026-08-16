@@ -1,16 +1,17 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/lib/pq"
 )
 
-// FindLatestPASClassIDByName возвращает последний id класса по имени.
-func (db *DB) FindLatestPASClassIDByName(className string) (int64, error) {
+// FindLatestPASClassIDByName РІРѕР·РІСЂР°С‰Р°РµС‚ РїРѕСЃР»РµРґРЅРёР№ id РєР»Р°СЃСЃР° РїРѕ РёРјРµРЅРё.
+func (db *DB) FindLatestPASClassIDByName(ctx context.Context, className string) (int64, error) {
 	var id int64
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT id
 		FROM pas_classes
 		WHERE LOWER(class_name) = LOWER($1)
@@ -24,9 +25,9 @@ func (db *DB) FindLatestPASClassIDByName(className string) (int64, error) {
 	return id, nil
 }
 
-// FindLatestPASClassIDsByNames возвращает map нижнего имени класса -> последний id.
-// Один SQL-запрос вместо N вызовов FindLatestPASClassIDByName.
-func (db *DB) FindLatestPASClassIDsByNames(classNames []string) (map[string]int64, error) {
+// FindLatestPASClassIDsByNames РІРѕР·РІСЂР°С‰Р°РµС‚ map РЅРёР¶РЅРµРіРѕ РёРјРµРЅРё РєР»Р°СЃСЃР° -> РїРѕСЃР»РµРґРЅРёР№ id.
+// РћРґРёРЅ SQL-Р·Р°РїСЂРѕСЃ РІРјРµСЃС‚Рѕ N РІС‹Р·РѕРІРѕРІ FindLatestPASClassIDByName.
+func (db *DB) FindLatestPASClassIDsByNames(ctx context.Context, classNames []string) (map[string]int64, error) {
 	normalized := make([]string, 0, len(classNames))
 	seen := make(map[string]struct{})
 	for _, name := range classNames {
@@ -44,7 +45,7 @@ func (db *DB) FindLatestPASClassIDsByNames(classNames []string) (map[string]int6
 	if len(normalized) == 0 {
 		return result, nil
 	}
-	rows, err := db.Query(`
+	rows, err := db.QueryContext(ctx, `
 		SELECT DISTINCT ON (class_key) class_key, id
 		FROM (
 			SELECT LOWER(class_name) AS class_key, id
@@ -68,9 +69,9 @@ func (db *DB) FindLatestPASClassIDsByNames(classNames []string) (map[string]int6
 	return result, rows.Err()
 }
 
-// FindPASFieldDFMLinkCandidates возвращает PAS поля, которые можно связать с DFM-компонентами через уже привязанный класс.
-func (db *DB) FindPASFieldDFMLinkCandidates() ([]PASFieldDFMLinkCandidate, error) {
-	rows, err := db.Query(`
+// FindPASFieldDFMLinkCandidates РІРѕР·РІСЂР°С‰Р°РµС‚ PAS РїРѕР»СЏ, РєРѕС‚РѕСЂС‹Рµ РјРѕР¶РЅРѕ СЃРІСЏР·Р°С‚СЊ СЃ DFM-РєРѕРјРїРѕРЅРµРЅС‚Р°РјРё С‡РµСЂРµР· СѓР¶Рµ РїСЂРёРІСЏР·Р°РЅРЅС‹Р№ РєР»Р°СЃСЃ.
+func (db *DB) FindPASFieldDFMLinkCandidates(ctx context.Context) ([]PASFieldDFMLinkCandidate, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT pf.id, pf.field_name, pc.dfm_form_id
 		FROM pas_fields pf
 		JOIN pas_classes pc ON pf.class_id = pc.id
@@ -95,9 +96,9 @@ func (db *DB) FindPASFieldDFMLinkCandidates() ([]PASFieldDFMLinkCandidate, error
 	return result, rows.Err()
 }
 
-// FindPASUnitIDsByFile возвращает id PAS юнитов файла по имени и line_start.
-func (db *DB) FindPASUnitIDsByFile(fileID int64) (map[string]int64, error) {
-	rows, err := db.Query(`
+// FindPASUnitIDsByFile РІРѕР·РІСЂР°С‰Р°РµС‚ id PAS СЋРЅРёС‚РѕРІ С„Р°Р№Р»Р° РїРѕ РёРјРµРЅРё Рё line_start.
+func (db *DB) FindPASUnitIDsByFile(ctx context.Context, fileID int64) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, unit_name, line_start
 		FROM pas_units
 		WHERE file_id = $1
@@ -128,9 +129,9 @@ func (db *DB) FindPASUnitIDsByFile(fileID int64) (map[string]int64, error) {
 	return result, nil
 }
 
-// FindPASClassIDsByUnit возвращает id PAS классов юнита по имени и line_start.
-func (db *DB) FindPASClassIDsByUnit(unitID int64) (map[string]int64, error) {
-	rows, err := db.Query(`
+// FindPASClassIDsByUnit РІРѕР·РІСЂР°С‰Р°РµС‚ id PAS РєР»Р°СЃСЃРѕРІ СЋРЅРёС‚Р° РїРѕ РёРјРµРЅРё Рё line_start.
+func (db *DB) FindPASClassIDsByUnit(ctx context.Context, unitID int64) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, class_name, line_start
 		FROM pas_classes
 		WHERE unit_id = $1
@@ -161,9 +162,9 @@ func (db *DB) FindPASClassIDsByUnit(unitID int64) (map[string]int64, error) {
 	return result, nil
 }
 
-// FindPASMethodIDsByUnit возвращает id PAS методов юнита по классу/имени/строке.
-func (db *DB) FindPASMethodIDsByUnit(unitID int64) (map[string]int64, error) {
-	rows, err := db.Query(`
+// FindPASMethodIDsByUnit РІРѕР·РІСЂР°С‰Р°РµС‚ id PAS РјРµС‚РѕРґРѕРІ СЋРЅРёС‚Р° РїРѕ РєР»Р°СЃСЃСѓ/РёРјРµРЅРё/СЃС‚СЂРѕРєРµ.
+func (db *DB) FindPASMethodIDsByUnit(ctx context.Context, unitID int64) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT pm.id, COALESCE(pc.class_name, ''), pm.method_name, pm.line_number
 		FROM pas_methods pm
 		LEFT JOIN pas_classes pc ON pm.class_id = pc.id
@@ -196,9 +197,9 @@ func (db *DB) FindPASMethodIDsByUnit(unitID int64) (map[string]int64, error) {
 	return result, nil
 }
 
-// FindPASFieldIDsByClassNames возвращает id PAS полей файла по классу/имени/строке.
-func (db *DB) FindPASFieldIDsByUnit(unitID int64) (map[string]int64, error) {
-	rows, err := db.Query(`
+// FindPASFieldIDsByClassNames РІРѕР·РІСЂР°С‰Р°РµС‚ id PAS РїРѕР»РµР№ С„Р°Р№Р»Р° РїРѕ РєР»Р°СЃСЃСѓ/РёРјРµРЅРё/СЃС‚СЂРѕРєРµ.
+func (db *DB) FindPASFieldIDsByUnit(ctx context.Context, unitID int64) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT pf.id, COALESCE(pc.class_name, ''), pf.field_name, pf.line_number
 		FROM pas_fields pf
 		LEFT JOIN pas_classes pc ON pf.class_id = pc.id
@@ -232,9 +233,9 @@ func (db *DB) FindPASFieldIDsByUnit(unitID int64) (map[string]int64, error) {
 	return result, nil
 }
 
-// UpdatePASClassDFMForm обновляет dfm_form_id у PAS класса.
-func (db *DB) UpdatePASClassDFMForm(classID int64, dfmFormID int64) error {
-	_, err := db.Exec(`UPDATE pas_classes SET dfm_form_id = $1 WHERE id = $2`, NullableInt64(dfmFormID), classID)
+// UpdatePASClassDFMForm РѕР±РЅРѕРІР»СЏРµС‚ dfm_form_id Сѓ PAS РєР»Р°СЃСЃР°.
+func (db *DB) UpdatePASClassDFMForm(ctx context.Context, classID int64, dfmFormID int64) error {
+	_, err := db.execCtx(ctx, `UPDATE pas_classes SET dfm_form_id = $1 WHERE id = $2`, NullableInt64(dfmFormID), classID)
 	if err != nil {
 		return fmt.Errorf("failed to update pas class dfm form: %w", err)
 	}
@@ -242,9 +243,9 @@ func (db *DB) UpdatePASClassDFMForm(classID int64, dfmFormID int64) error {
 	return nil
 }
 
-// UpdatePASFieldDFMComponent обновляет dfm_component_id у PAS поля.
-func (db *DB) UpdatePASFieldDFMComponent(fieldID int64, dfmComponentID int64) error {
-	_, err := db.Exec(`UPDATE pas_fields SET dfm_component_id = $1 WHERE id = $2`, NullableInt64(dfmComponentID), fieldID)
+// UpdatePASFieldDFMComponent РѕР±РЅРѕРІР»СЏРµС‚ dfm_component_id Сѓ PAS РїРѕР»СЏ.
+func (db *DB) UpdatePASFieldDFMComponent(ctx context.Context, fieldID int64, dfmComponentID int64) error {
+	_, err := db.execCtx(ctx, `UPDATE pas_fields SET dfm_component_id = $1 WHERE id = $2`, NullableInt64(dfmComponentID), fieldID)
 	if err != nil {
 		return fmt.Errorf("failed to update pas field dfm component: %w", err)
 	}
@@ -257,9 +258,9 @@ type UnlinkedPASClass struct {
 	ClassName string
 }
 
-// FindUnlinkedPASClasses возвращает PAS классы без привязанной DFM формы.
-func (db *DB) FindUnlinkedPASClasses() ([]UnlinkedPASClass, error) {
-	rows, err := db.Query(`
+// FindUnlinkedPASClasses РІРѕР·РІСЂР°С‰Р°РµС‚ PAS РєР»Р°СЃСЃС‹ Р±РµР· РїСЂРёРІСЏР·Р°РЅРЅРѕР№ DFM С„РѕСЂРјС‹.
+func (db *DB) FindUnlinkedPASClasses(ctx context.Context) ([]UnlinkedPASClass, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, class_name
 		FROM pas_classes
 		WHERE dfm_form_id IS NULL
@@ -288,27 +289,27 @@ type PASFieldDFMLinkCandidate struct {
 	DFMFormID int64
 }
 
-// UpdatePASMethodClass обновляет class_id у PAS метода.
-func (db *DB) UpdatePASMethodClass(methodID int64, classID int64) error {
-	_, err := db.Exec(`UPDATE pas_methods SET class_id = $1 WHERE id = $2`, classID, methodID)
+// UpdatePASMethodClass РѕР±РЅРѕРІР»СЏРµС‚ class_id Сѓ PAS РјРµС‚РѕРґР°.
+func (db *DB) UpdatePASMethodClass(ctx context.Context, methodID int64, classID int64) error {
+	_, err := db.execCtx(ctx, `UPDATE pas_methods SET class_id = $1 WHERE id = $2`, classID, methodID)
 	if err != nil {
 		return fmt.Errorf("failed to update pas method class: %w", err)
 	}
 	return nil
 }
 
-// UpdatePASFieldClass обновляет class_id у PAS поля.
-func (db *DB) UpdatePASFieldClass(fieldID int64, classID int64) error {
-	_, err := db.Exec(`UPDATE pas_fields SET class_id = $1 WHERE id = $2`, classID, fieldID)
+// UpdatePASFieldClass РѕР±РЅРѕРІР»СЏРµС‚ class_id Сѓ PAS РїРѕР»СЏ.
+func (db *DB) UpdatePASFieldClass(ctx context.Context, fieldID int64, classID int64) error {
+	_, err := db.execCtx(ctx, `UPDATE pas_fields SET class_id = $1 WHERE id = $2`, classID, fieldID)
 	if err != nil {
 		return fmt.Errorf("failed to update pas field class: %w", err)
 	}
 	return nil
 }
 
-// BatchUpdatePASClassDFMForm пакетно обновляет dfm_form_id у PAS классов.
-// pairs — (classID, dfmFormID).
-func (db *DB) BatchUpdatePASClassDFMForm(pairs []PASUpdatePair) error {
+// BatchUpdatePASClassDFMForm РїР°РєРµС‚РЅРѕ РѕР±РЅРѕРІР»СЏРµС‚ dfm_form_id Сѓ PAS РєР»Р°СЃСЃРѕРІ.
+// pairs вЂ” (classID, dfmFormID).
+func (db *DB) BatchUpdatePASClassDFMForm(ctx context.Context, pairs []PASUpdatePair) error {
 	if len(pairs) == 0 {
 		return nil
 	}
@@ -325,7 +326,7 @@ func (db *DB) BatchUpdatePASClassDFMForm(pairs []PASUpdatePair) error {
 			ids[j] = p.ID
 			values[j] = p.ValueID
 		}
-		if _, err := db.Exec(`
+		if _, err := db.execCtx(ctx, `
 			UPDATE pas_classes c
 			SET dfm_form_id = v.dfm_form_id
 			FROM unnest($1::bigint[], $2::bigint[]) AS v(id, dfm_form_id)
@@ -337,8 +338,8 @@ func (db *DB) BatchUpdatePASClassDFMForm(pairs []PASUpdatePair) error {
 	return nil
 }
 
-// BatchUpdatePASMethodClass пакетно обновляет class_id у PAS методов.
-func (db *DB) BatchUpdatePASMethodClass(pairs []PASUpdatePair) error {
+// BatchUpdatePASMethodClass РїР°РєРµС‚РЅРѕ РѕР±РЅРѕРІР»СЏРµС‚ class_id Сѓ PAS РјРµС‚РѕРґРѕРІ.
+func (db *DB) BatchUpdatePASMethodClass(ctx context.Context, pairs []PASUpdatePair) error {
 	if len(pairs) == 0 {
 		return nil
 	}
@@ -355,7 +356,7 @@ func (db *DB) BatchUpdatePASMethodClass(pairs []PASUpdatePair) error {
 			ids[j] = p.ID
 			classIDs[j] = p.ValueID
 		}
-		if _, err := db.Exec(`
+		if _, err := db.execCtx(ctx, `
 			UPDATE pas_methods m
 			SET class_id = v.class_id
 			FROM unnest($1::bigint[], $2::bigint[]) AS v(id, class_id)
@@ -367,8 +368,8 @@ func (db *DB) BatchUpdatePASMethodClass(pairs []PASUpdatePair) error {
 	return nil
 }
 
-// BatchUpdatePASFieldClass пакетно обновляет class_id у PAS полей.
-func (db *DB) BatchUpdatePASFieldClass(pairs []PASUpdatePair) error {
+// BatchUpdatePASFieldClass РїР°РєРµС‚РЅРѕ РѕР±РЅРѕРІР»СЏРµС‚ class_id Сѓ PAS РїРѕР»РµР№.
+func (db *DB) BatchUpdatePASFieldClass(ctx context.Context, pairs []PASUpdatePair) error {
 	if len(pairs) == 0 {
 		return nil
 	}
@@ -385,7 +386,7 @@ func (db *DB) BatchUpdatePASFieldClass(pairs []PASUpdatePair) error {
 			ids[j] = p.ID
 			classIDs[j] = p.ValueID
 		}
-		if _, err := db.Exec(`
+		if _, err := db.execCtx(ctx, `
 			UPDATE pas_fields f
 			SET class_id = v.class_id
 			FROM unnest($1::bigint[], $2::bigint[]) AS v(id, class_id)
@@ -397,8 +398,8 @@ func (db *DB) BatchUpdatePASFieldClass(pairs []PASUpdatePair) error {
 	return nil
 }
 
-// BatchUpdatePASFieldDFMComponent пакетно обновляет dfm_component_id у PAS полей.
-func (db *DB) BatchUpdatePASFieldDFMComponent(pairs []PASUpdatePair) error {
+// BatchUpdatePASFieldDFMComponent РїР°РєРµС‚РЅРѕ РѕР±РЅРѕРІР»СЏРµС‚ dfm_component_id Сѓ PAS РїРѕР»РµР№.
+func (db *DB) BatchUpdatePASFieldDFMComponent(ctx context.Context, pairs []PASUpdatePair) error {
 	if len(pairs) == 0 {
 		return nil
 	}
@@ -415,7 +416,7 @@ func (db *DB) BatchUpdatePASFieldDFMComponent(pairs []PASUpdatePair) error {
 			ids[j] = p.ID
 			componentIDs[j] = p.ValueID
 		}
-		if _, err := db.Exec(`
+		if _, err := db.execCtx(ctx, `
 			UPDATE pas_fields f
 			SET dfm_component_id = v.component_id
 			FROM unnest($1::bigint[], $2::bigint[]) AS v(id, component_id)
@@ -427,7 +428,7 @@ func (db *DB) BatchUpdatePASFieldDFMComponent(pairs []PASUpdatePair) error {
 	return nil
 }
 
-// PASUpdatePair — пара (ID, ValueID) для batch UPDATE.
+// PASUpdatePair вЂ” РїР°СЂР° (ID, ValueID) РґР»СЏ batch UPDATE.
 type PASUpdatePair struct {
 	ID      int64
 	ValueID int64

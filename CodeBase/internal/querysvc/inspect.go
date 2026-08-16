@@ -1,6 +1,7 @@
 package querysvc
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -15,13 +16,13 @@ type InspectResult struct {
 	Neighbors []query.SymbolResult   `json:"neighbors,omitempty"`
 }
 
-func RunInspectQuery(q *query.Query, name string, symbolType string, limit int) ([]InspectResult, error) {
-	symbols, err := q.SearchSymbol(name, symbolType, false, limit)
+func RunInspectQuery(ctx context.Context, q *query.Query, name string, symbolType string, limit int) ([]InspectResult, error) {
+	symbols, err := q.SearchSymbol(ctx, name, symbolType, false, limit)
 	if err != nil {
 		return nil, err
 	}
 	if len(symbols) == 0 {
-		symbols, err = q.SearchSymbol(name, symbolType, true, limit)
+		symbols, err = q.SearchSymbol(ctx, name, symbolType, true, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -31,11 +32,11 @@ func RunInspectQuery(q *query.Query, name string, symbolType string, limit int) 
 	results := make([]InspectResult, 0, len(ordered))
 	for _, symbol := range ordered {
 		relationType := InspectRelationType(symbol)
-		outgoing, err := q.SearchRelationsByEntity(relationType, symbol.EntityID, "", 0, "", limit)
+		outgoing, err := q.SearchRelationsByEntity(ctx, relationType, symbol.EntityID, "", 0, "", limit)
 		if err != nil && !strings.Contains(err.Error(), "at least one relation filter must be provided") {
 			return nil, err
 		}
-		incoming, err := q.SearchRelationsByEntity("", 0, relationType, symbol.EntityID, "", limit)
+		incoming, err := q.SearchRelationsByEntity(ctx, "", 0, relationType, symbol.EntityID, "", limit)
 		if err != nil && !strings.Contains(err.Error(), "at least one relation filter must be provided") {
 			return nil, err
 		}

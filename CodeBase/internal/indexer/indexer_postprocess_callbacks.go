@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -9,7 +10,7 @@ import (
 )
 
 func (idx *Indexer) postProcessCallbackEventRelations(collector *statsCollector) {
-	callbacks, err := idx.db.FindAPIContractsByKind("callback_event")
+	callbacks, err := idx.db.FindAPIContractsByKind(context.Background(), "callback_event")
 	if err != nil {
 		idx.logError("<post-processing>", "Error loading callback_event contracts: %v", err)
 		collector.Add(func(stats *model.ScanStats) {
@@ -30,7 +31,7 @@ func (idx *Indexer) postProcessCallbackEventRelations(collector *statsCollector)
 		}
 	}
 
-	lookup, err := idx.db.FindLatestEventContractIDsByNames(eventNames)
+	lookup, err := idx.db.FindLatestEventContractIDsByNames(context.Background(), eventNames)
 	if err != nil {
 		idx.logError("<post-processing>", "Error batch-loading event contracts: %v", err)
 		collector.Add(func(stats *model.ScanStats) {

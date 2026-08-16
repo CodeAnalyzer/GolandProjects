@@ -3,6 +3,7 @@
 package indexer
 
 import (
+	"context"
 	"io"
 	"log"
 	"os"
@@ -83,7 +84,7 @@ func TestInitMiniTree_BuildsCallsAndCallbacks(t *testing.T) {
 		t.Fatalf("Init errors = %d", stats.Errors)
 	}
 
-	ids, err := idx.db.FindLatestSQLProcedureIDsByNames([]string{"CallerA", "CalleeB"})
+	ids, err := idx.db.FindLatestSQLProcedureIDsByNames(context.Background(), []string{"CallerA", "CalleeB"})
 	if err != nil {
 		t.Fatalf("lookup procs: %v", err)
 	}
@@ -138,7 +139,7 @@ func TestUpdateOnlyModified_RebuildsStableRelations(t *testing.T) {
 	if _, err := idx.Update(root, true, 1); err != nil {
 		t.Fatalf("Update modified: %v", err)
 	}
-	ids2, err := idx.db.FindLatestSQLProcedureIDsByNames([]string{"CallerA"})
+	ids2, err := idx.db.FindLatestSQLProcedureIDsByNames(context.Background(), []string{"CallerA"})
 	if err != nil {
 		t.Fatalf("lookup after modify: %v", err)
 	}

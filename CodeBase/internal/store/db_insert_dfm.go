@@ -1,20 +1,21 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 
 	"github.com/codebase/internal/model"
 	"github.com/lib/pq"
 )
 
-// BatchInsertDFMComponents пакетная вставка DFM компонентов
-func (db *DB) BatchInsertDFMComponents(components []*model.DFMComponent, batchSize int) error {
+// BatchInsertDFMComponents РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° DFM РєРѕРјРїРѕРЅРµРЅС‚РѕРІ
+func (db *DB) BatchInsertDFMComponents(ctx context.Context, components []*model.DFMComponent, batchSize int) error {
 	if len(components) == 0 {
 		return nil
 	}
 
 	if len(components) <= batchSize {
-		return db.insertDFMComponentsBatch(components)
+		return db.insertDFMComponentsBatch(ctx, components)
 	}
 
 	for i := 0; i < len(components); i += batchSize {
@@ -24,19 +25,19 @@ func (db *DB) BatchInsertDFMComponents(components []*model.DFMComponent, batchSi
 		}
 
 		batch := components[i:end]
-		if err := db.insertDFMComponentsBatch(batch); err != nil {
+		if err := db.insertDFMComponentsBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (db *DB) insertDFMComponentsBatch(components []*model.DFMComponent) error {
+func (db *DB) insertDFMComponentsBatch(ctx context.Context, components []*model.DFMComponent) error {
 	if len(components) == 0 {
 		return nil
 	}
 
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("dfm_components", "file_id", "form_id", "component_name", "component_type", "parent_name", "caption", "line_start", "line_end"))
 		if err != nil {
 			return err
@@ -64,14 +65,14 @@ func (db *DB) insertDFMComponentsBatch(components []*model.DFMComponent) error {
 	})
 }
 
-// BatchInsertDFMForms пакетная вставка DFM форм
-func (db *DB) BatchInsertDFMForms(forms []*model.DFMForm, batchSize int) error {
+// BatchInsertDFMForms РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° DFM С„РѕСЂРј
+func (db *DB) BatchInsertDFMForms(ctx context.Context, forms []*model.DFMForm, batchSize int) error {
 	if len(forms) == 0 {
 		return nil
 	}
 
 	if len(forms) <= batchSize {
-		return db.insertDFMFormsBatch(forms)
+		return db.insertDFMFormsBatch(ctx, forms)
 	}
 
 	for i := 0; i < len(forms); i += batchSize {
@@ -81,19 +82,19 @@ func (db *DB) BatchInsertDFMForms(forms []*model.DFMForm, batchSize int) error {
 		}
 
 		batch := forms[i:end]
-		if err := db.insertDFMFormsBatch(batch); err != nil {
+		if err := db.insertDFMFormsBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (db *DB) insertDFMFormsBatch(forms []*model.DFMForm) error {
+func (db *DB) insertDFMFormsBatch(ctx context.Context, forms []*model.DFMForm) error {
 	if len(forms) == 0 {
 		return nil
 	}
 
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("dfm_forms", "file_id", "form_name", "form_class", "caption", "line_start", "line_end"))
 		if err != nil {
 			return err

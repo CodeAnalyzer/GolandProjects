@@ -1,20 +1,21 @@
 package store
 
 import (
+	"context"
 	"strconv"
 	"strings"
 
 	"github.com/codebase/internal/model"
 )
 
-// BatchInsertRetCodes пакетная вставка return code записей
-func (db *DB) BatchInsertRetCodes(entries []*model.RetCodeEntry, batchSize int) error {
+// BatchInsertRetCodes РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° return code Р·Р°РїРёСЃРµР№
+func (db *DB) BatchInsertRetCodes(ctx context.Context, entries []*model.RetCodeEntry, batchSize int) error {
 	if len(entries) == 0 {
 		return nil
 	}
 
 	if len(entries) <= batchSize {
-		return db.insertRetCodesBatch(entries)
+		return db.insertRetCodesBatch(ctx, entries)
 	}
 
 	for i := 0; i < len(entries); i += batchSize {
@@ -24,19 +25,19 @@ func (db *DB) BatchInsertRetCodes(entries []*model.RetCodeEntry, batchSize int) 
 		}
 
 		batch := entries[i:end]
-		if err := db.insertRetCodesBatch(batch); err != nil {
+		if err := db.insertRetCodesBatch(ctx, batch); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (db *DB) insertRetCodesBatch(entries []*model.RetCodeEntry) error {
+func (db *DB) insertRetCodesBatch(ctx context.Context, entries []*model.RetCodeEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
 
-	// Дедуплицируем по ret_code, оставляя последнее вхождение
+	// Р”РµРґСѓРїР»РёС†РёСЂСѓРµРј РїРѕ ret_code, РѕСЃС‚Р°РІР»СЏСЏ РїРѕСЃР»РµРґРЅРµРµ РІС…РѕР¶РґРµРЅРёРµ
 	seen := make(map[int64]int, len(entries))
 	for i, e := range entries {
 		seen[e.RetCode] = i
@@ -77,6 +78,6 @@ func (db *DB) insertRetCodesBatch(entries []*model.RetCodeEntry) error {
 	}
 	sb.WriteString(` ON CONFLICT (ret_code) DO UPDATE SET file_id=EXCLUDED.file_id, message=EXCLUDED.message, proc_name=EXCLUDED.proc_name, module_id=EXCLUDED.module_id`)
 
-	_, err := db.exec(sb.String(), args...)
+	_, err := db.execCtx(ctx, sb.String(), args...)
 	return err
 }

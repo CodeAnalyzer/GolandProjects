@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -48,14 +49,14 @@ var (
 	reWhitespace         = regexp.MustCompile(`\s+`)
 )
 
-func (r *Runner) checkForeignTables(parsed *sqlparser.ParseResult, file *indexedFile, prefix string) ([]Finding, error) {
+func (r *Runner) checkForeignTables(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile, prefix string) ([]Finding, error) {
 	tables := dedupeTableRefs(parsed.Tables, prefix)
 	findings := make([]Finding, 0)
 	for _, table := range tables {
 		if strings.EqualFold(prefix, "t") && isSharedTTable(table.Name) {
 			continue
 		}
-		targetProductIDs := r.cachedLookupTableProductIDs(table.Name)
+		targetProductIDs := r.cachedLookupTableProductIDs(ctx, table.Name)
 		if len(targetProductIDs) == 0 {
 			continue
 		}
@@ -85,18 +86,18 @@ func (r *Runner) checkForeignTables(parsed *sqlparser.ParseResult, file *indexed
 	return findings, nil
 }
 
-func (r *Runner) checkDatatypeFetchInto(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkDatatypeFetchInto(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	seen := make(map[string]struct{})
 
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
 
 	contentStr := string(content)
 	variableTypes := collectVariableTypes(parsed, contentStr)
-	r.enrichVariableTypesFromAPI(variableTypes, parsed, contentStr)
+	r.enrichVariableTypesFromAPI(ctx, variableTypes, parsed, contentStr)
 	cursorDeclarations := parseCursorDeclarations(contentStr)
 	if len(cursorDeclarations) == 0 {
 		return findings, nil
@@ -144,7 +145,7 @@ func (r *Runner) checkDatatypeFetchInto(parsed *sqlparser.ParseResult, file *ind
 				continue
 			}
 
-			sourceTypes := r.resolveCursorSourceTypes(sourceExpr, aliasMap, defaultTable)
+			sourceTypes := r.resolveCursorSourceTypes(ctx, sourceExpr, aliasMap, defaultTable)
 			for _, sourceType := range sourceTypes {
 				if !isPotentialPrecisionLoss(sourceType, targetType) {
 					continue
@@ -170,16 +171,16 @@ func (r *Runner) checkDatatypeFetchInto(parsed *sqlparser.ParseResult, file *ind
 	return findings, nil
 }
 
-func (r *Runner) checkDatatypeSelectAssign(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkDatatypeSelectAssign(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	seen := make(map[string]struct{})
 
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
 	variableTypes := collectVariableTypes(parsed, string(content))
-	r.enrichVariableTypesFromAPI(variableTypes, parsed, string(content))
+	r.enrichVariableTypesFromAPI(ctx, variableTypes, parsed, string(content))
 
 	for _, fragment := range parsed.Fragments {
 		if fragment == nil {
@@ -202,11 +203,11 @@ func (r *Runner) checkDatatypeSelectAssign(parsed *sqlparser.ParseResult, file *
 				continue
 			}
 
-			sourceTypes := r.resolveExpressionTypes(assignment.Expression, aliasMap)
+			sourceTypes := r.resolveExpressionTypes(ctx, assignment.Expression, aliasMap)
 			// Fallback: если resolveExpressionTypes не нашёл table.column ссылок,
 			// пробуем resolveArgType (он умеет разбирать переменные и арифметику)
 			if len(sourceTypes) == 0 {
-				if argType := r.resolveArgType(assignment.Expression, variableTypes, aliasMap); argType != "" {
+				if argType := r.resolveArgType(ctx, assignment.Expression, variableTypes, aliasMap); argType != "" {
 					sourceTypes = []string{argType}
 				}
 			}
@@ -239,10 +240,10 @@ func (r *Runner) checkDatatypeSelectAssign(parsed *sqlparser.ParseResult, file *
 	return findings, nil
 }
 
-func (r *Runner) checkIndexWrong(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkIndexWrong(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +319,7 @@ func (r *Runner) checkIndexWrong(file *indexedFile) ([]Finding, error) {
 		parenDepth += countParensRespectingStrings(line)
 
 		if hasStatementEnded(lower, stmtBuffer) {
-			items, err := r.analyzeStatementForIndexWrong(stmtBuffer, stmtStartLine, file)
+			items, err := r.analyzeStatementForIndexWrong(ctx, stmtBuffer, stmtStartLine, file)
 			if err != nil {
 				return nil, err
 			}
@@ -330,7 +331,7 @@ func (r *Runner) checkIndexWrong(file *indexedFile) ([]Finding, error) {
 	}
 
 	if inStatement && len(stmtBuffer) > 0 {
-		items, err := r.analyzeStatementForIndexWrong(stmtBuffer, stmtStartLine, file)
+		items, err := r.analyzeStatementForIndexWrong(ctx, stmtBuffer, stmtStartLine, file)
 		if err != nil {
 			return nil, err
 		}
@@ -340,7 +341,7 @@ func (r *Runner) checkIndexWrong(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) analyzeStatementForIndexWrong(lines []string, startLine int, file *indexedFile) ([]Finding, error) {
+func (r *Runner) analyzeStatementForIndexWrong(ctx context.Context, lines []string, startLine int, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	if len(lines) == 0 {
 		return findings, nil
@@ -390,7 +391,7 @@ func (r *Runner) analyzeStatementForIndexWrong(lines []string, startLine int, fi
 		}
 		joinCols := joinColumns[tableConditionKey(table)]
 
-		candidates, err := r.lookupTableIndexCandidates(tableName)
+		candidates, err := r.lookupTableIndexCandidates(ctx, tableName)
 		if err != nil {
 			return nil, err
 		}
@@ -459,10 +460,10 @@ func (r *Runner) analyzeStatementForIndexWrong(lines []string, startLine int, fi
 	return findings, nil
 }
 
-func (r *Runner) checkUpdateOnlyVar(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkUpdateOnlyVar(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -650,10 +651,10 @@ func analyzeStatementForUpdateOnlyVar(lines []string, startLine int, file *index
 	return nil
 }
 
-func (r *Runner) checkPTableSpid(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkPTableSpid(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	macroResult, err := r.fileProcessedContent(file.Path)
+	macroResult, err := r.fileProcessedContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -730,7 +731,7 @@ func (r *Runner) checkPTableSpid(file *indexedFile) ([]Finding, error) {
 		parenDepth += countParensRespectingStrings(line)
 
 		if hasStatementEnded(lower, stmtBuffer) {
-			items, err := r.analyzeStatementForPTableSpid(stmtBuffer, stmtStartLine, file)
+			items, err := r.analyzeStatementForPTableSpid(ctx, stmtBuffer, stmtStartLine, file)
 			if err != nil {
 				return nil, err
 			}
@@ -742,7 +743,7 @@ func (r *Runner) checkPTableSpid(file *indexedFile) ([]Finding, error) {
 	}
 
 	if inStatement && len(stmtBuffer) > 0 {
-		items, err := r.analyzeStatementForPTableSpid(stmtBuffer, stmtStartLine, file)
+		items, err := r.analyzeStatementForPTableSpid(ctx, stmtBuffer, stmtStartLine, file)
 		if err != nil {
 			return nil, err
 		}
@@ -752,7 +753,8 @@ func (r *Runner) checkPTableSpid(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) analyzeStatementForPTableSpid(lines []string, startLine int, file *indexedFile) ([]Finding, error) {
+func (r *Runner) analyzeStatementForPTableSpid(ctx context.Context, lines []string, startLine int, file *indexedFile) ([]Finding, error) {
+	_ = ctx
 	findings := make([]Finding, 0)
 	if len(lines) == 0 {
 		return findings, nil
@@ -801,10 +803,10 @@ func (r *Runner) analyzeStatementForPTableSpid(lines []string, startLine int, fi
 	return findings, nil
 }
 
-func (r *Runner) checkForceOrder2Tbl(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkForceOrder2Tbl(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	macroResult, err := r.fileProcessedContent(file.Path)
+	macroResult, err := r.fileProcessedContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -937,10 +939,10 @@ func analyzeStatementForForceOrder2Tbl(lines []string, startLine int, file *inde
 	}
 }
 
-func (r *Runner) checkSaveTran(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkSaveTran(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1003,10 +1005,10 @@ func (r *Runner) checkSaveTran(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkUseDrop(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkUseDrop(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1089,10 +1091,10 @@ func (r *Runner) checkUseDrop(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkMathOperations(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkMathOperations(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1169,10 +1171,10 @@ func (r *Runner) checkMathOperations(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkExistsWithAndInIf(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkExistsWithAndInIf(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1280,10 +1282,10 @@ func (r *Runner) checkExistsWithAndInIf(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkIndexExistsInDB(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	macroResult, err := r.fileProcessedContent(file.Path)
+	macroResult, err := r.fileProcessedContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1360,7 +1362,7 @@ func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
 		parenDepth += countParensRespectingStrings(line)
 
 		if hasStatementEnded(lower, stmtBuffer) {
-			items, err := r.analyzeStatementForIndexExists(stmtBuffer, stmtStartLine, file)
+			items, err := r.analyzeStatementForIndexExists(ctx, stmtBuffer, stmtStartLine, file)
 			if err != nil {
 				return nil, err
 			}
@@ -1372,7 +1374,7 @@ func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
 	}
 
 	if inStatement && len(stmtBuffer) > 0 {
-		items, err := r.analyzeStatementForIndexExists(stmtBuffer, stmtStartLine, file)
+		items, err := r.analyzeStatementForIndexExists(ctx, stmtBuffer, stmtStartLine, file)
 		if err != nil {
 			return nil, err
 		}
@@ -1380,7 +1382,7 @@ func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
 	}
 
 	// Проверка индексов для макросов M_DELETE_PTABLE*
-	ptableFindings, err := r.checkDeletePtableMacros(lines, macroResult.SourceMap, file)
+	ptableFindings, err := r.checkDeletePtableMacros(ctx, lines, macroResult.SourceMap, file)
 	if err != nil {
 		return nil, err
 	}
@@ -1389,7 +1391,7 @@ func (r *Runner) checkIndexExistsInDB(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) analyzeStatementForIndexExists(lines []string, startLine int, file *indexedFile) ([]Finding, error) {
+func (r *Runner) analyzeStatementForIndexExists(ctx context.Context, lines []string, startLine int, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	if len(lines) == 0 {
 		return findings, nil
@@ -1426,7 +1428,7 @@ func (r *Runner) analyzeStatementForIndexExists(lines []string, startLine int, f
 		}
 		seen[key] = struct{}{}
 
-		exists, err := r.lookupIndexExists(tableName, indexName)
+		exists, err := r.lookupIndexExists(ctx, tableName, indexName)
 		if err != nil {
 			return nil, err
 		}
@@ -1454,7 +1456,7 @@ func (r *Runner) analyzeStatementForIndexExists(lines []string, startLine int, f
 
 // checkDeletePtableMacros проверяет существование индексов, используемых
 // макросами M_DELETE_PTABLE*, в БД.
-func (r *Runner) checkDeletePtableMacros(lines []string, sourceMap []int, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkDeletePtableMacros(ctx context.Context, lines []string, sourceMap []int, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	calls := extractDeletePtableCalls(lines)
 	if len(calls) == 0 {
@@ -1478,7 +1480,7 @@ func (r *Runner) checkDeletePtableMacros(lines []string, sourceMap []int, file *
 		}
 		seen[key] = struct{}{}
 
-		exists, err := r.lookupIndexExists(tableName, indexName)
+		exists, err := r.lookupIndexExists(ctx, tableName, indexName)
 		if err != nil {
 			return nil, err
 		}
@@ -1502,12 +1504,12 @@ func (r *Runner) checkDeletePtableMacros(lines []string, sourceMap []int, file *
 	return findings, nil
 }
 
-func (r *Runner) checkForeignPTables(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkForeignPTables(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	tables := dedupeTableRefs(parsed.Tables, "p")
 	if len(tables) == 0 {
 		return []Finding{}, nil
 	}
-	apiNames, err := r.findAPITableNames(tableNames(tables))
+	apiNames, err := r.findAPITableNames(ctx, tableNames(tables))
 	if err != nil {
 		return nil, err
 	}
@@ -1520,7 +1522,7 @@ func (r *Runner) checkForeignPTables(parsed *sqlparser.ParseResult, file *indexe
 	}
 	findings := make([]Finding, 0)
 	for _, table := range filtered {
-		targetProductIDs := r.cachedLookupTableProductIDs(table.Name)
+		targetProductIDs := r.cachedLookupTableProductIDs(ctx, table.Name)
 		if len(targetProductIDs) == 0 {
 			continue
 		}
@@ -1546,11 +1548,11 @@ func (r *Runner) checkForeignPTables(parsed *sqlparser.ParseResult, file *indexe
 	return findings, nil
 }
 
-func (r *Runner) checkForeignProcedures(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkForeignProcedures(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	calls := dedupeProcedureCalls(parsed.Calls)
 	findings := make([]Finding, 0)
 	for _, call := range calls {
-		targetProductID, ok := r.cachedLookupProcedureProductID(call.Name)
+		targetProductID, ok := r.cachedLookupProcedureProductID(ctx, call.Name)
 		if !ok {
 			continue
 		}
@@ -1571,11 +1573,11 @@ func (r *Runner) checkForeignProcedures(parsed *sqlparser.ParseResult, file *ind
 	return findings, nil
 }
 
-func (r *Runner) checkExecNotExistsProcedures(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkExecNotExistsProcedures(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	calls := dedupeProcedureCalls(parsed.Calls)
 	findings := make([]Finding, 0)
 	for _, call := range calls {
-		_, ok := r.cachedLookupProcedureProductID(call.Name)
+		_, ok := r.cachedLookupProcedureProductID(ctx, call.Name)
 		if ok {
 			continue
 		}
@@ -1593,13 +1595,13 @@ func (r *Runner) checkExecNotExistsProcedures(parsed *sqlparser.ParseResult, fil
 	return findings, nil
 }
 
-func (r *Runner) checkProcDuplicate(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkProcDuplicate(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	for _, proc := range parsed.Procedures {
 		if proc == nil || proc.ProcName == "" {
 			continue
 		}
-		fileIDs, err := r.lookupProcedureCreateFiles(proc.ProcName)
+		fileIDs, err := r.lookupProcedureCreateFiles(ctx, proc.ProcName)
 		if err != nil {
 			return nil, err
 		}
@@ -1618,11 +1620,11 @@ func (r *Runner) checkProcDuplicate(parsed *sqlparser.ParseResult, file *indexed
 	return findings, nil
 }
 
-func (r *Runner) checkProcParamDefValue(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkProcParamDefValue(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
 	// Читаем содержимое файла один раз для извлечения тел процедур
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1634,14 +1636,14 @@ func (r *Runner) checkProcParamDefValue(parsed *sqlparser.ParseResult, file *ind
 		}
 
 		// Извлекаем тело процедуры по границам строк
-		procBody := r.extractProcedureBody(lines, proc.LineStart, proc.LineEnd)
+		procBody := r.extractProcedureBody(ctx, lines, proc.LineStart, proc.LineEnd)
 
 		// Для каждого параметра с default=null проверяем защиту в теле
 		for _, param := range proc.Params {
-			if !r.needsDefaultAssignment(param) {
+			if !r.needsDefaultAssignment(ctx, param) {
 				continue
 			}
-			if !r.hasDefaultAssignmentInBody(procBody, param.Name) {
+			if !r.hasDefaultAssignmentInBody(ctx, procBody, param.Name) {
 				findings = append(findings, Finding{
 					Rule:             RuleProcParamDefValue,
 					Severity:         SeverityDeployStopper,
@@ -1658,14 +1660,16 @@ func (r *Runner) checkProcParamDefValue(parsed *sqlparser.ParseResult, file *ind
 }
 
 // needsDefaultAssignment проверяет, нужен ли параметру default в начале процедуры
-func (r *Runner) needsDefaultAssignment(param model.SQLParam) bool {
+func (r *Runner) needsDefaultAssignment(ctx context.Context, param model.SQLParam) bool {
+	_ = ctx
 	// Только параметры с default=null требуют присвоения в начале процедуры
 	// Параметры без default (обязательные) - это нормально
 	return param.DefaultValue == "null"
 }
 
 // extractProcedureBody извлекает тело процедуры из строк файла по границам
-func (r *Runner) extractProcedureBody(lines []string, lineStart, lineEnd int) string {
+func (r *Runner) extractProcedureBody(ctx context.Context, lines []string, lineStart, lineEnd int) string {
+	_ = ctx
 	// Проверяем валидность границ
 	if lineStart < 1 || lineEnd > len(lines) || lineStart > lineEnd {
 		return ""
@@ -1682,7 +1686,8 @@ func (r *Runner) extractProcedureBody(lines []string, lineStart, lineEnd int) st
 
 // hasDefaultAssignmentInBody проверяет, есть ли в теле процедуры присвоение default для параметра
 // до первого использования параметра
-func (r *Runner) hasDefaultAssignmentInBody(procBody string, paramName string) bool {
+func (r *Runner) hasDefaultAssignmentInBody(ctx context.Context, procBody string, paramName string) bool {
+	_ = ctx
 	if procBody == "" || paramName == "" {
 		return false
 	}
@@ -1797,11 +1802,11 @@ func (r *Runner) hasDefaultAssignmentInBody(procBody string, paramName string) b
 	return firstAssignmentPos != -1
 }
 
-func (r *Runner) checkProcElseCase(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkProcElseCase(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
 	// Читаем содержимое файла
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1848,10 +1853,10 @@ func (r *Runner) checkProcElseCase(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkUseSelectAll(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkUseSelectAll(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	macroResult, err := r.fileProcessedContent(file.Path)
+	macroResult, err := r.fileProcessedContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1883,11 +1888,11 @@ func (r *Runner) checkUseSelectAll(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkTruncTbl(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkTruncTbl(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
 	// Читаем содержимое файла
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -1921,7 +1926,7 @@ func (r *Runner) checkTruncTbl(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkDatatype(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkDatatype(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	seen := map[string]string{}
 	for _, definition := range parsed.ColumnDefinitions {
@@ -1949,31 +1954,31 @@ func (r *Runner) checkDatatype(parsed *sqlparser.ParseResult, file *indexedFile)
 		seen[key] = dataType
 	}
 
-	insertSelectFindings, err := r.checkDatatypeInsertSelect(parsed, file)
+	insertSelectFindings, err := r.checkDatatypeInsertSelect(ctx, parsed, file)
 	if err != nil {
 		return nil, err
 	}
 	findings = append(findings, insertSelectFindings...)
 
-	updateSetFindings, err := r.checkDatatypeUpdateSet(parsed, file)
+	updateSetFindings, err := r.checkDatatypeUpdateSet(ctx, parsed, file)
 	if err != nil {
 		return nil, err
 	}
 	findings = append(findings, updateSetFindings...)
 
-	selectAssignFindings, err := r.checkDatatypeSelectAssign(parsed, file)
+	selectAssignFindings, err := r.checkDatatypeSelectAssign(ctx, parsed, file)
 	if err != nil {
 		return nil, err
 	}
 	findings = append(findings, selectAssignFindings...)
 
-	fetchIntoFindings, err := r.checkDatatypeFetchInto(parsed, file)
+	fetchIntoFindings, err := r.checkDatatypeFetchInto(ctx, parsed, file)
 	if err != nil {
 		return nil, err
 	}
 	findings = append(findings, fetchIntoFindings...)
 
-	execParamsFindings, err := r.checkDatatypeExecParams(parsed, file)
+	execParamsFindings, err := r.checkDatatypeExecParams(ctx, parsed, file)
 	if err != nil {
 		return nil, err
 	}
@@ -1982,7 +1987,7 @@ func (r *Runner) checkDatatype(parsed *sqlparser.ParseResult, file *indexedFile)
 	return findings, nil
 }
 
-func (r *Runner) checkDatatypeExecParams(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkDatatypeExecParams(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	seen := make(map[string]struct{})
 
@@ -1990,16 +1995,16 @@ func (r *Runner) checkDatatypeExecParams(parsed *sqlparser.ParseResult, file *in
 		return findings, nil
 	}
 
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
 	variableTypes := collectVariableTypes(parsed, string(content))
-	r.enrichVariableTypesFromAPI(variableTypes, parsed, string(content))
+	r.enrichVariableTypesFromAPI(ctx, variableTypes, parsed, string(content))
 
 	calls := dedupeProcedureCalls(parsed.Calls)
 	for _, call := range calls {
-		params := r.cachedLookupProcedureParams(call.Name)
+		params := r.cachedLookupProcedureParams(ctx, call.Name)
 		if len(params) == 0 {
 			continue
 		}
@@ -2042,7 +2047,7 @@ func (r *Runner) checkDatatypeExecParams(parsed *sqlparser.ParseResult, file *in
 				continue
 			}
 
-			argType := r.resolveArgType(arg.Value, variableTypes, nil)
+			argType := r.resolveArgType(ctx, arg.Value, variableTypes, nil)
 			if argType == "" {
 				continue
 			}
@@ -2142,7 +2147,7 @@ func analyzeStatementForTableHintExists(lines []string, allLines []string, start
 	return findings
 }
 
-func (r *Runner) checkDatatypeUpdateSet(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkDatatypeUpdateSet(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	seen := make(map[string]struct{})
 
@@ -2166,7 +2171,7 @@ func (r *Runner) checkDatatypeUpdateSet(parsed *sqlparser.ParseResult, file *ind
 				continue
 			}
 
-			targetType, err := r.cachedFindColumnDefinitionType(stmt.TargetTable, targetColumn)
+			targetType, err := r.cachedFindColumnDefinitionType(ctx, stmt.TargetTable, targetColumn)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					continue
@@ -2179,7 +2184,7 @@ func (r *Runner) checkDatatypeUpdateSet(parsed *sqlparser.ParseResult, file *ind
 				continue
 			}
 
-			sourceTypes := r.resolveExpressionTypes(assignment.Expression, aliasMap)
+			sourceTypes := r.resolveExpressionTypes(ctx, assignment.Expression, aliasMap)
 			for _, sourceType := range sourceTypes {
 				if !isPotentialPrecisionLoss(sourceType, targetType) {
 					continue
@@ -2205,7 +2210,7 @@ func (r *Runner) checkDatatypeUpdateSet(parsed *sqlparser.ParseResult, file *ind
 	return findings, nil
 }
 
-func (r *Runner) checkDatatypeInsertSelect(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkDatatypeInsertSelect(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	seen := make(map[string]struct{})
 
@@ -2230,7 +2235,7 @@ func (r *Runner) checkDatatypeInsertSelect(parsed *sqlparser.ParseResult, file *
 				continue
 			}
 
-			targetType, err := r.cachedFindColumnDefinitionType(stmt.TargetTable, targetColumn)
+			targetType, err := r.cachedFindColumnDefinitionType(ctx, stmt.TargetTable, targetColumn)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					continue
@@ -2243,7 +2248,7 @@ func (r *Runner) checkDatatypeInsertSelect(parsed *sqlparser.ParseResult, file *
 				continue
 			}
 
-			sourceTypes := r.resolveExpressionTypes(expression, aliasMap)
+			sourceTypes := r.resolveExpressionTypes(ctx, expression, aliasMap)
 			for _, sourceType := range sourceTypes {
 				if !isPotentialPrecisionLoss(sourceType, targetType) {
 					continue
@@ -2269,7 +2274,7 @@ func (r *Runner) checkDatatypeInsertSelect(parsed *sqlparser.ParseResult, file *
 	return findings, nil
 }
 
-func (r *Runner) resolveExpressionTypes(expression string, aliasMap map[string]string) []string {
+func (r *Runner) resolveExpressionTypes(ctx context.Context, expression string, aliasMap map[string]string) []string {
 	// Для CASE-выражений извлекаем типы только из THEN/ELSE-результатов,
 	// а не из WHEN-условий, чтобы избежать ложных срабатываний.
 	lowerExpr := strings.ToLower(expression)
@@ -2279,7 +2284,7 @@ func (r *Runner) resolveExpressionTypes(expression string, aliasMap map[string]s
 			result := make([]string, 0)
 			seen := make(map[string]struct{})
 			for _, part := range thenElseParts {
-				partTypes := r.resolveExpressionTypes(part, aliasMap)
+				partTypes := r.resolveExpressionTypes(ctx, part, aliasMap)
 				for _, t := range partTypes {
 					normalized := normalizeDataType(t)
 					if normalized == "" {
@@ -2307,7 +2312,7 @@ func (r *Runner) resolveExpressionTypes(expression string, aliasMap map[string]s
 		if strings.TrimSpace(tableName) == "" || strings.TrimSpace(ref.Column) == "" {
 			continue
 		}
-		typeName, err := r.cachedFindColumnDefinitionType(tableName, ref.Column)
+		typeName, err := r.cachedFindColumnDefinitionType(ctx, tableName, ref.Column)
 		if err != nil {
 			continue
 		}
@@ -2324,8 +2329,8 @@ func (r *Runner) resolveExpressionTypes(expression string, aliasMap map[string]s
 	return result
 }
 
-func (r *Runner) resolveCursorSourceTypes(expression string, aliasMap map[string]string, defaultTable string) []string {
-	types := r.resolveExpressionTypes(expression, aliasMap)
+func (r *Runner) resolveCursorSourceTypes(ctx context.Context, expression string, aliasMap map[string]string, defaultTable string) []string {
+	types := r.resolveExpressionTypes(ctx, expression, aliasMap)
 	if len(types) > 0 {
 		return types
 	}
@@ -2335,7 +2340,7 @@ func (r *Runner) resolveCursorSourceTypes(expression string, aliasMap map[string
 		return nil
 	}
 
-	typeName, err := r.cachedFindColumnDefinitionType(defaultTable, columnName)
+	typeName, err := r.cachedFindColumnDefinitionType(ctx, defaultTable, columnName)
 	if err != nil {
 		return nil
 	}
@@ -2343,10 +2348,10 @@ func (r *Runner) resolveCursorSourceTypes(expression string, aliasMap map[string
 	return []string{typeName}
 }
 
-func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkAnsiInJoin(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	macroResult, err := r.fileProcessedContent(file.Path)
+	macroResult, err := r.fileProcessedContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -2475,11 +2480,11 @@ func (r *Runner) checkAnsiInJoin(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkInsertRowLock(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkInsertRowLock(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
 	// Читаем содержимое файла
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -2589,10 +2594,10 @@ func analyzeInsertForRowLock(lines []string, startLine int, file *indexedFile) *
 	}
 }
 
-func (r *Runner) checkUseEqColumn(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkUseEqColumn(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -2814,10 +2819,10 @@ func isInSelectClause(lines []string, pos int) bool {
 	return true
 }
 
-func (r *Runner) checkTableFullScan(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkTableFullScan(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	macroResult, err := r.fileProcessedContent(file.Path)
+	macroResult, err := r.fileProcessedContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -3000,10 +3005,10 @@ func analyzeStatementForFullScan(lines []string, startLine int, file *indexedFil
 	return nil
 }
 
-func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkTableHintExists(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	macroResult, err := r.fileProcessedContent(file.Path)
+	macroResult, err := r.fileProcessedContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -3089,10 +3094,10 @@ func (r *Runner) checkTableHintExists(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkTableHintIsRight(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkTableHintIsRight(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	macroResult, err := r.fileProcessedContent(file.Path)
+	macroResult, err := r.fileProcessedContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -3348,10 +3353,10 @@ func analyzeStatementForHintType(lines []string, startLine int, file *indexedFil
 	return findings
 }
 
-func (r *Runner) checkNullComparison(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkNullComparison(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -3411,7 +3416,8 @@ func (r *Runner) checkNullComparison(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkShouldBeCP866(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkShouldBeCP866(ctx context.Context, file *indexedFile) ([]Finding, error) {
+	_ = ctx
 	data, err := os.ReadFile(file.Path)
 	if err != nil {
 		return nil, err
@@ -3433,8 +3439,8 @@ func (r *Runner) checkShouldBeCP866(file *indexedFile) ([]Finding, error) {
 	}}, nil
 }
 
-func (r *Runner) checkTooManyJoins(file *indexedFile) ([]Finding, error) {
-	content, err := r.fileContent(file.Path)
+func (r *Runner) checkTooManyJoins(ctx context.Context, file *indexedFile) ([]Finding, error) {
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -3470,7 +3476,8 @@ func (r *Runner) checkTooManyJoins(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkMaxProcParam(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkMaxProcParam(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	_ = ctx
 	findings := make([]Finding, 0)
 	for _, proc := range parsed.Procedures {
 		if proc == nil || proc.ProcName == "" {
@@ -3492,12 +3499,12 @@ func (r *Runner) checkMaxProcParam(parsed *sqlparser.ParseResult, file *indexedF
 	return findings, nil
 }
 
-func (r *Runner) checkModifyOutProc(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkModifyOutProc(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	if isDataOrPatchPath(file.Path) {
 		return nil, nil
 	}
 
-	macroResult, err := r.fileProcessedContent(file.Path)
+	macroResult, err := r.fileProcessedContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -3573,9 +3580,9 @@ func (r *Runner) checkModifyOutProc(parsed *sqlparser.ParseResult, file *indexed
 	return findings, nil
 }
 
-func (r *Runner) checkEmptyReturn(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkEmptyReturn(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -3602,9 +3609,9 @@ func (r *Runner) checkEmptyReturn(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkRawTransactionControl(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkRawTransactionControl(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -3631,9 +3638,9 @@ func (r *Runner) checkRawTransactionControl(file *indexedFile) ([]Finding, error
 	return findings, nil
 }
 
-func (r *Runner) checkDeferredUpdate(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkDeferredUpdate(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -3679,7 +3686,7 @@ func (r *Runner) checkDeferredUpdate(file *indexedFile) ([]Finding, error) {
 			continue
 		}
 
-		indexColumns, err := r.lookupIndexFieldsByName(indexName)
+		indexColumns, err := r.lookupIndexFieldsByName(ctx, indexName)
 		if err != nil {
 			return nil, err
 		}
@@ -3707,9 +3714,9 @@ func (r *Runner) checkDeferredUpdate(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkInSubQuery(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkInSubQuery(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -3741,7 +3748,7 @@ func (r *Runner) checkInSubQuery(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkVarcharSize(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkVarcharSize(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
 	// Проверяем параметры процедур через parsed
@@ -3765,7 +3772,7 @@ func (r *Runner) checkVarcharSize(parsed *sqlparser.ParseResult, file *indexedFi
 	}
 
 	// Проверяем DECLARE в теле файла
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -3846,9 +3853,9 @@ func (r *Runner) checkVarcharSize(parsed *sqlparser.ParseResult, file *indexedFi
 	return findings, nil
 }
 
-func (r *Runner) checkColumnInsert(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkColumnInsert(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
-	macroResult, err := r.fileProcessedContent(file.Path)
+	macroResult, err := r.fileProcessedContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -3872,9 +3879,9 @@ func (r *Runner) checkColumnInsert(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkPostgreLabelGotoLevel(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkPostgreLabelGotoLevel(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -4002,9 +4009,9 @@ func (r *Runner) checkPostgreLabelGotoLevel(file *indexedFile) ([]Finding, error
 	return findings, nil
 }
 
-func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkDateIntoString(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -4067,7 +4074,7 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 				if col == "" || a.Expression == "" {
 					continue
 				}
-				targetType, err := r.cachedFindColumnDefinitionType(updStmt.TargetTable, col)
+				targetType, err := r.cachedFindColumnDefinitionType(ctx, updStmt.TargetTable, col)
 				if err != nil {
 					if err == sql.ErrNoRows {
 						continue
@@ -4106,7 +4113,7 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 				if col == "" || expr == "" {
 					continue
 				}
-				targetType, err := r.cachedFindColumnDefinitionType(insStmt.TargetTable, col)
+				targetType, err := r.cachedFindColumnDefinitionType(ctx, insStmt.TargetTable, col)
 				if err != nil {
 					if err == sql.ErrNoRows {
 						continue
@@ -4221,7 +4228,7 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 			if col == "" || expr == "" {
 				continue
 			}
-			targetType, err := r.cachedFindColumnDefinitionType(table, col)
+			targetType, err := r.cachedFindColumnDefinitionType(ctx, table, col)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					continue
@@ -4251,9 +4258,9 @@ func (r *Runner) checkDateIntoString(parsed *sqlparser.ParseResult, file *indexe
 	return findings, nil
 }
 
-func (r *Runner) checkVarUseAfterCursor(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkVarUseAfterCursor(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
-	macroResult, err := r.fileProcessedContent(file.Path)
+	macroResult, err := r.fileProcessedContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -4339,9 +4346,9 @@ func (r *Runner) checkVarUseAfterCursor(file *indexedFile) ([]Finding, error) {
 	return findings, nil
 }
 
-func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkEmptyStringDate(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -4425,7 +4432,7 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 				if col == "" || a.Expression == "" {
 					continue
 				}
-				targetType, err := r.cachedFindColumnDefinitionType(updStmt.TargetTable, col)
+				targetType, err := r.cachedFindColumnDefinitionType(ctx, updStmt.TargetTable, col)
 				if err != nil {
 					if err == sql.ErrNoRows {
 						continue
@@ -4461,7 +4468,7 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 				if col == "" || expr == "" {
 					continue
 				}
-				targetType, err := r.cachedFindColumnDefinitionType(insStmt.TargetTable, col)
+				targetType, err := r.cachedFindColumnDefinitionType(ctx, insStmt.TargetTable, col)
 				if err != nil {
 					if err == sql.ErrNoRows {
 						continue
@@ -4566,7 +4573,7 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 			if col == "" || expr == "" {
 				continue
 			}
-			targetType, err := r.cachedFindColumnDefinitionType(table, col)
+			targetType, err := r.cachedFindColumnDefinitionType(ctx, table, col)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					continue
@@ -4631,12 +4638,12 @@ func (r *Runner) checkEmptyStringDate(parsed *sqlparser.ParseResult, file *index
 	return findings, nil
 }
 
-func (r *Runner) checkExcessProcParams(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkExcessProcParams(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	calls := dedupeProcedureCalls(parsed.Calls)
 	findings := make([]Finding, 0)
 
 	for _, call := range calls {
-		params := r.cachedLookupProcedureParams(call.Name)
+		params := r.cachedLookupProcedureParams(ctx, call.Name)
 		if len(params) == 0 {
 			continue // Процедура отсутствует в БД — это ловит execNotExistsProc
 		}
@@ -4662,7 +4669,7 @@ func (r *Runner) checkExcessProcParams(parsed *sqlparser.ParseResult, file *inde
 	return findings, nil
 }
 
-func (r *Runner) checkDuplicateOutputVariable(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkDuplicateOutputVariable(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	calls := dedupeProcedureCalls(parsed.Calls)
 	findings := make([]Finding, 0)
 
@@ -4674,7 +4681,7 @@ func (r *Runner) checkDuplicateOutputVariable(parsed *sqlparser.ParseResult, fil
 
 		args := parseExecArguments(callText, call.Name)
 
-		params := r.cachedLookupProcedureParams(call.Name)
+		params := r.cachedLookupProcedureParams(ctx, call.Name)
 
 		paramMap := make(map[string]model.SQLParam)
 		for _, p := range params {
@@ -4731,7 +4738,8 @@ func (r *Runner) checkDuplicateOutputVariable(parsed *sqlparser.ParseResult, fil
 }
 
 // checkUseOnlyDeclaredCursors проверяет, что все используемые курсоры были объявлены в том же scope
-func (r *Runner) checkUseOnlyDeclaredCursors(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkUseOnlyDeclaredCursors(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	_ = ctx
 	findings := make([]Finding, 0)
 
 	// Читаем файл построчно
@@ -4917,10 +4925,10 @@ func (r *Runner) checkUseOnlyDeclaredCursors(parsed *sqlparser.ParseResult, file
 
 // checkCursorFetchArguments проверяет, что FETCH INTO из курсора содержит
 // столько же переменных, сколько выражений в SELECT объявления курсора.
-func (r *Runner) checkCursorFetchArguments(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkCursorFetchArguments(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -4969,7 +4977,8 @@ func (r *Runner) checkCursorFetchArguments(parsed *sqlparser.ParseResult, file *
 // checkUsageVarInSameSelect проверяет, что в одном SELECT-операторе
 // переменная, присваиваемая в одном assignment, не используется в выражении
 // другого assignment, вычисляемого позже.
-func (r *Runner) checkUsageVarInSameSelect(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkUsageVarInSameSelect(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	_ = ctx
 	findings := make([]Finding, 0)
 
 	for _, fragment := range parsed.Fragments {
@@ -5052,7 +5061,7 @@ func (r *Runner) checkUsageVarInSameSelect(parsed *sqlparser.ParseResult, file *
 
 // checkStatementsWithJoinsRequireAliases проверяет, что в SELECT/UPDATE/DELETE
 // с JOIN (2+ таблицы) все ссылки на столбцы квалифицированы алиасом.
-func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkStatementsWithJoinsRequireAliases(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
 	for _, fragment := range parsed.Fragments {
@@ -5151,7 +5160,7 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 					continue
 				}
 				colNames := findAllUnqualifiedColumnRefs(trimmed)
-				colNames = r.filterKnownNames(colNames)
+				colNames = r.filterKnownNames(ctx, colNames)
 				colNames = filterOutTableNames(colNames, knownTableNames)
 				for _, colName := range colNames {
 					lineOffset := findColLineOffsetInPart(queryText, trimmed, colName)
@@ -5170,7 +5179,7 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 
 		if wherePart != "" {
 			colNames := findAllUnqualifiedColumnRefs(removeComments(wherePart))
-			colNames = r.filterKnownNames(colNames)
+			colNames = r.filterKnownNames(ctx, colNames)
 			colNames = filterOutTableNames(colNames, knownTableNames)
 			for _, colName := range colNames {
 				lineOffset := findColLineOffsetInPart(queryText, wherePart, colName)
@@ -5189,7 +5198,7 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 		// Проверяем ON-условия JOIN
 		for _, onPart := range onParts {
 			colNames := findAllUnqualifiedColumnRefs(removeComments(onPart))
-			colNames = r.filterKnownNames(colNames)
+			colNames = r.filterKnownNames(ctx, colNames)
 			colNames = filterOutTableNames(colNames, knownTableNames)
 			for _, colName := range colNames {
 				lineOffset := findColLineOffsetInPart(queryText, onPart, colName)
@@ -5211,7 +5220,8 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(parsed *sqlparser.ParseR
 
 // checkVarAssignInUpdate проверяет, что в UPDATE SET не присваиваются значения
 // переменным (@var = expr). Любое такое присваивание запрещено.
-func (r *Runner) checkVarAssignInUpdate(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkVarAssignInUpdate(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	_ = ctx
 	findings := make([]Finding, 0)
 
 	for _, fragment := range parsed.Fragments {
@@ -5254,10 +5264,10 @@ func (r *Runner) checkVarAssignInUpdate(parsed *sqlparser.ParseResult, file *ind
 
 // checkUseFuncInIndCol проверяет, что в WHERE и ON не используются функции
 // от столбцов, входящих в индекс, указанный в M_*_INDEX(...).
-func (r *Runner) checkUseFuncInIndCol(file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkUseFuncInIndCol(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
-	macroResult, err := r.fileProcessedContent(file.Path)
+	macroResult, err := r.fileProcessedContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -5334,7 +5344,7 @@ func (r *Runner) checkUseFuncInIndCol(file *indexedFile) ([]Finding, error) {
 		parenDepth += countParensRespectingStrings(line)
 
 		if hasStatementEnded(lower, stmtBuffer) {
-			items, err := r.analyzeStatementForUseFuncInIndCol(stmtBuffer, stmtStartLine, file)
+			items, err := r.analyzeStatementForUseFuncInIndCol(ctx, stmtBuffer, stmtStartLine, file)
 			if err != nil {
 				return nil, err
 			}
@@ -5346,7 +5356,7 @@ func (r *Runner) checkUseFuncInIndCol(file *indexedFile) ([]Finding, error) {
 	}
 
 	if inStatement && len(stmtBuffer) > 0 {
-		items, err := r.analyzeStatementForUseFuncInIndCol(stmtBuffer, stmtStartLine, file)
+		items, err := r.analyzeStatementForUseFuncInIndCol(ctx, stmtBuffer, stmtStartLine, file)
 		if err != nil {
 			return nil, err
 		}
@@ -5358,7 +5368,7 @@ func (r *Runner) checkUseFuncInIndCol(file *indexedFile) ([]Finding, error) {
 
 // analyzeStatementForUseFuncInIndCol анализирует один оператор на использование
 // функций от индексных столбцов в WHERE и ON.
-func (r *Runner) analyzeStatementForUseFuncInIndCol(lines []string, startLine int, file *indexedFile) ([]Finding, error) {
+func (r *Runner) analyzeStatementForUseFuncInIndCol(ctx context.Context, lines []string, startLine int, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	if len(lines) == 0 {
 		return findings, nil
@@ -5396,7 +5406,7 @@ func (r *Runner) analyzeStatementForUseFuncInIndCol(lines []string, startLine in
 		}
 		seen[key] = struct{}{}
 
-		indexFields, err := r.lookupIndexFieldsByName(indexName)
+		indexFields, err := r.lookupIndexFieldsByName(ctx, indexName)
 		if err != nil {
 			return nil, err
 		}
@@ -5466,11 +5476,11 @@ func (r *Runner) analyzeStatementForUseFuncInIndCol(lines []string, startLine in
 
 // checkIsNullSameTypes проверяет, что в ISNULL(expr1, expr2) оба выражения
 // имеют эквивалентные типы.
-func (r *Runner) checkIsNullSameTypes(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkIsNullSameTypes(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	seen := make(map[string]struct{})
 
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -5489,8 +5499,8 @@ func (r *Runner) checkIsNullSameTypes(parsed *sqlparser.ParseResult, file *index
 		aliasMap := parseAliasMap(extractFromClause(queryText))
 
 		for _, call := range isnullCalls {
-			type1 := r.resolveArgType(call[0], variableTypes, aliasMap)
-			type2 := r.resolveArgType(call[1], variableTypes, aliasMap)
+			type1 := r.resolveArgType(ctx, call[0], variableTypes, aliasMap)
+			type2 := r.resolveArgType(ctx, call[1], variableTypes, aliasMap)
 
 			// Пропускаем если хотя бы один тип не определён (NULL или не удалось резолвить)
 			if type1 == "" || type2 == "" {
@@ -5591,7 +5601,7 @@ func extractIsnullCalls(text string) [][2]string {
 
 // resolveArgType определяет тип аргумента выражения.
 // Возвращает пустую строку если тип не удалось определить или это NULL.
-func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, aliasMap map[string]string) string {
+func (r *Runner) resolveArgType(ctx context.Context, arg string, variableTypes map[string]string, aliasMap map[string]string) string {
 	trimmed := strings.TrimSpace(arg)
 	if trimmed == "" {
 		return ""
@@ -5606,7 +5616,7 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 
 	// CASE ... END — определяем тип по THEN-выражениям
 	if reCaseStart.MatchString(trimmed) {
-		return r.resolveCaseType(trimmed, variableTypes, aliasMap)
+		return r.resolveCaseType(ctx, trimmed, variableTypes, aliasMap)
 	}
 
 	// Вызов функции: funcName(...) — проверяем ДО арифметики,
@@ -5631,20 +5641,20 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 			}
 		}
 		// Проверяем, является ли вызов макросом #define с известным типом результата
-		if macroType := r.cachedLookupMacroType(funcName); macroType != "" {
+		if macroType := r.cachedLookupMacroType(ctx, funcName); macroType != "" {
 			return macroType
 		}
 		// Для прочих функций пытаемся вывести тип из аргументов
 		if len(innerArgs) > 0 {
 			// dateadd(datepart, number, date) — всегда возвращает datetime-тип
 			if funcName == "dateadd" && len(innerArgs) >= 3 {
-				lastArgType := r.resolveArgType(innerArgs[len(innerArgs)-1], variableTypes, aliasMap)
+				lastArgType := r.resolveArgType(ctx, innerArgs[len(innerArgs)-1], variableTypes, aliasMap)
 				if lastArgType != "" && typeGroup(lastArgType) != "datetime" {
 					return "datetime"
 				}
 				return lastArgType
 			}
-			return r.resolveArgType(innerArgs[0], variableTypes, aliasMap)
+			return r.resolveArgType(ctx, innerArgs[0], variableTypes, aliasMap)
 		}
 		return ""
 	}
@@ -5652,7 +5662,7 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 	// Арифметическое выражение: разбиваем по операторам +, -, *, /
 	// (до проверки @var, чтобы @MaxID - @MinID + 1 не трактовалось как имя переменной)
 	if reArithOp.MatchString(trimmed) {
-		return r.resolveArithmeticExprType(trimmed, variableTypes, aliasMap)
+		return r.resolveArithmeticExprType(ctx, trimmed, variableTypes, aliasMap)
 	}
 
 	// Переменная @var
@@ -5682,7 +5692,7 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 		if mapped, exists := aliasMap[strings.ToLower(strings.TrimSpace(tableName))]; exists {
 			tableName = mapped
 		}
-		typeName, err := r.cachedFindColumnDefinitionType(tableName, ref.Column)
+		typeName, err := r.cachedFindColumnDefinitionType(ctx, tableName, ref.Column)
 		if err != nil {
 			return ""
 		}
@@ -5698,7 +5708,7 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 				continue
 			}
 			seenTables[tbl] = struct{}{}
-			typeName, err := r.cachedFindColumnDefinitionType(tbl, trimmed)
+			typeName, err := r.cachedFindColumnDefinitionType(ctx, tbl, trimmed)
 			if err == nil && typeName != "" {
 				return typeName
 			}
@@ -5710,7 +5720,7 @@ func (r *Runner) resolveArgType(arg string, variableTypes map[string]string, ali
 
 // resolveArithmeticExprType разбирает арифметическое выражение по операторам +, -, *, /
 // и возвращает тип операнда с максимальной numeric precision.
-func (r *Runner) resolveArithmeticExprType(expr string, variableTypes map[string]string, aliasMap map[string]string) string {
+func (r *Runner) resolveArithmeticExprType(ctx context.Context, expr string, variableTypes map[string]string, aliasMap map[string]string) string {
 	// Разбиваем по операторам +, -, *, / (с пробелами вокруг)
 	parts := reArithOp.Split(expr, -1)
 	bestType := ""
@@ -5720,7 +5730,7 @@ func (r *Runner) resolveArithmeticExprType(expr string, variableTypes map[string
 		if trimmed == "" {
 			continue
 		}
-		t := r.resolveArgType(trimmed, variableTypes, aliasMap)
+		t := r.resolveArgType(ctx, trimmed, variableTypes, aliasMap)
 		if t == "" {
 			continue
 		}
@@ -5745,7 +5755,7 @@ func (r *Runner) resolveArithmeticExprType(expr string, variableTypes map[string
 // resolveCaseType определяет тип результата CASE ... END по THEN/ELSE-выражениям.
 // Если все THEN-значения — строковые литералы, возвращает varchar.
 // Если все числовые — int. Иначе берёт тип первого нетривиального THEN/ELSE-выражения.
-func (r *Runner) resolveCaseType(expr string, variableTypes map[string]string, aliasMap map[string]string) string {
+func (r *Runner) resolveCaseType(ctx context.Context, expr string, variableTypes map[string]string, aliasMap map[string]string) string {
 	// Извлекаем THEN-выражения
 	thenRe := reThenExpr
 	matches := thenRe.FindAllStringSubmatch(expr, -1)
@@ -5789,7 +5799,7 @@ func (r *Runner) resolveCaseType(expr string, variableTypes map[string]string, a
 
 	// Определяем тип по первому выражению с непустым типом
 	for _, e := range expressions {
-		t := r.resolveArgType(e, variableTypes, aliasMap)
+		t := r.resolveArgType(ctx, e, variableTypes, aliasMap)
 		if t != "" {
 			firstType = t
 			break
@@ -5807,11 +5817,11 @@ func (r *Runner) resolveCaseType(expr string, variableTypes map[string]string, a
 
 // checkDiffTypesComparison проверяет, что в сравнениях (WHERE, ON, IF, CASE WHEN)
 // оба операнда имеют эквивалентные типы. Присвоения (UPDATE SET, SELECT @var =) не проверяются.
-func (r *Runner) checkDiffTypesComparison(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkDiffTypesComparison(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	seen := make(map[string]struct{})
 
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -5882,8 +5892,8 @@ func (r *Runner) checkDiffTypesComparison(parsed *sqlparser.ParseResult, file *i
 					continue
 				}
 
-				type1 := r.resolveArgType(cmp.left, variableTypes, aliasMap)
-				type2 := r.resolveArgType(cmp.right, variableTypes, aliasMap)
+				type1 := r.resolveArgType(ctx, cmp.left, variableTypes, aliasMap)
+				type2 := r.resolveArgType(ctx, cmp.right, variableTypes, aliasMap)
 
 				if type1 == "" || type2 == "" {
 					continue
@@ -5939,8 +5949,8 @@ func (r *Runner) checkDiffTypesComparison(parsed *sqlparser.ParseResult, file *i
 				continue
 			}
 
-			type1 := r.resolveArgType(cmp.left, variableTypes, nil)
-			type2 := r.resolveArgType(cmp.right, variableTypes, nil)
+			type1 := r.resolveArgType(ctx, cmp.left, variableTypes, nil)
+			type2 := r.resolveArgType(ctx, cmp.right, variableTypes, nil)
 
 			if type1 == "" || type2 == "" {
 				continue
@@ -5974,11 +5984,11 @@ func (r *Runner) checkDiffTypesComparison(parsed *sqlparser.ParseResult, file *i
 
 // checkFloatToStringConvert проверяет, что CONVERT и CAST не используются
 // для приведения float/DSFLOAT к строковому типу.
-func (r *Runner) checkFloatToStringConvert(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkFloatToStringConvert(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	seen := make(map[string]struct{})
 
-	content, err := r.fileContent(file.Path)
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -6016,7 +6026,7 @@ func (r *Runner) checkFloatToStringConvert(parsed *sqlparser.ParseResult, file *
 			if typeGroup(targetType) != "string" {
 				continue
 			}
-			sourceType := r.resolveArgType(sourceExpr, variableTypes, aliasMap)
+			sourceType := r.resolveArgType(ctx, sourceExpr, variableTypes, aliasMap)
 			if sourceType == "" {
 				continue
 			}
@@ -6065,7 +6075,7 @@ func (r *Runner) checkFloatToStringConvert(parsed *sqlparser.ParseResult, file *
 			if typeGroup(targetType) != "string" {
 				continue
 			}
-			sourceType := r.resolveArgType(sourceExpr, variableTypes, aliasMap)
+			sourceType := r.resolveArgType(ctx, sourceExpr, variableTypes, aliasMap)
 			if sourceType == "" {
 				continue
 			}
@@ -6094,7 +6104,8 @@ func (r *Runner) checkFloatToStringConvert(parsed *sqlparser.ParseResult, file *
 
 // checkSelectAfterSetRowcount проверяет, что после SET ROWCOUNT N (N != 0)
 // SELECT-присвоения в переменные и INSERT...SELECT имеют ORDER BY.
-func (r *Runner) checkSelectAfterSetRowcount(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkSelectAfterSetRowcount(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	_ = ctx
 	findings := make([]Finding, 0)
 	seen := make(map[string]struct{})
 
@@ -6181,7 +6192,8 @@ func (r *Runner) checkSelectAfterSetRowcount(parsed *sqlparser.ParseResult, file
 // checkAliasWhenUsingUnion проверяет, что при использовании ORDER BY после
 // SELECT-ов объединённых UNION, все имена из ORDER BY содержатся в алиасах
 // первого SELECT.
-func (r *Runner) checkAliasWhenUsingUnion(parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+func (r *Runner) checkAliasWhenUsingUnion(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	_ = ctx
 	findings := make([]Finding, 0)
 	seen := make(map[string]struct{})
 

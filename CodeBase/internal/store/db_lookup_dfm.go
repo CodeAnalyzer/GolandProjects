@@ -1,15 +1,16 @@
 package store
 
 import (
+	"context"
 	"strings"
 
 	"github.com/lib/pq"
 )
 
-// FindLatestDFMFormIDByClassName возвращает последний id DFM формы по имени класса формы.
-func (db *DB) FindLatestDFMFormIDByClassName(className string) (int64, error) {
+// FindLatestDFMFormIDByClassName РІРѕР·РІСЂР°С‰Р°РµС‚ РїРѕСЃР»РµРґРЅРёР№ id DFM С„РѕСЂРјС‹ РїРѕ РёРјРµРЅРё РєР»Р°СЃСЃР° С„РѕСЂРјС‹.
+func (db *DB) FindLatestDFMFormIDByClassName(ctx context.Context, className string) (int64, error) {
 	var id int64
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT id
 		FROM dfm_forms
 		WHERE LOWER(form_class) = LOWER($1)
@@ -23,10 +24,10 @@ func (db *DB) FindLatestDFMFormIDByClassName(className string) (int64, error) {
 	return id, nil
 }
 
-// FindLatestDFMComponentIDByFormAndName возвращает последний id DFM-компонента по форме и имени компонента.
-func (db *DB) FindLatestDFMComponentIDByFormAndName(formID int64, componentName string) (int64, error) {
+// FindLatestDFMComponentIDByFormAndName РІРѕР·РІСЂР°С‰Р°РµС‚ РїРѕСЃР»РµРґРЅРёР№ id DFM-РєРѕРјРїРѕРЅРµРЅС‚Р° РїРѕ С„РѕСЂРјРµ Рё РёРјРµРЅРё РєРѕРјРїРѕРЅРµРЅС‚Р°.
+func (db *DB) FindLatestDFMComponentIDByFormAndName(ctx context.Context, formID int64, componentName string) (int64, error) {
 	var id int64
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT id
 		FROM dfm_components
 		WHERE form_id = $1
@@ -41,9 +42,9 @@ func (db *DB) FindLatestDFMComponentIDByFormAndName(formID int64, componentName 
 	return id, nil
 }
 
-// FindLatestDFMFormIDsByClassNames возвращает map нижнего имени класса -> последний id DFM формы.
-// Один SQL-запрос вместо N вызовов FindLatestDFMFormIDByClassName.
-func (db *DB) FindLatestDFMFormIDsByClassNames(classNames []string) (map[string]int64, error) {
+// FindLatestDFMFormIDsByClassNames РІРѕР·РІСЂР°С‰Р°РµС‚ map РЅРёР¶РЅРµРіРѕ РёРјРµРЅРё РєР»Р°СЃСЃР° -> РїРѕСЃР»РµРґРЅРёР№ id DFM С„РѕСЂРјС‹.
+// РћРґРёРЅ SQL-Р·Р°РїСЂРѕСЃ РІРјРµСЃС‚Рѕ N РІС‹Р·РѕРІРѕРІ FindLatestDFMFormIDByClassName.
+func (db *DB) FindLatestDFMFormIDsByClassNames(ctx context.Context, classNames []string) (map[string]int64, error) {
 	normalized := make([]string, 0, len(classNames))
 	seen := make(map[string]struct{})
 	for _, name := range classNames {
@@ -61,7 +62,7 @@ func (db *DB) FindLatestDFMFormIDsByClassNames(classNames []string) (map[string]
 	if len(normalized) == 0 {
 		return result, nil
 	}
-	rows, err := db.Query(`
+	rows, err := db.QueryContext(ctx, `
 		SELECT DISTINCT ON (class_key) class_key, id
 		FROM (
 			SELECT LOWER(form_class) AS class_key, id
@@ -85,9 +86,9 @@ func (db *DB) FindLatestDFMFormIDsByClassNames(classNames []string) (map[string]
 	return result, rows.Err()
 }
 
-// FindLatestDFMComponentIDsByFormAndNames возвращает map нижнего имени компонента -> последний id
-// для заданной формы. Один SQL-запрос вместо N вызовов FindLatestDFMComponentIDByFormAndName.
-func (db *DB) FindLatestDFMComponentIDsByFormAndNames(formID int64, componentNames []string) (map[string]int64, error) {
+// FindLatestDFMComponentIDsByFormAndNames РІРѕР·РІСЂР°С‰Р°РµС‚ map РЅРёР¶РЅРµРіРѕ РёРјРµРЅРё РєРѕРјРїРѕРЅРµРЅС‚Р° -> РїРѕСЃР»РµРґРЅРёР№ id
+// РґР»СЏ Р·Р°РґР°РЅРЅРѕР№ С„РѕСЂРјС‹. РћРґРёРЅ SQL-Р·Р°РїСЂРѕСЃ РІРјРµСЃС‚Рѕ N РІС‹Р·РѕРІРѕРІ FindLatestDFMComponentIDByFormAndName.
+func (db *DB) FindLatestDFMComponentIDsByFormAndNames(ctx context.Context, formID int64, componentNames []string) (map[string]int64, error) {
 	normalized := make([]string, 0, len(componentNames))
 	seen := make(map[string]struct{})
 	for _, name := range componentNames {
@@ -105,7 +106,7 @@ func (db *DB) FindLatestDFMComponentIDsByFormAndNames(formID int64, componentNam
 	if len(normalized) == 0 {
 		return result, nil
 	}
-	rows, err := db.Query(`
+	rows, err := db.QueryContext(ctx, `
 		SELECT DISTINCT ON (comp_key) comp_key, id
 		FROM (
 			SELECT LOWER(component_name) AS comp_key, id
@@ -130,9 +131,9 @@ func (db *DB) FindLatestDFMComponentIDsByFormAndNames(formID int64, componentNam
 	return result, rows.Err()
 }
 
-// FindDFMComponentIDsByForm возвращает id компонентов формы по имени и line_start.
-func (db *DB) FindDFMComponentIDsByForm(formID int64) (map[string]int64, error) {
-	rows, err := db.Query(`
+// FindDFMComponentIDsByForm РІРѕР·РІСЂР°С‰Р°РµС‚ id РєРѕРјРїРѕРЅРµРЅС‚РѕРІ С„РѕСЂРјС‹ РїРѕ РёРјРµРЅРё Рё line_start.
+func (db *DB) FindDFMComponentIDsByForm(ctx context.Context, formID int64) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, component_name, line_start
 		FROM dfm_components
 		WHERE form_id = $1
@@ -163,9 +164,9 @@ func (db *DB) FindDFMComponentIDsByForm(formID int64) (map[string]int64, error) 
 	return result, nil
 }
 
-// FindDFMFormIDsByFile возвращает id DFM форм файла по имени и line_start.
-func (db *DB) FindDFMFormIDsByFile(fileID int64) (map[string]int64, error) {
-	rows, err := db.Query(`
+// FindDFMFormIDsByFile РІРѕР·РІСЂР°С‰Р°РµС‚ id DFM С„РѕСЂРј С„Р°Р№Р»Р° РїРѕ РёРјРµРЅРё Рё line_start.
+func (db *DB) FindDFMFormIDsByFile(ctx context.Context, fileID int64) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, form_name, line_start
 		FROM dfm_forms
 		WHERE file_id = $1
@@ -196,10 +197,10 @@ func (db *DB) FindDFMFormIDsByFile(fileID int64) (map[string]int64, error) {
 	return result, nil
 }
 
-// FindDFMFormIDByFileAndLine возвращает id DFM формы, диапазон которой включает строку.
-func (db *DB) FindDFMFormIDByFileAndLine(fileID int64, lineNumber int) (int64, error) {
+// FindDFMFormIDByFileAndLine РІРѕР·РІСЂР°С‰Р°РµС‚ id DFM С„РѕСЂРјС‹, РґРёР°РїР°Р·РѕРЅ РєРѕС‚РѕСЂРѕР№ РІРєР»СЋС‡Р°РµС‚ СЃС‚СЂРѕРєСѓ.
+func (db *DB) FindDFMFormIDByFileAndLine(ctx context.Context, fileID int64, lineNumber int) (int64, error) {
 	var id int64
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT id
 		FROM dfm_forms
 		WHERE file_id = $1

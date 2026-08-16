@@ -46,6 +46,7 @@ var reviewCmd = &cobra.Command{
 	Short: "Run SQL review checks for one file",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
 		filePath := strings.TrimSpace(args[0])
 		opts, rawRules, err := buildReviewOptions(reviewRulesRaw, reviewMinSeverity)
 		if err != nil {
@@ -61,7 +62,7 @@ var reviewCmd = &cobra.Command{
 		if progress != nil {
 			onProgress = progress.update
 		}
-		result, err := reviewsvc.Execute(filePath, opts, onProgress)
+		result, err := reviewsvc.ExecuteCtx(ctx, filePath, opts, onProgress)
 		if progress != nil {
 			progress.stop()
 		}

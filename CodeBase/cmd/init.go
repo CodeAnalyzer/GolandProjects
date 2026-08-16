@@ -48,6 +48,7 @@ Arguments:
   root_path - project root directory (defaults to config)`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 		// Путь можно передать либо аргументом CLI, либо через --path,
 		// либо взять из конфигурации как fallback.
 		if len(args) > 0 {
@@ -90,7 +91,7 @@ Arguments:
 			return fmt.Errorf("failed to init schema: %w", err)
 		}
 
-		hasCompletedInit, err := db.HasCompletedInit()
+		hasCompletedInit, err := db.HasCompletedInit(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to check init state: %w", err)
 		}
@@ -103,7 +104,7 @@ Arguments:
 		startedAt := time.Now()
 		fmt.Printf("\nIndexing started: %s\n", startedAt.Format("2006-01-02 15:04:05"))
 		fmt.Printf("rootPath=%s parallel=%d\n", rootPath, effectiveParallel)
-		stats, err := idx.Init(rootPath, effectiveParallel)
+		stats, err := idx.InitCtx(ctx, rootPath, effectiveParallel)
 		if err != nil {
 			return fmt.Errorf("indexing failed: %w", err)
 		}

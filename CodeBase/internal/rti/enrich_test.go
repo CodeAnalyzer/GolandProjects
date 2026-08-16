@@ -1,6 +1,7 @@
 package rti
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -12,7 +13,7 @@ type mockLookup struct {
 	procs map[string]*query.SQLProcedureResult
 }
 
-func (m *mockLookup) GetProcedureResult(name string) (*query.SQLProcedureResult, error) {
+func (m *mockLookup) GetProcedureResult(ctx context.Context, name string) (*query.SQLProcedureResult, error) {
 	if p, ok := m.procs[name]; ok {
 		return p, nil
 	}
@@ -34,7 +35,7 @@ func TestEnrichProcedure_Found(t *testing.T) {
 		},
 	}
 
-	enrich, err := EnrichProcedure(q, "Cons_Get_ProtocolNumber")
+	enrich, err := EnrichProcedure(context.Background(), q, "Cons_Get_ProtocolNumber")
 	if err != nil {
 		t.Fatalf("EnrichProcedure returned error: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestEnrichProcedure_Found(t *testing.T) {
 func TestEnrichProcedure_NotFound(t *testing.T) {
 	q := &mockLookup{procs: map[string]*query.SQLProcedureResult{}}
 
-	enrich, err := EnrichProcedure(q, "NonExistentProc")
+	enrich, err := EnrichProcedure(context.Background(), q, "NonExistentProc")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -86,7 +87,7 @@ func TestEnrichCalls_FoundInIndex(t *testing.T) {
 		{ID: 1, Procedure: "ProcA", NestLevel: 1},
 	}
 
-	enrichMap := EnrichCalls(q, calls)
+	enrichMap := EnrichCalls(context.Background(), q, calls)
 	if len(enrichMap) != 1 {
 		t.Fatalf("enrichMap len = %d, want 1", len(enrichMap))
 	}
@@ -109,7 +110,7 @@ func TestEnrichCalls_NotFound(t *testing.T) {
 		{ID: 1, Procedure: "UnknownProc", NestLevel: 1},
 	}
 
-	enrichMap := EnrichCalls(q, calls)
+	enrichMap := EnrichCalls(context.Background(), q, calls)
 	e, ok := enrichMap["UnknownProc"]
 	if !ok {
 		t.Fatal("UnknownProc not in enrichMap")
@@ -128,9 +129,9 @@ type countingLookup struct {
 	counts map[string]int
 }
 
-func (c *countingLookup) GetProcedureResult(name string) (*query.SQLProcedureResult, error) {
+func (c *countingLookup) GetProcedureResult(ctx context.Context, name string) (*query.SQLProcedureResult, error) {
 	c.counts[name]++
-	return c.inner.GetProcedureResult(name)
+	return c.inner.GetProcedureResult(ctx, name)
 }
 
 func TestEnrichCalls_Deduplication(t *testing.T) {
@@ -151,7 +152,7 @@ func TestEnrichCalls_Deduplication(t *testing.T) {
 		{ID: 4, Procedure: "ProcB", NestLevel: 1},
 	}
 
-	enrichMap := EnrichCalls(q, calls)
+	enrichMap := EnrichCalls(context.Background(), q, calls)
 
 	if len(enrichMap) != 2 {
 		t.Fatalf("enrichMap len = %d, want 2", len(enrichMap))
@@ -186,7 +187,7 @@ func TestEnrichCalls_WithParams(t *testing.T) {
 		},
 	}
 
-	enrich, err := EnrichProcedure(q, "MyProc")
+	enrich, err := EnrichProcedure(context.Background(), q, "MyProc")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

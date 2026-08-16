@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -151,7 +152,7 @@ func (idx *Indexer) parseSQLLikeFile(file fswalk.FileInfo, fileID int64, stats *
 
 	// Выполняем batch-вставку процедур
 	if len(proceduresBatch) > 0 {
-		if err := idx.db.BatchInsertSQLProcedures(proceduresBatch, idx.config.Indexer.BatchSize); err != nil {
+		if err := idx.db.BatchInsertSQLProcedures(context.Background(), proceduresBatch, idx.config.Indexer.BatchSize); err != nil {
 			idx.logError(path, "Error batch inserting procedures: %v", err)
 			stats.Errors += len(proceduresBatch)
 			return err
@@ -161,7 +162,7 @@ func (idx *Indexer) parseSQLLikeFile(file fswalk.FileInfo, fileID int64, stats *
 
 	// Выполняем batch-вставку таблиц
 	if len(tablesBatch) > 0 {
-		if err := idx.db.BatchInsertSQLTables(tablesBatch, idx.config.Indexer.BatchSize); err != nil {
+		if err := idx.db.BatchInsertSQLTables(context.Background(), tablesBatch, idx.config.Indexer.BatchSize); err != nil {
 			idx.logError(path, "Error batch inserting tables: %v", err)
 			stats.Errors += len(tablesBatch)
 			return err
@@ -171,7 +172,7 @@ func (idx *Indexer) parseSQLLikeFile(file fswalk.FileInfo, fileID int64, stats *
 
 	// Выполняем batch-вставку колонок
 	if len(columnsBatch) > 0 {
-		if err := idx.db.BatchInsertSQLColumns(columnsBatch, idx.config.Indexer.BatchSize); err != nil {
+		if err := idx.db.BatchInsertSQLColumns(context.Background(), columnsBatch, idx.config.Indexer.BatchSize); err != nil {
 			idx.logError(path, "Error batch inserting columns: %v", err)
 			stats.Errors += len(columnsBatch)
 			return err
@@ -180,12 +181,12 @@ func (idx *Indexer) parseSQLLikeFile(file fswalk.FileInfo, fileID int64, stats *
 	}
 
 	if len(columnDefinitionsBatch) > 0 {
-		if err := idx.db.BatchInsertSQLColumnDefinitions(columnDefinitionsBatch, idx.config.Indexer.BatchSize); err != nil {
+		if err := idx.db.BatchInsertSQLColumnDefinitions(context.Background(), columnDefinitionsBatch, idx.config.Indexer.BatchSize); err != nil {
 			idx.logError(path, "Error batch inserting column definitions: %v", err)
 			stats.Errors += len(columnDefinitionsBatch)
 			return err
 		}
-		columnDefinitionIDs, err := idx.db.FindSQLColumnDefinitionIDsByFile(fileID)
+		columnDefinitionIDs, err := idx.db.FindSQLColumnDefinitionIDsByFile(context.Background(), fileID)
 		if err != nil {
 			return fmt.Errorf("failed to resolve SQL column definition ids for symbols: %w", err)
 		}
@@ -210,7 +211,7 @@ func (idx *Indexer) parseSQLLikeFile(file fswalk.FileInfo, fileID int64, stats *
 			})
 		}
 		if len(columnDefinitionSymbolsBatch) > 0 {
-			if err := idx.db.BatchInsertSymbols(columnDefinitionSymbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+			if err := idx.db.BatchInsertSymbols(context.Background(), columnDefinitionSymbolsBatch, idx.config.Indexer.BatchSize); err != nil {
 				return fmt.Errorf("failed to save SQL column definition symbols: %w", err)
 			}
 		}
@@ -218,13 +219,13 @@ func (idx *Indexer) parseSQLLikeFile(file fswalk.FileInfo, fileID int64, stats *
 
 	var indexIDs map[string]int64
 	if len(indexDefinitionsBatch) > 0 {
-		if err := idx.db.BatchInsertSQLIndexDefinitions(indexDefinitionsBatch, idx.config.Indexer.BatchSize); err != nil {
+		if err := idx.db.BatchInsertSQLIndexDefinitions(context.Background(), indexDefinitionsBatch, idx.config.Indexer.BatchSize); err != nil {
 			idx.logError(path, "Error batch inserting SQL index definitions: %v", err)
 			stats.Errors += len(indexDefinitionsBatch)
 			return err
 		}
 		var err error
-		indexIDs, err = idx.db.FindSQLIndexDefinitionIDsByFile(fileID)
+		indexIDs, err = idx.db.FindSQLIndexDefinitionIDsByFile(context.Background(), fileID)
 		if err != nil {
 			return fmt.Errorf("failed to resolve SQL index definition ids for symbols: %w", err)
 		}
@@ -252,7 +253,7 @@ func (idx *Indexer) parseSQLLikeFile(file fswalk.FileInfo, fileID int64, stats *
 			})
 		}
 		if len(indexSymbolsBatch) > 0 {
-			if err := idx.db.BatchInsertSymbols(indexSymbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+			if err := idx.db.BatchInsertSymbols(context.Background(), indexSymbolsBatch, idx.config.Indexer.BatchSize); err != nil {
 				return fmt.Errorf("failed to save SQL index definition symbols: %w", err)
 			}
 		}
@@ -261,7 +262,7 @@ func (idx *Indexer) parseSQLLikeFile(file fswalk.FileInfo, fileID int64, stats *
 	if len(indexDefinitionFieldsBatch) > 0 {
 		if indexIDs == nil {
 			var err error
-			indexIDs, err = idx.db.FindSQLIndexDefinitionIDsByFile(fileID)
+			indexIDs, err = idx.db.FindSQLIndexDefinitionIDsByFile(context.Background(), fileID)
 			if err != nil {
 				return fmt.Errorf("failed to resolve SQL index definition ids: %w", err)
 			}
@@ -279,7 +280,7 @@ func (idx *Indexer) parseSQLLikeFile(file fswalk.FileInfo, fileID int64, stats *
 			fieldsToPersist = append(fieldsToPersist, field)
 		}
 		if len(fieldsToPersist) > 0 {
-			if err := idx.db.BatchInsertSQLIndexDefinitionFields(fieldsToPersist, idx.config.Indexer.BatchSize); err != nil {
+			if err := idx.db.BatchInsertSQLIndexDefinitionFields(context.Background(), fieldsToPersist, idx.config.Indexer.BatchSize); err != nil {
 				idx.logError(path, "Error batch inserting SQL index definition fields: %v", err)
 				stats.Errors += len(fieldsToPersist)
 				return err
@@ -288,7 +289,7 @@ func (idx *Indexer) parseSQLLikeFile(file fswalk.FileInfo, fileID int64, stats *
 	}
 
 	if len(definesBatch) > 0 {
-		if err := idx.db.BatchInsertHDefines(definesBatch, idx.config.Indexer.BatchSize); err != nil {
+		if err := idx.db.BatchInsertHDefines(context.Background(), definesBatch, idx.config.Indexer.BatchSize); err != nil {
 			idx.logError(path, "Error batch inserting SQL defines: %v", err)
 			stats.Errors += len(definesBatch)
 			return err
@@ -296,15 +297,15 @@ func (idx *Indexer) parseSQLLikeFile(file fswalk.FileInfo, fileID int64, stats *
 		stats.Defines += len(definesBatch)
 	}
 
-	procedureIDs, err := idx.db.FindSQLProcedureIDsByFile(fileID)
+	procedureIDs, err := idx.db.FindSQLProcedureIDsByFile(context.Background(), fileID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve SQL procedure ids for symbols: %w", err)
 	}
-	tableIDs, err := idx.db.FindSQLTableIDsByFileAndLine(fileID)
+	tableIDs, err := idx.db.FindSQLTableIDsByFileAndLine(context.Background(), fileID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve SQL table ids for symbols: %w", err)
 	}
-	defineIDs, err := idx.db.FindHDefineIDsByFile(fileID)
+	defineIDs, err := idx.db.FindHDefineIDsByFile(context.Background(), fileID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve SQL define ids for symbols: %w", err)
 	}
@@ -346,14 +347,14 @@ func (idx *Indexer) parseSQLLikeFile(file fswalk.FileInfo, fileID int64, stats *
 
 	// Выполняем batch-вставку символов
 	if len(symbolsBatch) > 0 {
-		if err := idx.db.BatchInsertSymbols(symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+		if err := idx.db.BatchInsertSymbols(context.Background(), symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
 			idx.logError(path, "Error batch inserting symbols: %v", err)
 			stats.Errors += len(symbolsBatch)
 			return err
 		}
 	}
 	if len(fragmentsBatch) > 0 {
-		if err := idx.db.BatchInsertQueryFragments(fragmentsBatch, idx.config.Indexer.BatchSize); err != nil {
+		if err := idx.db.BatchInsertQueryFragments(context.Background(), fragmentsBatch, idx.config.Indexer.BatchSize); err != nil {
 			idx.logError(path, "Error batch inserting SQL query fragments: %v", err)
 			stats.Errors += len(fragmentsBatch)
 			return err
@@ -406,7 +407,7 @@ func (idx *Indexer) parseSQLLikeFile(file fswalk.FileInfo, fileID int64, stats *
 			e.FileID = fileID
 		}
 		if len(entries) > 0 {
-			if err := idx.db.BatchInsertRetCodes(entries, idx.config.Indexer.BatchSize); err != nil {
+			if err := idx.db.BatchInsertRetCodes(context.Background(), entries, idx.config.Indexer.BatchSize); err != nil {
 				idx.logError(path, "Error batch inserting return codes: %v", err)
 			}
 		}
@@ -476,7 +477,7 @@ func (idx *Indexer) enrichSelectIntoDataTypes(result *sqlparser.ParseResult) err
 			}
 			continue
 		}
-		resolvedType, err := idx.db.FindLatestSQLColumnDefinitionType(resolvedTable, sourceColumn)
+		resolvedType, err := idx.db.FindLatestSQLColumnDefinitionType(context.Background(), resolvedTable, sourceColumn)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				typeCache[typeKey] = ""
@@ -721,7 +722,7 @@ func extractSimpleSourceColumn(segment string) (string, string, bool) {
 
 func (idx *Indexer) buildT01GeneratedSubscriberRelations(content string, fileID int64, procedures []*model.SQLProcedure, calls []*model.SQLProcedureCall) ([]*model.Relation, error) {
 	lines := strings.Split(content, "\n")
-	procedureIDs, err := idx.db.FindSQLProcedureIDsByFile(fileID)
+	procedureIDs, err := idx.db.FindSQLProcedureIDsByFile(context.Background(), fileID)
 	if err != nil {
 		return nil, err
 	}
@@ -817,10 +818,10 @@ func (idx *Indexer) parsePASFile(file fswalk.FileInfo, fileID int64, stats *mode
 
 	unit := result.Units[0]
 	unit.FileID = fileID
-	if err := idx.db.BatchInsertPASUnits([]*model.PASUnit{unit}, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertPASUnits(context.Background(), []*model.PASUnit{unit}, idx.config.Indexer.BatchSize); err != nil {
 		return fmt.Errorf("failed to save PAS unit: %w", err)
 	}
-	unitIDs, err := idx.db.FindPASUnitIDsByFile(fileID)
+	unitIDs, err := idx.db.FindPASUnitIDsByFile(context.Background(), fileID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve PAS unit ids: %w", err)
 	}
@@ -841,7 +842,7 @@ func (idx *Indexer) parsePASFile(file fswalk.FileInfo, fileID int64, stats *mode
 		EntityID:   unitID,
 		LineNumber: unit.LineStart,
 	})
-	if err := idx.db.BatchInsertSymbols(symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSymbols(context.Background(), symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return fmt.Errorf("failed to save PAS unit symbol: %w", err)
 	}
 	unitSymbolCount := len(symbolsBatch)
@@ -850,12 +851,12 @@ func (idx *Indexer) parsePASFile(file fswalk.FileInfo, fileID int64, stats *mode
 		class.UnitID = unitID
 		classesBatch = append(classesBatch, class)
 	}
-	if err := idx.db.BatchInsertPASClasses(classesBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertPASClasses(context.Background(), classesBatch, idx.config.Indexer.BatchSize); err != nil {
 		return fmt.Errorf("failed to save PAS classes: %w", err)
 	}
 	stats.Classes += len(classesBatch)
 
-	classIDByLookup, err := idx.db.FindPASClassIDsByUnit(unitID)
+	classIDByLookup, err := idx.db.FindPASClassIDsByUnit(context.Background(), unitID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve PAS class ids: %w", err)
 	}
@@ -877,7 +878,7 @@ func (idx *Indexer) parsePASFile(file fswalk.FileInfo, fileID int64, stats *mode
 		})
 	}
 	if len(symbolsBatch) > unitSymbolCount {
-		if err := idx.db.BatchInsertSymbols(symbolsBatch[unitSymbolCount:], idx.config.Indexer.BatchSize); err != nil {
+		if err := idx.db.BatchInsertSymbols(context.Background(), symbolsBatch[unitSymbolCount:], idx.config.Indexer.BatchSize); err != nil {
 			return fmt.Errorf("failed to save PAS class symbols: %w", err)
 		}
 	}
@@ -891,12 +892,12 @@ func (idx *Indexer) parsePASFile(file fswalk.FileInfo, fileID int64, stats *mode
 		}
 		methodsBatch = append(methodsBatch, method)
 	}
-	if err := idx.db.BatchInsertPASMethods(methodsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertPASMethods(context.Background(), methodsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return fmt.Errorf("failed to save PAS methods: %w", err)
 	}
 	stats.Methods += len(methodsBatch)
 
-	methodIDByLookup, err := idx.db.FindPASMethodIDsByUnit(unitID)
+	methodIDByLookup, err := idx.db.FindPASMethodIDsByUnit(context.Background(), unitID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve PAS method ids: %w", err)
 	}
@@ -925,7 +926,7 @@ func (idx *Indexer) parsePASFile(file fswalk.FileInfo, fileID int64, stats *mode
 		}
 	}
 	if len(symbolsBatch) > classSymbolCount {
-		if err := idx.db.BatchInsertSymbols(symbolsBatch[classSymbolCount:], idx.config.Indexer.BatchSize); err != nil {
+		if err := idx.db.BatchInsertSymbols(context.Background(), symbolsBatch[classSymbolCount:], idx.config.Indexer.BatchSize); err != nil {
 			return fmt.Errorf("failed to save PAS method symbols: %w", err)
 		}
 	}
@@ -937,12 +938,12 @@ func (idx *Indexer) parsePASFile(file fswalk.FileInfo, fileID int64, stats *mode
 		}
 		fieldsBatch = append(fieldsBatch, field)
 	}
-	if err := idx.db.BatchInsertPASFields(fieldsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertPASFields(context.Background(), fieldsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return fmt.Errorf("failed to save PAS fields: %w", err)
 	}
 	stats.PASFields += len(fieldsBatch)
 
-	fieldIDByLookup, err := idx.db.FindPASFieldIDsByUnit(unitID)
+	fieldIDByLookup, err := idx.db.FindPASFieldIDsByUnit(context.Background(), unitID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve PAS field ids: %w", err)
 	}
@@ -959,7 +960,7 @@ func (idx *Indexer) parsePASFile(file fswalk.FileInfo, fileID int64, stats *mode
 	for _, table := range result.Tables {
 		table.FileID = fileID
 	}
-	if err := idx.db.BatchInsertSQLTables(result.Tables, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSQLTables(context.Background(), result.Tables, idx.config.Indexer.BatchSize); err != nil {
 		return fmt.Errorf("failed to save PAS SQL tables: %w", err)
 	}
 	stats.Tables += len(result.Tables)
@@ -1028,7 +1029,7 @@ func (idx *Indexer) parsePASFile(file fswalk.FileInfo, fileID int64, stats *mode
 			LineNumber:       fragment.LineNumber,
 		})
 	}
-	if err := idx.db.BatchInsertQueryFragments(fragmentsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertQueryFragments(context.Background(), fragmentsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return fmt.Errorf("failed to save PAS query fragments: %w", err)
 	}
 	stats.QueryFragments += len(fragmentsBatch)

@@ -3,6 +3,7 @@
 package rti
 
 import (
+	"context"
 	"testing"
 
 	"github.com/codebase/internal/store/testutil"
@@ -32,7 +33,7 @@ func TestPruneAndDeleteRTISessions(t *testing.T) {
 	id2 := insert("s2.rti")
 	id3 := insert("s3.rti")
 
-	deleted, err := PruneSessions(db, 1)
+	deleted, err := PruneSessions(context.Background(), db, 1)
 	if err != nil {
 		t.Fatalf("PruneSessions(1): %v", err)
 	}
@@ -40,7 +41,7 @@ func TestPruneAndDeleteRTISessions(t *testing.T) {
 		t.Fatalf("deleted = %d, want 2", deleted)
 	}
 
-	sessions, err := ListSessions(db, 10)
+	sessions, err := ListSessions(context.Background(), db, 10)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -56,11 +57,11 @@ func TestPruneAndDeleteRTISessions(t *testing.T) {
 	}
 
 	keepID := id3
-	if err := DeleteSession(db, keepID); err != nil {
+	if err := DeleteSession(context.Background(), db, keepID); err != nil {
 		t.Fatalf("DeleteSession: %v", err)
 	}
 	id4 := insert("s4.rti")
-	if err := DeleteSession(db, keepID); err != nil {
+	if err := DeleteSession(context.Background(), db, keepID); err != nil {
 		t.Fatalf("DeleteSession missing: %v", err)
 	}
 	var exists bool
@@ -71,7 +72,7 @@ func TestPruneAndDeleteRTISessions(t *testing.T) {
 		t.Fatal("unrelated session was deleted")
 	}
 
-	n, err := PruneSessions(db, 0)
+	n, err := PruneSessions(context.Background(), db, 0)
 	if err != nil {
 		t.Fatalf("PruneSessions(0): %v", err)
 	}
@@ -83,7 +84,7 @@ func TestPruneAndDeleteRTISessions(t *testing.T) {
 		t.Fatal("insert after truncate failed")
 	}
 
-	if _, err := PruneSessions(db, -1); err == nil {
+	if _, err := PruneSessions(context.Background(), db, -1); err == nil {
 		t.Log("PruneSessions(-1) accepted; documented as current behavior")
 	}
 }

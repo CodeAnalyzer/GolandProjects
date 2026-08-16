@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -128,6 +129,7 @@ var rtiPruneCmd = &cobra.Command{
 }
 
 func runRTIParse(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	result, err := rti.ParseFile(args[0])
 	if err != nil {
 		return fmt.Errorf("failed to parse RTI file: %w", err)
@@ -142,7 +144,7 @@ func runRTIParse(cmd *cobra.Command, args []string) error {
 			if err := db.InitSchema(); err != nil {
 				return fmt.Errorf("failed to init schema: %w", err)
 			}
-			sessionID, err = rti.SaveSession(db, result, args[0])
+			sessionID, err = rti.SaveSession(ctx, db, result, args[0])
 			if err != nil {
 				return fmt.Errorf("failed to save session: %w", err)
 			}
@@ -162,7 +164,7 @@ func runRTIParse(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func loadRTICalls(args []string) (*rti.RTIParseResult, error) {
+func loadRTICalls(ctx context.Context, args []string) (*rti.RTIParseResult, error) {
 	if rtiSessionID > 0 {
 		cfg := config.Get()
 		if cfg == nil {
@@ -174,15 +176,15 @@ func loadRTICalls(args []string) (*rti.RTIParseResult, error) {
 		}
 		defer db.Close()
 
-		session, err := rti.GetSession(db, rtiSessionID)
+		session, err := rti.GetSession(ctx, db, rtiSessionID)
 		if err != nil {
 			return nil, fmt.Errorf("session %d not found: %w", rtiSessionID, err)
 		}
-		calls, err := rti.LoadCalls(db, rtiSessionID)
+		calls, err := rti.LoadCalls(ctx, db, rtiSessionID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load calls: %w", err)
 		}
-		clientEvents, err := rti.LoadClientEvents(db, rtiSessionID)
+		clientEvents, err := rti.LoadClientEvents(ctx, db, rtiSessionID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load client events: %w", err)
 		}
@@ -205,12 +207,13 @@ func loadRTICalls(args []string) (*rti.RTIParseResult, error) {
 }
 
 func runRTISummary(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	if rtiSessionID > 0 {
 		cfg := config.Get()
 		if cfg != nil {
 			if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
 				defer db.Close()
-				summary, err := rti.LoadSummary(db, rtiSessionID)
+				summary, err := rti.LoadSummary(ctx, db, rtiSessionID)
 				if err != nil {
 					return err
 				}
@@ -222,7 +225,7 @@ func runRTISummary(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	result, err := loadRTICalls(args)
+	result, err := loadRTICalls(ctx, args)
 	if err != nil {
 		return err
 	}
@@ -234,6 +237,7 @@ func runRTISummary(cmd *cobra.Command, args []string) error {
 }
 
 func runRTITree(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	var calls []*rti.RTICall
 	if rtiSessionID > 0 {
 		cfg := config.Get()
@@ -241,7 +245,7 @@ func runRTITree(cmd *cobra.Command, args []string) error {
 			if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
 				defer db.Close()
 				var err error
-				calls, err = rti.LoadCallsForTree(db, rtiSessionID, rtiProcedure, rtiMaxDepth, 5000)
+				calls, err = rti.LoadCallsForTree(ctx, db, rtiSessionID, rtiProcedure, rtiMaxDepth, 5000)
 				if err != nil {
 					return err
 				}
@@ -249,7 +253,7 @@ func runRTITree(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if calls == nil {
-		result, err := loadRTICalls(args)
+		result, err := loadRTICalls(ctx, args)
 		if err != nil {
 			return err
 		}
@@ -266,7 +270,7 @@ func runRTITree(cmd *cobra.Command, args []string) error {
 		if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
 			defer db.Close()
 			q := query.New(db)
-			enrichMap = rti.EnrichCalls(q, calls)
+			enrichMap = rti.EnrichCalls(ctx, q, calls)
 		}
 	}
 
@@ -278,6 +282,7 @@ func runRTITree(cmd *cobra.Command, args []string) error {
 }
 
 func runRTIClientTree(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	limit := applyQueryLimit(rtiLimit)
 	var events []*rti.RTIClientEvent
 	if rtiSessionID > 0 {
@@ -291,7 +296,7 @@ func runRTIClientTree(cmd *cobra.Command, args []string) error {
 					filter.PID = &p
 				}
 				var err error
-				events, err = rti.LoadClientEventsFiltered(db, rtiSessionID, filter, limit)
+				events, err = rti.LoadClientEventsFiltered(ctx, db, rtiSessionID, filter, limit)
 				if err != nil {
 					return err
 				}
@@ -299,7 +304,7 @@ func runRTIClientTree(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if events == nil {
-		result, err := loadRTICalls(args)
+		result, err := loadRTICalls(ctx, args)
 		if err != nil {
 			return err
 		}
@@ -317,7 +322,7 @@ func runRTIClientTree(cmd *cobra.Command, args []string) error {
 		if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
 			defer db.Close()
 			q := query.New(db)
-			clientEnrichMap = rti.EnrichClientEvents(q, events)
+			clientEnrichMap = rti.EnrichClientEvents(ctx, q, events)
 		}
 	}
 
@@ -340,6 +345,7 @@ func runRTIClientTree(cmd *cobra.Command, args []string) error {
 }
 
 func runRTITimeline(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	limit := applyQueryLimit(rtiLimit)
 	var calls []*rti.RTICall
 	var events []*rti.RTIClientEvent
@@ -354,11 +360,11 @@ func runRTITimeline(cmd *cobra.Command, args []string) error {
 					filter.PID = &p
 				}
 				var err error
-				calls, err = rti.LoadTimelineCalls(db, rtiSessionID, filter, limit)
+				calls, err = rti.LoadTimelineCalls(ctx, db, rtiSessionID, filter, limit)
 				if err != nil {
 					return err
 				}
-				events, err = rti.LoadTimelineClientEvents(db, rtiSessionID, filter, limit)
+				events, err = rti.LoadTimelineClientEvents(ctx, db, rtiSessionID, filter, limit)
 				if err != nil {
 					return err
 				}
@@ -366,7 +372,7 @@ func runRTITimeline(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if calls == nil && events == nil {
-		result, err := loadRTICalls(args)
+		result, err := loadRTICalls(ctx, args)
 		if err != nil {
 			return err
 		}
@@ -387,7 +393,7 @@ func runRTITimeline(cmd *cobra.Command, args []string) error {
 		if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
 			defer db.Close()
 			q := query.New(db)
-			clientEnrichMap = rti.EnrichClientEvents(q, events)
+			clientEnrichMap = rti.EnrichClientEvents(ctx, q, events)
 		}
 	}
 
@@ -407,6 +413,7 @@ func runRTITimeline(cmd *cobra.Command, args []string) error {
 }
 
 func runRTIErrors(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	limit := applyQueryLimit(rtiLimit)
 	var errors []*rti.RTICall
 	var clientErrors []*rti.RTIClientEvent
@@ -416,11 +423,11 @@ func runRTIErrors(cmd *cobra.Command, args []string) error {
 			if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
 				defer db.Close()
 				var err error
-				errors, err = rti.LoadErrorCalls(db, rtiSessionID, limit)
+				errors, err = rti.LoadErrorCalls(ctx, db, rtiSessionID, limit)
 				if err != nil {
 					return err
 				}
-				clientErrors, err = rti.LoadClientErrors(db, rtiSessionID, limit)
+				clientErrors, err = rti.LoadClientErrors(ctx, db, rtiSessionID, limit)
 				if err != nil {
 					return err
 				}
@@ -433,18 +440,18 @@ func runRTIErrors(cmd *cobra.Command, args []string) error {
 					codes = append(codes, int64(*c.RetVal))
 				}
 				if len(codes) > 0 {
-					retCodeMap, _ = db.LookupRetCodes(codes)
+					retCodeMap, _ = db.LookupRetCodes(ctx, codes)
 				}
 				q := query.New(db)
-				enrichMap = rti.EnrichCalls(q, errors)
+				enrichMap = rti.EnrichCalls(ctx, q, errors)
 				if len(clientErrors) > 0 {
-					clientEnrichMap = rti.EnrichClientEvents(q, clientErrors)
+					clientEnrichMap = rti.EnrichClientEvents(ctx, q, clientErrors)
 				}
 				return printRTIErrors(errors, clientErrors, retCodeMap, enrichMap, clientEnrichMap)
 			}
 		}
 	}
-	result, err := loadRTICalls(args)
+	result, err := loadRTICalls(ctx, args)
 	if err != nil {
 		return err
 	}
@@ -476,11 +483,11 @@ func runRTIErrors(cmd *cobra.Command, args []string) error {
 			for _, c := range errors {
 				codes = append(codes, int64(*c.RetVal))
 			}
-			retCodeMap, _ = db.LookupRetCodes(codes)
+			retCodeMap, _ = db.LookupRetCodes(ctx, codes)
 			q := query.New(db)
-			enrichMap = rti.EnrichCalls(q, errors)
+			enrichMap = rti.EnrichCalls(ctx, q, errors)
 			if len(clientErrors) > 0 {
-				clientEnrichMap = rti.EnrichClientEvents(q, clientErrors)
+				clientEnrichMap = rti.EnrichClientEvents(ctx, q, clientErrors)
 			}
 		}
 	}
@@ -540,6 +547,7 @@ func printRTIErrors(errors []*rti.RTICall, clientErrors []*rti.RTIClientEvent,
 }
 
 func runRTIDetails(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	if rtiProcedure == "" {
 		return fmt.Errorf("--proc is required for details command")
 	}
@@ -551,7 +559,7 @@ func runRTIDetails(cmd *cobra.Command, args []string) error {
 			if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
 				defer db.Close()
 				var err error
-				calls, err = rti.LoadCallsByProcedure(db, rtiSessionID, rtiProcedure, limit)
+				calls, err = rti.LoadCallsByProcedure(ctx, db, rtiSessionID, rtiProcedure, limit)
 				if err != nil {
 					return err
 				}
@@ -559,7 +567,7 @@ func runRTIDetails(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if calls == nil {
-		result, err := loadRTICalls(args)
+		result, err := loadRTICalls(ctx, args)
 		if err != nil {
 			return err
 		}
@@ -584,7 +592,7 @@ func runRTIDetails(cmd *cobra.Command, args []string) error {
 		if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
 			defer db.Close()
 			q := query.New(db)
-			enrich, _ = rti.EnrichProcedure(q, rtiProcedure)
+			enrich, _ = rti.EnrichProcedure(ctx, q, rtiProcedure)
 			// Lookup retcodes for all error calls
 			codes := make([]int64, 0)
 			for _, c := range calls {
@@ -593,7 +601,7 @@ func runRTIDetails(cmd *cobra.Command, args []string) error {
 				}
 			}
 			if len(codes) > 0 {
-				retCodeMap, _ = db.LookupRetCodes(codes)
+				retCodeMap, _ = db.LookupRetCodes(ctx, codes)
 			}
 		}
 	}
@@ -645,6 +653,7 @@ func runRTIDetails(cmd *cobra.Command, args []string) error {
 }
 
 func runRTIBlog(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	if rtiProcedure == "" {
 		return fmt.Errorf("--proc is required for blog command")
 	}
@@ -656,7 +665,7 @@ func runRTIBlog(cmd *cobra.Command, args []string) error {
 			if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
 				defer db.Close()
 				var err error
-				calls, err = rti.LoadCallsByProcedure(db, rtiSessionID, rtiProcedure, limit)
+				calls, err = rti.LoadCallsByProcedure(ctx, db, rtiSessionID, rtiProcedure, limit)
 				if err != nil {
 					return err
 				}
@@ -664,7 +673,7 @@ func runRTIBlog(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if calls == nil {
-		result, err := loadRTICalls(args)
+		result, err := loadRTICalls(ctx, args)
 		if err != nil {
 			return err
 		}
@@ -752,6 +761,7 @@ func joinStrings(ss []string, sep string) string {
 }
 
 func runRTIList(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	cfg := config.Get()
 	if cfg == nil {
 		return fmt.Errorf("no config available")
@@ -762,7 +772,7 @@ func runRTIList(cmd *cobra.Command, args []string) error {
 	}
 	defer db.Close()
 
-	sessions, err := rti.ListSessions(db, rtiListLimit)
+	sessions, err := rti.ListSessions(ctx, db, rtiListLimit)
 	if err != nil {
 		return fmt.Errorf("failed to list sessions: %w", err)
 	}
@@ -783,6 +793,7 @@ func runRTIList(cmd *cobra.Command, args []string) error {
 }
 
 func runRTIDelete(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	if rtiSessionID <= 0 {
 		return fmt.Errorf("--session is required for delete command")
 	}
@@ -796,12 +807,12 @@ func runRTIDelete(cmd *cobra.Command, args []string) error {
 	}
 	defer db.Close()
 
-	session, err := rti.GetSession(db, rtiSessionID)
+	session, err := rti.GetSession(ctx, db, rtiSessionID)
 	if err != nil {
 		return fmt.Errorf("session %d not found: %w", rtiSessionID, err)
 	}
 
-	if err := rti.DeleteSession(db, rtiSessionID); err != nil {
+	if err := rti.DeleteSession(ctx, db, rtiSessionID); err != nil {
 		return fmt.Errorf("failed to delete session: %w", err)
 	}
 
@@ -818,6 +829,7 @@ func runRTIDelete(cmd *cobra.Command, args []string) error {
 }
 
 func runRTIPrune(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	if rtiKeepLast < 0 {
 		return fmt.Errorf("--keep-last must be >= 0")
 	}
@@ -831,7 +843,7 @@ func runRTIPrune(cmd *cobra.Command, args []string) error {
 	}
 	defer db.Close()
 
-	deleted, err := rti.PruneSessions(db, rtiKeepLast)
+	deleted, err := rti.PruneSessions(ctx, db, rtiKeepLast)
 	if err != nil {
 		return fmt.Errorf("failed to prune sessions: %w", err)
 	}
@@ -847,6 +859,7 @@ func runRTIPrune(cmd *cobra.Command, args []string) error {
 }
 
 func runRTISlow(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	threshold := rtiSlowThreshold
 	if threshold <= 0 {
 		threshold = rti.GetSlowThresholdMs()
@@ -860,19 +873,19 @@ func runRTISlow(cmd *cobra.Command, args []string) error {
 			if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
 				defer db.Close()
 				var err error
-				slow, err = rti.LoadSlowCalls(db, rtiSessionID, threshold, limit)
+				slow, err = rti.LoadSlowCalls(ctx, db, rtiSessionID, threshold, limit)
 				if err != nil {
 					return err
 				}
-				slowClientSQL, err = rti.LoadSlowClientSQL(db, rtiSessionID, threshold, limit)
+				slowClientSQL, err = rti.LoadSlowClientSQL(ctx, db, rtiSessionID, threshold, limit)
 				if err != nil {
 					return err
 				}
-				return printRTISlow(slow, slowClientSQL, threshold, cfg)
+				return printRTISlow(ctx, slow, slowClientSQL, threshold, cfg)
 			}
 		}
 	}
-	result, err := loadRTICalls(args)
+	result, err := loadRTICalls(ctx, args)
 	if err != nil {
 		return err
 	}
@@ -900,10 +913,10 @@ func runRTISlow(cmd *cobra.Command, args []string) error {
 	if len(slowClientSQL) > limit {
 		slowClientSQL = slowClientSQL[:limit]
 	}
-	return printRTISlow(slow, slowClientSQL, threshold, config.Get())
+	return printRTISlow(ctx, slow, slowClientSQL, threshold, config.Get())
 }
 
-func printRTISlow(slow []*rti.RTICall, slowClientSQL []*rti.RTIClientEvent, threshold int, cfg *config.Config) error {
+func printRTISlow(ctx context.Context, slow []*rti.RTICall, slowClientSQL []*rti.RTIClientEvent, threshold int, cfg *config.Config) error {
 	if rtiOutputJSON {
 		return printJSON(map[string]interface{}{
 			"server_calls":      slow,
@@ -931,7 +944,7 @@ func printRTISlow(slow []*rti.RTICall, slowClientSQL []*rti.RTIClientEvent, thre
 			if db2, dbErr2 := store.NewDB(cfg.DB); dbErr2 == nil {
 				defer db2.Close()
 				q2 := query.New(db2)
-				clientEnrichMap = rti.EnrichClientEvents(q2, slowClientSQL)
+				clientEnrichMap = rti.EnrichClientEvents(ctx, q2, slowClientSQL)
 			}
 		}
 		fmt.Printf("\nFound %d slow client SQL block(s) (>= %dms):\n\n", len(slowClientSQL), threshold)

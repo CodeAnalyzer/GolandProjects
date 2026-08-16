@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -57,9 +58,9 @@ func (idx *Indexer) walkerPatterns() ([]string, []string) {
 	return includePatterns, excludePatterns
 }
 
-func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error) {
+func (idx *Indexer) InitCtx(ctx context.Context, rootPath string, parallel int) (*model.ScanStats, error) {
 	startedAt := time.Now()
-	scanRunID, err := idx.db.CreateScanRun(rootPath)
+	scanRunID, err := idx.db.CreateScanRun(ctx, rootPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create scan run: %w", err)
 	}
@@ -78,7 +79,7 @@ func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error
 	workersWG.Add(1)
 	go func() {
 		defer workersWG.Done()
-		idx.processFilesWorkerPoolInit(parallel, filesCh, scanRunID, collector)
+		idx.processFilesWorkerPoolInit(ctx, parallel, filesCh, scanRunID, collector)
 	}()
 
 	for err := range errsCh {
@@ -88,7 +89,7 @@ func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error
 
 	workersWG.Wait()
 	walkSaveDone := time.Now()
-	idx.runPostProcessingParallel(collector, parallel)
+	idx.runPostProcessingParallel(ctx, collector, parallel)
 	postProcessDone := time.Now()
 	stats := collector.Snapshot()
 	stats.WalkSaveMs = walkSaveDone.Sub(startedAt).Milliseconds()
@@ -98,20 +99,24 @@ func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error
 	if stats.Errors > 0 {
 		status = "completed_with_errors"
 	}
-	if err := idx.db.UpdateScanRun(scanRunID, stats.FilesScanned, stats.FilesIndexed, stats.Errors, status); err != nil {
+	if err := idx.db.UpdateScanRun(ctx, scanRunID, stats.FilesScanned, stats.FilesIndexed, stats.Errors, status); err != nil {
 		return nil, fmt.Errorf("failed to finalize scan run: %w", err)
 	}
 	return &stats, nil
 }
 
-func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*model.ScanStats, error) {
+func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error) {
+	return idx.InitCtx(context.Background(), rootPath, parallel)
+}
+
+func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified bool, parallel int) (*model.ScanStats, error) {
 	startedAt := time.Now()
-	scanRunID, err := idx.db.CreateScanRun(rootPath)
+	scanRunID, err := idx.db.CreateScanRun(ctx, rootPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create scan run: %w", err)
 	}
 
-	existing, err := idx.db.GetLatestFilesByRootPath(rootPath)
+	existing, err := idx.db.GetLatestFilesByRootPath(ctx, rootPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load previous file state: %w", err)
 	}
@@ -137,7 +142,7 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 	workersWG.Add(1)
 	go func() {
 		defer workersWG.Done()
-		idx.processFilesWorkerPool(parallel, jobs, collector)
+		idx.processFilesWorkerPool(ctx, parallel, jobs, collector)
 	}()
 
 	// Collect paths and new file IDs for modified files.
@@ -164,7 +169,7 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 				continue
 			}
 			saveStart := time.Now()
-			fileID, err := idx.saveFile(file, scanRunID)
+			fileID, err := idx.saveFileCtx(ctx, file, scanRunID)
 			saveElapsed := time.Since(saveStart).Milliseconds()
 			collector.Add(func(stats *model.ScanStats) { stats.SaveMs += saveElapsed })
 			if err != nil {
@@ -194,7 +199,7 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 
 	// Batch delete old rows for modified files, keeping the new file IDs.
 	if len(modifiedPaths) > 0 {
-		if err := idx.db.DeleteFilesByPathsExcept(modifiedPaths, newFileIDs); err != nil {
+		if err := idx.db.DeleteFilesByPathsExcept(ctx, modifiedPaths, newFileIDs); err != nil {
 			idx.logError("<cleanup>", "Error batch deleting outdated file rows: %v", err)
 			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		}
@@ -202,7 +207,7 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 
 	workersWG.Wait()
 	processDone := time.Now()
-	idx.runPostProcessingParallel(collector, parallel)
+	idx.runPostProcessingParallel(ctx, collector, parallel)
 	postProcessDone := time.Now()
 
 	// Batch delete removed files (not seen in walker).
@@ -213,7 +218,7 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 		}
 		removedPaths = append(removedPaths, path)
 	}
-	if err := idx.db.DeleteFilesByPaths(removedPaths); err != nil {
+	if err := idx.db.DeleteFilesByPaths(ctx, removedPaths); err != nil {
 		idx.logError("<cleanup>", "Error batch deleting removed files: %v", err)
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 	}
@@ -229,17 +234,21 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 	if stats.Errors > 0 {
 		status = "completed_with_errors"
 	}
-	if err := idx.db.UpdateScanRun(scanRunID, stats.FilesScanned, stats.FilesIndexed, stats.Errors, status); err != nil {
+	if err := idx.db.UpdateScanRun(ctx, scanRunID, stats.FilesScanned, stats.FilesIndexed, stats.Errors, status); err != nil {
 		return nil, fmt.Errorf("failed to finalize scan run: %w", err)
 	}
 	return &stats, nil
 }
 
+func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*model.ScanStats, error) {
+	return idx.UpdateCtx(context.Background(), rootPath, onlyModified, parallel)
+}
+
 // runPostProcessingParallel запускает все независимые пост-обработки параллельно.
 // Каждая пост-обработка работает с разными типами relations и не конфликтует с другими.
 // DELETE выполняется до запуска горутин, чтобы не конкурировать с параллельными COPY INTO relations.
-func (idx *Indexer) runPostProcessingParallel(collector *statsCollector, parallel int) {
-	if err := idx.db.DeleteSubscribesToEventRelations(); err != nil {
+func (idx *Indexer) runPostProcessingParallel(ctx context.Context, collector *statsCollector, parallel int) {
+	if err := idx.db.DeleteSubscribesToEventRelations(ctx); err != nil {
 		idx.logError("<post-processing>", "Error deleting subscribes_to_event relations: %v", err)
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 	}

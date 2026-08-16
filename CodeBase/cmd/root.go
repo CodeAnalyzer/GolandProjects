@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/codebase/internal/config"
@@ -19,7 +22,7 @@ import (
 var (
 	appName        = "CodeBase"
 	version        = "0.8.7"
-	buildNumber    = "1323"
+	buildNumber    = "1329"
 	copyright      = "Copyright (c) 2026"
 	cfgFile        string
 	commandLogger  *log.Logger
@@ -62,8 +65,12 @@ func Execute() (err error) {
 		fmt.Printf("%s %s build %s\n%s\n", appName, version, buildNumber, copyright)
 	}
 	rootCmd.Version = version
+	// Root context with signal handling — Ctrl+C / SIGTERM cancel all operations.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	rootCmd.SetContext(ctx)
 	// Cobra сам разбирает args/flags и вызывает подходящую подкоманду.
-	err = rootCmd.Execute()
+	err = rootCmd.ExecuteContext(ctx)
 	if err != nil {
 		if isQueryJSONMode(args) {
 			commandName := detectQueryCommandName(args)

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"strings"
 
@@ -8,11 +9,11 @@ import (
 	"github.com/lib/pq"
 )
 
-func (db *DB) BatchInsertAPIBusinessObjects(items []*model.APIBusinessObject, batchSize int) error {
+func (db *DB) BatchInsertAPIBusinessObjects(ctx context.Context, items []*model.APIBusinessObject, batchSize int) error {
 	if len(items) == 0 {
 		return nil
 	}
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("api_business_objects", "file_id", "business_object", "module_name", "line_start", "line_end"))
 		if err != nil {
 			return err
@@ -32,8 +33,8 @@ func BuildAPIBusinessObjectTableLookupKey(businessObject string, tableName strin
 	return strings.ToLower(strings.TrimSpace(businessObject)) + "|" + strings.ToLower(strings.TrimSpace(tableName))
 }
 
-func (db *DB) FindAPIBusinessObjectTableIDsByFile(fileID int64) (map[string]int64, error) {
-	rows, err := db.Query(`SELECT id, business_object, table_name FROM api_business_object_tables WHERE file_id = $1 ORDER BY id DESC`, fileID)
+func (db *DB) FindAPIBusinessObjectTableIDsByFile(ctx context.Context, fileID int64) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id, business_object, table_name FROM api_business_object_tables WHERE file_id = $1 ORDER BY id DESC`, fileID)
 	if err != nil {
 		return nil, err
 	}
@@ -54,11 +55,11 @@ func (db *DB) FindAPIBusinessObjectTableIDsByFile(fileID int64) (map[string]int6
 	return result, rows.Err()
 }
 
-func (db *DB) BatchInsertAPIBusinessObjectTableFields(items []*model.APIBusinessObjectTableField, batchSize int) error {
+func (db *DB) BatchInsertAPIBusinessObjectTableFields(ctx context.Context, items []*model.APIBusinessObjectTableField, batchSize int) error {
 	if len(items) == 0 {
 		return nil
 	}
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("api_business_object_table_fields", "business_table_id", "field_name", "type_name", "ws_param_name", "rus_name", "description", "param_order", "line_number"))
 		if err != nil {
 			return err
@@ -78,8 +79,8 @@ func BuildAPIBusinessObjectTableIndexLookupKey(businessObject string, tableName 
 	return strings.ToLower(strings.TrimSpace(businessObject)) + "|" + strings.ToLower(strings.TrimSpace(tableName)) + "|" + strings.ToLower(strings.TrimSpace(indexName))
 }
 
-func (db *DB) FindAPIBusinessObjectTableIndexIDsByFile(fileID int64) (map[string]int64, error) {
-	rows, err := db.Query(`
+func (db *DB) FindAPIBusinessObjectTableIndexIDsByFile(ctx context.Context, fileID int64) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT i.id, t.business_object, t.table_name, i.index_name
 		FROM api_business_object_table_indexes i
 		JOIN api_business_object_tables t ON t.id = i.business_table_id
@@ -107,11 +108,11 @@ func (db *DB) FindAPIBusinessObjectTableIndexIDsByFile(fileID int64) (map[string
 	return result, rows.Err()
 }
 
-func (db *DB) BatchInsertAPIBusinessObjectTableIndexes(items []*model.APIBusinessObjectTableIndex, batchSize int) error {
+func (db *DB) BatchInsertAPIBusinessObjectTableIndexes(ctx context.Context, items []*model.APIBusinessObjectTableIndex, batchSize int) error {
 	if len(items) == 0 {
 		return nil
 	}
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("api_business_object_table_indexes", "business_table_id", "index_name", "index_fields", "index_type", "is_clustered", "line_number"))
 		if err != nil {
 			return err
@@ -127,11 +128,11 @@ func (db *DB) BatchInsertAPIBusinessObjectTableIndexes(items []*model.APIBusines
 	})
 }
 
-func (db *DB) BatchInsertAPIBusinessObjectTableIndexFields(items []*model.APIBusinessObjectTableIndexField, batchSize int) error {
+func (db *DB) BatchInsertAPIBusinessObjectTableIndexFields(ctx context.Context, items []*model.APIBusinessObjectTableIndexField, batchSize int) error {
 	if len(items) == 0 {
 		return nil
 	}
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("api_business_object_table_index_fields", "table_index_id", "field_name", "field_order", "line_number"))
 		if err != nil {
 			return err
@@ -147,8 +148,8 @@ func (db *DB) BatchInsertAPIBusinessObjectTableIndexFields(items []*model.APIBus
 	})
 }
 
-func (db *DB) FindAPIBusinessObjectIDsByFile(fileID int64) (map[string]int64, error) {
-	rows, err := db.Query(`SELECT id, business_object FROM api_business_objects WHERE file_id = $1 ORDER BY id DESC`, fileID)
+func (db *DB) FindAPIBusinessObjectIDsByFile(ctx context.Context, fileID int64) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id, business_object FROM api_business_objects WHERE file_id = $1 ORDER BY id DESC`, fileID)
 	if err != nil {
 		return nil, err
 	}
@@ -168,11 +169,11 @@ func (db *DB) FindAPIBusinessObjectIDsByFile(fileID int64) (map[string]int64, er
 	return result, rows.Err()
 }
 
-func (db *DB) BatchInsertAPIContracts(items []*model.APIContract, batchSize int) error {
+func (db *DB) BatchInsertAPIContracts(ctx context.Context, items []*model.APIContract, batchSize int) error {
 	if len(items) == 0 {
 		return nil
 	}
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("api_contracts", "file_id", "business_object_id", "business_object", "contract_name", "contract_kind", "object_type_id", "object_name_id", "api_version", "arch_approval", "implemented", "internal_use", "deprecated", "is_external", "owner_module", "used_object_name", "used_module_sys_name", "short_description", "full_description", "line_start", "line_end"))
 		if err != nil {
 			return err
@@ -188,8 +189,8 @@ func (db *DB) BatchInsertAPIContracts(items []*model.APIContract, batchSize int)
 	})
 }
 
-func (db *DB) FindAPIContractIDsByFile(fileID int64) (map[string]int64, error) {
-	rows, err := db.Query(`SELECT id, contract_name, contract_kind FROM api_contracts WHERE file_id = $1 ORDER BY id DESC`, fileID)
+func (db *DB) FindAPIContractIDsByFile(ctx context.Context, fileID int64) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id, contract_name, contract_kind FROM api_contracts WHERE file_id = $1 ORDER BY id DESC`, fileID)
 	if err != nil {
 		return nil, err
 	}
@@ -209,25 +210,25 @@ func (db *DB) FindAPIContractIDsByFile(fileID int64) (map[string]int64, error) {
 	return result, rows.Err()
 }
 
-func (db *DB) FindLatestAPIContractIDByNameAndKind(name string, kind string) (int64, error) {
+func (db *DB) FindLatestAPIContractIDByNameAndKind(ctx context.Context, name string, kind string) (int64, error) {
 	var id int64
-	err := db.QueryRow(`SELECT id FROM api_contracts WHERE LOWER(contract_name)=LOWER($1) AND LOWER(contract_kind)=LOWER($2) ORDER BY id DESC LIMIT 1`, strings.TrimSpace(name), strings.TrimSpace(kind)).Scan(&id)
+	err := db.QueryRowContext(ctx, `SELECT id FROM api_contracts WHERE LOWER(contract_name)=LOWER($1) AND LOWER(contract_kind)=LOWER($2) ORDER BY id DESC LIMIT 1`, strings.TrimSpace(name), strings.TrimSpace(kind)).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
 	return id, nil
 }
 
-// APIContractNameKind — пара (name, kind) для batch-resolve.
+// APIContractNameKind вЂ” РїР°СЂР° (name, kind) РґР»СЏ batch-resolve.
 type APIContractNameKind struct {
 	Name string
 	Kind string
 }
 
-// FindLatestAPIContractIDsByNamesAndKinds загружает API контракты одним запросом
-// и строит in-memory map для batch-resolve. Заменяет N+1 вызовов
+// FindLatestAPIContractIDsByNamesAndKinds Р·Р°РіСЂСѓР¶Р°РµС‚ API РєРѕРЅС‚СЂР°РєС‚С‹ РѕРґРЅРёРј Р·Р°РїСЂРѕСЃРѕРј
+// Рё СЃС‚СЂРѕРёС‚ in-memory map РґР»СЏ batch-resolve. Р—Р°РјРµРЅСЏРµС‚ N+1 РІС‹Р·РѕРІРѕРІ
 // FindLatestAPIContractIDByNameAndKind.
-func (db *DB) FindLatestAPIContractIDsByNamesAndKinds(pairs []APIContractNameKind) (map[string]int64, error) {
+func (db *DB) FindLatestAPIContractIDsByNamesAndKinds(ctx context.Context, pairs []APIContractNameKind) (map[string]int64, error) {
 	type nkKey struct{ name, kind string }
 	unique := make(map[nkKey]struct{})
 	names := make([]string, 0)
@@ -250,7 +251,7 @@ func (db *DB) FindLatestAPIContractIDsByNamesAndKinds(pairs []APIContractNameKin
 	if len(names) == 0 {
 		return result, nil
 	}
-	rows, err := db.Query(`
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, LOWER(contract_name) AS name_key, LOWER(contract_kind) AS kind_key
 		FROM api_contracts
 		WHERE LOWER(contract_name) = ANY($1)
@@ -275,13 +276,13 @@ func (db *DB) FindLatestAPIContractIDsByNamesAndKinds(pairs []APIContractNameKin
 	return result, rows.Err()
 }
 
-func (db *DB) FindLatestAPIContractIDByNameKindAndOwnerModule(name string, kind string, ownerModule string) (int64, error) {
+func (db *DB) FindLatestAPIContractIDByNameKindAndOwnerModule(ctx context.Context, name string, kind string, ownerModule string) (int64, error) {
 	trimmedName := strings.TrimSpace(name)
 	trimmedKind := strings.TrimSpace(kind)
 	trimmedOwnerModule := strings.TrimSpace(ownerModule)
 	if trimmedOwnerModule != "" {
 		var id int64
-		err := db.QueryRow(`SELECT id FROM api_contracts WHERE LOWER(contract_name)=LOWER($1) AND LOWER(contract_kind)=LOWER($2) AND LOWER(owner_module)=LOWER($3) ORDER BY id DESC LIMIT 1`, trimmedName, trimmedKind, trimmedOwnerModule).Scan(&id)
+		err := db.QueryRowContext(ctx, `SELECT id FROM api_contracts WHERE LOWER(contract_name)=LOWER($1) AND LOWER(contract_kind)=LOWER($2) AND LOWER(owner_module)=LOWER($3) ORDER BY id DESC LIMIT 1`, trimmedName, trimmedKind, trimmedOwnerModule).Scan(&id)
 		if err == nil {
 			return id, nil
 		}
@@ -289,11 +290,11 @@ func (db *DB) FindLatestAPIContractIDByNameKindAndOwnerModule(name string, kind 
 			return 0, err
 		}
 	}
-	return db.FindLatestAPIContractIDByNameAndKind(trimmedName, trimmedKind)
+	return db.FindLatestAPIContractIDByNameAndKind(ctx, trimmedName, trimmedKind)
 }
 
-func (db *DB) FindAPIContractsByKind(kind string) ([]*model.APIContract, error) {
-	rows, err := db.Query(`
+func (db *DB) FindAPIContractsByKind(ctx context.Context, kind string) ([]*model.APIContract, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, contract_name, contract_kind, used_object_name, used_module_sys_name
 		FROM api_contracts
 		WHERE LOWER(contract_kind)=LOWER($1)
@@ -315,17 +316,17 @@ func (db *DB) FindAPIContractsByKind(kind string) ([]*model.APIContract, error) 
 	return result, rows.Err()
 }
 
-// EventContractLookupKey — ключ для in-memory map event-контрактов.
-// Формат: lower(name) + "|" + lower(module), или lower(name) + "|" для fallback без module.
+// EventContractLookupKey вЂ” РєР»СЋС‡ РґР»СЏ in-memory map event-РєРѕРЅС‚СЂР°РєС‚РѕРІ.
+// Р¤РѕСЂРјР°С‚: lower(name) + "|" + lower(module), РёР»Рё lower(name) + "|" РґР»СЏ fallback Р±РµР· module.
 type EventContractLookup struct {
 	ByNameAndModule map[string]int64 // key: lower(name)|lower(module) -> id
 	ByName          map[string]int64 // key: lower(name) -> id (fallback)
 }
 
-// FindLatestEventContractIDsByNames загружает event-контракты одним запросом
-// и строит in-memory map для batch-resolve. Заменяет N+1 вызовов
+// FindLatestEventContractIDsByNames Р·Р°РіСЂСѓР¶Р°РµС‚ event-РєРѕРЅС‚СЂР°РєС‚С‹ РѕРґРЅРёРј Р·Р°РїСЂРѕСЃРѕРј
+// Рё СЃС‚СЂРѕРёС‚ in-memory map РґР»СЏ batch-resolve. Р—Р°РјРµРЅСЏРµС‚ N+1 РІС‹Р·РѕРІРѕРІ
 // FindLatestAPIContractIDByNameKindAndOwnerModule.
-func (db *DB) FindLatestEventContractIDsByNames(names []string) (*EventContractLookup, error) {
+func (db *DB) FindLatestEventContractIDsByNames(ctx context.Context, names []string) (*EventContractLookup, error) {
 	normalizedNames := make([]string, 0, len(names))
 	seenNames := make(map[string]struct{})
 	for _, n := range names {
@@ -348,9 +349,9 @@ func (db *DB) FindLatestEventContractIDsByNames(names []string) (*EventContractL
 		return lookup, nil
 	}
 
-	// Загружаем все event-контракты, у которых contract_name входит в names.
-	// owner_module может быть любым (включая пустой), поэтому не фильтруем по modules.
-	rows, err := db.Query(`
+	// Р—Р°РіСЂСѓР¶Р°РµРј РІСЃРµ event-РєРѕРЅС‚СЂР°РєС‚С‹, Сѓ РєРѕС‚РѕСЂС‹С… contract_name РІС…РѕРґРёС‚ РІ names.
+	// owner_module РјРѕР¶РµС‚ Р±С‹С‚СЊ Р»СЋР±С‹Рј (РІРєР»СЋС‡Р°СЏ РїСѓСЃС‚РѕР№), РїРѕСЌС‚РѕРјСѓ РЅРµ С„РёР»СЊС‚СЂСѓРµРј РїРѕ modules.
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, LOWER(contract_name) AS name_key, COALESCE(LOWER(owner_module), '') AS module_key
 		FROM api_contracts
 		WHERE LOWER(contract_kind) = 'event'
@@ -368,12 +369,12 @@ func (db *DB) FindLatestEventContractIDsByNames(names []string) (*EventContractL
 		if err := rows.Scan(&id, &nameKey, &moduleKey); err != nil {
 			return nil, err
 		}
-		// ByNameAndModule: первый (latest) id для name+module
+		// ByNameAndModule: РїРµСЂРІС‹Р№ (latest) id РґР»СЏ name+module
 		nmKey := nameKey + "|" + moduleKey
 		if _, exists := lookup.ByNameAndModule[nmKey]; !exists {
 			lookup.ByNameAndModule[nmKey] = id
 		}
-		// ByName: первый (latest) id для name (fallback)
+		// ByName: РїРµСЂРІС‹Р№ (latest) id РґР»СЏ name (fallback)
 		if _, exists := lookup.ByName[nameKey]; !exists {
 			lookup.ByName[nameKey] = id
 		}
@@ -381,8 +382,8 @@ func (db *DB) FindLatestEventContractIDsByNames(names []string) (*EventContractL
 	return lookup, rows.Err()
 }
 
-func (db *DB) DeleteSubscribesToEventRelations() error {
-	_, err := db.Exec(`
+func (db *DB) DeleteSubscribesToEventRelations(ctx context.Context) error {
+	_, err := db.execCtx(ctx, `
 		DELETE FROM relations
 		WHERE source_type = 'api_contract'
 		  AND target_type = 'api_contract'
@@ -395,11 +396,11 @@ func BuildAPIContractLookupKey(name string, kind string) string {
 	return strings.ToLower(strings.TrimSpace(name)) + "|" + strings.ToLower(strings.TrimSpace(kind))
 }
 
-func (db *DB) BatchInsertAPIContractParams(items []*model.APIContractParam, batchSize int) error {
+func (db *DB) BatchInsertAPIContractParams(ctx context.Context, items []*model.APIContractParam, batchSize int) error {
 	if len(items) == 0 {
 		return nil
 	}
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("api_contract_params", "contract_id", "direction", "param_name", "prm_sub_object", "type_name", "required", "rus_name", "description", "ws_param_name", "param_order", "is_virtual_link", "line_number"))
 		if err != nil {
 			return err
@@ -415,11 +416,11 @@ func (db *DB) BatchInsertAPIContractParams(items []*model.APIContractParam, batc
 	})
 }
 
-func (db *DB) BatchInsertAPIContractTables(items []*model.APIContractTable, batchSize int) error {
+func (db *DB) BatchInsertAPIContractTables(ctx context.Context, items []*model.APIContractTable, batchSize int) error {
 	if len(items) == 0 {
 		return nil
 	}
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("api_contract_tables", "contract_id", "direction", "table_name", "ws_param_name", "required", "rus_name", "description", "param_order", "line_number"))
 		if err != nil {
 			return err
@@ -439,8 +440,8 @@ func BuildAPIContractTableLookupKey(direction string, tableName string) string {
 	return strings.ToLower(strings.TrimSpace(direction)) + "|" + strings.ToLower(strings.TrimSpace(tableName))
 }
 
-func (db *DB) FindAPIContractTableIDsByFile(fileID int64) (map[string]int64, error) {
-	rows, err := db.Query(`SELECT t.id, t.direction, t.table_name FROM api_contract_tables t JOIN api_contracts c ON c.id = t.contract_id WHERE c.file_id = $1 ORDER BY t.id DESC`, fileID)
+func (db *DB) FindAPIContractTableIDsByFile(ctx context.Context, fileID int64) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `SELECT t.id, t.direction, t.table_name FROM api_contract_tables t JOIN api_contracts c ON c.id = t.contract_id WHERE c.file_id = $1 ORDER BY t.id DESC`, fileID)
 	if err != nil {
 		return nil, err
 	}
@@ -461,11 +462,11 @@ func (db *DB) FindAPIContractTableIDsByFile(fileID int64) (map[string]int64, err
 	return result, rows.Err()
 }
 
-func (db *DB) BatchInsertAPIContractTableFields(items []*model.APIContractTableField, batchSize int) error {
+func (db *DB) BatchInsertAPIContractTableFields(ctx context.Context, items []*model.APIContractTableField, batchSize int) error {
 	if len(items) == 0 {
 		return nil
 	}
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("api_contract_table_fields", "contract_table_id", "field_name", "type_name", "required", "rus_name", "description", "ws_param_name", "param_order", "line_number"))
 		if err != nil {
 			return err
@@ -481,11 +482,11 @@ func (db *DB) BatchInsertAPIContractTableFields(items []*model.APIContractTableF
 	})
 }
 
-func (db *DB) BatchInsertAPIContractReturnValues(items []*model.APIContractReturnValue, batchSize int) error {
+func (db *DB) BatchInsertAPIContractReturnValues(ctx context.Context, items []*model.APIContractReturnValue, batchSize int) error {
 	if len(items) == 0 {
 		return nil
 	}
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("api_contract_return_values", "contract_id", "value", "return_type", "description", "line_number"))
 		if err != nil {
 			return err
@@ -501,11 +502,11 @@ func (db *DB) BatchInsertAPIContractReturnValues(items []*model.APIContractRetur
 	})
 }
 
-func (db *DB) BatchInsertAPIContractContexts(items []*model.APIContractContext, batchSize int) error {
+func (db *DB) BatchInsertAPIContractContexts(ctx context.Context, items []*model.APIContractContext, batchSize int) error {
 	if len(items) == 0 {
 		return nil
 	}
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("api_contract_contexts", "contract_id", "context_name", "type_name", "rus_name", "description", "context_order", "context_value", "is_virtual_link", "line_number"))
 		if err != nil {
 			return err
@@ -521,11 +522,11 @@ func (db *DB) BatchInsertAPIContractContexts(items []*model.APIContractContext, 
 	})
 }
 
-func (db *DB) BatchInsertAPIBusinessObjectParams(items []*model.APIBusinessObjectParam, batchSize int) error {
+func (db *DB) BatchInsertAPIBusinessObjectParams(ctx context.Context, items []*model.APIBusinessObjectParam, batchSize int) error {
 	if len(items) == 0 {
 		return nil
 	}
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("api_business_object_params", "file_id", "business_object", "param_name", "prm_sub_object", "type_name", "ws_param_name", "rus_name", "description", "line_number"))
 		if err != nil {
 			return err
@@ -541,11 +542,11 @@ func (db *DB) BatchInsertAPIBusinessObjectParams(items []*model.APIBusinessObjec
 	})
 }
 
-func (db *DB) BatchInsertAPIBusinessObjectTables(items []*model.APIBusinessObjectTable, batchSize int) error {
+func (db *DB) BatchInsertAPIBusinessObjectTables(ctx context.Context, items []*model.APIBusinessObjectTable, batchSize int) error {
 	if len(items) == 0 {
 		return nil
 	}
-	return db.withCopyInTx(func(tx *sql.Tx) error {
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.Prepare(pq.CopyIn("api_business_object_tables", "file_id", "business_object", "table_name", "type_name", "ws_param_name", "rus_name", "description", "line_number"))
 		if err != nil {
 			return err

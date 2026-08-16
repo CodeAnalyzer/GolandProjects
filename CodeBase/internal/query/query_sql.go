@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -10,7 +11,7 @@ import (
 	"github.com/lib/pq"
 )
 
-func (q *Query) SearchTable(name string, likeSearch bool, limit int) ([]TableResult, error) {
+func (q *Query) SearchTable(ctx context.Context, name string, likeSearch bool, limit int) ([]TableResult, error) {
 	queryText := `
 		SELECT 
 			MIN(st.id) as table_id,
@@ -32,7 +33,7 @@ func (q *Query) SearchTable(name string, likeSearch bool, limit int) ([]TableRes
 	}
 	queryText = fmt.Sprintf(queryText, whereClause)
 
-	rows, err := q.db.Query(queryText, searchValue, limit)
+	rows, err := q.db.QueryContext(ctx, queryText, searchValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -60,21 +61,21 @@ func (q *Query) SearchTable(name string, likeSearch bool, limit int) ([]TableRes
 		tableResults[results[i].TableName] = &results[i]
 	}
 
-	if err := q.loadTableFiles(tableResults, tableNames); err != nil {
+	if err := q.loadTableFiles(ctx, tableResults, tableNames); err != nil {
 		return nil, err
 	}
-	if err := q.loadTableColumns(tableResults, tableNames); err != nil {
+	if err := q.loadTableColumns(ctx, tableResults, tableNames); err != nil {
 		return nil, err
 	}
-	if err := q.loadTableProcedures(tableResults, tableNames); err != nil {
+	if err := q.loadTableProcedures(ctx, tableResults, tableNames); err != nil {
 		return nil, err
 	}
 
 	return results, nil
 }
 
-func (q *Query) loadTableFiles(results map[string]*TableResult, tableNames []string) error {
-	rows, err := q.db.Query(`
+func (q *Query) loadTableFiles(ctx context.Context, results map[string]*TableResult, tableNames []string) error {
+	rows, err := q.db.QueryContext(ctx, `
 		SELECT table_name, file_id, rel_path
 		FROM (
 			SELECT
@@ -112,8 +113,8 @@ func (q *Query) loadTableFiles(results map[string]*TableResult, tableNames []str
 	return rows.Err()
 }
 
-func (q *Query) loadTableColumns(results map[string]*TableResult, tableNames []string) error {
-	rows, err := q.db.Query(`
+func (q *Query) loadTableColumns(ctx context.Context, results map[string]*TableResult, tableNames []string) error {
+	rows, err := q.db.QueryContext(ctx, `
 		SELECT table_name, column_name
 		FROM (
 			SELECT
@@ -147,8 +148,8 @@ func (q *Query) loadTableColumns(results map[string]*TableResult, tableNames []s
 	return rows.Err()
 }
 
-func (q *Query) loadTableProcedures(results map[string]*TableResult, tableNames []string) error {
-	rows, err := q.db.Query(`
+func (q *Query) loadTableProcedures(ctx context.Context, results map[string]*TableResult, tableNames []string) error {
+	rows, err := q.db.QueryContext(ctx, `
 		SELECT table_name, proc_name
 		FROM (
 			SELECT
@@ -187,7 +188,7 @@ func (q *Query) loadTableProcedures(results map[string]*TableResult, tableNames 
 	return rows.Err()
 }
 
-func (q *Query) SearchTableSchema(name string, limit int) ([]TableSchemaColumnResult, error) {
+func (q *Query) SearchTableSchema(ctx context.Context, name string, limit int) ([]TableSchemaColumnResult, error) {
 	query := `
 		SELECT
 			scd.table_name,
@@ -205,7 +206,7 @@ func (q *Query) SearchTableSchema(name string, limit int) ([]TableSchemaColumnRe
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, name, limit)
+	rows, err := q.db.QueryContext(ctx, query, name, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +228,7 @@ func (q *Query) SearchTableSchema(name string, limit int) ([]TableSchemaColumnRe
 	return results, rows.Err()
 }
 
-func (q *Query) SearchSQLTableIndex(name string, likeSearch bool, limit int) ([]SQLTableIndexResult, error) {
+func (q *Query) SearchSQLTableIndex(ctx context.Context, name string, likeSearch bool, limit int) ([]SQLTableIndexResult, error) {
 	queryText := `
 		SELECT i.id, i.table_name, i.index_name, COALESCE(i.index_fields,''), COALESCE(i.index_type,''), i.is_unique,
 		       i.definition_kind, COALESCE(f.rel_path,''), i.file_id, i.line_number
@@ -246,7 +247,7 @@ func (q *Query) SearchSQLTableIndex(name string, likeSearch bool, limit int) ([]
 	}
 	queryText = fmt.Sprintf(queryText, whereClause)
 
-	rows, err := q.db.Query(queryText, searchValue, limit)
+	rows, err := q.db.QueryContext(ctx, queryText, searchValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +258,7 @@ func (q *Query) SearchSQLTableIndex(name string, likeSearch bool, limit int) ([]
 		if err := rows.Scan(&item.ID, &item.TableName, &item.IndexName, &item.IndexFields, &item.IndexType, &item.IsUnique, &item.DefinitionKind, &item.File, &item.FileID, &item.LineNumber); err != nil {
 			return nil, err
 		}
-		fieldRows, err := q.db.Query(`SELECT field_name, field_order, line_number FROM sql_index_definition_fields WHERE table_index_id = $1 ORDER BY field_order, id`, item.ID)
+		fieldRows, err := q.db.QueryContext(ctx, `SELECT field_name, field_order, line_number FROM sql_index_definition_fields WHERE table_index_id = $1 ORDER BY field_order, id`, item.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -275,7 +276,7 @@ func (q *Query) SearchSQLTableIndex(name string, likeSearch bool, limit int) ([]
 	return items, rows.Err()
 }
 
-func (q *Query) FindCallers(procedureName string, limit int) ([]CallerResult, error) {
+func (q *Query) FindCallers(ctx context.Context, procedureName string, limit int) ([]CallerResult, error) {
 	query := `
 		SELECT *
 		FROM (
@@ -347,7 +348,7 @@ func (q *Query) FindCallers(procedureName string, limit int) ([]CallerResult, er
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, "%"+procedureName+"%", limit)
+	rows, err := q.db.QueryContext(ctx, query, "%"+procedureName+"%", limit)
 	if err != nil {
 		return nil, err
 	}
@@ -373,7 +374,7 @@ func (q *Query) FindCallers(procedureName string, limit int) ([]CallerResult, er
 	return results, nil
 }
 
-func (q *Query) FindMethodsByTable(tableName string, limit int) ([]MethodResult, error) {
+func (q *Query) FindMethodsByTable(ctx context.Context, tableName string, limit int) ([]MethodResult, error) {
 	query := `
 		SELECT 
 			pm.id,
@@ -399,7 +400,7 @@ func (q *Query) FindMethodsByTable(tableName string, limit int) ([]MethodResult,
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, tableName, limit)
+	rows, err := q.db.QueryContext(ctx, query, tableName, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -417,7 +418,7 @@ func (q *Query) FindMethodsByTable(tableName string, limit int) ([]MethodResult,
 	return results, nil
 }
 
-func (q *Query) FindPASMethodsByName(methodName string, like bool, limit int) ([]MethodResult, error) {
+func (q *Query) FindPASMethodsByName(ctx context.Context, methodName string, like bool, limit int) ([]MethodResult, error) {
 	lookupValue := buildLookupValue(methodName, like)
 	lookupCondition := buildNameLookupCondition([]string{"pm.method_name"}, like, 1)
 	query := `
@@ -440,7 +441,7 @@ func (q *Query) FindPASMethodsByName(methodName string, like bool, limit int) ([
 		LIMIT $2
 	`
 
-	rows, err := q.db.Query(query, lookupValue, limit)
+	rows, err := q.db.QueryContext(ctx, query, lookupValue, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -475,7 +476,7 @@ type SQLProcedureResult struct {
 	BodyHash  string           `json:"body_hash,omitempty"`
 }
 
-func (q *Query) GetProcedureDetails(name string) (*model.SQLProcedure, error) {
+func (q *Query) GetProcedureDetails(ctx context.Context, name string) (*model.SQLProcedure, error) {
 	query := `
 		SELECT 
 			sp.id, sp.file_id, sp.proc_name,
@@ -484,7 +485,7 @@ func (q *Query) GetProcedureDetails(name string) (*model.SQLProcedure, error) {
 		WHERE sp.proc_name = $1
 	`
 
-	row := q.db.QueryRow(query, name)
+	row := q.db.QueryRowContext(ctx, query, name)
 
 	var proc model.SQLProcedure
 	var paramsJSON sql.NullString
@@ -504,7 +505,7 @@ func (q *Query) GetProcedureDetails(name string) (*model.SQLProcedure, error) {
 	return &proc, nil
 }
 
-func (q *Query) GetProcedureResult(name string) (*SQLProcedureResult, error) {
+func (q *Query) GetProcedureResult(ctx context.Context, name string) (*SQLProcedureResult, error) {
 	query := `
 		SELECT 
 			sp.id, sp.file_id, sp.proc_name,
@@ -514,7 +515,7 @@ func (q *Query) GetProcedureResult(name string) (*SQLProcedureResult, error) {
 		WHERE sp.proc_name = $1
 	`
 
-	row := q.db.QueryRow(query, name)
+	row := q.db.QueryRowContext(ctx, query, name)
 
 	var proc SQLProcedureResult
 	var paramsJSON sql.NullString
