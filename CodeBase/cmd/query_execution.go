@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
 	"strings"
 
+	"github.com/codebase/internal/errs"
 	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/querysvc"
 )
@@ -295,18 +297,19 @@ func collectInspectNeighbors(symbol query.SymbolResult, incoming []query.Relatio
 }
 
 func classifyQueryError(err error) string {
-	message := err.Error()
 	switch {
-	case message == "config not loaded":
+	case errors.Is(err, errs.ErrConfigNotLoaded):
 		return "config_error"
-	case containsAny(message, "required flag(s)", "unknown flag:", "accepts 0 arg(s)", "unknown command", "at least one relation filter must be provided"):
+	case errors.Is(err, errs.ErrNoRelationFilters):
 		return "invalid_arguments"
-	case containsAny(message, "failed to connect to database", "connection refused", "dial tcp"):
+	case errors.Is(err, errs.ErrDBConnect):
 		return "database_unavailable"
-	case containsAny(message, "failed to init schema"):
+	case errors.Is(err, errs.ErrSchemaInit):
 		return "schema_init_failed"
-	case containsAny(message, "query failed"):
+	case errors.Is(err, errs.ErrQueryFailed):
 		return "query_failed"
+	case containsAny(err.Error(), "required flag(s)", "unknown flag:", "accepts 0 arg(s)", "unknown command"):
+		return "invalid_arguments"
 	default:
 		return "internal_error"
 	}

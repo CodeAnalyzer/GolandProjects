@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/codebase/internal/config"
+	"github.com/codebase/internal/errs"
 	"github.com/codebase/internal/indexer"
 	"github.com/codebase/internal/model"
 	"github.com/codebase/internal/store"
@@ -71,7 +72,7 @@ Arguments:
 
 		cfg := config.Get()
 		if cfg == nil {
-			return fmt.Errorf("config not loaded")
+			return errs.ErrConfigNotLoaded
 		}
 
 		effectiveParallel := parallel

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/codebase/internal/errs"
 )
 
 type relationEntityMatch struct {
@@ -43,7 +45,7 @@ func (q *Query) SearchRelationsByEntity(ctx context.Context, sourceType string, 
 	}
 
 	if len(conditions) == 0 {
-		return nil, fmt.Errorf("at least one relation filter must be provided")
+		return nil, errs.ErrNoRelationFilters
 	}
 	relationIDs, err := q.selectRelationIDs(ctx, conditions, args, argPos, limit)
 	if err != nil {
@@ -270,7 +272,7 @@ func (q *Query) SearchRelations(ctx context.Context, sourceType string, sourceNa
 	}
 
 	if len(conditions) == 0 {
-		return nil, fmt.Errorf("at least one relation filter must be provided")
+		return nil, errs.ErrNoRelationFilters
 	}
 	relationIDs, err := q.selectRelationIDs(ctx, conditions, args, argPos, limit)
 	if err != nil {

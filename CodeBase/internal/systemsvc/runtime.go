@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/codebase/internal/config"
+	"github.com/codebase/internal/errs"
 	"github.com/codebase/internal/store"
 )
 
@@ -27,7 +28,7 @@ func ExecuteHealth(db *store.DB) (HealthResult, error) {
 
 	cfg := config.Get()
 	if cfg == nil {
-		return result, fmt.Errorf("config not loaded")
+		return result, errs.ErrConfigNotLoaded
 	}
 	result.Checks = append(result.Checks, HealthCheck{Name: "config", Status: "ok"})
 	result.Checks = append(result.Checks, HealthCheck{Name: "database", Status: "ok"})
@@ -35,7 +36,7 @@ func ExecuteHealth(db *store.DB) (HealthResult, error) {
 
 	hasIndex, err := db.HasCompletedInit(context.Background())
 	if err != nil {
-		return result, fmt.Errorf("failed to inspect index readiness: %w", err)
+		return result, fmt.Errorf("%w: %w", errs.ErrHealthCheckFailed, err)
 	}
 	if hasIndex {
 		result.Checks = append(result.Checks, HealthCheck{Name: "index", Status: "ok"})
@@ -54,12 +55,12 @@ func ExecuteHealth(db *store.DB) (HealthResult, error) {
 func ExecuteStats(db *store.DB) (*store.Stats, error) {
 	cfg := config.Get()
 	if cfg == nil {
-		return nil, fmt.Errorf("config not loaded")
+		return nil, errs.ErrConfigNotLoaded
 	}
 
 	stats, err := db.GetStats(context.Background())
 	if err != nil {
-		return nil, fmt.Errorf("failed to get stats: %w", err)
+		return nil, fmt.Errorf("%w: %w", errs.ErrStatsFailed, err)
 	}
 	return stats, nil
 }

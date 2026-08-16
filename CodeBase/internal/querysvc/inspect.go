@@ -2,10 +2,12 @@ package querysvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/codebase/internal/errs"
 	"github.com/codebase/internal/query"
 )
 
@@ -33,11 +35,11 @@ func RunInspectQuery(ctx context.Context, q *query.Query, name string, symbolTyp
 	for _, symbol := range ordered {
 		relationType := InspectRelationType(symbol)
 		outgoing, err := q.SearchRelationsByEntity(ctx, relationType, symbol.EntityID, "", 0, "", limit)
-		if err != nil && !strings.Contains(err.Error(), "at least one relation filter must be provided") {
+		if err != nil && !errors.Is(err, errs.ErrNoRelationFilters) {
 			return nil, err
 		}
 		incoming, err := q.SearchRelationsByEntity(ctx, "", 0, relationType, symbol.EntityID, "", limit)
-		if err != nil && !strings.Contains(err.Error(), "at least one relation filter must be provided") {
+		if err != nil && !errors.Is(err, errs.ErrNoRelationFilters) {
 			return nil, err
 		}
 		neighbors := CollectInspectNeighbors(symbol, incoming, outgoing)

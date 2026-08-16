@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codebase/internal/errs"
 	"github.com/codebase/internal/review"
 	"github.com/codebase/internal/reviewsvc"
 	"github.com/spf13/cobra"
@@ -147,18 +149,17 @@ func writeReviewErrorResponse(err error) error {
 }
 
 func classifyReviewError(err error) string {
-	message := err.Error()
 	switch {
-	case message == "config not loaded":
+	case errors.Is(err, errs.ErrConfigNotLoaded):
 		return "config_error"
-	case containsAny(message, "required flag", "accepts", "unknown review rule"):
-		return "invalid_arguments"
-	case containsAny(message, "failed to connect to database", "connection refused", "dial tcp"):
+	case errors.Is(err, errs.ErrDBConnect):
 		return "database_unavailable"
-	case containsAny(message, "failed to init schema"):
+	case errors.Is(err, errs.ErrSchemaInit):
 		return "schema_init_failed"
-	case containsAny(message, "review failed"):
+	case errors.Is(err, errs.ErrReviewFailed):
 		return "review_failed"
+	case containsAny(err.Error(), "required flag", "accepts", "unknown review rule"):
+		return "invalid_arguments"
 	default:
 		return "internal_error"
 	}

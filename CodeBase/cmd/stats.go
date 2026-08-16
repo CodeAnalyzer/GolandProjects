@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/codebase/internal/config"
+	"github.com/codebase/internal/errs"
 	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/systemsvc"
 	"github.com/spf13/cobra"
@@ -170,15 +172,15 @@ var statsCmd = &cobra.Command{
 func executeStats() (*store.Stats, error) {
 	cfg := config.Get()
 	if cfg == nil {
-		return nil, fmt.Errorf("config not loaded")
+		return nil, errs.ErrConfigNotLoaded
 	}
 	db, err := store.NewDB(cfg.DB)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
+		return nil, fmt.Errorf("%w: %w", errs.ErrDBConnect, err)
 	}
 	defer db.Close()
 	if err := db.InitSchema(); err != nil {
-		return nil, fmt.Errorf("failed to init schema: %w", err)
+		return nil, fmt.Errorf("%w: %w", errs.ErrSchemaInit, err)
 	}
 	return systemsvc.ExecuteStats(db)
 }
@@ -265,16 +267,17 @@ func writeStatsErrorResponse(err error) error {
 }
 
 func classifyStatsError(err error) string {
-	message := err.Error()
 	switch {
-	case message == "config not loaded":
+	case errors.Is(err, errs.ErrConfigNotLoaded):
 		return "config_error"
-	case containsAny(message, "failed to connect to database", "connection refused", "dial tcp"):
+	case errors.Is(err, errs.ErrDBConnect):
 		return "database_unavailable"
-	case containsAny(message, "failed to init schema"):
+	case errors.Is(err, errs.ErrSchemaInit):
 		return "schema_init_failed"
-	case containsAny(message, "failed to get stats"):
+	case errors.Is(err, errs.ErrStatsFailed):
 		return "stats_query_failed"
+	case containsAny(err.Error(), "connection refused", "dial tcp"):
+		return "database_unavailable"
 	default:
 		return "internal_error"
 	}

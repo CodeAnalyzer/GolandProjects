@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/codebase/internal/errs"
 	"github.com/codebase/internal/store"
 )
 
@@ -54,10 +56,10 @@ func TestClassifyStatsError(t *testing.T) {
 		err  error
 		want string
 	}{
-		{err: errors.New("config not loaded"), want: "config_error"},
-		{err: errors.New("failed to connect to database: connection refused"), want: "database_unavailable"},
-		{err: errors.New("failed to init schema"), want: "schema_init_failed"},
-		{err: errors.New("failed to get stats"), want: "stats_query_failed"},
+		{err: errs.ErrConfigNotLoaded, want: "config_error"},
+		{err: fmt.Errorf("%w: %w", errs.ErrDBConnect, errors.New("connection refused")), want: "database_unavailable"},
+		{err: fmt.Errorf("%w: %w", errs.ErrSchemaInit, errors.New("boom")), want: "schema_init_failed"},
+		{err: fmt.Errorf("%w: %w", errs.ErrStatsFailed, errors.New("db error")), want: "stats_query_failed"},
 		{err: errors.New("other"), want: "internal_error"},
 	}
 	for _, tt := range tests {
@@ -72,10 +74,10 @@ func TestClassifyHealthError(t *testing.T) {
 		err  error
 		want string
 	}{
-		{err: errors.New("config not loaded"), want: "config_error"},
+		{err: errs.ErrConfigNotLoaded, want: "config_error"},
 		{err: errors.New("failed to ping database: connection refused"), want: "database_unavailable"},
-		{err: errors.New("failed to init schema"), want: "schema_init_failed"},
-		{err: errors.New("failed to inspect index readiness"), want: "health_check_failed"},
+		{err: fmt.Errorf("%w: %w", errs.ErrSchemaInit, errors.New("boom")), want: "schema_init_failed"},
+		{err: fmt.Errorf("%w: %w", errs.ErrHealthCheckFailed, errors.New("boom")), want: "health_check_failed"},
 		{err: errors.New("other"), want: "internal_error"},
 	}
 	for _, tt := range tests {
