@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/codebase/internal/config"
 )
@@ -68,6 +70,42 @@ type Stats struct {
 	LastScanStatus     string
 }
 
+// dsnValueEscaper экранирует спецсимволы внутри закавыченного DSN-значения.
+// Порядок важен: сначала backslash, затем кавычка.
+var dsnValueEscaper = strings.NewReplacer(`\`, `\\`, `'`, `\'`)
+
+// quoteDSNValue экранирует значение для libpq keyword/value DSN.
+// Значения с пробелами или спецсимволами оборачиваются в одинарные кавычки,
+// внутри которых одинарная кавычка и backslash экранируются backslash-ом (\' и \\).
+// Удвоение кавычки (как в SQL-литералах) здесь НЕ работает: парсер lib/pq (parseOpts) трактует
+// любую неэкранированную ' как конец значения, а одиночный \ съедает как escape.
+func quoteDSNValue(s string) string {
+	if s == "" {
+		return "''"
+	}
+	needsQuoting := false
+	for _, r := range s {
+		if unicode.IsSpace(r) || r == '\'' || r == '\\' {
+			needsQuoting = true
+			break
+		}
+	}
+	if !needsQuoting {
+		return s
+	}
+	return "'" + dsnValueEscaper.Replace(s) + "'"
+}
+
+// FormatDSN строит libpq keyword/value DSN из конфигурации с экранированием значений.
+func FormatDSN(cfg config.DBConfig) string {
+	return fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s connect_timeout=%d",
+		quoteDSNValue(cfg.Host), cfg.Port, quoteDSNValue(cfg.User),
+		quoteDSNValue(cfg.Password), quoteDSNValue(cfg.Database),
+		quoteDSNValue(cfg.SSLMode), cfg.ConnectTimeout,
+	)
+}
+
 // NewDB создаёт подключение к БД и создаёт её если не существует
 func NewDB(cfg config.DBConfig) (*DB, error) {
 	// Подключение в два шага нужно потому, что целевая БД может ещё не существовать:
@@ -75,7 +113,8 @@ func NewDB(cfg config.DBConfig) (*DB, error) {
 	// Сначала подключаемся к default database для создания целевой БД
 	dsnDefault := fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=postgres sslmode=%s connect_timeout=%d",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.SSLMode, cfg.ConnectTimeout,
+		quoteDSNValue(cfg.Host), cfg.Port, quoteDSNValue(cfg.User),
+		quoteDSNValue(cfg.Password), quoteDSNValue(cfg.SSLMode), cfg.ConnectTimeout,
 	)
 
 	dbDefault, err := sql.Open("postgres", dsnDefault)
@@ -97,10 +136,7 @@ func NewDB(cfg config.DBConfig) (*DB, error) {
 	}
 
 	// Теперь подключаемся к целевой БД
-	dsn := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s connect_timeout=%d",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Database, cfg.SSLMode, cfg.ConnectTimeout,
-	)
+	dsn := FormatDSN(cfg)
 
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
@@ -111,6 +147,7 @@ func NewDB(cfg config.DBConfig) (*DB, error) {
 	pingCtx2, pingCancel2 := context.WithTimeout(context.Background(), time.Duration(cfg.ConnectTimeout)*time.Second)
 	defer pingCancel2()
 	if err := db.PingContext(pingCtx2); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 

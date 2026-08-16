@@ -564,3 +564,41 @@ func TestKnownFunctionReturnType_RandIsInt(t *testing.T) {
 		t.Fatalf("rand return type = %q, want int", rt)
 	}
 }
+
+func TestFileProcessedContent_ReadOnly(t *testing.T) {
+	content := "select 1"
+	mr := replaceMacros(content)
+	path := normalizePath("test.sql")
+	r := &Runner{
+		exec: &reviewExecContext{
+			filePath:    path,
+			content:     []byte(content),
+			macroResult: mr,
+		},
+	}
+
+	got, err := r.fileProcessedContent(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Content != mr.Content {
+		t.Fatalf("content mismatch: got %q, want %q", got.Content, mr.Content)
+	}
+	if len(got.SourceMap) != len(mr.SourceMap) {
+		t.Fatalf("sourceMap length mismatch: got %d, want %d", len(got.SourceMap), len(mr.SourceMap))
+	}
+	if r.exec.macroResult.Content != mr.Content {
+		t.Fatalf("exec.macroResult was modified: got %q, want %q", r.exec.macroResult.Content, mr.Content)
+	}
+
+	// Регрессия на удалённый lazy-fallback: даже при пустом SourceMap метод
+	// не должен пересчитывать и записывать exec.macroResult (источник гонки,
+	// т.к. правила вызывают его параллельно).
+	r.exec.macroResult = macroReplaceResult{Content: content}
+	if _, err := r.fileProcessedContent(path); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(r.exec.macroResult.SourceMap) != 0 {
+		t.Fatalf("exec.macroResult was recomputed: SourceMap len = %d, want 0", len(r.exec.macroResult.SourceMap))
+	}
+}

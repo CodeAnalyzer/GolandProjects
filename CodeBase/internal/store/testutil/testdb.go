@@ -39,7 +39,7 @@ func OpenEmpty(t *testing.T) *store.DB {
 func openEmpty(t *testing.T) *store.DB {
 	t.Helper()
 	adminCfg := resolveAdminConfig(t)
-	adminDSN := formatDSN(adminCfg)
+	adminDSN := store.FormatDSN(adminCfg)
 	admin, err := sql.Open("postgres", adminDSN)
 	if err != nil {
 		t.Skipf("postgres unavailable: %v", err)
@@ -186,11 +186,4 @@ func parsePostgresDSN(dsn string) (config.DBConfig, error) {
 		cfg.SSLMode = "disable"
 	}
 	return cfg, nil
-}
-
-func formatDSN(cfg config.DBConfig) string {
-	return fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s connect_timeout=%d",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Database, cfg.SSLMode, cfg.ConnectTimeout,
-	)
 }

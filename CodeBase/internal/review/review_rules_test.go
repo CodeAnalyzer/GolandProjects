@@ -60,6 +60,12 @@ from tSource M_NOLOCK_INDEX(XPKtSource)`,
 
 			file := &indexedFile{Path: tmpFile.Name(), DsProductID: 1}
 			runner := &Runner{}
+			runner.exec = &reviewExecContext{
+				filePath:    normalizePath(tmpFile.Name()),
+				content:     []byte(tc.content),
+				lines:       strings.Split(tc.content, "\n"),
+				macroResult: replaceMacros(tc.content),
+			}
 
 			findings, err := runner.checkTableHintExists(file)
 			if err != nil {
@@ -1553,6 +1559,12 @@ delete pTmpObjectAccount
 
 			file := &indexedFile{Path: tmpFile.Name(), DsProductID: 1}
 			runner := &Runner{}
+			runner.exec = &reviewExecContext{
+				filePath:    normalizePath(tmpFile.Name()),
+				content:     []byte(tc.content),
+				lines:       strings.Split(tc.content, "\n"),
+				macroResult: replaceMacros(tc.content),
+			}
 
 			findings, err := runner.checkAnsiInJoin(file)
 			if err != nil {
@@ -1612,6 +1624,12 @@ select @CorrAccountID = r.ResourceID
 
 	file := &indexedFile{Path: tmpFile.Name(), DsProductID: 1}
 	runner := &Runner{}
+	runner.exec = &reviewExecContext{
+		filePath:    normalizePath(tmpFile.Name()),
+		content:     []byte(content),
+		lines:       strings.Split(content, "\n"),
+		macroResult: replaceMacros(content),
+	}
 
 	findings, err := runner.checkAnsiInJoin(file)
 	if err != nil {
@@ -1797,6 +1815,12 @@ end`,
 
 			file := &indexedFile{Path: tmpFile.Name(), DsProductID: 1}
 			runner := &Runner{}
+			runner.exec = &reviewExecContext{
+				filePath:    normalizePath(tmpFile.Name()),
+				content:     []byte(tc.content),
+				lines:       strings.Split(tc.content, "\n"),
+				macroResult: replaceMacros(tc.content),
+			}
 
 			findings, err := runner.checkInsertRowLock(file)
 			if err != nil {
@@ -2077,7 +2101,7 @@ func TestCheckModifyOutProc(t *testing.T) {
 		path := writeTemp(t, content)
 		defer os.Remove(path)
 		r := &Runner{}
-		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n")}
+		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
 		parsed := &sqlparser.ParseResult{Procedures: procs}
 		findings, err := r.checkModifyOutProc(parsed, &indexedFile{Path: path, DsProductID: 1})
 		r.exec = nil
@@ -2188,7 +2212,7 @@ func TestCheckModifyOutProc(t *testing.T) {
 		defer os.Remove(dataPath)
 
 		r := &Runner{}
-		r.exec = &reviewExecContext{filePath: normalizePath(dataPath), content: []byte(content), lines: strings.Split(content, "\n")}
+		r.exec = &reviewExecContext{filePath: normalizePath(dataPath), content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
 		parsed := &sqlparser.ParseResult{}
 		findings, err := r.checkModifyOutProc(parsed, &indexedFile{Path: dataPath, DsProductID: 1})
 		r.exec = nil
@@ -2334,7 +2358,7 @@ func TestCheckTooManyJoins(t *testing.T) {
 		path := writeTemp(t, content)
 		defer os.Remove(path)
 		r := &Runner{}
-		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n")}
+		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
 		findings, err := r.checkTooManyJoins(&indexedFile{Path: path, DsProductID: 1})
 		r.exec = nil
 		if err != nil {
@@ -2350,7 +2374,7 @@ func TestCheckTooManyJoins(t *testing.T) {
 		path := writeTemp(t, content)
 		defer os.Remove(path)
 		r := &Runner{}
-		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n")}
+		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
 		findings, err := r.checkTooManyJoins(&indexedFile{Path: path, DsProductID: 1})
 		r.exec = nil
 		if err != nil {
@@ -2369,7 +2393,7 @@ func TestCheckTooManyJoins(t *testing.T) {
 		path := writeTemp(t, content)
 		defer os.Remove(path)
 		r := &Runner{}
-		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n")}
+		r.exec = &reviewExecContext{filePath: normalizePath(path), content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
 		findings, err := r.checkTooManyJoins(&indexedFile{Path: path, DsProductID: 1})
 		r.exec = nil
 		if err != nil {
@@ -2537,9 +2561,10 @@ func TestCheckNullComparison_Detects(t *testing.T) {
 
 			file := &indexedFile{Path: f.Name(), DsProductID: 1}
 			runner.exec = &reviewExecContext{
-				filePath: normalizePath(f.Name()),
-				content:  []byte(tc.content),
-				lines:    strings.Split(tc.content, "\n"),
+				filePath:    normalizePath(f.Name()),
+				content:     []byte(tc.content),
+				lines:       strings.Split(tc.content, "\n"),
+				macroResult: replaceMacros(tc.content),
 			}
 			findings, err := runner.checkNullComparison(file)
 			runner.exec = nil
@@ -2596,9 +2621,10 @@ func TestCheckNullComparison_NoFalsePositive(t *testing.T) {
 
 			file := &indexedFile{Path: f.Name(), DsProductID: 1}
 			runner.exec = &reviewExecContext{
-				filePath: normalizePath(f.Name()),
-				content:  []byte(tc.content),
-				lines:    strings.Split(tc.content, "\n"),
+				filePath:    normalizePath(f.Name()),
+				content:     []byte(tc.content),
+				lines:       strings.Split(tc.content, "\n"),
+				macroResult: replaceMacros(tc.content),
 			}
 			findings, err := runner.checkNullComparison(file)
 			runner.exec = nil
@@ -2645,9 +2671,10 @@ func TestCheckEmptyReturn(t *testing.T) {
 
 			file := &indexedFile{Path: f.Name(), DsProductID: 1}
 			runner.exec = &reviewExecContext{
-				filePath: normalizePath(f.Name()),
-				content:  []byte(tc.content),
-				lines:    strings.Split(tc.content, "\n"),
+				filePath:    normalizePath(f.Name()),
+				content:     []byte(tc.content),
+				lines:       strings.Split(tc.content, "\n"),
+				macroResult: replaceMacros(tc.content),
 			}
 			findings, err := runner.checkEmptyReturn(file)
 			runner.exec = nil
@@ -2709,9 +2736,10 @@ func TestCheckRawTransactionControl(t *testing.T) {
 
 			file := &indexedFile{Path: f.Name(), DsProductID: 1}
 			runner.exec = &reviewExecContext{
-				filePath: normalizePath(f.Name()),
-				content:  []byte(tc.content),
-				lines:    strings.Split(tc.content, "\n"),
+				filePath:    normalizePath(f.Name()),
+				content:     []byte(tc.content),
+				lines:       strings.Split(tc.content, "\n"),
+				macroResult: replaceMacros(tc.content),
 			}
 			findings, err := runner.checkRawTransactionControl(file)
 			runner.exec = nil
@@ -2922,6 +2950,13 @@ func TestCheckPostgreLabelGotoLevel(t *testing.T) {
 			}
 			f.Close()
 
+			runner.exec = &reviewExecContext{
+				filePath:    normalizePath(f.Name()),
+				content:     []byte(tc.content),
+				lines:       strings.Split(tc.content, "\n"),
+				macroResult: replaceMacros(tc.content),
+			}
+
 			findings, err := runner.checkPostgreLabelGotoLevel(&indexedFile{Path: f.Name(), DsProductID: 1})
 			if err != nil {
 				t.Fatal(err)
@@ -3089,7 +3124,7 @@ select @IntVar = getdate()
 		t.Run(tc.name, func(t *testing.T) {
 			r := &Runner{}
 			path := normalizePath("test.sql")
-			r.exec = &reviewExecContext{filePath: path, content: []byte(tc.content), lines: strings.Split(tc.content, "\n")}
+			r.exec = &reviewExecContext{filePath: path, content: []byte(tc.content), lines: strings.Split(tc.content, "\n"), macroResult: replaceMacros(tc.content)}
 			parsed := &sqlparser.ParseResult{
 				Procedures: tc.procs,
 				Fragments:  tc.fragments,
@@ -3126,7 +3161,7 @@ as
 `
 	r := &Runner{}
 	path := normalizePath("test.sql")
-	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n")}
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
 	findings, err := r.checkVarUseAfterCursor(&indexedFile{Path: path, DsProductID: 1})
 	r.exec = nil
 	if err != nil {
@@ -3155,7 +3190,7 @@ as
 `
 	r := &Runner{}
 	path := normalizePath("test.sql")
-	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n")}
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
 	findings, err := r.checkVarUseAfterCursor(&indexedFile{Path: path, DsProductID: 1})
 	r.exec = nil
 	if err != nil {
@@ -3179,7 +3214,7 @@ as
 `
 	r := &Runner{}
 	path := normalizePath("test.sql")
-	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n")}
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
 	findings, err := r.checkVarUseAfterCursor(&indexedFile{Path: path, DsProductID: 1})
 	r.exec = nil
 	if err != nil {
@@ -3210,7 +3245,7 @@ as
 `
 	r := &Runner{}
 	path := normalizePath("test.sql")
-	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n")}
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
 	findings, err := r.checkVarUseAfterCursor(&indexedFile{Path: path, DsProductID: 1})
 	r.exec = nil
 	if err != nil {
@@ -3238,7 +3273,7 @@ as
 `
 	r := &Runner{}
 	path := normalizePath("test.sql")
-	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n")}
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
 	findings, err := r.checkVarUseAfterCursor(&indexedFile{Path: path, DsProductID: 1})
 	r.exec = nil
 	if err != nil {
@@ -3630,6 +3665,12 @@ as
 		t.Fatalf("failed to write to temp file: %v", err)
 	}
 	tmpFile.Close()
+	r.exec = &reviewExecContext{
+		filePath:    normalizePath(tmpFile.Name()),
+		content:     []byte(content),
+		lines:       strings.Split(content, "\n"),
+		macroResult: replaceMacros(content),
+	}
 
 	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
@@ -3665,6 +3706,12 @@ as
 		t.Fatalf("failed to write to temp file: %v", err)
 	}
 	tmpFile.Close()
+	r.exec = &reviewExecContext{
+		filePath:    normalizePath(tmpFile.Name()),
+		content:     []byte(content),
+		lines:       strings.Split(content, "\n"),
+		macroResult: replaceMacros(content),
+	}
 
 	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
@@ -3702,6 +3749,12 @@ as
 		t.Fatalf("failed to write to temp file: %v", err)
 	}
 	tmpFile.Close()
+	r.exec = &reviewExecContext{
+		filePath:    normalizePath(tmpFile.Name()),
+		content:     []byte(content),
+		lines:       strings.Split(content, "\n"),
+		macroResult: replaceMacros(content),
+	}
 
 	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
@@ -3738,6 +3791,12 @@ as
 		t.Fatalf("failed to write to temp file: %v", err)
 	}
 	tmpFile.Close()
+	r.exec = &reviewExecContext{
+		filePath:    normalizePath(tmpFile.Name()),
+		content:     []byte(content),
+		lines:       strings.Split(content, "\n"),
+		macroResult: replaceMacros(content),
+	}
 
 	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
@@ -3784,6 +3843,12 @@ as
 		t.Fatalf("failed to write to temp file: %v", err)
 	}
 	tmpFile.Close()
+	r.exec = &reviewExecContext{
+		filePath:    normalizePath(tmpFile.Name()),
+		content:     []byte(content),
+		lines:       strings.Split(content, "\n"),
+		macroResult: replaceMacros(content),
+	}
 
 	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
@@ -3819,6 +3884,12 @@ as
 		t.Fatalf("failed to write to temp file: %v", err)
 	}
 	tmpFile.Close()
+	r.exec = &reviewExecContext{
+		filePath:    normalizePath(tmpFile.Name()),
+		content:     []byte(content),
+		lines:       strings.Split(content, "\n"),
+		macroResult: replaceMacros(content),
+	}
 
 	findings, err := r.checkCursorFetchArguments(parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
 	if err != nil {
@@ -5428,9 +5499,10 @@ func TestCheckDatatypeExecParams_NoDB_NoPanic(t *testing.T) {
 
 	file := &indexedFile{Path: f.Name(), DsProductID: 1}
 	runner.exec = &reviewExecContext{
-		filePath: normalizePath(f.Name()),
-		content:  []byte(content),
-		lines:    strings.Split(content, "\n"),
+		filePath:    normalizePath(f.Name()),
+		content:     []byte(content),
+		lines:       strings.Split(content, "\n"),
+		macroResult: replaceMacros(content),
 	}
 	parsed := &sqlparser.ParseResult{}
 	findings, err := runner.checkDatatypeExecParams(parsed, file)

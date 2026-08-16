@@ -1,6 +1,11 @@
 package store
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+
+	"github.com/lib/pq"
+)
 
 func TestLookupKeyBuilders(t *testing.T) {
 	tests := []struct {
@@ -128,5 +133,59 @@ func TestChunkStrings(t *testing.T) {
 	}
 	if len(chunks[0]) != 500 || len(chunks[1]) != 1 {
 		t.Fatalf("chunk sizes = %d, %d", len(chunks[0]), len(chunks[1]))
+	}
+}
+
+func TestQuoteDSNValue(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "simple", input: "localhost", want: "localhost"},
+		{name: "with space", input: "my secret", want: "'my secret'"},
+		{name: "with quote", input: "it's", want: `'it\'s'`},
+		{name: "empty", input: "", want: "''"},
+		{name: "with backslash", input: `a\b`, want: `'a\\b'`},
+		{name: "injection attempt", input: "x sslmode=disable", want: "'x sslmode=disable'"},
+		{name: "with tab", input: "a\tb", want: "'a\tb'"},
+		{name: "with newline", input: "a\nb", want: "'a\nb'"},
+		{name: "numeric", input: "5432", want: "5432"},
+		{name: "ipv6", input: "::1", want: "::1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := quoteDSNValue(tt.input)
+			if got != tt.want {
+				t.Fatalf("quoteDSNValue(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestQuoteDSNValue_ParsedByLibPQ проверяет экранирование против реального
+// парсера DSN из lib/pq: значение должно дойти до драйвера без искажений.
+func TestQuoteDSNValue_ParsedByLibPQ(t *testing.T) {
+	secrets := []string{
+		"simple",
+		"my secret",
+		"it's",
+		`a\b`,
+		`back\\slash`,
+		"x sslmode=disable",
+		"tab\tsep",
+		"",
+	}
+	for _, secret := range secrets {
+		t.Run(secret, func(t *testing.T) {
+			dsn := fmt.Sprintf(
+				"host=localhost port=5432 user=postgres password=%s dbname=codebase sslmode=disable",
+				quoteDSNValue(secret),
+			)
+			if _, err := pq.NewConnector(dsn); err != nil {
+				t.Fatalf("lib/pq rejected DSN %s: %v", dsn, err)
+			}
+		})
 	}
 }

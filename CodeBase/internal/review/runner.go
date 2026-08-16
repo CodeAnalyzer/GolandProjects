@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"regexp"
 	"runtime"
 	"sort"
@@ -560,12 +559,10 @@ func runRuleTasks(tasks []ruleTask, maxWorkers int, onProgress func(int, int)) (
 }
 
 func (r *Runner) fileContent(path string) ([]byte, error) {
-	if r.exec != nil {
-		if normalizePath(path) == r.exec.filePath {
-			return r.exec.content, nil
-		}
+	if r.exec != nil && normalizePath(path) == r.exec.filePath {
+		return r.exec.content, nil
 	}
-	return os.ReadFile(path)
+	return nil, fmt.Errorf("file %q is not the active review target", path)
 }
 
 // reUpdateTable, reInsertTable, reFromJoinTable — лёгкие regex для извлечения имён
@@ -669,19 +666,10 @@ func (r *Runner) cachedFindColumnDefinitionType(tableName, columnName string) (s
 }
 
 func (r *Runner) fileProcessedContent(path string) (macroReplaceResult, error) {
-	if r.exec != nil {
-		if normalizePath(path) == r.exec.filePath {
-			if len(r.exec.macroResult.SourceMap) == 0 && len(r.exec.content) > 0 {
-				r.exec.macroResult = replaceMacros(string(r.exec.content))
-			}
-			return r.exec.macroResult, nil
-		}
+	if r.exec != nil && normalizePath(path) == r.exec.filePath {
+		return r.exec.macroResult, nil
 	}
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return macroReplaceResult{}, err
-	}
-	return replaceMacros(string(content)), nil
+	return macroReplaceResult{}, fmt.Errorf("file %q is not the active review target", path)
 }
 
 // mapExpandedLineToOriginal преобразует номер строки из expanded-контента

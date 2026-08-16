@@ -110,7 +110,7 @@ func TestCheckEmptyStringDate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &Runner{}
 			path := normalizePath("test.sql")
-			r.exec = &reviewExecContext{filePath: path, content: []byte(tc.content), lines: strings.Split(tc.content, "\n")}
+			r.exec = &reviewExecContext{filePath: path, content: []byte(tc.content), lines: strings.Split(tc.content, "\n"), macroResult: replaceMacros(tc.content)}
 			parsed := &sqlparser.ParseResult{
 				Procedures: tc.procs,
 				Fragments:  tc.fragments,
