@@ -1,14 +1,10 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
-	"sort"
 
-	"github.com/codebase/internal/config"
-	"github.com/codebase/internal/query"
-	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/trc"
+	"github.com/codebase/internal/trcsvc"
 	"github.com/spf13/cobra"
 )
 
@@ -113,220 +109,79 @@ var trcPruneCmd = &cobra.Command{
 	RunE:  runTRCPrune,
 }
 
-func loadTRCResult(ctx context.Context, args []string) (*trc.TRCParseResult, error) {
-	if trcSessionID > 0 {
-		cfg := config.Get()
-		if cfg == nil {
-			return nil, fmt.Errorf("no config available")
-		}
-		db, err := store.NewDB(cfg.DB)
-		if err != nil {
-			return nil, fmt.Errorf("failed to connect to DB: %w", err)
-		}
-		defer db.Close()
-
-		session, err := trc.GetSession(ctx, db, trcSessionID)
-		if err != nil {
-			return nil, fmt.Errorf("session %d not found: %w", trcSessionID, err)
-		}
-		events, err := trc.LoadEvents(ctx, db, trcSessionID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load events: %w", err)
-		}
-		return &trc.TRCParseResult{
-			Header: &trc.TraceHeader{
-				ProviderName: session.ProviderName,
-				ServerName:   session.ServerName,
-				MajorVersion: session.MajorVersion,
-				MinorVersion: session.MinorVersion,
-				BuildNumber:  session.BuildNumber,
-			},
-			Events: events,
-		}, nil
+func trcSource(args []string) trcsvc.SessionSource {
+	var filePath string
+	if len(args) > 0 {
+		filePath = args[0]
 	}
-	if len(args) == 0 {
-		return nil, fmt.Errorf("either <file.trc> or --session is required")
-	}
-	return trc.ParseFile(args[0])
+	return trcsvc.SessionSource{SessionID: trcSessionID, FilePath: filePath}
 }
 
 func runTRCParse(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	// Если DB доступна — используем streaming parse-to-DB (ParseFileToDB),
-	// который не накапливает события в памяти. Это критично для больших
-	// файлов (> 1 ГБ), где накопление []TRCEvent исчерпывает RAM.
-	cfg := config.Get()
-	if cfg != nil {
-		if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-			defer db.Close()
-			if err := db.InitSchema(); err != nil {
-				return fmt.Errorf("failed to init schema: %w", err)
-			}
-			sessionID, totalEvents, err := trc.ParseFileToDB(ctx, args[0], db)
-			if err != nil {
-				return fmt.Errorf("failed to parse trc file: %w", err)
-			}
-			if trcOutputJSON {
-				return printJSON(map[string]interface{}{
-					"total_events": totalEvents,
-					"session_id":   sessionID,
-				})
-			}
-			fmt.Printf("TRC file: %s\n", args[0])
-			fmt.Printf("Total events: %d\n", totalEvents)
-			fmt.Printf("Saved session: %d\n", sessionID)
-			return nil
-		}
-	}
-
-	// Fallback: ParseFile без DB (no-DB режим)
-	result, err := trc.ParseFile(args[0])
+	db := openDB()
+	defer closeDB(db)
+	result, err := trcsvc.ExecuteParse(ctx, db, args[0])
 	if err != nil {
-		return fmt.Errorf("failed to parse trc file: %w", err)
+		return err
 	}
-
 	if trcOutputJSON {
-		return printJSON(map[string]interface{}{
-			"total_events": len(result.Events),
-			"session_id":   0,
-		})
+		return printJSON(result)
 	}
-	printTRCSummary(args[0], result)
+	fmt.Printf("TRC file: %s\n", args[0])
+	fmt.Printf("Total events: %d\n", result.TotalEvents)
+	if result.SessionID > 0 {
+		fmt.Printf("Saved session: %d\n", result.SessionID)
+	}
 	return nil
 }
 
 func runTRCSummary(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	// Server-side SQL when session_id > 0
-	if trcSessionID > 0 {
-		cfg := config.Get()
-		if cfg == nil {
-			return fmt.Errorf("no config available")
-		}
-		db, err := store.NewDB(cfg.DB)
-		if err != nil {
-			return fmt.Errorf("failed to connect to DB: %w", err)
-		}
-		defer db.Close()
-
-		session, err := trc.GetSession(ctx, db, trcSessionID)
-		if err != nil {
-			return fmt.Errorf("session %d not found: %w", trcSessionID, err)
-		}
-		totalEvents, _ := trc.LoadEventCount(ctx, db, trcSessionID)
-		if trcOutputJSON {
-			return printJSON(map[string]interface{}{
-				"total_events": totalEvents,
-				"session":      session,
-			})
-		}
-		fmt.Printf("Session: %d\n", trcSessionID)
-		fmt.Printf("File: %s\n", session.FilePath)
-		fmt.Printf("Total events: %d\n", totalEvents)
-		fmt.Printf("Provider: %s  Server: %s  Version: %d.%d build %d\n",
-			session.ProviderName, session.ServerName,
-			session.MajorVersion, session.MinorVersion, session.BuildNumber)
-		return nil
-	}
-
-	// Fallback: parse from file
-	result, err := loadTRCResult(ctx, args)
+	db := openDB()
+	defer closeDB(db)
+	result, err := trcsvc.ExecuteSummary(ctx, db, trcSource(args))
 	if err != nil {
 		return err
 	}
 	if trcOutputJSON {
-		return printJSON(map[string]interface{}{
-			"total_events": len(result.Events),
-			"header":       result.Header,
-		})
+		return printJSON(result)
 	}
-	filePath := ""
-	if len(args) > 0 {
-		filePath = args[0]
+	if trcSessionID > 0 {
+		fmt.Printf("Session: %d\n", trcSessionID)
+		if result.Session != nil {
+			fmt.Printf("File: %s\n", result.Session.FilePath)
+		}
+	} else if len(args) > 0 {
+		fmt.Printf("TRC file: %s\n", args[0])
 	}
-	printTRCSummary(filePath, result)
-	return nil
-}
-
-func printTRCSummary(filePath string, result *trc.TRCParseResult) {
-	if filePath != "" {
-		fmt.Printf("TRC file: %s\n", filePath)
-	}
-	fmt.Printf("Total events: %d\n", len(result.Events))
+	fmt.Printf("Total events: %d\n", result.TotalEvents)
 	if result.Header != nil {
 		fmt.Printf("Provider: %s  Server: %s  Version: %d.%d build %d\n",
 			result.Header.ProviderName, result.Header.ServerName,
 			result.Header.MajorVersion, result.Header.MinorVersion, result.Header.BuildNumber)
 	}
+	return nil
 }
 
 func runTRCEvents(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	limit := applyQueryLimit(trcLimit)
-
-	// Server-side SQL when session_id > 0
-	if trcSessionID > 0 {
-		cfg := config.Get()
-		if cfg == nil {
-			return fmt.Errorf("no config available")
-		}
-		db, err := store.NewDB(cfg.DB)
-		if err != nil {
-			return fmt.Errorf("failed to connect to DB: %w", err)
-		}
-		defer db.Close()
-
-		f := trc.TRCEventFilter{SPID: trcSPID, Procedure: trcProcedure}
-		events, err := trc.LoadEventsFiltered(ctx, db, trcSessionID, f, limit)
-		if err != nil {
-			return fmt.Errorf("failed to load events: %w", err)
-		}
-		totalCount, _ := trc.LoadEventCount(ctx, db, trcSessionID)
-		if trcOutputJSON {
-			return printJSON(map[string]interface{}{
-				"events":         events,
-				"total_count":    totalCount,
-				"filtered_count": len(events),
-				"limit":          limit,
-			})
-		}
-		fmt.Printf("%d event(s) (of %d total, limit %d):\n\n", len(events), totalCount, limit)
-		for _, ev := range events {
-			printEventLine(ev)
-		}
-		return nil
-	}
-
-	// Fallback: parse from file
-	result, err := loadTRCResult(ctx, args)
+	db := openDB()
+	defer closeDB(db)
+	result, err := trcsvc.ExecuteEvents(ctx, db, trcsvc.EventsParams{
+		Source:    trcSource(args),
+		SPID:      trcSPID,
+		Procedure: trcProcedure,
+		Limit:     applyQueryLimit(trcLimit),
+	})
 	if err != nil {
 		return err
 	}
-	var filtered []trc.TRCEvent
-	for _, ev := range result.Events {
-		if trcSPID > 0 {
-			if spid, ok := ev.Columns[12].(int32); !ok || int(spid) != trcSPID {
-				continue
-			}
-		}
-		if trcProcedure != "" && ev.Procedure != trcProcedure {
-			continue
-		}
-		filtered = append(filtered, ev)
-		if len(filtered) >= limit {
-			break
-		}
-	}
 	if trcOutputJSON {
-		return printJSON(map[string]interface{}{
-			"events":         filtered,
-			"total_count":    len(result.Events),
-			"filtered_count": len(filtered),
-			"limit":          limit,
-		})
+		return printJSON(result)
 	}
-	fmt.Printf("%d event(s) (of %d total, limit %d):\n\n", len(filtered), len(result.Events), limit)
-	for _, ev := range filtered {
+	fmt.Printf("%d event(s) (of %d total, limit %d):\n\n", result.FilteredCount, result.TotalCount, result.Limit)
+	for _, ev := range result.Events {
 		printEventLine(ev)
 	}
 	return nil
@@ -350,65 +205,17 @@ func printEventLine(ev trc.TRCEvent) {
 
 func runTRCProcedures(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	// Server-side SQL when session_id > 0
-	if trcSessionID > 0 {
-		cfg := config.Get()
-		if cfg == nil {
-			return fmt.Errorf("no config available")
-		}
-		db, err := store.NewDB(cfg.DB)
-		if err != nil {
-			return fmt.Errorf("failed to connect to DB: %w", err)
-		}
-		defer db.Close()
-
-		aggs, err := trc.LoadProceduresAggregated(ctx, db, trcSessionID)
-		if err != nil {
-			return fmt.Errorf("failed to load procedures: %w", err)
-		}
-		if len(aggs) > 0 {
-			q := query.New(db)
-			sampleEvents, _ := trc.LoadEventsFiltered(ctx, db, trcSessionID, trc.TRCEventFilter{}, 1000)
-			if len(sampleEvents) > 0 {
-				enrichMap := trc.EnrichEvents(ctx, q, sampleEvents)
-				trc.EnrichAggregates(aggs, enrichMap)
-			}
-		}
-		if trcOutputJSON {
-			return printJSON(aggs)
-		}
-		fmt.Printf("%d procedure(s):\n\n", len(aggs))
-		for _, a := range aggs {
-			fmt.Printf("  %-40s count=%-5d total=%dms min=%dms max=%dms avg=%.1fms",
-				a.Procedure, a.Count, a.TotalMs, a.MinMs, a.MaxMs, a.AvgMs)
-			if a.SourceFile != "" {
-				fmt.Printf("  → %s", a.SourceFile)
-			}
-			fmt.Println()
-		}
-		return nil
-	}
-
-	// Fallback: parse from file
-	result, err := loadTRCResult(ctx, args)
+	db := openDB()
+	defer closeDB(db)
+	result, err := trcsvc.ExecuteProcedures(ctx, db, trcSource(args))
 	if err != nil {
 		return err
 	}
-	aggs := trc.AggregateByProcedure(result.Events)
-	cfg := config.Get()
-	if cfg != nil && len(aggs) > 0 {
-		if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-			defer db.Close()
-			q := query.New(db)
-			enrichMap := trc.EnrichEvents(ctx, q, result.Events)
-			trc.EnrichAggregates(aggs, enrichMap)
-		}
-	}
 	if trcOutputJSON {
-		return printJSON(aggs)
+		return printJSON(result)
 	}
-	fmt.Printf("%d procedure(s):\n\n", len(aggs))
-	for _, a := range aggs {
+	fmt.Printf("%d procedure(s):\n\n", result.Count)
+	for _, a := range result.Procedures {
 		fmt.Printf("  %-40s count=%-5d total=%dms min=%dms max=%dms avg=%.1fms",
 			a.Procedure, a.Count, a.TotalMs, a.MinMs, a.MaxMs, a.AvgMs)
 		if a.SourceFile != "" {
@@ -421,124 +228,48 @@ func runTRCProcedures(cmd *cobra.Command, args []string) error {
 
 func runTRCTree(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	// Server-side recursive CTE when session_id > 0
-	if trcSessionID > 0 {
-		cfg := config.Get()
-		if cfg == nil {
-			return fmt.Errorf("no config available")
-		}
-		db, err := store.NewDB(cfg.DB)
-		if err != nil {
-			return fmt.Errorf("failed to connect to DB: %w", err)
-		}
-		defer db.Close()
-
-		treeEvents, err := trc.LoadEventsForTree(ctx, db, trcSessionID, trcSPID, trcMaxDepth, trcTreeLimit)
-		if err != nil {
-			return fmt.Errorf("failed to load tree: %w", err)
-		}
-		trees := trc.BuildTrees(treeEvents)
-		if trcOutputJSON {
-			return printJSON(trees)
-		}
-		if len(trees) == 0 {
-			fmt.Println("No events found.")
-			return nil
-		}
-		fmt.Print(trc.FormatTrees(trees))
-		return nil
-	}
-
-	// Fallback: parse from file
-	result, err := loadTRCResult(ctx, args)
+	db := openDB()
+	defer closeDB(db)
+	result, err := trcsvc.ExecuteTree(ctx, db, trcsvc.TreeParams{
+		Source:   trcSource(args),
+		SPID:     trcSPID,
+		MaxDepth: trcMaxDepth,
+		Limit:    trcTreeLimit,
+	})
 	if err != nil {
 		return err
 	}
-	trees := trc.BuildTreesWithDepth(result.Events, trcMaxDepth)
-	if trcSPID > 0 {
-		if t, ok := trees[trcSPID]; ok {
-			trees = map[int][]*trc.TRCTreeNode{trcSPID: t}
-		} else {
-			trees = map[int][]*trc.TRCTreeNode{}
-		}
-	}
-	trc.LimitTrees(trees, trcTreeLimit)
 	if trcOutputJSON {
-		return printJSON(trees)
+		return printJSON(result)
 	}
-	if len(trees) == 0 {
+	if len(result.Trees) == 0 {
 		fmt.Println("No events found.")
 		return nil
 	}
-	fmt.Print(trc.FormatTrees(trees))
+	fmt.Print(trc.FormatTrees(result.Trees))
 	return nil
 }
 
 func runTRCErrors(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	limit := applyQueryLimit(trcLimit)
-
-	// Server-side SQL when session_id > 0
-	if trcSessionID > 0 {
-		cfg := config.Get()
-		if cfg == nil {
-			return fmt.Errorf("no config available")
-		}
-		db, err := store.NewDB(cfg.DB)
-		if err != nil {
-			return fmt.Errorf("failed to connect to DB: %w", err)
-		}
-		defer db.Close()
-
-		events, err := trc.LoadErrorEvents(ctx, db, trcSessionID, limit)
-		if err != nil {
-			return fmt.Errorf("failed to load error events: %w", err)
-		}
-		if trcOutputJSON {
-			return printJSON(map[string]interface{}{
-				"events": events,
-				"count":  len(events),
-				"limit":  limit,
-			})
-		}
-		if len(events) == 0 {
-			fmt.Println("No errors found.")
-			return nil
-		}
-		fmt.Printf("Found %d error event(s) (limit %d):\n\n", len(events), limit)
-		for _, ev := range events {
-			printEventLine(ev)
-		}
-		return nil
-	}
-
-	// Fallback: parse from file
-	result, err := loadTRCResult(ctx, args)
+	db := openDB()
+	defer closeDB(db)
+	result, err := trcsvc.ExecuteErrors(ctx, db, trcsvc.ErrorsParams{
+		Source: trcSource(args),
+		Limit:  applyQueryLimit(trcLimit),
+	})
 	if err != nil {
 		return err
 	}
-	var errs []trc.TRCEvent
-	for _, ev := range result.Events {
-		if code, ok := ev.Columns[31].(int32); ok && code != 0 {
-			errs = append(errs, ev)
-		}
-		if len(errs) >= limit {
-			break
-		}
-	}
 	if trcOutputJSON {
-		return printJSON(map[string]interface{}{
-			"events": errs,
-			"count":  len(errs),
-			"limit":  limit,
-		})
+		return printJSON(result)
 	}
-	if len(errs) == 0 {
+	if result.Count == 0 {
 		fmt.Println("No errors found.")
 		return nil
 	}
-	fmt.Printf("Found %d error event(s) (limit %d):\n\n", len(errs), limit)
-	for _, ev := range errs {
+	fmt.Printf("Found %d error event(s) (limit %d):\n\n", result.Count, result.Limit)
+	for _, ev := range result.Events {
 		printEventLine(ev)
 	}
 	return nil
@@ -546,77 +277,25 @@ func runTRCErrors(cmd *cobra.Command, args []string) error {
 
 func runTRCSlow(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	threshold := trcSlowThreshold
-	if threshold <= 0 {
-		threshold = trc.GetSlowThresholdMs()
-	}
-	limit := applyQueryLimit(trcLimit)
-
-	// Server-side SQL when session_id > 0
-	if trcSessionID > 0 {
-		cfg := config.Get()
-		if cfg == nil {
-			return fmt.Errorf("no config available")
-		}
-		db, err := store.NewDB(cfg.DB)
-		if err != nil {
-			return fmt.Errorf("failed to connect to DB: %w", err)
-		}
-		defer db.Close()
-
-		events, err := trc.LoadSlowEvents(ctx, db, trcSessionID, threshold, limit)
-		if err != nil {
-			return fmt.Errorf("failed to load slow events: %w", err)
-		}
-		if trcOutputJSON {
-			return printJSON(map[string]interface{}{
-				"events":    events,
-				"count":     len(events),
-				"threshold": threshold,
-				"limit":     limit,
-			})
-		}
-		if len(events) == 0 {
-			fmt.Printf("No events slower than %dms found.\n", threshold)
-			return nil
-		}
-		fmt.Printf("Found %d slow event(s) (>= %dms, limit %d):\n\n", len(events), threshold, limit)
-		for _, ev := range events {
-			printEventLine(ev)
-		}
-		return nil
-	}
-
-	// Fallback: parse from file
-	result, err := loadTRCResult(ctx, args)
+	db := openDB()
+	defer closeDB(db)
+	result, err := trcsvc.ExecuteSlow(ctx, db, trcsvc.SlowParams{
+		Source:      trcSource(args),
+		ThresholdMs: trcSlowThreshold,
+		Limit:       applyQueryLimit(trcLimit),
+	})
 	if err != nil {
 		return err
 	}
-	var slow []trc.TRCEvent
-	for _, ev := range result.Events {
-		if ev.DurationMs >= int64(threshold) {
-			slow = append(slow, ev)
-		}
-	}
-	sort.Slice(slow, func(i, j int) bool { return slow[i].DurationMs > slow[j].DurationMs })
-	if len(slow) > limit {
-		slow = slow[:limit]
-	}
-
 	if trcOutputJSON {
-		return printJSON(map[string]interface{}{
-			"events":    slow,
-			"count":     len(slow),
-			"threshold": threshold,
-			"limit":     limit,
-		})
+		return printJSON(result)
 	}
-	if len(slow) == 0 {
-		fmt.Printf("No events slower than %dms found.\n", threshold)
+	if result.Count == 0 {
+		fmt.Printf("No events slower than %dms found.\n", result.Threshold)
 		return nil
 	}
-	fmt.Printf("Found %d slow event(s) (>= %dms, limit %d):\n\n", len(slow), threshold, limit)
-	for _, ev := range slow {
+	fmt.Printf("Found %d slow event(s) (>= %dms, limit %d):\n\n", result.Count, result.Threshold, result.Limit)
+	for _, ev := range result.Events {
 		printEventLine(ev)
 	}
 	return nil
@@ -624,29 +303,21 @@ func runTRCSlow(cmd *cobra.Command, args []string) error {
 
 func runTRCList(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	cfg := config.Get()
-	if cfg == nil {
-		return fmt.Errorf("no config available")
-	}
-	db, err := store.NewDB(cfg.DB)
+	db := openDB()
+	defer closeDB(db)
+	result, err := trcsvc.ExecuteList(ctx, db, trcListLimit)
 	if err != nil {
-		return fmt.Errorf("failed to connect to DB: %w", err)
+		return err
 	}
-	defer db.Close()
-
-	sessions, err := trc.ListSessions(ctx, db, trcListLimit)
-	if err != nil {
-		return fmt.Errorf("failed to list sessions: %w", err)
-	}
-	if len(sessions) == 0 {
+	if len(result.Sessions) == 0 {
 		fmt.Println("No saved sessions.")
 		return nil
 	}
 	if trcOutputJSON {
-		return printJSON(sessions)
+		return printJSON(result)
 	}
-	fmt.Printf("%d session(s):\n\n", len(sessions))
-	for _, s := range sessions {
+	fmt.Printf("%d session(s):\n\n", len(result.Sessions))
+	for _, s := range result.Sessions {
 		fmt.Printf("  %d  %s  events=%d  size=%d  parsed=%s\n",
 			s.ID, s.FilePath, s.TotalEvents, s.FileSize,
 			s.ParsedAt.Format("2006-01-02 15:04:05"))
@@ -659,32 +330,16 @@ func runTRCDelete(cmd *cobra.Command, args []string) error {
 	if trcSessionID <= 0 {
 		return fmt.Errorf("--session is required for delete command")
 	}
-	cfg := config.Get()
-	if cfg == nil {
-		return fmt.Errorf("no config available")
-	}
-	db, err := store.NewDB(cfg.DB)
+	db := openDB()
+	defer closeDB(db)
+	result, err := trcsvc.ExecuteDelete(ctx, db, trcSessionID)
 	if err != nil {
-		return fmt.Errorf("failed to connect to DB: %w", err)
-	}
-	defer db.Close()
-
-	session, err := trc.GetSession(ctx, db, trcSessionID)
-	if err != nil {
-		return fmt.Errorf("session %d not found: %w", trcSessionID, err)
-	}
-	if err := trc.DeleteSession(ctx, db, trcSessionID); err != nil {
-		return fmt.Errorf("failed to delete session: %w", err)
+		return err
 	}
 	if trcOutputJSON {
-		return printJSON(map[string]interface{}{
-			"deleted":    true,
-			"session_id": trcSessionID,
-			"file_path":  session.FilePath,
-		})
+		return printJSON(result)
 	}
-	fmt.Printf("Deleted session %d (file: %s, %d events)\n",
-		trcSessionID, session.FilePath, session.TotalEvents)
+	fmt.Printf("Deleted session %d (file: %s)\n", result.SessionID, result.FilePath)
 	return nil
 }
 
@@ -693,27 +348,16 @@ func runTRCPrune(cmd *cobra.Command, args []string) error {
 	if trcKeepLast < 0 {
 		return fmt.Errorf("--keep-last must be >= 0")
 	}
-	cfg := config.Get()
-	if cfg == nil {
-		return fmt.Errorf("no config available")
-	}
-	db, err := store.NewDB(cfg.DB)
+	db := openDB()
+	defer closeDB(db)
+	result, err := trcsvc.ExecutePrune(ctx, db, trcKeepLast)
 	if err != nil {
-		return fmt.Errorf("failed to connect to DB: %w", err)
-	}
-	defer db.Close()
-
-	deleted, err := trc.PruneSessions(ctx, db, trcKeepLast)
-	if err != nil {
-		return fmt.Errorf("failed to prune sessions: %w", err)
+		return err
 	}
 	if trcOutputJSON {
-		return printJSON(map[string]interface{}{
-			"deleted_count": deleted,
-			"kept_last":     trcKeepLast,
-		})
+		return printJSON(result)
 	}
-	fmt.Printf("Deleted %d session(s), kept last %d\n", deleted, trcKeepLast)
+	fmt.Printf("Deleted %d session(s), kept last %d\n", result.DeletedCount, result.KeptLast)
 	return nil
 }
 

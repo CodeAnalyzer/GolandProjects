@@ -15,6 +15,7 @@ import (
 	"github.com/codebase/internal/indexer"
 	"github.com/codebase/internal/mcp"
 	"github.com/codebase/internal/rti"
+	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/trc"
 	"github.com/codebase/internal/util"
 	"github.com/spf13/cobra"
@@ -23,7 +24,7 @@ import (
 var (
 	appName        = "CodeBase"
 	version        = "0.8.7"
-	buildNumber    = "1332"
+	buildNumber    = "1339"
 	copyright      = "Copyright (c) 2026"
 	cfgFile        string
 	commandLogger  *log.Logger
@@ -306,4 +307,24 @@ func applyQueryLimit(limit int) int {
 		}
 	}
 	return limit
+}
+
+// openDB opens a DB connection from config. Returns nil if config or DB unavailable.
+func openDB() *store.DB {
+	cfg := config.Get()
+	if cfg == nil {
+		return nil
+	}
+	db, err := store.NewDB(cfg.DB)
+	if err != nil {
+		return nil
+	}
+	return db
+}
+
+// closeDB safely closes a DB connection. No-op if db is nil.
+func closeDB(db *store.DB) {
+	if db != nil {
+		db.Close()
+	}
 }

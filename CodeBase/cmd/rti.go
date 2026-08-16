@@ -1,17 +1,13 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"time"
 
-	"github.com/codebase/internal/config"
-	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/rti"
-	"github.com/codebase/internal/store"
+	"github.com/codebase/internal/rtisvc"
 	"github.com/spf13/cobra"
 )
 
@@ -130,214 +126,94 @@ var rtiPruneCmd = &cobra.Command{
 
 func runRTIParse(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	result, err := rti.ParseFile(args[0])
-	if err != nil {
-		return fmt.Errorf("failed to parse RTI file: %w", err)
-	}
-
-	// Save to DB if available
-	var sessionID int64
-	cfg := config.Get()
-	if cfg != nil {
-		if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-			defer db.Close()
-			if err := db.InitSchema(); err != nil {
-				return fmt.Errorf("failed to init schema: %w", err)
-			}
-			sessionID, err = rti.SaveSession(ctx, db, result, args[0])
-			if err != nil {
-				return fmt.Errorf("failed to save session: %w", err)
-			}
-		}
-	}
-
-	if rtiOutputJSON {
-		return printJSON(map[string]interface{}{
-			"summary":    result.Summary,
-			"session_id": sessionID,
-		})
-	}
-	printSummary(result)
-	if sessionID > 0 {
-		fmt.Printf("Saved session: %d\n", sessionID)
-	}
-	return nil
-}
-
-func loadRTICalls(ctx context.Context, args []string) (*rti.RTIParseResult, error) {
-	if rtiSessionID > 0 {
-		cfg := config.Get()
-		if cfg == nil {
-			return nil, fmt.Errorf("no config available")
-		}
-		db, err := store.NewDB(cfg.DB)
-		if err != nil {
-			return nil, fmt.Errorf("failed to connect to DB: %w", err)
-		}
-		defer db.Close()
-
-		session, err := rti.GetSession(ctx, db, rtiSessionID)
-		if err != nil {
-			return nil, fmt.Errorf("session %d not found: %w", rtiSessionID, err)
-		}
-		calls, err := rti.LoadCalls(ctx, db, rtiSessionID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load calls: %w", err)
-		}
-		clientEvents, err := rti.LoadClientEvents(ctx, db, rtiSessionID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load client events: %w", err)
-		}
-		return &rti.RTIParseResult{
-			Calls:        calls,
-			ClientEvents: clientEvents,
-			Summary: rti.RTISummary{
-				FilePath:          session.FilePath,
-				FileSize:          session.FileSize,
-				TotalCalls:        session.TotalCalls,
-				ErrorsCount:       session.ErrorsCount,
-				ClientEventsCount: session.ClientEventsCount,
-			},
-		}, nil
-	}
-	if len(args) == 0 {
-		return nil, fmt.Errorf("either <file.rti> or --session is required")
-	}
-	return rti.ParseFile(args[0])
-}
-
-func runRTISummary(cmd *cobra.Command, args []string) error {
-	ctx := cmd.Context()
-	if rtiSessionID > 0 {
-		cfg := config.Get()
-		if cfg != nil {
-			if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-				defer db.Close()
-				summary, err := rti.LoadSummary(ctx, db, rtiSessionID)
-				if err != nil {
-					return err
-				}
-				if rtiOutputJSON {
-					return printJSON(summary)
-				}
-				printSummaryDirect(summary)
-				return nil
-			}
-		}
-	}
-	result, err := loadRTICalls(ctx, args)
+	db := openDB()
+	defer closeDB(db)
+	result, err := rtisvc.ExecuteParse(ctx, db, args[0])
 	if err != nil {
 		return err
 	}
 	if rtiOutputJSON {
-		return printJSON(result.Summary)
+		return printJSON(result)
 	}
-	printSummary(result)
+	printSummaryDirect(&result.Summary)
+	if result.SessionID > 0 {
+		fmt.Printf("Saved session: %d\n", result.SessionID)
+	}
+	return nil
+}
+
+func rtiSource(args []string) rtisvc.SessionSource {
+	var filePath string
+	if len(args) > 0 {
+		filePath = args[0]
+	}
+	return rtisvc.SessionSource{SessionID: rtiSessionID, FilePath: filePath}
+}
+
+func runRTISummary(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
+	db := openDB()
+	defer closeDB(db)
+	result, err := rtisvc.ExecuteSummary(ctx, db, rtiSource(args))
+	if err != nil {
+		return err
+	}
+	if rtiOutputJSON {
+		return printJSON(result)
+	}
+	printSummaryDirect(&result.Summary)
 	return nil
 }
 
 func runRTITree(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	var calls []*rti.RTICall
-	if rtiSessionID > 0 {
-		cfg := config.Get()
-		if cfg != nil {
-			if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-				defer db.Close()
-				var err error
-				calls, err = rti.LoadCallsForTree(ctx, db, rtiSessionID, rtiProcedure, rtiMaxDepth, 5000)
-				if err != nil {
-					return err
-				}
-			}
-		}
+	db := openDB()
+	defer closeDB(db)
+	result, err := rtisvc.ExecuteTree(ctx, db, rtisvc.TreeParams{
+		Source:    rtiSource(args),
+		Procedure: rtiProcedure,
+		MaxDepth:  rtiMaxDepth,
+	})
+	if err != nil {
+		return err
 	}
-	if calls == nil {
-		result, err := loadRTICalls(ctx, args)
-		if err != nil {
-			return err
-		}
-		calls = result.Calls
-	}
-	tree := rti.BuildTree(calls, rtiProcedure, rtiMaxDepth)
-	if tree == nil {
+	if result.Tree == nil {
 		return fmt.Errorf("procedure %q not found in RTI log", rtiProcedure)
 	}
-
-	var enrichMap map[string]*rti.ProcedureEnrichment
-	cfg := config.Get()
-	if cfg != nil {
-		if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-			defer db.Close()
-			q := query.New(db)
-			enrichMap = rti.EnrichCalls(ctx, q, calls)
-		}
-	}
-
 	if rtiOutputJSON {
-		return printJSON(tree)
+		return printJSON(result)
 	}
-	fmt.Print(rti.FormatTreeEnriched(tree, enrichMap))
+	fmt.Print(rti.FormatTreeEnriched(result.Tree, result.Enrichment))
 	return nil
 }
 
 func runRTIClientTree(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	limit := applyQueryLimit(rtiLimit)
-	var events []*rti.RTIClientEvent
-	if rtiSessionID > 0 {
-		cfg := config.Get()
-		if cfg != nil {
-			if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-				defer db.Close()
-				var filter rti.TimelineFilter
-				if rtiPID > 0 {
-					p := rtiPID
-					filter.PID = &p
-				}
-				var err error
-				events, err = rti.LoadClientEventsFiltered(ctx, db, rtiSessionID, filter, limit)
-				if err != nil {
-					return err
-				}
-			}
-		}
+	db := openDB()
+	defer closeDB(db)
+	var filter rtisvc.TimelineFilter
+	if rtiPID > 0 {
+		p := rtiPID
+		filter.PID = &p
 	}
-	if events == nil {
-		result, err := loadRTICalls(ctx, args)
-		if err != nil {
-			return err
-		}
-		events = result.ClientEvents
-		if len(events) > limit {
-			events = events[:limit]
-		}
+	result, err := rtisvc.ExecuteClientTree(ctx, db, rtisvc.ClientTreeParams{
+		Source: rtiSource(args),
+		Filter: filter,
+		Limit:  applyQueryLimit(rtiLimit),
+	})
+	if err != nil {
+		return err
 	}
-	nodes := rti.BuildClientTree(events, rtiPID)
-
-	// Enrich client events with CodeBase data (PAS methods, DFM forms, query fragments)
-	var clientEnrichMap map[string]*rti.ClientEnrichment
-	cfg := config.Get()
-	if cfg != nil && len(events) > 0 {
-		if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-			defer db.Close()
-			q := query.New(db)
-			clientEnrichMap = rti.EnrichClientEvents(ctx, q, events)
-		}
-	}
-
 	if rtiOutputJSON {
-		return printJSON(map[string]interface{}{
-			"nodes":      nodes,
-			"enrichment": clientEnrichMap,
-		})
+		return printJSON(result)
 	}
-	if len(nodes) == 0 {
+	nodes, ok := result.Nodes.([]*rti.RTIClientTreeNode)
+	if !ok || len(nodes) == 0 {
 		fmt.Println("No client events found.")
 		return nil
 	}
-	if clientEnrichMap != nil {
-		fmt.Print(rti.FormatClientTreeEnriched(nodes, clientEnrichMap))
+	if result.Enrichment != nil {
+		fmt.Print(rti.FormatClientTreeEnriched(nodes, result.Enrichment))
 	} else {
 		fmt.Print(rti.FormatClientTree(nodes))
 	}
@@ -346,66 +222,28 @@ func runRTIClientTree(cmd *cobra.Command, args []string) error {
 
 func runRTITimeline(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	limit := applyQueryLimit(rtiLimit)
-	var calls []*rti.RTICall
-	var events []*rti.RTIClientEvent
-	if rtiSessionID > 0 {
-		cfg := config.Get()
-		if cfg != nil {
-			if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-				defer db.Close()
-				var filter rti.TimelineFilter
-				if rtiPID > 0 {
-					p := rtiPID
-					filter.PID = &p
-				}
-				var err error
-				calls, err = rti.LoadTimelineCalls(ctx, db, rtiSessionID, filter, limit)
-				if err != nil {
-					return err
-				}
-				events, err = rti.LoadTimelineClientEvents(ctx, db, rtiSessionID, filter, limit)
-				if err != nil {
-					return err
-				}
-			}
-		}
+	db := openDB()
+	defer closeDB(db)
+	var filter rtisvc.TimelineFilter
+	if rtiPID > 0 {
+		p := rtiPID
+		filter.PID = &p
 	}
-	if calls == nil && events == nil {
-		result, err := loadRTICalls(ctx, args)
-		if err != nil {
-			return err
-		}
-		calls = result.Calls
-		events = result.ClientEvents
-		if len(calls) > limit {
-			calls = calls[:limit]
-		}
-		if len(events) > limit {
-			events = events[:limit]
-		}
+	result, err := rtisvc.ExecuteTimeline(ctx, db, rtisvc.TimelineParams{
+		Source: rtiSource(args),
+		Filter: filter,
+		Limit:  applyQueryLimit(rtiLimit),
+	})
+	if err != nil {
+		return err
 	}
-
-	// Enrich client events with CodeBase data
-	var clientEnrichMap map[string]*rti.ClientEnrichment
-	cfg := config.Get()
-	if cfg != nil && len(events) > 0 {
-		if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-			defer db.Close()
-			q := query.New(db)
-			clientEnrichMap = rti.EnrichClientEvents(ctx, q, events)
-		}
-	}
-
 	if rtiOutputJSON {
-		return printJSON(map[string]interface{}{
-			"calls":         calls,
-			"client_events": events,
-			"enrichment":    clientEnrichMap,
-		})
+		return printJSON(result)
 	}
-	if clientEnrichMap != nil {
-		fmt.Print(rti.FormatUnifiedTimelineEnriched(calls, events, clientEnrichMap))
+	calls, _ := result.Calls.([]*rti.RTICall)
+	events, _ := result.ClientEvents.([]*rti.RTIClientEvent)
+	if result.Enrichment != nil {
+		fmt.Print(rti.FormatUnifiedTimelineEnriched(calls, events, result.Enrichment))
 	} else {
 		fmt.Print(rti.FormatUnifiedTimeline(calls, events))
 	}
@@ -414,130 +252,48 @@ func runRTITimeline(cmd *cobra.Command, args []string) error {
 
 func runRTIErrors(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	limit := applyQueryLimit(rtiLimit)
-	var errors []*rti.RTICall
-	var clientErrors []*rti.RTIClientEvent
-	if rtiSessionID > 0 {
-		cfg := config.Get()
-		if cfg != nil {
-			if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-				defer db.Close()
-				var err error
-				errors, err = rti.LoadErrorCalls(ctx, db, rtiSessionID, limit)
-				if err != nil {
-					return err
-				}
-				clientErrors, err = rti.LoadClientErrors(ctx, db, rtiSessionID, limit)
-				if err != nil {
-					return err
-				}
-				// Enrich
-				var retCodeMap map[int64]*store.RetCodeLookup
-				var enrichMap map[string]*rti.ProcedureEnrichment
-				var clientEnrichMap map[string]*rti.ClientEnrichment
-				codes := make([]int64, 0, len(errors))
-				for _, c := range errors {
-					codes = append(codes, int64(*c.RetVal))
-				}
-				if len(codes) > 0 {
-					retCodeMap, _ = db.LookupRetCodes(ctx, codes)
-				}
-				q := query.New(db)
-				enrichMap = rti.EnrichCalls(ctx, q, errors)
-				if len(clientErrors) > 0 {
-					clientEnrichMap = rti.EnrichClientEvents(ctx, q, clientErrors)
-				}
-				return printRTIErrors(errors, clientErrors, retCodeMap, enrichMap, clientEnrichMap)
-			}
-		}
-	}
-	result, err := loadRTICalls(ctx, args)
+	db := openDB()
+	defer closeDB(db)
+	result, err := rtisvc.ExecuteErrors(ctx, db, rtisvc.ErrorsParams{
+		Source: rtiSource(args),
+		Limit:  applyQueryLimit(rtiLimit),
+	})
 	if err != nil {
 		return err
 	}
-	for _, c := range result.Calls {
-		if c.RetVal != nil && *c.RetVal != 0 {
-			errors = append(errors, c)
-			if len(errors) >= limit {
-				break
-			}
-		}
-	}
-	for _, ev := range result.ClientEvents {
-		if ev.Kind == "error" && ev.ErrorText != "" {
-			clientErrors = append(clientErrors, ev)
-			if len(clientErrors) >= limit {
-				break
-			}
-		}
-	}
-
-	var retCodeMap map[int64]*store.RetCodeLookup
-	var enrichMap map[string]*rti.ProcedureEnrichment
-	var clientEnrichMap map[string]*rti.ClientEnrichment
-	cfg := config.Get()
-	if cfg != nil {
-		if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-			defer db.Close()
-			codes := make([]int64, 0, len(errors))
-			for _, c := range errors {
-				codes = append(codes, int64(*c.RetVal))
-			}
-			retCodeMap, _ = db.LookupRetCodes(ctx, codes)
-			q := query.New(db)
-			enrichMap = rti.EnrichCalls(ctx, q, errors)
-			if len(clientErrors) > 0 {
-				clientEnrichMap = rti.EnrichClientEvents(ctx, q, clientErrors)
-			}
-		}
-	}
-	return printRTIErrors(errors, clientErrors, retCodeMap, enrichMap, clientEnrichMap)
-}
-
-func printRTIErrors(errors []*rti.RTICall, clientErrors []*rti.RTIClientEvent,
-	retCodeMap map[int64]*store.RetCodeLookup,
-	enrichMap map[string]*rti.ProcedureEnrichment,
-	clientEnrichMap map[string]*rti.ClientEnrichment) error {
 	if rtiOutputJSON {
-		return printJSON(map[string]interface{}{
-			"server_errors":     errors,
-			"server_enrichment": enrichMap,
-			"client_errors":     clientErrors,
-			"client_enrichment": clientEnrichMap,
-		})
+		return printJSON(result)
 	}
-	if len(errors) == 0 && len(clientErrors) == 0 {
+	if result.ServerErrorCount == 0 && result.ClientErrorCount == 0 {
 		fmt.Println("No errors found.")
 		return nil
 	}
-	if len(errors) > 0 {
-		fmt.Printf("Found %d server error(s):\n\n", len(errors))
-		for _, c := range errors {
+	if result.ServerErrorCount > 0 {
+		fmt.Printf("Found %d server error(s):\n\n", result.ServerErrorCount)
+		for _, c := range result.ServerErrors {
 			fmt.Printf("  [server] Line %d: %s [RetVal=%d] %s ← %s (%d)\n",
 				c.EnterLine, c.Procedure, *c.RetVal, c.RetValContext,
 				c.ModuleName, c.ModuleID)
 			if c.ElapsedMs > 0 {
 				fmt.Printf("    Elapsed: %dms, NestLevel: %d\n", c.ElapsedMs, c.NestLevel)
 			}
-			if retCodeMap != nil {
-				if lookup, ok := retCodeMap[int64(*c.RetVal)]; ok && lookup != nil {
-					fmt.Printf("    Error code: %s (proc: %s)\n", lookup.Message, lookup.ProcName)
-				}
+			if c.RetValMeaning != "" {
+				fmt.Printf("    Error code: %s (proc: %s)\n", c.RetValMeaning, c.ErrorConstant)
 			}
-			if enrichMap != nil {
-				if enrich, ok := enrichMap[c.Procedure]; ok && enrich != nil && enrich.Found {
+			if result.ServerEnrichment != nil {
+				if enrich, ok := result.ServerEnrichment[c.Procedure]; ok && enrich != nil && enrich.Found {
 					fmt.Printf("    Source: %s:%d\n", enrich.SourceFile, enrich.LineStart)
 				}
 			}
 		}
 	}
-	if len(clientErrors) > 0 {
-		fmt.Printf("\nFound %d client error(s):\n\n", len(clientErrors))
-		for _, ev := range clientErrors {
+	if result.ClientErrorCount > 0 {
+		fmt.Printf("\nFound %d client error(s):\n\n", result.ClientErrorCount)
+		for _, ev := range result.ClientErrors {
 			fmt.Printf("  [client] Line %d: %s.%s: %s\n", ev.Line, ev.ClassName, ev.MethodName, ev.ErrorText)
-			if clientEnrichMap != nil {
+			if result.ClientEnrichment != nil {
 				key := ev.ClassName + "." + ev.MethodName
-				if enrich, ok := clientEnrichMap[key]; ok && enrich != nil && enrich.Found {
+				if enrich, ok := result.ClientEnrichment[key]; ok && enrich != nil && enrich.Found {
 					fmt.Printf("    Source: %s:%d\n", enrich.SourceFile, enrich.LineNumber)
 				}
 			}
@@ -551,77 +307,29 @@ func runRTIDetails(cmd *cobra.Command, args []string) error {
 	if rtiProcedure == "" {
 		return fmt.Errorf("--proc is required for details command")
 	}
-	limit := applyQueryLimit(rtiLimit)
-	var calls []*rti.RTICall
-	if rtiSessionID > 0 {
-		cfg := config.Get()
-		if cfg != nil {
-			if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-				defer db.Close()
-				var err error
-				calls, err = rti.LoadCallsByProcedure(ctx, db, rtiSessionID, rtiProcedure, limit)
-				if err != nil {
-					return err
-				}
-			}
-		}
+	db := openDB()
+	defer closeDB(db)
+	result, err := rtisvc.ExecuteDetails(ctx, db, rtisvc.DetailsParams{
+		Source:    rtiSource(args),
+		Procedure: rtiProcedure,
+		Limit:     applyQueryLimit(rtiLimit),
+	})
+	if err != nil {
+		return err
 	}
-	if calls == nil {
-		result, err := loadRTICalls(ctx, args)
-		if err != nil {
-			return err
-		}
-		for _, c := range result.Calls {
-			if c.Procedure == rtiProcedure {
-				calls = append(calls, c)
-				if len(calls) >= limit {
-					break
-				}
-			}
-		}
-	}
-	if len(calls) == 0 {
+	if result.Count == 0 {
 		return fmt.Errorf("procedure %q not found in RTI log", rtiProcedure)
 	}
-
-	// Enrich from CodeBase DB
-	var enrich *rti.ProcedureEnrichment
-	var retCodeMap map[int64]*store.RetCodeLookup
-	cfg := config.Get()
-	if cfg != nil {
-		if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-			defer db.Close()
-			q := query.New(db)
-			enrich, _ = rti.EnrichProcedure(ctx, q, rtiProcedure)
-			// Lookup retcodes for all error calls
-			codes := make([]int64, 0)
-			for _, c := range calls {
-				if c.RetVal != nil && *c.RetVal != 0 {
-					codes = append(codes, int64(*c.RetVal))
-				}
-			}
-			if len(codes) > 0 {
-				retCodeMap, _ = db.LookupRetCodes(ctx, codes)
-			}
-		}
-	}
-
 	if rtiOutputJSON {
-		return printJSON(map[string]interface{}{
-			"procedure":  rtiProcedure,
-			"calls":      calls,
-			"enrichment": enrich,
-		})
+		return printJSON(result)
 	}
-
-	// Print details
-	fmt.Printf("Procedure: %s\n", rtiProcedure)
-	fmt.Printf("Calls in log: %d\n", len(calls))
-	if enrich != nil && enrich.Found {
-		fmt.Printf("Source: %s:%d-%d\n", enrich.SourceFile, enrich.LineStart, enrich.LineEnd)
-		if len(enrich.Params) > 0 {
+	fmt.Printf("Procedure: %s\n", result.Procedure)
+	fmt.Printf("Calls in log: %d\n", result.Count)
+	if result.Enrichment != nil && result.Enrichment.Found {
+		fmt.Printf("Source: %s:%d-%d\n", result.Enrichment.SourceFile, result.Enrichment.LineStart, result.Enrichment.LineEnd)
+		if len(result.Enrichment.Params) > 0 {
 			fmt.Println("Parameters:")
-			for _, p := range enrich.Params {
+			for _, p := range result.Enrichment.Params {
 				fmt.Printf("  %s %s (%s)\n", p.Direction, p.Name, p.Type)
 			}
 		}
@@ -629,7 +337,7 @@ func runRTIDetails(cmd *cobra.Command, args []string) error {
 		fmt.Println("Source: (not found)")
 	}
 	fmt.Println()
-	for i, c := range calls {
+	for i, c := range result.Calls {
 		retVal := ""
 		if c.RetVal != nil {
 			retVal = fmt.Sprintf("RetVal=%d", *c.RetVal)
@@ -640,10 +348,8 @@ func runRTIDetails(cmd *cobra.Command, args []string) error {
 		if c.RetValContext != "" {
 			fmt.Printf("    Context: %s\n", c.RetValContext)
 		}
-		if retCodeMap != nil && c.RetVal != nil && *c.RetVal != 0 {
-			if lookup, ok := retCodeMap[int64(*c.RetVal)]; ok && lookup != nil {
-				fmt.Printf("    Error: %s (proc: %s)\n", lookup.Message, lookup.ProcName)
-			}
+		if c.RetValMeaning != "" {
+			fmt.Printf("    Error: %s (proc: %s)\n", c.RetValMeaning, c.ErrorConstant)
 		}
 		if len(c.Params) > 0 {
 			fmt.Printf("    Params: %d\n", len(c.Params))
@@ -657,66 +363,24 @@ func runRTIBlog(cmd *cobra.Command, args []string) error {
 	if rtiProcedure == "" {
 		return fmt.Errorf("--proc is required for blog command")
 	}
-	limit := applyQueryLimit(rtiLimit)
-	var calls []*rti.RTICall
-	if rtiSessionID > 0 {
-		cfg := config.Get()
-		if cfg != nil {
-			if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-				defer db.Close()
-				var err error
-				calls, err = rti.LoadCallsByProcedure(ctx, db, rtiSessionID, rtiProcedure, limit)
-				if err != nil {
-					return err
-				}
-			}
-		}
+	db := openDB()
+	defer closeDB(db)
+	result, err := rtisvc.ExecuteBlog(ctx, db, rtisvc.BlogParams{
+		Source:    rtiSource(args),
+		Procedure: rtiProcedure,
+		Limit:     applyQueryLimit(rtiLimit),
+	})
+	if err != nil {
+		return err
 	}
-	if calls == nil {
-		result, err := loadRTICalls(ctx, args)
-		if err != nil {
-			return err
-		}
-		for _, c := range result.Calls {
-			if c.Procedure == rtiProcedure {
-				calls = append(calls, c)
-				if len(calls) >= limit {
-					break
-				}
-			}
-		}
-	}
-	if len(calls) == 0 {
+	if result.Count == 0 {
 		return fmt.Errorf("procedure %q not found in RTI log", rtiProcedure)
 	}
-
 	if rtiOutputJSON {
-		type callBLog struct {
-			EnterLine   int                 `json:"enter_line"`
-			ElapsedMs   int                 `json:"elapsed_ms,omitempty"`
-			BLogBlocks  []rti.RTIBLogBlock  `json:"blog_blocks,omitempty"`
-			Checkpoints []rti.RTICheckpoint `json:"checkpoints,omitempty"`
-			BLogTables  []rti.RTIBLogTable  `json:"blog_tables,omitempty"`
-		}
-		var items []callBLog
-		for _, c := range calls {
-			items = append(items, callBLog{
-				EnterLine:   c.EnterLine,
-				ElapsedMs:   c.ElapsedMs,
-				BLogBlocks:  c.BLogBlocks,
-				Checkpoints: c.Checkpoints,
-				BLogTables:  c.BLogTables,
-			})
-		}
-		return printJSON(map[string]interface{}{
-			"procedure": rtiProcedure,
-			"count":     len(calls),
-			"calls":     items,
-		})
+		return printJSON(result)
 	}
-
-	fmt.Printf("Business log: %s  (%d call(s))\n\n", rtiProcedure, len(calls))
-	for i, c := range calls {
+	fmt.Printf("Business log: %s  (%d call(s))\n\n", result.Procedure, result.Count)
+	for i, c := range result.Calls {
 		fmt.Printf("  Call %d: Line %d [%dms]\n", i+1, c.EnterLine, c.ElapsedMs)
 		for _, b := range c.BLogBlocks {
 			fmt.Printf("    Block %-40s  Enter: %s  Exit: %s  [%dms]\n",
@@ -762,29 +426,21 @@ func joinStrings(ss []string, sep string) string {
 
 func runRTIList(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	cfg := config.Get()
-	if cfg == nil {
-		return fmt.Errorf("no config available")
-	}
-	db, err := store.NewDB(cfg.DB)
+	db := openDB()
+	defer closeDB(db)
+	result, err := rtisvc.ExecuteList(ctx, db, rtiListLimit)
 	if err != nil {
-		return fmt.Errorf("failed to connect to DB: %w", err)
+		return err
 	}
-	defer db.Close()
-
-	sessions, err := rti.ListSessions(ctx, db, rtiListLimit)
-	if err != nil {
-		return fmt.Errorf("failed to list sessions: %w", err)
-	}
-	if len(sessions) == 0 {
+	if len(result.Sessions) == 0 {
 		fmt.Println("No saved sessions.")
 		return nil
 	}
 	if rtiOutputJSON {
-		return printJSON(sessions)
+		return printJSON(result)
 	}
-	fmt.Printf("%d session(s):\n\n", len(sessions))
-	for _, s := range sessions {
+	fmt.Printf("%d session(s):\n\n", len(result.Sessions))
+	for _, s := range result.Sessions {
 		fmt.Printf("  %d  %s  calls=%d  errors=%d  size=%d  parsed=%s\n",
 			s.ID, s.FilePath, s.TotalCalls, s.ErrorsCount, s.FileSize,
 			s.ParsedAt.Format("2006-01-02 15:04:05"))
@@ -797,34 +453,16 @@ func runRTIDelete(cmd *cobra.Command, args []string) error {
 	if rtiSessionID <= 0 {
 		return fmt.Errorf("--session is required for delete command")
 	}
-	cfg := config.Get()
-	if cfg == nil {
-		return fmt.Errorf("no config available")
-	}
-	db, err := store.NewDB(cfg.DB)
+	db := openDB()
+	defer closeDB(db)
+	result, err := rtisvc.ExecuteDelete(ctx, db, rtiSessionID)
 	if err != nil {
-		return fmt.Errorf("failed to connect to DB: %w", err)
+		return err
 	}
-	defer db.Close()
-
-	session, err := rti.GetSession(ctx, db, rtiSessionID)
-	if err != nil {
-		return fmt.Errorf("session %d not found: %w", rtiSessionID, err)
-	}
-
-	if err := rti.DeleteSession(ctx, db, rtiSessionID); err != nil {
-		return fmt.Errorf("failed to delete session: %w", err)
-	}
-
 	if rtiOutputJSON {
-		return printJSON(map[string]interface{}{
-			"deleted":    true,
-			"session_id": rtiSessionID,
-			"file_path":  session.FilePath,
-		})
+		return printJSON(result)
 	}
-	fmt.Printf("Deleted session %d (file: %s, %d calls)\n",
-		rtiSessionID, session.FilePath, session.TotalCalls)
+	fmt.Printf("Deleted session %d (file: %s)\n", result.SessionID, result.FilePath)
 	return nil
 }
 
@@ -833,103 +471,41 @@ func runRTIPrune(cmd *cobra.Command, args []string) error {
 	if rtiKeepLast < 0 {
 		return fmt.Errorf("--keep-last must be >= 0")
 	}
-	cfg := config.Get()
-	if cfg == nil {
-		return fmt.Errorf("no config available")
-	}
-	db, err := store.NewDB(cfg.DB)
+	db := openDB()
+	defer closeDB(db)
+	result, err := rtisvc.ExecutePrune(ctx, db, rtiKeepLast)
 	if err != nil {
-		return fmt.Errorf("failed to connect to DB: %w", err)
+		return err
 	}
-	defer db.Close()
-
-	deleted, err := rti.PruneSessions(ctx, db, rtiKeepLast)
-	if err != nil {
-		return fmt.Errorf("failed to prune sessions: %w", err)
-	}
-
 	if rtiOutputJSON {
-		return printJSON(map[string]interface{}{
-			"deleted_count": deleted,
-			"kept_last":     rtiKeepLast,
-		})
+		return printJSON(result)
 	}
-	fmt.Printf("Deleted %d session(s), kept last %d\n", deleted, rtiKeepLast)
+	fmt.Printf("Deleted %d session(s), kept last %d\n", result.DeletedCount, result.KeptLast)
 	return nil
 }
 
 func runRTISlow(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	threshold := rtiSlowThreshold
-	if threshold <= 0 {
-		threshold = rti.GetSlowThresholdMs()
-	}
-	limit := applyQueryLimit(rtiLimit)
-	var slow []*rti.RTICall
-	var slowClientSQL []*rti.RTIClientEvent
-	if rtiSessionID > 0 {
-		cfg := config.Get()
-		if cfg != nil {
-			if db, dbErr := store.NewDB(cfg.DB); dbErr == nil {
-				defer db.Close()
-				var err error
-				slow, err = rti.LoadSlowCalls(ctx, db, rtiSessionID, threshold, limit)
-				if err != nil {
-					return err
-				}
-				slowClientSQL, err = rti.LoadSlowClientSQL(ctx, db, rtiSessionID, threshold, limit)
-				if err != nil {
-					return err
-				}
-				return printRTISlow(ctx, slow, slowClientSQL, threshold, cfg)
-			}
-		}
-	}
-	result, err := loadRTICalls(ctx, args)
+	db := openDB()
+	defer closeDB(db)
+	result, err := rtisvc.ExecuteSlow(ctx, db, rtisvc.SlowParams{
+		Source:      rtiSource(args),
+		ThresholdMs: rtiSlowThreshold,
+		Limit:       applyQueryLimit(rtiLimit),
+	})
 	if err != nil {
 		return err
 	}
-	for _, c := range result.Calls {
-		if c.ElapsedMs >= threshold {
-			slow = append(slow, c)
-		}
-	}
-	sort.Slice(slow, func(i, j int) bool {
-		return slow[i].ElapsedMs > slow[j].ElapsedMs
-	})
-	if len(slow) > limit {
-		slow = slow[:limit]
-	}
-
-	thresholdSec := float64(threshold) / 1000.0
-	for _, ev := range result.ClientEvents {
-		if ev.Kind == "sql_block" && ev.SQL != nil && ev.SQL.DurationSec >= thresholdSec {
-			slowClientSQL = append(slowClientSQL, ev)
-		}
-	}
-	sort.Slice(slowClientSQL, func(i, j int) bool {
-		return slowClientSQL[i].SQL.DurationSec > slowClientSQL[j].SQL.DurationSec
-	})
-	if len(slowClientSQL) > limit {
-		slowClientSQL = slowClientSQL[:limit]
-	}
-	return printRTISlow(ctx, slow, slowClientSQL, threshold, config.Get())
-}
-
-func printRTISlow(ctx context.Context, slow []*rti.RTICall, slowClientSQL []*rti.RTIClientEvent, threshold int, cfg *config.Config) error {
 	if rtiOutputJSON {
-		return printJSON(map[string]interface{}{
-			"server_calls":      slow,
-			"client_sql_blocks": slowClientSQL,
-		})
+		return printJSON(result)
 	}
-	if len(slow) == 0 && len(slowClientSQL) == 0 {
-		fmt.Printf("No calls slower than %dms found.\n", threshold)
+	if result.ServerCallCount == 0 && result.ClientSQLCount == 0 {
+		fmt.Printf("No calls slower than %dms found.\n", result.Threshold)
 		return nil
 	}
-	if len(slow) > 0 {
-		fmt.Printf("Found %d slow server call(s) (>= %dms):\n\n", len(slow), threshold)
-		for _, c := range slow {
+	if result.ServerCallCount > 0 {
+		fmt.Printf("Found %d slow server call(s) (>= %dms):\n\n", result.ServerCallCount, result.Threshold)
+		for _, c := range result.ServerCalls {
 			fmt.Printf("  [server] %s [%dms] Line %d ← %s (%d) NestLevel=%d\n",
 				c.Procedure, c.ElapsedMs, c.EnterLine,
 				c.ModuleName, c.ModuleID, c.NestLevel)
@@ -938,26 +514,18 @@ func printRTISlow(ctx context.Context, slow []*rti.RTICall, slowClientSQL []*rti
 			}
 		}
 	}
-	if len(slowClientSQL) > 0 {
-		var clientEnrichMap map[string]*rti.ClientEnrichment
-		if cfg != nil {
-			if db2, dbErr2 := store.NewDB(cfg.DB); dbErr2 == nil {
-				defer db2.Close()
-				q2 := query.New(db2)
-				clientEnrichMap = rti.EnrichClientEvents(ctx, q2, slowClientSQL)
-			}
-		}
-		fmt.Printf("\nFound %d slow client SQL block(s) (>= %dms):\n\n", len(slowClientSQL), threshold)
-		for _, ev := range slowClientSQL {
+	if result.ClientSQLCount > 0 {
+		fmt.Printf("\nFound %d slow client SQL block(s) (>= %dms):\n\n", result.ClientSQLCount, result.Threshold)
+		for _, ev := range result.ClientSQLBlocks {
 			proc := ev.SQL.ExecProcedure
 			if proc == "" {
 				proc = "(raw SQL)"
 			}
 			fmt.Printf("  [client] %s [%.3fs] Line %d ← %s.%s\n",
 				proc, ev.SQL.DurationSec, ev.Line, ev.ClassName, ev.MethodName)
-			if clientEnrichMap != nil {
+			if result.ClientEnrichment != nil {
 				key := ev.ClassName + "." + ev.MethodName
-				if enrich, ok := clientEnrichMap[key]; ok && enrich != nil {
+				if enrich, ok := result.ClientEnrichment[key]; ok && enrich != nil {
 					if enrich.Found {
 						fmt.Printf("    Source: %s:%d\n", enrich.SourceFile, enrich.LineNumber)
 					}
@@ -973,10 +541,6 @@ func printRTISlow(ctx context.Context, slow []*rti.RTICall, slowClientSQL []*rti
 		}
 	}
 	return nil
-}
-
-func printSummary(result *rti.RTIParseResult) {
-	printSummaryDirect(&result.Summary)
 }
 
 func printSummaryDirect(s *rti.RTISummary) {

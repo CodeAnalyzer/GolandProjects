@@ -5,18 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/querysvc"
 	"github.com/codebase/internal/review"
 	"github.com/codebase/internal/reviewsvc"
-	"github.com/codebase/internal/rti"
+	"github.com/codebase/internal/rtisvc"
 	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/systemsvc"
-	"github.com/codebase/internal/trc"
+	"github.com/codebase/internal/trcsvc"
 )
 
 type toolHandler func(ctx context.Context, args map[string]interface{}) (interface{}, error)
@@ -572,52 +570,22 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if err != nil {
 					return nil, err
 				}
-				result, err := rti.ParseFile(filePath)
-				if err != nil {
-					return nil, fmt.Errorf("failed to parse RTI file: %w", err)
-				}
-				var sessionID int64
-				if db != nil {
-					sessionID, err = rti.SaveSession(ctx, db, result, filePath)
-					if err != nil {
-						return nil, fmt.Errorf("failed to save session: %w", err)
-					}
-				}
-				return map[string]interface{}{
-					"summary":    result.Summary,
-					"session_id": sessionID,
-				}, nil
+				return rtisvc.ExecuteParse(ctx, db, filePath)
 			},
 		},
 		"codebase_rti_list": {
 			Definition: toolDefinition{Name: "codebase_rti_list", Description: "List saved RTI parsing sessions from the database, ordered by most recent first. Returns session ID, file path, call counts, error counts, file size, and parse timestamp.", InputSchema: objectSchema(map[string]interface{}{"limit": intProp("Max sessions to return (default 20)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				if db == nil {
-					return nil, fmt.Errorf("database not available")
-				}
 				limit := optionalLimit(args)
-				sessions, err := rti.ListSessions(ctx, db, limit)
-				if err != nil {
-					return nil, err
-				}
-				return sessions, nil
+				return rtisvc.ExecuteList(ctx, db, limit)
 			},
 		},
 		"codebase_rti_summary": {
 			Definition: toolDefinition{Name: "codebase_rti_summary", Description: "Get summary statistics for an RTI session: total calls, errors, max nest level, unparsed lines, top 10 slowest calls. Requires either a saved session ID or a file path to parse on the fly.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file to parse on the fly")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				sessionID, err := resolveRTISessionID(args)
-				if err != nil {
-					return nil, err
-				}
-				if sessionID > 0 && db != nil {
-					return rti.LoadSummary(ctx, db, sessionID)
-				}
-				result, err := loadRTIFromArgs(ctx, db, args)
-				if err != nil {
-					return nil, err
-				}
-				return result.Summary, nil
+				sessionID, _ := optionalInt64(args, "session_id")
+				filePath, _ := optionalString(args, "file_path")
+				return rtisvc.ExecuteSummary(ctx, db, rtisvc.SessionSource{SessionID: sessionID, FilePath: filePath})
 			},
 		},
 		"codebase_rti_tree": {
@@ -625,222 +593,46 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				procName, _ := optionalString(args, "procedure")
 				maxDepth, _ := optionalInt(args, "max_depth")
-				sessionID, err := resolveRTISessionID(args)
+				sessionID, _ := optionalInt64(args, "session_id")
+				filePath, _ := optionalString(args, "file_path")
+				result, err := rtisvc.ExecuteTree(ctx, db, rtisvc.TreeParams{
+					Source:    rtisvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					Procedure: procName,
+					MaxDepth:  maxDepth,
+				})
 				if err != nil {
 					return nil, err
 				}
-				var calls []*rti.RTICall
-				if sessionID > 0 && db != nil {
-					maxTreeNodes := 5000
-					calls, err = rti.LoadCallsForTree(ctx, db, sessionID, procName, maxDepth, maxTreeNodes)
-					if err != nil {
-						return nil, err
-					}
-				} else {
-					result, err := loadRTIFromArgs(ctx, db, args)
-					if err != nil {
-						return nil, err
-					}
-					calls = result.Calls
-				}
-				tree := rti.BuildTree(calls, procName, maxDepth)
-				if tree == nil {
+				if result.Tree == nil {
 					return nil, fmt.Errorf("procedure %q not found in RTI log", procName)
 				}
-				var enrichMap map[string]*rti.ProcedureEnrichment
-				if db != nil {
-					q := query.New(db)
-					enrichMap = rti.EnrichCalls(ctx, q, calls)
-				}
-				return map[string]interface{}{
-					"tree":       tree,
-					"enrichment": enrichMap,
-				}, nil
+				return result, nil
 			},
 		},
 		"codebase_rti_errors": {
 			Definition: toolDefinition{Name: "codebase_rti_errors", Description: "Find all calls with non-zero RetVal in an RTI session. Returns server errors (procedure name, line number, return value, error context, elapsed time, nest level, module info, error code description, source file) and client errors (ClassName.MethodName, error text, source file from CodeBase enrichment).", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "limit": intProp("Maximum number of errors to return (default 100, max 1000)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				limit, _ := optionalInt(args, "limit")
-				if limit <= 0 {
-					limit = queryDefaultLimit
-				}
-				if limit > queryMaxLimit {
-					limit = queryMaxLimit
-				}
-				type callSlim struct {
-					*rti.RTICall
-					BLogTables interface{} `json:"blog_tables,omitempty"`
-					BLogBlocks interface{} `json:"blog_blocks,omitempty"`
-				}
-				var errorCalls []*rti.RTICall
-				var clientErrors []*rti.RTIClientEvent
-				sessionID, err := resolveRTISessionID(args)
-				if err != nil {
-					return nil, err
-				}
-				if sessionID > 0 && db != nil {
-					errorCalls, err = rti.LoadErrorCalls(ctx, db, sessionID, limit)
-					if err != nil {
-						return nil, err
-					}
-					clientErrors, err = rti.LoadClientErrors(ctx, db, sessionID, limit)
-					if err != nil {
-						return nil, err
-					}
-				} else {
-					result, err := loadRTIFromArgs(ctx, db, args)
-					if err != nil {
-						return nil, err
-					}
-					for _, c := range result.Calls {
-						if c.RetVal != nil && *c.RetVal != 0 {
-							errorCalls = append(errorCalls, c)
-							if len(errorCalls) >= limit {
-								break
-							}
-						}
-					}
-					for _, ev := range result.ClientEvents {
-						if ev.Kind == "error" && ev.ErrorText != "" {
-							clientErrors = append(clientErrors, ev)
-							if len(clientErrors) >= limit {
-								break
-							}
-						}
-					}
-				}
-				var serverErrors []callSlim
-				for _, c := range errorCalls {
-					serverErrors = append(serverErrors, callSlim{RTICall: c})
-				}
-				var serverEnrich map[string]*rti.ProcedureEnrichment
-				var clientEnrich map[string]*rti.ClientEnrichment
-				if db != nil && (len(serverErrors) > 0 || len(clientErrors) > 0) {
-					q := query.New(db)
-					if len(serverErrors) > 0 {
-						callsForEnrich := make([]*rti.RTICall, 0, len(serverErrors))
-						for _, s := range serverErrors {
-							callsForEnrich = append(callsForEnrich, s.RTICall)
-						}
-						serverEnrich = rti.EnrichCalls(ctx, q, callsForEnrich)
-						for _, s := range serverErrors {
-							if s.RetVal != nil {
-								retCode, err := q.LookupRetCode(ctx, int64(*s.RetVal))
-								if err == nil && retCode != nil {
-									s.RetValMeaning = retCode.Message
-									s.ErrorConstant = retCode.ProcName
-								}
-							}
-						}
-					}
-					if len(clientErrors) > 0 {
-						clientEnrich = rti.EnrichClientEvents(ctx, q, clientErrors)
-					}
-				}
-				return map[string]interface{}{
-					"server_errors":      serverErrors,
-					"server_error_count": len(serverErrors),
-					"server_enrichment":  serverEnrich,
-					"client_errors":      clientErrors,
-					"client_error_count": len(clientErrors),
-					"client_enrichment":  clientEnrich,
-					"limit":              limit,
-				}, nil
+				sessionID, _ := optionalInt64(args, "session_id")
+				filePath, _ := optionalString(args, "file_path")
+				return rtisvc.ExecuteErrors(ctx, db, rtisvc.ErrorsParams{
+					Source: rtisvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					Limit:  limit,
+				})
 			},
 		},
 		"codebase_rti_slow": {
 			Definition: toolDefinition{Name: "codebase_rti_slow", Description: "Find the slowest calls in an RTI session above a threshold. Returns server calls sorted by elapsed time descending, and client SQL blocks sorted by duration. Includes enrichment data (source files, SQL origin) from CodeBase index.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "threshold_ms": intProp("Minimum elapsed milliseconds (default 100)"), "limit": intProp("Maximum number of calls to return (default 100, max 1000)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				threshold, _ := optionalInt(args, "threshold_ms")
-				if threshold <= 0 {
-					threshold = rti.GetSlowThresholdMs()
-				}
 				limit, _ := optionalInt(args, "limit")
-				if limit <= 0 {
-					limit = queryDefaultLimit
-				}
-				if limit > queryMaxLimit {
-					limit = queryMaxLimit
-				}
-				sessionID, err := resolveRTISessionID(args)
-				if err != nil {
-					return nil, err
-				}
-				type callSlim struct {
-					*rti.RTICall
-					BLogTables interface{} `json:"blog_tables,omitempty"`
-					BLogBlocks interface{} `json:"blog_blocks,omitempty"`
-				}
-				var slowCalls []*rti.RTICall
-				var slowClientSQL []*rti.RTIClientEvent
-				if sessionID > 0 && db != nil {
-					slowCalls, err = rti.LoadSlowCalls(ctx, db, sessionID, threshold, limit)
-					if err != nil {
-						return nil, err
-					}
-					slowClientSQL, err = rti.LoadSlowClientSQL(ctx, db, sessionID, threshold, limit)
-					if err != nil {
-						return nil, err
-					}
-				} else {
-					result, err := loadRTIFromArgs(ctx, db, args)
-					if err != nil {
-						return nil, err
-					}
-					for _, c := range result.Calls {
-						if c.ElapsedMs >= threshold {
-							slowCalls = append(slowCalls, c)
-						}
-					}
-					sort.Slice(slowCalls, func(i, j int) bool {
-						return slowCalls[i].ElapsedMs > slowCalls[j].ElapsedMs
-					})
-					if len(slowCalls) > limit {
-						slowCalls = slowCalls[:limit]
-					}
-					thresholdSec := float64(threshold) / 1000.0
-					for _, ev := range result.ClientEvents {
-						if ev.Kind == "sql_block" && ev.SQL != nil && ev.SQL.DurationSec >= thresholdSec {
-							slowClientSQL = append(slowClientSQL, ev)
-						}
-					}
-					sort.Slice(slowClientSQL, func(i, j int) bool {
-						return slowClientSQL[i].SQL.DurationSec > slowClientSQL[j].SQL.DurationSec
-					})
-					if len(slowClientSQL) > limit {
-						slowClientSQL = slowClientSQL[:limit]
-					}
-				}
-				var slow []callSlim
-				for _, c := range slowCalls {
-					slow = append(slow, callSlim{RTICall: c})
-				}
-				var serverEnrich map[string]*rti.ProcedureEnrichment
-				var clientEnrich map[string]*rti.ClientEnrichment
-				if db != nil && (len(slow) > 0 || len(slowClientSQL) > 0) {
-					q := query.New(db)
-					if len(slow) > 0 {
-						callsForEnrich := make([]*rti.RTICall, 0, len(slow))
-						for _, s := range slow {
-							callsForEnrich = append(callsForEnrich, s.RTICall)
-						}
-						serverEnrich = rti.EnrichCalls(ctx, q, callsForEnrich)
-					}
-					if len(slowClientSQL) > 0 {
-						clientEnrich = rti.EnrichClientEvents(ctx, q, slowClientSQL)
-					}
-				}
-				return map[string]interface{}{
-					"server_calls":      slow,
-					"server_call_count": len(slow),
-					"server_enrichment": serverEnrich,
-					"client_sql_blocks": slowClientSQL,
-					"client_sql_count":  len(slowClientSQL),
-					"threshold":         threshold,
-					"limit":             limit,
-					"client_enrichment": clientEnrich,
-				}, nil
+				sessionID, _ := optionalInt64(args, "session_id")
+				filePath, _ := optionalString(args, "file_path")
+				return rtisvc.ExecuteSlow(ctx, db, rtisvc.SlowParams{
+					Source:      rtisvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					ThresholdMs: threshold,
+					Limit:       limit,
+				})
 			},
 		},
 		"codebase_rti_details": {
@@ -851,58 +643,25 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				limit, _ := optionalInt(args, "limit")
-				if limit <= 0 {
-					limit = queryDefaultLimit
-				}
-				if limit > queryMaxLimit {
-					limit = queryMaxLimit
-				}
-				sessionID, err := resolveRTISessionID(args)
+				sessionID, _ := optionalInt64(args, "session_id")
+				filePath, _ := optionalString(args, "file_path")
+				result, err := rtisvc.ExecuteDetails(ctx, db, rtisvc.DetailsParams{
+					Source:    rtisvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					Procedure: procName,
+					Limit:     limit,
+				})
 				if err != nil {
 					return nil, err
 				}
-				var calls []*rti.RTICall
-				if sessionID > 0 && db != nil {
-					calls, err = rti.LoadCallsByProcedure(ctx, db, sessionID, procName, limit)
-					if err != nil {
-						return nil, err
-					}
-				} else {
-					result, err := loadRTIFromArgs(ctx, db, args)
-					if err != nil {
-						return nil, err
-					}
-					for _, c := range result.Calls {
-						if c.Procedure == procName {
-							calls = append(calls, c)
-							if len(calls) >= limit {
-								break
-							}
-						}
-					}
-				}
-				if len(calls) == 0 {
+				if result.Count == 0 {
 					return nil, fmt.Errorf("procedure %q not found in RTI log", procName)
 				}
-				var enrich *rti.ProcedureEnrichment
-				if db != nil {
-					q := query.New(db)
-					enrich, _ = rti.EnrichProcedure(ctx, q, procName)
-				}
-				return map[string]interface{}{
-					"procedure":  procName,
-					"calls":      calls,
-					"count":      len(calls),
-					"enrichment": enrich,
-				}, nil
+				return result, nil
 			},
 		},
 		"codebase_rti_delete": {
 			Definition: toolDefinition{Name: "codebase_rti_delete", Description: "Delete a saved RTI session by ID. Cascades to delete all associated calls, parameters, and checkpoints.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Session ID to delete")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				if db == nil {
-					return nil, fmt.Errorf("database not available")
-				}
 				sessionID, err := optionalInt64(args, "session_id")
 				if err != nil {
 					return nil, err
@@ -910,41 +669,17 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if sessionID <= 0 {
 					return nil, fmt.Errorf("session_id is required")
 				}
-				session, err := rti.GetSession(ctx, db, sessionID)
-				if err != nil {
-					return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
-				}
-				if err := rti.DeleteSession(ctx, db, sessionID); err != nil {
-					return nil, err
-				}
-				return map[string]interface{}{
-					"deleted":    true,
-					"session_id": sessionID,
-					"file_path":  session.FilePath,
-				}, nil
+				return rtisvc.ExecuteDelete(ctx, db, sessionID)
 			},
 		},
 		"codebase_rti_prune": {
 			Definition: toolDefinition{Name: "codebase_rti_prune", Description: "Delete old RTI sessions, keeping only the most recent N. Use keep_last=0 to delete all sessions (uses TRUNCATE for instant cleanup). Returns the number of deleted sessions.", InputSchema: objectSchema(map[string]interface{}{"keep_last": intProp("Number of most recent sessions to keep")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				if db == nil {
-					return nil, fmt.Errorf("database not available")
-				}
 				keepLast, err := optionalInt(args, "keep_last")
 				if err != nil {
 					return nil, err
 				}
-				if keepLast < 0 {
-					return nil, fmt.Errorf("keep_last must be >= 0")
-				}
-				deleted, err := rti.PruneSessions(ctx, db, keepLast)
-				if err != nil {
-					return nil, err
-				}
-				return map[string]interface{}{
-					"deleted_count": deleted,
-					"kept_last":     keepLast,
-				}, nil
+				return rtisvc.ExecutePrune(ctx, db, keepLast)
 			},
 		},
 		"codebase_rti_blog": {
@@ -955,61 +690,20 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				limit, _ := optionalInt(args, "limit")
-				if limit <= 0 {
-					limit = queryDefaultLimit
-				}
-				if limit > queryMaxLimit {
-					limit = queryMaxLimit
-				}
-				sessionID, err := resolveRTISessionID(args)
+				sessionID, _ := optionalInt64(args, "session_id")
+				filePath, _ := optionalString(args, "file_path")
+				result, err := rtisvc.ExecuteBlog(ctx, db, rtisvc.BlogParams{
+					Source:    rtisvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					Procedure: procName,
+					Limit:     limit,
+				})
 				if err != nil {
 					return nil, err
 				}
-				var calls []*rti.RTICall
-				if sessionID > 0 && db != nil {
-					calls, err = rti.LoadCallsByProcedure(ctx, db, sessionID, procName, limit)
-					if err != nil {
-						return nil, err
-					}
-				} else {
-					result, err := loadRTIFromArgs(ctx, db, args)
-					if err != nil {
-						return nil, err
-					}
-					for _, c := range result.Calls {
-						if c.Procedure == procName {
-							calls = append(calls, c)
-							if len(calls) >= limit {
-								break
-							}
-						}
-					}
-				}
-				if len(calls) == 0 {
+				if result.Count == 0 {
 					return nil, fmt.Errorf("procedure %q not found in RTI log", procName)
 				}
-				type callBLog struct {
-					EnterLine   int                 `json:"enter_line"`
-					ElapsedMs   int                 `json:"elapsed_ms,omitempty"`
-					BLogBlocks  []rti.RTIBLogBlock  `json:"blog_blocks,omitempty"`
-					Checkpoints []rti.RTICheckpoint `json:"checkpoints,omitempty"`
-					BLogTables  []rti.RTIBLogTable  `json:"blog_tables,omitempty"`
-				}
-				var items []callBLog
-				for _, c := range calls {
-					items = append(items, callBLog{
-						EnterLine:   c.EnterLine,
-						ElapsedMs:   c.ElapsedMs,
-						BLogBlocks:  c.BLogBlocks,
-						Checkpoints: c.Checkpoints,
-						BLogTables:  c.BLogTables,
-					})
-				}
-				return map[string]interface{}{
-					"procedure": procName,
-					"count":     len(calls),
-					"calls":     items,
-				}, nil
+				return result, nil
 			},
 		},
 		"codebase_rti_client_tree": {
@@ -1026,110 +720,17 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				limit, _ := optionalInt(args, "limit")
-				if limit <= 0 {
-					limit = queryDefaultLimit
-				}
-				if limit > queryMaxLimit {
-					limit = queryMaxLimit
-				}
-
-				// Build filter from optional args
-				var filter rti.TimelineFilter
-
-				className, err := optionalString(args, "class_name")
+				filter, err := buildTimelineFilter(args)
 				if err != nil {
 					return nil, err
 				}
-				filter.ClassName = className
-
-				methodName, err := optionalString(args, "method_name")
-				if err != nil {
-					return nil, err
-				}
-				filter.MethodName = methodName
-
-				formatVal, err := optionalString(args, "format")
-				if err != nil {
-					return nil, err
-				}
-				filter.Format = formatVal
-
-				if v, err := optionalString(args, "time_from"); err != nil {
-					return nil, err
-				} else if v != "" {
-					t, perr := time.Parse(time.RFC3339, v)
-					if perr != nil {
-						return nil, fmt.Errorf("invalid time_from (expected RFC3339): %w", perr)
-					}
-					filter.TimeFrom = &t
-				}
-
-				if v, err := optionalString(args, "time_to"); err != nil {
-					return nil, err
-				} else if v != "" {
-					t, perr := time.Parse(time.RFC3339, v)
-					if perr != nil {
-						return nil, fmt.Errorf("invalid time_to (expected RFC3339): %w", perr)
-					}
-					filter.TimeTo = &t
-				}
-
-				pidVal, err := optionalInt(args, "pid")
-				if err != nil {
-					return nil, err
-				}
-				if pidVal > 0 {
-					filter.PID = &pidVal
-				}
-
-				var filteredEvents []*rti.RTIClientEvent
-				sessionID, err := resolveRTISessionID(args)
-				if err != nil {
-					return nil, err
-				}
-				if sessionID > 0 && db != nil {
-					filteredEvents, err = rti.LoadClientEventsFiltered(ctx, db, sessionID, filter, limit)
-					if err != nil {
-						return nil, err
-					}
-				} else {
-					result, err := loadRTIFromArgs(ctx, db, args)
-					if err != nil {
-						return nil, err
-					}
-					filteredEvents = rti.FilterClientEvents(result.ClientEvents, filter)
-					if len(filteredEvents) > limit {
-						filteredEvents = filteredEvents[:limit]
-					}
-				}
-
-				// Build tree from filtered events; pid=0 because PID filter
-				// was already applied by FilterClientEvents
-				nodes := rti.BuildClientTree(filteredEvents, 0)
-
-				// Enrich only filtered events
-				var clientEnrich map[string]*rti.ClientEnrichment
-				if db != nil && len(filteredEvents) > 0 {
-					q := query.New(db)
-					clientEnrich = rti.EnrichClientEvents(ctx, q, filteredEvents)
-				}
-
-				// Convert to short format if requested
-				var respNodes interface{} = nodes
-				if strings.EqualFold(filter.Format, "short") {
-					shortNodes := make([]rti.RTIClientTreeNodeShort, 0, len(nodes))
-					for _, n := range nodes {
-						shortNodes = append(shortNodes, rti.ToShortClientTreeNode(n))
-					}
-					respNodes = shortNodes
-				}
-
-				return map[string]interface{}{
-					"nodes":                 respNodes,
-					"enrichment":            clientEnrich,
-					"filtered_events_count": len(filteredEvents),
-					"limit":                 limit,
-				}, nil
+				sessionID, _ := optionalInt64(args, "session_id")
+				filePath, _ := optionalString(args, "file_path")
+				return rtisvc.ExecuteClientTree(ctx, db, rtisvc.ClientTreeParams{
+					Source: rtisvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					Filter: filter,
+					Limit:  limit,
+				})
 			},
 		},
 		"codebase_rti_timeline": {
@@ -1147,127 +748,19 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				limit, _ := optionalInt(args, "limit")
-				if limit <= 0 {
-					limit = queryDefaultLimit
-				}
-				if limit > queryMaxLimit {
-					limit = queryMaxLimit
-				}
-
-				// Build filter from optional args
-				var filter rti.TimelineFilter
-				procName, err := optionalString(args, "procedure")
+				filter, err := buildTimelineFilter(args)
 				if err != nil {
 					return nil, err
 				}
+				procName, _ := optionalString(args, "procedure")
 				filter.Procedure = procName
-
-				className, err := optionalString(args, "class_name")
-				if err != nil {
-					return nil, err
-				}
-				filter.ClassName = className
-
-				methodName, err := optionalString(args, "method_name")
-				if err != nil {
-					return nil, err
-				}
-				filter.MethodName = methodName
-
-				formatVal, err := optionalString(args, "format")
-				if err != nil {
-					return nil, err
-				}
-				filter.Format = formatVal
-
-				if v, err := optionalString(args, "time_from"); err != nil {
-					return nil, err
-				} else if v != "" {
-					t, perr := time.Parse(time.RFC3339, v)
-					if perr != nil {
-						return nil, fmt.Errorf("invalid time_from (expected RFC3339): %w", perr)
-					}
-					filter.TimeFrom = &t
-				}
-
-				if v, err := optionalString(args, "time_to"); err != nil {
-					return nil, err
-				} else if v != "" {
-					t, perr := time.Parse(time.RFC3339, v)
-					if perr != nil {
-						return nil, fmt.Errorf("invalid time_to (expected RFC3339): %w", perr)
-					}
-					filter.TimeTo = &t
-				}
-
-				pidVal, err := optionalInt(args, "pid")
-				if err != nil {
-					return nil, err
-				}
-				if pidVal > 0 {
-					filter.PID = &pidVal
-				}
-
-				var filteredCalls []*rti.RTICall
-				var filteredEvents []*rti.RTIClientEvent
-				sessionID, err := resolveRTISessionID(args)
-				if err != nil {
-					return nil, err
-				}
-				if sessionID > 0 && db != nil {
-					filteredCalls, err = rti.LoadTimelineCalls(ctx, db, sessionID, filter, limit)
-					if err != nil {
-						return nil, err
-					}
-					filteredEvents, err = rti.LoadTimelineClientEvents(ctx, db, sessionID, filter, limit)
-					if err != nil {
-						return nil, err
-					}
-				} else {
-					result, err := loadRTIFromArgs(ctx, db, args)
-					if err != nil {
-						return nil, err
-					}
-					filteredCalls, filteredEvents = rti.ApplyTimelineFilter(result.Calls, result.ClientEvents, filter)
-					if len(filteredCalls) > limit {
-						filteredCalls = filteredCalls[:limit]
-					}
-					if len(filteredEvents) > limit {
-						filteredEvents = filteredEvents[:limit]
-					}
-				}
-
-				// Enrich client events AFTER filtering (saves DB queries)
-				var clientEnrich map[string]*rti.ClientEnrichment
-				if db != nil && len(filteredEvents) > 0 {
-					q := query.New(db)
-					clientEnrich = rti.EnrichClientEvents(ctx, q, filteredEvents)
-				}
-
-				// Build response
-				var respCalls interface{} = filteredCalls
-				var respEvents interface{} = filteredEvents
-				if strings.EqualFold(filter.Format, "short") {
-					shortCalls := make([]rti.RTICallShort, 0, len(filteredCalls))
-					for _, c := range filteredCalls {
-						shortCalls = append(shortCalls, rti.ToShortCall(c))
-					}
-					shortEvents := make([]rti.RTIClientEventShort, 0, len(filteredEvents))
-					for _, e := range filteredEvents {
-						shortEvents = append(shortEvents, rti.ToShortEvent(e))
-					}
-					respCalls = shortCalls
-					respEvents = shortEvents
-				}
-
-				return map[string]interface{}{
-					"calls":                 respCalls,
-					"client_events":         respEvents,
-					"enrichment":            clientEnrich,
-					"filtered_calls_count":  len(filteredCalls),
-					"filtered_events_count": len(filteredEvents),
-					"limit":                 limit,
-				}, nil
+				sessionID, _ := optionalInt64(args, "session_id")
+				filePath, _ := optionalString(args, "file_path")
+				return rtisvc.ExecuteTimeline(ctx, db, rtisvc.TimelineParams{
+					Source: rtisvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					Filter: filter,
+					Limit:  limit,
+				})
 			},
 		},
 		"codebase_trc_parse": {
@@ -1277,188 +770,48 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if err != nil {
 					return nil, err
 				}
-				if db != nil {
-					// Streaming parse-to-DB: не накапливает события в памяти.
-					// Критично для больших файлов (> 1 ГБ).
-					// Поддерживает бинарный .trc, XML-экспорт и .xel (Extended Events).
-					sessionID, totalEvents, perr := trc.ParseFileToDB(ctx, filePath, db)
-					if perr != nil {
-						return nil, fmt.Errorf("failed to parse trc file: %w", perr)
-					}
-					return map[string]interface{}{
-						"total_events": totalEvents,
-						"session_id":   sessionID,
-					}, nil
-				}
-				// Fallback без DB — только парсинг, без сохранения
-				result, err := trc.ParseFile(filePath)
-				if err != nil {
-					return nil, fmt.Errorf("failed to parse trc file: %w", err)
-				}
-				return map[string]interface{}{
-					"total_events": len(result.Events),
-					"session_id":   0,
-				}, nil
+				return trcsvc.ExecuteParse(ctx, db, filePath)
 			},
 		},
 		"codebase_trc_list": {
 			Definition: toolDefinition{Name: "codebase_trc_list", Description: "List saved trc parsing sessions from the database, ordered by most recent first. Returns session ID, file path, total events, file size, and parse timestamp.", InputSchema: objectSchema(map[string]interface{}{"limit": intProp("Max sessions to return (default 20)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				if db == nil {
-					return nil, fmt.Errorf("database not available")
-				}
 				limit := optionalLimit(args)
-				sessions, err := trc.ListSessions(ctx, db, limit)
-				if err != nil {
-					return nil, err
-				}
-				return sessions, nil
+				return trcsvc.ExecuteList(ctx, db, limit)
 			},
 		},
 		"codebase_trc_summary": {
 			Definition: toolDefinition{Name: "codebase_trc_summary", Description: "Get summary info for a trc session: total events and session metadata (provider/server/version). Requires either a saved session ID or a file path to parse on the fly.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file to parse on the fly")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				sessionID, err := resolveTRCSessionID(args)
-				if err != nil {
-					return nil, err
-				}
-				if sessionID > 0 && db != nil {
-					session, err := trc.GetSession(ctx, db, sessionID)
-					if err != nil {
-						return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
-					}
-					totalEvents, _ := trc.LoadEventCount(ctx, db, sessionID)
-					return map[string]interface{}{
-						"total_events": totalEvents,
-						"header": map[string]interface{}{
-							"ProviderName": session.ProviderName,
-							"ServerName":   session.ServerName,
-							"MajorVersion": session.MajorVersion,
-							"MinorVersion": session.MinorVersion,
-							"BuildNumber":  session.BuildNumber,
-						},
-						"session": session,
-					}, nil
-				}
-				// Fallback: parse from file
-				result, err := loadTRCFromArgs(ctx, db, args)
-				if err != nil {
-					return nil, err
-				}
-				return map[string]interface{}{
-					"total_events": len(result.Events),
-					"header":       result.Header,
-				}, nil
+				sessionID, _ := optionalInt64(args, "session_id")
+				filePath, _ := optionalString(args, "file_path")
+				return trcsvc.ExecuteSummary(ctx, db, trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath})
 			},
 		},
 		"codebase_trc_events": {
 			Definition: toolDefinition{Name: "codebase_trc_events", Description: "List decoded events from a trc session, with optional filters. Returns event class, name, procedure, params, duration, and full decoded columns. Supports server-side filtering by SPID, procedure, and event_name with limit.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spid": intProp("Optional SPID filter"), "procedure": stringProp("Optional procedure name filter (exact match)"), "event_name": stringProp("Optional event name filter (e.g. RPC:Completed)"), "limit": intProp("Max events to return (default 100, max 1000)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				limit := optionalLimit(args)
-				if limit > queryMaxLimit {
-					limit = queryMaxLimit
-				}
+				limit, _ := optionalInt(args, "limit")
 				spidFilter, _ := optionalInt(args, "spid")
 				procFilter, _ := optionalString(args, "procedure")
 				eventNameFilter, _ := optionalString(args, "event_name")
-
-				sessionID, err := resolveTRCSessionID(args)
-				if err != nil {
-					return nil, err
-				}
-
-				if sessionID > 0 && db != nil {
-					f := trc.TRCEventFilter{
-						SPID:      spidFilter,
-						Procedure: procFilter,
-						EventName: eventNameFilter,
-					}
-					events, err := trc.LoadEventsFiltered(ctx, db, sessionID, f, limit)
-					if err != nil {
-						return nil, err
-					}
-					totalCount, _ := trc.LoadEventCount(ctx, db, sessionID)
-					return map[string]interface{}{
-						"events":         events,
-						"total_count":    totalCount,
-						"filtered_count": len(events),
-						"limit":          limit,
-					}, nil
-				}
-
-				// Fallback: parse from file
-				result, err := loadTRCFromArgs(ctx, db, args)
-				if err != nil {
-					return nil, err
-				}
-				var filtered []trc.TRCEvent
-				for _, ev := range result.Events {
-					if spidFilter > 0 {
-						if spid, ok := ev.Columns[12].(int32); !ok || int(spid) != spidFilter {
-							continue
-						}
-					}
-					if procFilter != "" && ev.Procedure != procFilter {
-						continue
-					}
-					if eventNameFilter != "" && ev.EventName != eventNameFilter {
-						continue
-					}
-					filtered = append(filtered, ev)
-					if len(filtered) >= limit {
-						break
-					}
-				}
-				return map[string]interface{}{
-					"events":         filtered,
-					"total_count":    len(result.Events),
-					"filtered_count": len(filtered),
-					"limit":          limit,
-				}, nil
+				sessionID, _ := optionalInt64(args, "session_id")
+				filePath, _ := optionalString(args, "file_path")
+				return trcsvc.ExecuteEvents(ctx, db, trcsvc.EventsParams{
+					Source:    trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					SPID:      spidFilter,
+					Procedure: procFilter,
+					EventName: eventNameFilter,
+					Limit:     limit,
+				})
 			},
 		},
 		"codebase_trc_procedures": {
 			Definition: toolDefinition{Name: "codebase_trc_procedures", Description: "Aggregate trc session events by procedure name (extracted from exec-statements in TextData): call count, min/max/avg/total duration. Enriched with source file location from CodeBase index. Sorted by total duration descending. Uses server-side SQL aggregation when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				sessionID, err := resolveTRCSessionID(args)
-				if err != nil {
-					return nil, err
-				}
-				if sessionID > 0 && db != nil {
-					aggs, err := trc.LoadProceduresAggregated(ctx, db, sessionID)
-					if err != nil {
-						return nil, err
-					}
-					// Enrich with source file info
-					if len(aggs) > 0 {
-						q := query.New(db)
-						// Load a small sample of events to build enrichment map
-						sampleEvents, _ := trc.LoadEventsFiltered(ctx, db, sessionID, trc.TRCEventFilter{}, 1000)
-						if len(sampleEvents) > 0 {
-							enrichMap := trc.EnrichEvents(ctx, q, sampleEvents)
-							trc.EnrichAggregates(aggs, enrichMap)
-						}
-					}
-					return map[string]interface{}{
-						"procedures": aggs,
-						"count":      len(aggs),
-					}, nil
-				}
-				// Fallback: parse from file
-				result, err := loadTRCFromArgs(ctx, db, args)
-				if err != nil {
-					return nil, err
-				}
-				aggs := trc.AggregateByProcedure(result.Events)
-				if db != nil && len(aggs) > 0 {
-					q := query.New(db)
-					enrichMap := trc.EnrichEvents(ctx, q, result.Events)
-					trc.EnrichAggregates(aggs, enrichMap)
-				}
-				return map[string]interface{}{
-					"procedures": aggs,
-					"count":      len(aggs),
-				}, nil
+				sessionID, _ := optionalInt64(args, "session_id")
+				filePath, _ := optionalString(args, "file_path")
+				return trcsvc.ExecuteProcedures(ctx, db, trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath})
 			},
 		},
 		"codebase_trc_tree": {
@@ -1467,145 +820,45 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				maxDepth, _ := optionalInt(args, "max_depth")
 				limit, _ := optionalInt(args, "limit")
 				spidFilter, _ := optionalInt(args, "spid")
-
-				sessionID, err := resolveTRCSessionID(args)
-				if err != nil {
-					return nil, err
-				}
-				if sessionID > 0 && db != nil {
-					// Server-side recursive CTE tree
-					treeEvents, err := trc.LoadEventsForTree(ctx, db, sessionID, spidFilter, maxDepth, limit)
-					if err != nil {
-						return nil, err
-					}
-					// Build in-memory tree from loaded events
-					trees := trc.BuildTrees(treeEvents)
-					return map[string]interface{}{
-						"trees":       trees,
-						"event_count": len(treeEvents),
-						"spid":        spidFilter,
-					}, nil
-				}
-				// Fallback: parse from file
-				result, err := loadTRCFromArgs(ctx, db, args)
-				if err != nil {
-					return nil, err
-				}
-				trees := trc.BuildTreesWithDepth(result.Events, maxDepth)
-				if spidFilter > 0 {
-					if t, ok := trees[spidFilter]; ok {
-						trees = map[int][]*trc.TRCTreeNode{spidFilter: t}
-					} else {
-						trees = map[int][]*trc.TRCTreeNode{}
-					}
-				}
-				trc.LimitTrees(trees, limit)
-				return map[string]interface{}{
-					"trees": trees,
-				}, nil
+				sessionID, _ := optionalInt64(args, "session_id")
+				filePath, _ := optionalString(args, "file_path")
+				return trcsvc.ExecuteTree(ctx, db, trcsvc.TreeParams{
+					Source:   trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					SPID:     spidFilter,
+					MaxDepth: maxDepth,
+					Limit:    limit,
+				})
 			},
 		},
 		"codebase_trc_slow": {
 			Definition: toolDefinition{Name: "codebase_trc_slow", Description: "Find the slowest events in a trc session above a duration threshold (DurationMs). Sorted by duration descending. Uses server-side SQL when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "threshold_ms": intProp("Minimum duration in milliseconds (default 100)"), "limit": intProp("Max events to return (default 100, max 1000)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				threshold, _ := optionalInt(args, "threshold_ms")
-				if threshold <= 0 {
-					threshold = trc.GetSlowThresholdMs()
-				}
-				limit := optionalLimit(args)
-				if limit > queryMaxLimit {
-					limit = queryMaxLimit
-				}
-
-				sessionID, err := resolveTRCSessionID(args)
-				if err != nil {
-					return nil, err
-				}
-				if sessionID > 0 && db != nil {
-					events, err := trc.LoadSlowEvents(ctx, db, sessionID, threshold, limit)
-					if err != nil {
-						return nil, err
-					}
-					return map[string]interface{}{
-						"events":    events,
-						"count":     len(events),
-						"threshold": threshold,
-						"limit":     limit,
-					}, nil
-				}
-				// Fallback: parse from file
-				result, err := loadTRCFromArgs(ctx, db, args)
-				if err != nil {
-					return nil, err
-				}
-				var slow []trc.TRCEvent
-				for _, ev := range result.Events {
-					if ev.DurationMs >= int64(threshold) {
-						slow = append(slow, ev)
-					}
-				}
-				sort.Slice(slow, func(i, j int) bool { return slow[i].DurationMs > slow[j].DurationMs })
-				if len(slow) > limit {
-					slow = slow[:limit]
-				}
-				return map[string]interface{}{
-					"events":    slow,
-					"count":     len(slow),
-					"threshold": threshold,
-					"limit":     limit,
-				}, nil
+				limit, _ := optionalInt(args, "limit")
+				sessionID, _ := optionalInt64(args, "session_id")
+				filePath, _ := optionalString(args, "file_path")
+				return trcsvc.ExecuteSlow(ctx, db, trcsvc.SlowParams{
+					Source:      trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					ThresholdMs: threshold,
+					Limit:       limit,
+				})
 			},
 		},
 		"codebase_trc_errors": {
 			Definition: toolDefinition{Name: "codebase_trc_errors", Description: "Find events with a non-zero Error(31) column in a trc session. Uses server-side SQL when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "limit": intProp("Max events to return (default 100, max 1000)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				limit := optionalLimit(args)
-				if limit > queryMaxLimit {
-					limit = queryMaxLimit
-				}
-
-				sessionID, err := resolveTRCSessionID(args)
-				if err != nil {
-					return nil, err
-				}
-				if sessionID > 0 && db != nil {
-					events, err := trc.LoadErrorEvents(ctx, db, sessionID, limit)
-					if err != nil {
-						return nil, err
-					}
-					return map[string]interface{}{
-						"events": events,
-						"count":  len(events),
-						"limit":  limit,
-					}, nil
-				}
-				// Fallback: parse from file
-				result, err := loadTRCFromArgs(ctx, db, args)
-				if err != nil {
-					return nil, err
-				}
-				var errs []trc.TRCEvent
-				for _, ev := range result.Events {
-					if code, ok := ev.Columns[31].(int32); ok && code != 0 {
-						errs = append(errs, ev)
-					}
-					if len(errs) >= limit {
-						break
-					}
-				}
-				return map[string]interface{}{
-					"events": errs,
-					"count":  len(errs),
-					"limit":  limit,
-				}, nil
+				limit, _ := optionalInt(args, "limit")
+				sessionID, _ := optionalInt64(args, "session_id")
+				filePath, _ := optionalString(args, "file_path")
+				return trcsvc.ExecuteErrors(ctx, db, trcsvc.ErrorsParams{
+					Source: trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					Limit:  limit,
+				})
 			},
 		},
 		"codebase_trc_delete": {
 			Definition: toolDefinition{Name: "codebase_trc_delete", Description: "Delete a saved trc session by ID. Batch-deletes all associated events first, then removes the session.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Session ID to delete")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				if db == nil {
-					return nil, fmt.Errorf("database not available")
-				}
 				sessionID, err := optionalInt64(args, "session_id")
 				if err != nil {
 					return nil, err
@@ -1613,41 +866,17 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if sessionID <= 0 {
 					return nil, fmt.Errorf("session_id is required")
 				}
-				session, err := trc.GetSession(ctx, db, sessionID)
-				if err != nil {
-					return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
-				}
-				if err := trc.DeleteSession(ctx, db, sessionID); err != nil {
-					return nil, err
-				}
-				return map[string]interface{}{
-					"deleted":    true,
-					"session_id": sessionID,
-					"file_path":  session.FilePath,
-				}, nil
+				return trcsvc.ExecuteDelete(ctx, db, sessionID)
 			},
 		},
 		"codebase_trc_prune": {
 			Definition: toolDefinition{Name: "codebase_trc_prune", Description: "Delete old trc sessions, keeping only the most recent N. Use keep_last=0 to delete all sessions (uses TRUNCATE for instant cleanup). Returns the number of deleted sessions.", InputSchema: objectSchema(map[string]interface{}{"keep_last": intProp("Number of most recent sessions to keep")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				if db == nil {
-					return nil, fmt.Errorf("database not available")
-				}
 				keepLast, err := optionalInt(args, "keep_last")
 				if err != nil {
 					return nil, err
 				}
-				if keepLast < 0 {
-					return nil, fmt.Errorf("keep_last must be >= 0")
-				}
-				deleted, err := trc.PruneSessions(ctx, db, keepLast)
-				if err != nil {
-					return nil, err
-				}
-				return map[string]interface{}{
-					"deleted_count": deleted,
-					"kept_last":     keepLast,
-				}, nil
+				return trcsvc.ExecutePrune(ctx, db, keepLast)
 			},
 		},
 	}
@@ -1815,62 +1044,57 @@ func optionalInt64(args map[string]interface{}, key string) (int64, error) {
 	}
 }
 
-// resolveRTISessionID extracts session_id from args. Returns 0 if not provided.
-func resolveRTISessionID(args map[string]interface{}) (int64, error) {
-	return optionalInt64(args, "session_id")
-}
+// buildTimelineFilter constructs a TimelineFilter from common MCP args.
+func buildTimelineFilter(args map[string]interface{}) (rtisvc.TimelineFilter, error) {
+	var filter rtisvc.TimelineFilter
 
-// resolveTRCSessionID extracts session_id from args. Returns 0 if not provided.
-func resolveTRCSessionID(args map[string]interface{}) (int64, error) {
-	return optionalInt64(args, "session_id")
-}
+	className, err := optionalString(args, "class_name")
+	if err != nil {
+		return filter, err
+	}
+	filter.ClassName = className
 
-func loadRTIFromArgs(ctx context.Context, db *store.DB, args map[string]interface{}) (*rti.RTIParseResult, error) {
-	sessionID, err := optionalInt64(args, "session_id")
+	methodName, err := optionalString(args, "method_name")
 	if err != nil {
-		return nil, err
+		return filter, err
 	}
-	if sessionID > 0 {
-		if db == nil {
-			return nil, fmt.Errorf("database not available")
-		}
-		session, err := rti.GetSession(ctx, db, sessionID)
-		if err != nil {
-			return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
-		}
-		calls, err := rti.LoadCalls(ctx, db, sessionID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load calls: %w", err)
-		}
-		clientEvents, err := rti.LoadClientEvents(ctx, db, sessionID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load client events: %w", err)
-		}
-		summary := rti.RTISummary{
-			FilePath:      session.FilePath,
-			FileSize:      session.FileSize,
-			TotalCalls:    session.TotalCalls,
-			ErrorsCount:   session.ErrorsCount,
-			MaxNestLevel:  session.MaxNestLevel,
-			UnparsedLines: session.UnparsedLines,
-		}
-		rti.FillClientSummary(&summary, clientEvents)
-		summary.TopSlow = rti.TopSlowCallsFromLoaded(calls, 10)
-		summary.SlowCallsCount = rti.CountSlowCalls(calls, 100)
-		return &rti.RTIParseResult{
-			Calls:        calls,
-			ClientEvents: clientEvents,
-			Summary:      summary,
-		}, nil
-	}
-	filePath, err := optionalString(args, "file_path")
+	filter.MethodName = methodName
+
+	formatVal, err := optionalString(args, "format")
 	if err != nil {
-		return nil, err
+		return filter, err
 	}
-	if filePath == "" {
-		return nil, fmt.Errorf("either session_id or file_path is required")
+	filter.Format = formatVal
+
+	if v, err := optionalString(args, "time_from"); err != nil {
+		return filter, err
+	} else if v != "" {
+		t, perr := time.Parse(time.RFC3339, v)
+		if perr != nil {
+			return filter, fmt.Errorf("invalid time_from (expected RFC3339): %w", perr)
+		}
+		filter.TimeFrom = &t
 	}
-	return rti.ParseFile(filePath)
+
+	if v, err := optionalString(args, "time_to"); err != nil {
+		return filter, err
+	} else if v != "" {
+		t, perr := time.Parse(time.RFC3339, v)
+		if perr != nil {
+			return filter, fmt.Errorf("invalid time_to (expected RFC3339): %w", perr)
+		}
+		filter.TimeTo = &t
+	}
+
+	pidVal, err := optionalInt(args, "pid")
+	if err != nil {
+		return filter, err
+	}
+	if pidVal > 0 {
+		filter.PID = &pidVal
+	}
+
+	return filter, nil
 }
 
 func toJSONText(value interface{}) (string, error) {
@@ -1879,45 +1103,4 @@ func toJSONText(value interface{}) (string, error) {
 		return "", err
 	}
 	return string(data), nil
-}
-
-// loadTRCFromArgs загружает результат разбора .trc либо из сохранённой в БД
-// сессии (session_id), либо парсит файл на месте (file_path) — аналог
-// loadRTIFromArgs для пакета trc.
-func loadTRCFromArgs(ctx context.Context, db *store.DB, args map[string]interface{}) (*trc.TRCParseResult, error) {
-	sessionID, err := optionalInt64(args, "session_id")
-	if err != nil {
-		return nil, err
-	}
-	if sessionID > 0 {
-		if db == nil {
-			return nil, fmt.Errorf("database not available")
-		}
-		session, err := trc.GetSession(ctx, db, sessionID)
-		if err != nil {
-			return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
-		}
-		events, err := trc.LoadEvents(ctx, db, sessionID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load events: %w", err)
-		}
-		return &trc.TRCParseResult{
-			Header: &trc.TraceHeader{
-				ProviderName: session.ProviderName,
-				ServerName:   session.ServerName,
-				MajorVersion: session.MajorVersion,
-				MinorVersion: session.MinorVersion,
-				BuildNumber:  session.BuildNumber,
-			},
-			Events: events,
-		}, nil
-	}
-	filePath, err := optionalString(args, "file_path")
-	if err != nil {
-		return nil, err
-	}
-	if filePath == "" {
-		return nil, fmt.Errorf("either session_id or file_path is required")
-	}
-	return trc.ParseFile(filePath)
 }
