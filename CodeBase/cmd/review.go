@@ -112,27 +112,18 @@ func parseReviewRules(raw string) ([]review.RuleID, []string, error) {
 		return nil, nil, nil
 	}
 	parts := strings.Split(trimmed, ",")
-	result := make([]review.RuleID, 0, len(parts))
-	resultRaw := make([]string, 0, len(parts))
-	seen := make(map[review.RuleID]struct{})
+	rawParts := make([]string, 0, len(parts))
 	for _, part := range parts {
-		rule := review.RuleID(strings.TrimSpace(part))
-		if rule == "" {
-			continue
+		s := strings.TrimSpace(part)
+		if s != "" {
+			rawParts = append(rawParts, s)
 		}
-		switch rule {
-		case review.RuleForeignTablesUsing, review.RuleForeignPTablesUsing, review.RuleForeignProcedureUsing, review.RuleExecNotExistsProc, review.RuleProcDuplicate, review.RuleProcParamDefValue, review.RuleProcElseCase, review.RuleUseSelectAll, review.RuleTruncTbl, review.RuleDatatype, review.RuleAnsiInJoin, review.RuleInsertRowLock, review.RuleUseEqColumn, review.RuleTableFullScan, review.RuleTableHintExists, review.RuleTableHintIsRight, review.RuleIndexExistsInDB, review.RuleIndexWrong, review.RuleUpdateOnlyVar, review.RulePTableSpid, review.RuleForceOrder2Tbl, review.RuleSaveTran, review.RuleUseDrop, review.RuleMathOperations, review.RuleExistsWithAndInIf, review.RuleNullComparison, review.RuleShouldBeCP866, review.RuleTooManyJoins, review.RuleMaxProcParam, review.RuleModifyOutProc, review.RuleEmptyReturn, review.RuleRawTransactionControl, review.RuleDeferredUpdate, review.RuleInSubQuery, review.RuleVarcharSize, review.RuleColumnInsert, review.RulePostgreLabelGotoLevel, review.RuleDateIntoString, review.RuleEmptyStringDate, review.RuleVarUseAfterCursor, review.RuleExcessProcParams, review.RuleDuplicateOutputVariable, review.RuleUseOnlyDeclaredCursors, review.RuleCursorFetchArguments, review.RuleUsageVarInSameSelect, review.RuleVarAssignInUpdate, review.RuleStatementsWithJoinsRequireAliases, review.RuleUseFuncInIndCol, review.RuleIsNullSameTypes, review.RuleDiffTypesComparison, review.RuleFloatToStringConvert, review.RuleSelectAfterSetRowcount, review.RuleAliasWhenUsingUnion:
-		default:
-			return nil, nil, fmt.Errorf("unknown review rule: %s", rule)
-		}
-		if _, exists := seen[rule]; exists {
-			continue
-		}
-		seen[rule] = struct{}{}
-		result = append(result, rule)
-		resultRaw = append(resultRaw, string(rule))
 	}
-	return result, resultRaw, nil
+	rules, err := review.ValidateRuleIDs(rawParts)
+	if err != nil {
+		return nil, nil, err
+	}
+	return rules, rawParts, nil
 }
 
 func handleReviewError(err error) error {
@@ -254,7 +245,7 @@ func (p *reviewProgress) stop() {
 
 func init() {
 	reviewCmd.Flags().BoolVar(&reviewOutputJSON, "json", false, "output as JSON")
-	reviewCmd.Flags().StringVar(&reviewRulesRaw, "rules", "", "comma-separated rules (foreignTablesUsing,foreignPTablesUsing,foreignProcedureUsing,execNotExistsProc,procDuplicate,procParamDefValue,procElseCase,useSelectAll,truncTbl,datatype,ansiInJoin,insertRowLock,useEqColumn,tableFullScan,tableHintExists,tableHintIsRight,indexExistsInDB,indexWrong,updateOnlyVar,pTableSpid,forceOrder2Tbl,saveTran,useDrop,mathOperations,existsWithAndInIf,nullComparison,shouldBeCP866,tooManyJoins,maxProcParam,modifyOutProc,emptyReturn,rawTransactionControl,deferredUpdate,inSubQuery,varcharSize,columnInsert,postgreLabelGotoLevel,dateIntoString,emptyStringDate,cursorFetchArguments,usageVarInSameSelect,varAssignInUpdate,statementsWithJoinsRequireAliases,useFuncInIndCol,isNullSameTypes,diffTypesComparison,floatToStringConvert,selectAfterSetRowcount,aliasWhenUsingUnion)")
+	reviewCmd.Flags().StringVar(&reviewRulesRaw, "rules", "", "comma-separated rules ("+review.RuleListString()+")")
 	reviewCmd.Flags().IntVar(&reviewMinSeverity, "min-severity", review.SeverityFineCode, "minimum severity to output")
 	rootCmd.AddCommand(reviewCmd)
 }
