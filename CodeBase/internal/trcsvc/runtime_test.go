@@ -47,6 +47,9 @@ func TestExecuteParse_FileMode(t *testing.T) {
 	if result.TotalEvents <= 0 {
 		t.Errorf("TotalEvents = %d, want > 0", result.TotalEvents)
 	}
+	if result.Warning == "" {
+		t.Errorf("Warning should be set when db is nil")
+	}
 }
 
 func TestExecuteParse_EmptyPath(t *testing.T) {

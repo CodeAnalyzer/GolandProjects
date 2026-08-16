@@ -57,6 +57,9 @@ func TestExecuteParse_FileMode(t *testing.T) {
 	if result.Summary.TotalCalls != 3 {
 		t.Errorf("Summary.TotalCalls = %d, want 3", result.Summary.TotalCalls)
 	}
+	if result.Warning == "" {
+		t.Errorf("Warning should be set when db is nil")
+	}
 }
 
 func TestExecuteParse_EmptyPath(t *testing.T) {

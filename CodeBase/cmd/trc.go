@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/codebase/internal/trc"
 	"github.com/codebase/internal/trcsvc"
@@ -132,6 +133,8 @@ func runTRCParse(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Total events: %d\n", result.TotalEvents)
 	if result.SessionID > 0 {
 		fmt.Printf("Saved session: %d\n", result.SessionID)
+	} else {
+		fmt.Fprintf(os.Stderr, "Warning: database unavailable, session not saved\n")
 	}
 	return nil
 }

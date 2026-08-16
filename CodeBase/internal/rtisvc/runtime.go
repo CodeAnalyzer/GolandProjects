@@ -92,6 +92,7 @@ func ExecuteParse(ctx context.Context, db *store.DB, filePath string) (*ParseRes
 		SessionID:  0,
 		TotalCalls: result.Summary.TotalCalls,
 		Summary:    result.Summary,
+		Warning:    "database unavailable, session not saved",
 	}, nil
 }
 

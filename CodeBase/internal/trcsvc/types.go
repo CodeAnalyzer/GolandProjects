@@ -12,8 +12,9 @@ type SessionSource struct {
 
 // ParseResult — результат парсинга TRC-файла.
 type ParseResult struct {
-	SessionID   int64 `json:"session_id"`
-	TotalEvents int   `json:"total_events"`
+	SessionID   int64  `json:"session_id"`
+	TotalEvents int    `json:"total_events"`
+	Warning     string `json:"warning,omitempty"`
 }
 
 // SummaryResult — статистика по сессии.

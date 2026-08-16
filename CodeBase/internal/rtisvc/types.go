@@ -18,6 +18,7 @@ type ParseResult struct {
 	SessionID  int64          `json:"session_id"`
 	TotalCalls int            `json:"total_calls"`
 	Summary    rti.RTISummary `json:"summary"`
+	Warning    string         `json:"warning,omitempty"`
 }
 
 // SummaryResult — статистика по сессии.
