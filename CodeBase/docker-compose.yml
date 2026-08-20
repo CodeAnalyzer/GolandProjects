@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: codebase
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5436:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d codebase"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  codebase:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # Исходники Diasoft 5NT для индексации
+      - ../FA:/data/FA:ro
+      # Логи
+      - ./docker-logs:/var/log/codebase
+    # Конфиг codebase.toml лежит рядом с бинарником (/usr/local/bin/) и подхватывается автоматически
+
+volumes:
+  pgdata:

@@ -1,0 +1,11 @@
+*.exe
+*.exe~
+*.log
+*.gob
+*.gob.processed
+*.rti
+*.trc
+*.xel
+*.xml
+docker-logs/
+CodeBase/
