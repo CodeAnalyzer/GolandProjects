@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -107,6 +109,13 @@ Arguments:
 		fmt.Printf("rootPath=%s parallel=%d\n", rootPath, effectiveParallel)
 		stats, err := idx.InitCtx(ctx, rootPath, effectiveParallel)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				fmt.Fprintf(os.Stderr, "\nIndexing canceled by user.\n")
+				if stats != nil {
+					fmt.Fprintf(os.Stderr, "Partial stats: scanned=%d indexed=%d errors=%d\n", stats.FilesScanned, stats.FilesIndexed, stats.Errors)
+				}
+				return nil
+			}
 			return fmt.Errorf("indexing failed: %w", err)
 		}
 

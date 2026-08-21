@@ -1,6 +1,7 @@
 package fswalk
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -111,15 +112,24 @@ type walkTask struct {
 
 // Walk обходит файлы в один поток (делегирует в WalkParallel с workers=1).
 func (w *Walker) Walk() (<-chan FileInfo, <-chan error) {
-	return w.WalkParallel(1)
+	return w.WalkParallelCtx(context.Background(), 1)
 }
 
-// WalkParallel обходит файлы с параллельным чтением+хэшированием.
+// WalkParallel обходит файлы с параллельным чтением+хэшированием (без отмены).
+// Делегирует в WalkParallelCtx с context.Background().
+func (w *Walker) WalkParallel(workers int) (<-chan FileInfo, <-chan error) {
+	return w.WalkParallelCtx(context.Background(), workers)
+}
+
+// WalkParallelCtx обходит файлы с параллельным чтением+хэшированием и поддержкой
+// отмены через context.Context. Все отправки в каналы обёрнуты в select с ctx.Done(),
+// что предотвращает зависание горутин при отмене (Ctrl+C / SIGTERM).
+//
 // WalkDir (обход каталогов) выполняется в одной горутине — это лёгкая операция.
 // os.ReadFile + sha256 выполняются в workers горутинах — это тяжёлая I/O+CPU часть.
 // При установленном preFilter файлы с совпадающими mtime+size отправляются напрямую
 // в filesChan с пустым Hash (без чтения с диска).
-func (w *Walker) WalkParallel(workers int) (<-chan FileInfo, <-chan error) {
+func (w *Walker) WalkParallelCtx(ctx context.Context, workers int) (<-chan FileInfo, <-chan error) {
 	if workers < 1 {
 		workers = 1
 	}
@@ -128,12 +138,19 @@ func (w *Walker) WalkParallel(workers int) (<-chan FileInfo, <-chan error) {
 	fileQueue := make(chan walkTask, workers*50)
 
 	// Обходчик каталогов — 1 горутина (только метаданные, без чтения файлов)
+	var wg sync.WaitGroup
+	wg.Add(1) // WalkDir
 	go func() {
+		defer wg.Done()
 		defer close(fileQueue)
 
 		err := filepath.WalkDir(w.rootPath, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
-				errorsChan <- err
+				select {
+				case errorsChan <- err:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 				return nil
 			}
 
@@ -146,7 +163,11 @@ func (w *Walker) WalkParallel(workers int) (<-chan FileInfo, <-chan error) {
 
 			relPath, err := filepath.Rel(w.rootPath, path)
 			if err != nil {
-				errorsChan <- fmt.Errorf("failed to get relative path: %w", err)
+				select {
+				case errorsChan <- fmt.Errorf("failed to get relative path: %w", err):
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 				return nil
 			}
 			relPath = filepath.ToSlash(relPath)
@@ -160,7 +181,11 @@ func (w *Walker) WalkParallel(workers int) (<-chan FileInfo, <-chan error) {
 
 			info, err := d.Info()
 			if err != nil {
-				errorsChan <- fmt.Errorf("failed to get file info for %s: %w", path, err)
+				select {
+				case errorsChan <- fmt.Errorf("failed to get file info for %s: %w", path, err):
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 				return nil
 			}
 
@@ -173,7 +198,8 @@ func (w *Walker) WalkParallel(workers int) (<-chan FileInfo, <-chan error) {
 				if fp, ok := w.preFilter[normalizedPath]; ok {
 					if fp.Size == info.Size() && modTimeMatch(fp.ModTime, info.ModTime()) {
 						encoding, language := getEncodingAndLanguage(ext)
-						filesChan <- FileInfo{
+						select {
+						case filesChan <- FileInfo{
 							Path:       normalizedPath,
 							RelPath:    relPath,
 							Extension:  ext,
@@ -182,45 +208,70 @@ func (w *Walker) WalkParallel(workers int) (<-chan FileInfo, <-chan error) {
 							ModifiedAt: info.ModTime(),
 							Encoding:   encoding,
 							Language:   language,
+						}:
+						case <-ctx.Done():
+							return ctx.Err()
 						}
 						return nil
 					}
 				}
 			}
 
-			fileQueue <- walkTask{path: path, relPath: relPath, info: info, ext: ext}
+			select {
+			case fileQueue <- walkTask{path: path, relPath: relPath, info: info, ext: ext}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 			return nil
 		})
 
-		if err != nil {
-			errorsChan <- fmt.Errorf("walk error: %w", err)
+		if err != nil && err != ctx.Err() {
+			select {
+			case errorsChan <- fmt.Errorf("walk error: %w", err):
+			case <-ctx.Done():
+			}
 		}
 	}()
 
 	// Воркеры чтения+хэширования — N горутин
-	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for task := range fileQueue {
-				content, err := os.ReadFile(task.path)
-				if err != nil {
-					errorsChan <- fmt.Errorf("failed to read %s: %w", task.path, err)
-					continue
-				}
-				hash := computeHashBytes(content)
-				encoding, language := getEncodingAndLanguage(task.ext)
-				filesChan <- FileInfo{
-					Path:       filepath.ToSlash(task.path),
-					RelPath:    task.relPath,
-					Extension:  task.ext,
-					Size:       task.info.Size(),
-					Hash:       hash,
-					ModifiedAt: task.info.ModTime(),
-					Encoding:   encoding,
-					Language:   language,
-					Content:    content,
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case task, ok := <-fileQueue:
+					if !ok {
+						return
+					}
+					content, err := os.ReadFile(task.path)
+					if err != nil {
+						select {
+						case errorsChan <- fmt.Errorf("failed to read %s: %w", task.path, err):
+						case <-ctx.Done():
+							return
+						}
+						continue
+					}
+					hash := computeHashBytes(content)
+					encoding, language := getEncodingAndLanguage(task.ext)
+					select {
+					case filesChan <- FileInfo{
+						Path:       filepath.ToSlash(task.path),
+						RelPath:    task.relPath,
+						Extension:  task.ext,
+						Size:       task.info.Size(),
+						Hash:       hash,
+						ModifiedAt: task.info.ModTime(),
+						Encoding:   encoding,
+						Language:   language,
+						Content:    content,
+					}:
+					case <-ctx.Done():
+						return
+					}
 				}
 			}
 		}()

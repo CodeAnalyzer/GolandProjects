@@ -71,7 +71,7 @@ func (idx *Indexer) InitCtx(ctx context.Context, rootPath string, parallel int) 
 
 	includePatterns, excludePatterns := idx.walkerPatterns()
 	walker := fswalk.NewWalker(rootPath, includePatterns, excludePatterns)
-	filesCh, errsCh := walker.WalkParallel(parallel)
+	filesCh, errsCh := walker.WalkParallelCtx(ctx, parallel)
 
 	// Воркеры читают файлы напрямую из filesCh и делают saveFile + processFile
 	// параллельно. Это устраняет bottleneck последовательных INSERT-ов в один поток.
@@ -82,14 +82,27 @@ func (idx *Indexer) InitCtx(ctx context.Context, rootPath string, parallel int) 
 		idx.processFilesWorkerPoolInit(ctx, parallel, filesCh, scanRunID, collector)
 	}()
 
-	for err := range errsCh {
-		idx.logError(rootPath, "Walker error: %v", err)
-		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+	// Чтение ошибок walker'а с поддержкой отмены: при ctx.Done() выходим
+	// из цикла и ждём завершения workers (они тоже получат ctx.Done()).
+errorLoopInit:
+	for {
+		select {
+		case err, ok := <-errsCh:
+			if !ok {
+				break errorLoopInit
+			}
+			idx.logError(rootPath, "Walker error: %v", err)
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+		case <-ctx.Done():
+			break errorLoopInit
+		}
 	}
 
 	workersWG.Wait()
 	walkSaveDone := time.Now()
-	idx.runPostProcessingParallel(ctx, collector, parallel)
+	if ctx.Err() == nil {
+		idx.runPostProcessingParallel(ctx, collector, parallel)
+	}
 	postProcessDone := time.Now()
 	stats := collector.Snapshot()
 	stats.WalkSaveMs = walkSaveDone.Sub(startedAt).Milliseconds()
@@ -99,8 +112,20 @@ func (idx *Indexer) InitCtx(ctx context.Context, rootPath string, parallel int) 
 	if stats.Errors > 0 {
 		status = "completed_with_errors"
 	}
-	if err := idx.db.UpdateScanRun(ctx, scanRunID, stats.FilesScanned, stats.FilesIndexed, stats.Errors, status); err != nil {
+	// При отмене контекста используем свежий контекст для финализации scan_run,
+	// чтобы записать статус даже после Ctrl+C.
+	finalizeCtx := ctx
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		finalizeCtx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		status = "canceled"
+	}
+	if err := idx.db.UpdateScanRun(finalizeCtx, scanRunID, stats.FilesScanned, stats.FilesIndexed, stats.Errors, status); err != nil {
 		return nil, fmt.Errorf("failed to finalize scan run: %w", err)
+	}
+	if ctx.Err() != nil {
+		return &stats, ctx.Err()
 	}
 	return &stats, nil
 }
@@ -135,7 +160,7 @@ func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified
 	}
 	walker.SetPreFilter(fingerprints)
 
-	filesCh, errsCh := walker.WalkParallel(parallel)
+	filesCh, errsCh := walker.WalkParallelCtx(ctx, parallel)
 	jobs := make(chan indexedFileJob, 128)
 	seen := make(map[string]struct{})
 	var workersWG sync.WaitGroup
@@ -153,52 +178,74 @@ func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified
 	feederWG.Add(1)
 	go func() {
 		defer feederWG.Done()
-		for file := range filesCh {
-			normalizedPath := filepath.ToSlash(strings.TrimSpace(file.Path))
-			seen[normalizedPath] = struct{}{}
-			collector.Add(func(stats *model.ScanStats) {
-				stats.FilesScanned++
-			})
-			prev := existing[normalizedPath]
-			// Pre-filtered файл (Hash пустой — не читался, mtime+size совпадают)
-			if file.Hash == "" && prev != nil {
-				collector.Add(func(stats *model.ScanStats) { stats.PreFilteredFiles++ })
-				continue
+		defer close(jobs)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case file, ok := <-filesCh:
+				if !ok {
+					return
+				}
+				normalizedPath := filepath.ToSlash(strings.TrimSpace(file.Path))
+				seen[normalizedPath] = struct{}{}
+				collector.Add(func(stats *model.ScanStats) {
+					stats.FilesScanned++
+				})
+				prev := existing[normalizedPath]
+				// Pre-filtered файл (Hash пустой — не читался, mtime+size совпадают)
+				if file.Hash == "" && prev != nil {
+					collector.Add(func(stats *model.ScanStats) { stats.PreFilteredFiles++ })
+					continue
+				}
+				if onlyModified && prev != nil && prev.HashSHA256 == file.Hash {
+					continue
+				}
+				saveStart := time.Now()
+				fileID, err := idx.saveFileCtx(ctx, file, scanRunID)
+				saveElapsed := time.Since(saveStart).Milliseconds()
+				collector.Add(func(stats *model.ScanStats) { stats.SaveMs += saveElapsed })
+				if err != nil {
+					idx.logError(file.Path, "Error saving file row: %v", err)
+					collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+					continue
+				}
+				if prev != nil {
+					modifiedPaths = append(modifiedPaths, normalizedPath)
+					newFileIDs[normalizedPath] = fileID
+					collector.Add(func(stats *model.ScanStats) { stats.FilesUpdated++ })
+				} else {
+					collector.Add(func(stats *model.ScanStats) { stats.FilesAdded++ })
+				}
+				select {
+				case jobs <- indexedFileJob{file: file, fileID: fileID}:
+				case <-ctx.Done():
+					return
+				}
 			}
-			if onlyModified && prev != nil && prev.HashSHA256 == file.Hash {
-				continue
-			}
-			saveStart := time.Now()
-			fileID, err := idx.saveFileCtx(ctx, file, scanRunID)
-			saveElapsed := time.Since(saveStart).Milliseconds()
-			collector.Add(func(stats *model.ScanStats) { stats.SaveMs += saveElapsed })
-			if err != nil {
-				idx.logError(file.Path, "Error saving file row: %v", err)
-				collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
-				continue
-			}
-			if prev != nil {
-				modifiedPaths = append(modifiedPaths, normalizedPath)
-				newFileIDs[normalizedPath] = fileID
-				collector.Add(func(stats *model.ScanStats) { stats.FilesUpdated++ })
-			} else {
-				collector.Add(func(stats *model.ScanStats) { stats.FilesAdded++ })
-			}
-			jobs <- indexedFileJob{file: file, fileID: fileID}
 		}
-		close(jobs)
 	}()
 
-	for err := range errsCh {
-		idx.logError(rootPath, "Walker error: %v", err)
-		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+	// Чтение ошибок walker'а с поддержкой отмены.
+errorLoopUpdate:
+	for {
+		select {
+		case err, ok := <-errsCh:
+			if !ok {
+				break errorLoopUpdate
+			}
+			idx.logError(rootPath, "Walker error: %v", err)
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+		case <-ctx.Done():
+			break errorLoopUpdate
+		}
 	}
 
 	feederWG.Wait()
 	walkSaveDone := time.Now()
 
 	// Batch delete old rows for modified files, keeping the new file IDs.
-	if len(modifiedPaths) > 0 {
+	if len(modifiedPaths) > 0 && ctx.Err() == nil {
 		if err := idx.db.DeleteFilesByPathsExcept(ctx, modifiedPaths, newFileIDs); err != nil {
 			idx.logError("<cleanup>", "Error batch deleting outdated file rows: %v", err)
 			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
@@ -207,7 +254,9 @@ func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified
 
 	workersWG.Wait()
 	processDone := time.Now()
-	idx.runPostProcessingParallel(ctx, collector, parallel)
+	if ctx.Err() == nil {
+		idx.runPostProcessingParallel(ctx, collector, parallel)
+	}
 	postProcessDone := time.Now()
 
 	// Batch delete removed files (not seen in walker).
@@ -218,11 +267,13 @@ func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified
 		}
 		removedPaths = append(removedPaths, path)
 	}
-	if err := idx.db.DeleteFilesByPaths(ctx, removedPaths); err != nil {
-		idx.logError("<cleanup>", "Error batch deleting removed files: %v", err)
-		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+	if ctx.Err() == nil {
+		if err := idx.db.DeleteFilesByPaths(ctx, removedPaths); err != nil {
+			idx.logError("<cleanup>", "Error batch deleting removed files: %v", err)
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+		}
+		collector.Add(func(stats *model.ScanStats) { stats.FilesDeleted += len(removedPaths) })
 	}
-	collector.Add(func(stats *model.ScanStats) { stats.FilesDeleted += len(removedPaths) })
 	cleanupDone := time.Now()
 
 	stats := collector.Snapshot()
@@ -234,8 +285,20 @@ func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified
 	if stats.Errors > 0 {
 		status = "completed_with_errors"
 	}
-	if err := idx.db.UpdateScanRun(ctx, scanRunID, stats.FilesScanned, stats.FilesIndexed, stats.Errors, status); err != nil {
+	// При отмене контекста используем свежий контекст для финализации scan_run,
+	// чтобы записать статус даже после Ctrl+C.
+	finalizeCtx := ctx
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		finalizeCtx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		status = "canceled"
+	}
+	if err := idx.db.UpdateScanRun(finalizeCtx, scanRunID, stats.FilesScanned, stats.FilesIndexed, stats.Errors, status); err != nil {
 		return nil, fmt.Errorf("failed to finalize scan run: %w", err)
+	}
+	if ctx.Err() != nil {
+		return &stats, ctx.Err()
 	}
 	return &stats, nil
 }

@@ -197,34 +197,37 @@ func (idx *Indexer) processFilesWorkerPoolInit(ctx context.Context, parallel int
 	for i := 0; i < workerCount; i++ {
 		go func() {
 			defer wg.Done()
-			for file := range filesCh {
+			for {
 				select {
 				case <-ctx.Done():
 					return
-				default:
-				}
-				collector.Add(func(stats *model.ScanStats) { stats.FilesScanned++ })
+				case file, ok := <-filesCh:
+					if !ok {
+						return
+					}
+					collector.Add(func(stats *model.ScanStats) { stats.FilesScanned++ })
 
-				saveStart := time.Now()
-				fileID, err := idx.saveFileCtx(ctx, file, scanRunID)
-				saveElapsed := time.Since(saveStart).Milliseconds()
-				collector.Add(func(stats *model.ScanStats) { stats.SaveMs += saveElapsed })
-				if err != nil {
-					idx.logError(file.Path, "Error saving file row: %v", err)
-					collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
-					continue
-				}
+					saveStart := time.Now()
+					fileID, err := idx.saveFileCtx(ctx, file, scanRunID)
+					saveElapsed := time.Since(saveStart).Milliseconds()
+					collector.Add(func(stats *model.ScanStats) { stats.SaveMs += saveElapsed })
+					if err != nil {
+						idx.logError(file.Path, "Error saving file row: %v", err)
+						collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+						continue
+					}
 
-				localStats := &model.ScanStats{}
-				parseStart := time.Now()
-				if err := idx.processFileCtx(ctx, file, fileID, localStats); err != nil {
-					idx.logError(file.Path, "Error processing file: %v", err)
-					localStats.Errors++
+					localStats := &model.ScanStats{}
+					parseStart := time.Now()
+					if err := idx.processFileCtx(ctx, file, fileID, localStats); err != nil {
+						idx.logError(file.Path, "Error processing file: %v", err)
+						localStats.Errors++
+					}
+					localStats.ParseMs += time.Since(parseStart).Milliseconds()
+					collector.Add(func(stats *model.ScanStats) {
+						mergeScanStats(stats, localStats)
+					})
 				}
-				localStats.ParseMs += time.Since(parseStart).Milliseconds()
-				collector.Add(func(stats *model.ScanStats) {
-					mergeScanStats(stats, localStats)
-				})
 			}
 		}()
 	}
@@ -240,22 +243,25 @@ func (idx *Indexer) processFilesWorkerPool(ctx context.Context, parallel int, jo
 	for i := 0; i < workerCount; i++ {
 		go func() {
 			defer wg.Done()
-			for job := range jobs {
+			for {
 				select {
 				case <-ctx.Done():
 					return
-				default:
+				case job, ok := <-jobs:
+					if !ok {
+						return
+					}
+					localStats := &model.ScanStats{}
+					parseStart := time.Now()
+					if err := idx.processFileCtx(ctx, job.file, job.fileID, localStats); err != nil {
+						idx.logError(job.file.Path, "Error processing file: %v", err)
+						localStats.Errors++
+					}
+					localStats.ParseMs += time.Since(parseStart).Milliseconds()
+					collector.Add(func(stats *model.ScanStats) {
+						mergeScanStats(stats, localStats)
+					})
 				}
-				localStats := &model.ScanStats{}
-				parseStart := time.Now()
-				if err := idx.processFileCtx(ctx, job.file, job.fileID, localStats); err != nil {
-					idx.logError(job.file.Path, "Error processing file: %v", err)
-					localStats.Errors++
-				}
-				localStats.ParseMs += time.Since(parseStart).Milliseconds()
-				collector.Add(func(stats *model.ScanStats) {
-					mergeScanStats(stats, localStats)
-				})
 			}
 		}()
 	}

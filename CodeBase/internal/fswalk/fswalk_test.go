@@ -1,6 +1,8 @@
 package fswalk
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -327,5 +329,79 @@ func TestWalkParallelPreFilterMicrosecondSkewMatches(t *testing.T) {
 	// 500µs < 1ms tolerance → pre-filter должен сработать
 	if files[0].Hash != "" {
 		t.Fatalf("file should be pre-filtered (500µs skew < 1ms tolerance), got hash %q", files[0].Hash)
+	}
+}
+
+func TestWalkParallelCtx_CancelStopsPipeline(t *testing.T) {
+	root := t.TempDir()
+	// Создаём много файлов, чтобы заполнить буфер каналов
+	for i := 0; i < 200; i++ {
+		writeTestFile(t, filepath.Join(root, fmt.Sprintf("file_%03d.sql", i)), "select 1")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	w := NewWalker(root, []string{"*.sql"}, nil)
+	filesChan, errorsChan := w.WalkParallelCtx(ctx, 2)
+
+	// Читаем первый файл, затем отменяем
+	<-filesChan
+	cancel()
+
+	// Должны получить закрытые каналы (не зависнуть)
+	done := make(chan struct{})
+	go func() {
+		for range filesChan {
+		}
+		for range errorsChan {
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// OK — каналы закрылись после отмены
+	case <-time.After(5 * time.Second):
+		t.Fatal("WalkParallelCtx hung after context cancellation")
+	}
+}
+
+func TestWalkParallelCtx_PreFilterNoPanic(t *testing.T) {
+	root := t.TempDir()
+	// Создаём 100 файлов — все будут pre-filtered (mtime+size совпадают)
+	for i := 0; i < 100; i++ {
+		writeTestFile(t, filepath.Join(root, fmt.Sprintf("file_%03d.sql", i)), "select 1")
+	}
+
+	// Собираем fingerprints для всех файлов → все pre-filtered
+	preFilter := make(map[string]FileFingerprint, 100)
+	for i := 0; i < 100; i++ {
+		p := filepath.Join(root, fmt.Sprintf("file_%03d.sql", i))
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		preFilter[filepath.ToSlash(p)] = FileFingerprint{Size: info.Size(), ModTime: info.ModTime()}
+	}
+
+	w := NewWalker(root, []string{"*.sql"}, nil)
+	w.SetPreFilter(preFilter)
+
+	// 1 воркер — fileQueue будет пуст, read worker выйдет быстро.
+	// WalkDir отправляет pre-filtered файлы напрямую в filesChan.
+	// Без фикса: closer закрывает filesChan пока WalkDir ещё работает → panic.
+	filesChan, errorsChan := w.WalkParallelCtx(context.Background(), 1)
+
+	var count int
+	for range filesChan {
+		count++
+	}
+	for err := range errorsChan {
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	if count != 100 {
+		t.Fatalf("expected 100 pre-filtered files, got %d", count)
 	}
 }

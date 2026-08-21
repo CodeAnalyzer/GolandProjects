@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -61,6 +63,13 @@ Uses file hashes to detect changes.`,
 		fmt.Printf("rootPath=%s parallel=%d\n", rootPath, effectiveParallel)
 		stats, err := idx.UpdateCtx(ctx, rootPath, onlyModified, effectiveParallel)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				fmt.Fprintf(os.Stderr, "\nUpdating canceled by user.\n")
+				if stats != nil {
+					fmt.Fprintf(os.Stderr, "Partial stats: scanned=%d indexed=%d errors=%d\n", stats.FilesScanned, stats.FilesIndexed, stats.Errors)
+				}
+				return nil
+			}
 			return fmt.Errorf("update failed: %w", err)
 		}
 
