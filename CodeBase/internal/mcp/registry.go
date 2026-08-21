@@ -1011,20 +1011,22 @@ func optionalLimit(args map[string]interface{}) int {
 	if !ok || value == nil {
 		return queryDefaultLimit
 	}
+	var result int
 	switch v := value.(type) {
 	case float64:
-		if int(v) <= 0 {
-			return queryDefaultLimit
-		}
-		return int(v)
+		result = int(v)
 	case int:
-		if v <= 0 {
-			return queryDefaultLimit
-		}
-		return v
+		result = v
 	default:
 		return queryDefaultLimit
 	}
+	if result <= 0 {
+		return queryDefaultLimit
+	}
+	if result > queryMaxLimit {
+		return queryMaxLimit
+	}
+	return result
 }
 
 func optionalInt64(args map[string]interface{}, key string) (int64, error) {

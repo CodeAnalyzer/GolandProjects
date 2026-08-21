@@ -24,7 +24,7 @@ import (
 var (
 	appName        = "CodeBase"
 	version        = "0.8.7"
-	buildNumber    = "1349"
+	buildNumber    = "1351"
 	copyright      = "Copyright (c) 2026"
 	cfgFile        string
 	commandLogger  *log.Logger
@@ -47,6 +47,9 @@ Supported modes:
   trc    - SQL Server Profiler trace analyzer (parse, summary, events, procedures, tree, slow, errors)
   mcp    - MCP JSON-RPC server over stdio`,
 		Version: version,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			return initConfigE()
+		},
 	}
 )
 
@@ -242,13 +245,10 @@ func detectQueryCommandName(args []string) string {
 }
 
 func init() {
-	// Конфигурация поднимается один раз до выполнения любой команды,
-	// чтобы все подкоманды работали с единым in-memory состоянием config.
-	cobra.OnInitialize(initConfig)
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: codebase.toml)")
 }
 
-func initConfig() {
+func initConfigE() error {
 	// Явно переданный путь имеет приоритет над автопоиском codebase.toml.
 	if cfgFile != "" {
 		config.SetConfigFile(cfgFile)
@@ -256,8 +256,7 @@ func initConfig() {
 
 	if err := config.Load(); err != nil {
 		if !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("loading config: %w", err)
 		}
 		// Отсутствие файла конфигурации не является ошибкой для старта CLI:
 		// команда init может создать его позже с дефолтными значениями.
@@ -265,6 +264,7 @@ func initConfig() {
 
 	// Применяем параметры из конфига к пакетам, не имеющим прямого доступа к config.
 	applyConfigToPackages()
+	return nil
 }
 
 func applyConfigToPackages() {

@@ -48,12 +48,12 @@
   - Unified `query symbol` для SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects и XML/API symbols
 - **Review (проверка SQL перед деплоем)**: статический анализ SQL-файлов с детекцией deploy stoppers (использование внешних таблиц/процедур, небезопасные конструкции IF/EXISTS, отсутствие required hints, и т.д.)
 - **RTI-анализатор** (`codebase rti`): парсинг и анализ RTI-трейс логов Diasoft 5NT; извлечение вызовов процедур, параметров, контрольных точек, кодов ошибок, бизнес-лог блоков (`M_BUSINESSLOG_BLOCK_BEGIN/END`), checkpoint-временных меток, дампов таблиц (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`), клиентских событий (thick client d5nt: SQL blocks, recordset open, connection, BPL load, errors, memory); enrichment из индекса (PAS-файлы, DFM-формы, SQL-фрагменты); сохранение в БД для повторного анализа
-- **TRC-анализатор** (`codebase trc`): парсинг и анализ бинарных `.trc` файлов SQL Server Profiler; декодирование событий (RPC:Completed, SQL:BatchCompleted, SP:StmtCompleted и др.), извлечение вызовов процедур и параметров из TextData, агрегация по процедурам (count/min/max/avg/total duration), дерево вызовов по SPID с восстановлением вложенности через Starting/Completed пары, enrichment из индекса (путь к файлу и строки); сохранение в БД для повторного анализа
+- **TRC-анализатор** (`codebase trc`): парсинг и анализ файлов SQL Server Profiler — бинарных `.trc`, XML-экспортов `.xml` и Extended Events `.xel`; декодирование событий (RPC:Completed, SQL:BatchCompleted, SP:StmtCompleted и др.), извлечение вызовов процедур и параметров из TextData, агрегация по процедурам (count/min/max/avg/total duration), дерево вызовов по SPID с восстановлением вложенности через Starting/Completed пары, enrichment из индекса (путь к файлу и строки); сохранение в БД для повторного анализа
 - **Кодировки**: CP866/WIN1251/UTF8 с эвристическим выбором для legacy-форматов, включая TPR и препроцессированные `.t01`
 
 ## Требования
 
-- Go 1.21+
+- Go 1.25+
 - PostgreSQL 14+ (порт 5435 по умолчанию)
 
 ## Установка
@@ -567,12 +567,13 @@ codebase rti prune --keep-last 5
 
 ### TRC-анализатор
 
-Анализ файлов SQL Server Profiler: бинарных `.trc` и XML-экспортов (`.xml`). Формат определяется автоматически по сигнатуре содержимого (content sniffing) — указывайте любой путь:
+Анализ файлов SQL Server Profiler: бинарных `.trc`, XML-экспортов (`.xml`) и Extended Events (`.xel`). Формат определяется автоматически по сигнатуре содержимого (content sniffing) — указывайте любой путь:
 
 ```bash
-# Парсинг файла и сохранение в БД (поддерживаются .trc и .xml)
+# Парсинг файла и сохранение в БД (поддерживаются .trc, .xml и .xel)
 codebase trc parse path/to/file.trc
 codebase trc parse path/to/file.xml
+codebase trc parse path/to/file.xel
 
 # Сводка по трейсу
 codebase trc summary path/to/file.trc
@@ -610,9 +611,10 @@ codebase trc prune --keep-last 5
 Поддерживаемые форматы файлов:
 - **Бинарный `.trc`** — собственный формат SQL Server Profiler; декодируется через `ParseHeader` + `ParseEvents`
 - **XML-экспорт `.xml`** — трейс, сохранённый через File → Export в SQL Server Profiler; декодируется через `ParseXML` (с автоматическим определением кодировки UTF-16/UTF-8)
+- **Extended Events `.xel`** — бинарный формат SQL Server Extended Events; декодируется через `ParseXEL` (самоописывающийся формат с dictionary-блоком, декодирование событий wait_completed, sql_batch_completed, sql_statement_completed, sp_statement_completed, калибровка timestamp)
 
 Подкоманды:
-- **`parse`** — распарсить `.trc` или `.xml` файл и сохранить результат в БД; выводит сводку + session ID
+- **`parse`** — распарсить `.trc`, `.xml` или `.xel` файл и сохранить результат в БД; выводит сводку + session ID
 - **`summary`** — общая сводка: total_events, метаданные провайдера/сервера/версии
 - **`events`** — список декодированных событий с опциональной фильтрацией по SPID и процедуре
 - **`procedures`** — агрегация событий по имени процедуры (извлечённому из exec-statements в TextData): count, min/max/avg/total duration; enrichment из индекса (путь к файлу)
@@ -748,9 +750,12 @@ codebase mcp
 
 Ключевые MCP tools:
 
-- `codebase.health`
-- `codebase.stats`
+- `codebase.ping` — проверка живости MCP-сервера
+- `codebase.health` — проверка готовности БД и индекса
+- `codebase.stats` — статистика индекса
 - `codebase.query.*` для всех query-подкоманд CLI
+- `codebase_review_sql` — статический анализ SQL-файла (review rules)
+- `codebase_read_more` — пагинация MCP-ответов
 
 **RTI tools:**
 
@@ -794,7 +799,7 @@ codebase mcp
 
 | Tool | Описание | Обязательные параметры |
 |------|----------|------------------------|
-| `codebase_trc_parse` | Парсинг `.trc` или `.xml` файла и сохранение в БД | `file_path` |
+| `codebase_trc_parse` | Парсинг `.trc`, `.xml` или `.xel` файла и сохранение в БД | `file_path` |
 | `codebase_trc_list` | Список сохранённых сессий | — |
 | `codebase_trc_summary` | Сводка сессии: total_events, метаданные | `session_id` или `file_path` |
 | `codebase_trc_events` | Декодированные события с фильтрами | `session_id` или `file_path`, опц. `spid`/`procedure`/`limit` |
@@ -840,7 +845,10 @@ codebase mcp
 [mcp]
 pagination_chunk_size = 8000
 pagination_ttl = "15m"
+regexp_cache_max_entries = 10000
 ```
+
+`regexp_cache_max_entries` — лимит кэша скомпилированных regexp-паттернов (по умолчанию без лимита).
 
 ## Архитектура
 
@@ -892,10 +900,16 @@ CodeBase/
 │   ├── systemsvc/                 # Внутренний runtime для health/stats (CLI + MCP)
 │   ├── review/                    # Review rules engine и SQL checker
 │   │   ├── types.go               # Типы Finding, RuleID, Severity
+│   │   ├── catalog.go             # Каталог правил (ruleCatalog) — единый источник rule metadata
 │   │   ├── review_rules.go        # Реализация проверок (deploy stoppers)
 │   │   ├── review_helpers.go      # Вспомогательные функции
+│   │   ├── review_lookup.go       # Lookup-функции для типов данных и макросов
+│   │   ├── review_parser.go       # SQL-парсер для review (split statements, CASE tracking)
 │   │   ├── runner.go              # Review runner и execution pipeline
-│   │   └── runner_test.go         # Тесты для review rules
+│   │   ├── runner_test.go         # Тесты для review rules
+│   │   ├── review_rules_test.go   # Тести правил
+│   │   ├── review_parser_test.go  # Тесты review-парсера
+│   │   └── review_helpers_test.go # Тесты helper-функций
 │   ├── rti/                       # RTI-анализатор (поддержка .rti и .hrti)
 │   │   ├── model.go               # RTICall, RTIParam, RTICheckpoint, RTIBLogBlock, RTIBLogTable, RTISummary, RTIClientEvent
 │   │   ├── parser.go              # ParseFile, parseContent (regex state machine, CP866/UTF8) — серверные вызовы, авто-детект HRTI
@@ -908,21 +922,58 @@ CodeBase/
 │   │   ├── enrich_client.go       # EnrichClientEvents (enrichment клиентских событий: PAS, DFM, SQL-фрагменты)
 │   │   ├── link.go                # Связывание клиентских событий с серверными вызовами
 │   │   └── store.go               # SaveSession, LoadCalls, LoadClientEvents, ListSessions, ...
-│   ├── trc/                       # TRC-анализатор (бинарные .trc и XML .xml файлы SQL Server Profiler)
+│   ├── trc/                       # TRC-анализатор (бинарные .trc, XML .xml и Extended Events .xel файлы SQL Server)
 │   │   ├── model.go               # TraceHeader, TRCEvent, TRCParam, TRCSession, SystemTime, SystemTimeFromLocalParts
-│   │   ├── parser.go              # ParseFile — точка входа: DetectFormat → ParseXML или ParseHeader+ParseEvents
+│   │   ├── parser.go              # ParseFile — точка входа: DetectFormat → ParseXML/ParseXEL или ParseHeader+ParseEvents
 │   │   ├── xml_parser.go          # ParseXML, DetectFormat — парсинг XML-экспорта трейса (UTF-16/UTF-8)
+│   │   ├── xel_parser.go          # ParseXEL — парсинг бинарных .xel (Extended Events): декодирование событий
+│   │   ├── xel_format.go          # XEL-формат: dictionary-блок, TLV-структуры, калибровка timestamp
+│   │   ├── xel_event_map_generated.go # Сгенерированная карта событий XEL (event name → decoder)
+│   │   ├── gen_xel_mapping.go     # Генератор карты событий XEL
 │   │   ├── header.go              # Разбор заголовка бинарного формата: OrderedColumns, TracedEvents, EventsOffset
 │   │   ├── extract.go             # Извлечение procedure/params из TextData (regex-эвристика)
 │   │   ├── aggregate.go           # AggregateByProcedure (count/min/max/avg/total duration)
 │   │   ├── tree.go                # BuildTreesWithDepth, FormatTrees — дерево вызовов по SPID
+│   │   ├── parent_tracker.go      # Tracker вложенности событий для tree building
 │   │   ├── enrich.go              # EnrichEvents, EnrichAggregates — enrichment из индекса
+│   │   ├── enrich_parallel.go     # Параллельный enrichment для больших трейсов
 │   │   ├── format.go              # FormatTrees — текстовое форматирование дерева
+│   │   ├── utf16.go               # UTF-16LE декодирование для .xel
+│   │   ├── parse_to_db.go         # ParseToDB — связка парсинг + сохранение в БД
 │   │   └── store.go               # SaveSession, LoadEvents, ListSessions, DeleteSession, PruneSessions
 │   ├── mcp/                       # MCP stdio JSON-RPC transport, tools registry, handlers, пагинация
+│   │   ├── server.go              # MCP SDK server, stdio transport, tool dispatch
+│   │   ├── registry.go            # Registry всех MCP tools (query, RTI, TRC, review, health, stats)
+│   │   ├── pagination.go          # Пагинация больших MCP-ответов (chunking, TTL)
+│   │   ├── tools.go               # Вспомогательные типы для tool definitions
+│   │   └── types.go               # Внутренние типы MCP
 │   └── store/
-│       ├── db.go                  # Основной persistence layer и batch insert helpers
-│       └── api_store.go           # Persistence для API/DSArchitect сущностей
+│       ├── db.go                  # Основной persistence layer, NewDB, DSN-экранирование
+│       ├── db_tx.go               # Транзакционная обёртка: WithBatchTxCtx, ExecContext, QueryContext
+│       ├── db_schema.go           # InitSchema — создание всех таблиц и индексов
+│       ├── db_files.go            # CRUD для files, DeleteFilesByPath(s)
+│       ├── db_insert_sql.go       # BatchInsert для SQL procedures/tables/columns/indexes
+│       ├── db_insert_pas.go       # BatchInsert для PAS units/classes/methods/fields
+│       ├── db_insert_dfm.go       # BatchInsert для DFM forms/components
+│       ├── db_insert_h.go         # BatchInsert для H defines
+│       ├── db_insert_j.go         # BatchInsert для JS functions/constants
+│       ├── db_insert_reports.go   # BatchInsert для report forms/fields/params/VB functions
+│       ├── db_insert_retcode.go   # BatchInsert для ds_return_codes
+│       ├── db_lookup_sql.go       # Lookup для SQL entities (procedures, tables, columns, indexes)
+│       ├── db_lookup_pas.go       # Lookup для PAS entities + batch update DFM links
+│       ├── db_lookup_dfm.go       # Lookup для DFM forms/components
+│       ├── db_lookup_h.go         # Lookup для H defines
+│       ├── db_lookup_j.go         # Lookup для JS functions/constants
+│       ├── db_lookup_reports.go   # Lookup для report forms/fields/params
+│       ├── db_lookup_retcode.go   # Lookup для ds_return_codes
+│       ├── db_lookup_keys.go      # Lookup key builders (unified symbol index keys)
+│       ├── db_resolve_retcode.go  # ResolveRetCodeConstants — замена LOC_RETCODE_* на значения
+│       ├── db_scan_runs.go        # CreateScanRun, UpdateScanRun
+│       ├── db_stats.go            # Stats — агрегированная статистика индекса
+│       ├── db_nullable.go         # Nullable helpers (NullableString, NullableInt, NullableInt64)
+│       ├── db_products.go         # Продукты Diasoft (product catalog)
+│       ├── api_store.go           # Persistence для API/DSArchitect сущностей
+│       └── testutil/              # Test utilities (Open, DSN для integration-тестов)
 ├── main.go                        # Точка входа приложения
 └── codebase.toml                  # Конфигурация
 ```
@@ -1082,6 +1133,11 @@ $env:CODEBASE_TEST_DSN = "postgres://postgres:123456@localhost:5435/postgres?ssl
 - [x] RTI клиентские события: парсинг thick client d5nt (SQL blocks, recordset open, connection, BPL, errors, memory), enrichment из индекса, client-tree и timeline
 - [x] TRC-анализатор: парсинг бинарных `.trc` файлов SQL Server Profiler, декодирование событий, агрегация по процедурам, дерево вызовов по SPID, enrichment из индекса, CLI и MCP tools
 - [x] TRC XML-поддержка: автоматическое определение формата (content sniffing), парсинг XML-экспортов `.xml` (UTF-16/UTF-8), маппинг в существующую модель данных без изменения схемы БД
+- [x] TRC XEL-поддержка: парсинг бинарных `.xel` (Extended Events), декодирование событий (wait_completed, sql_batch_completed, sql_statement_completed, sp_statement_completed), калибровка timestamp, маппинг в существующую модель данных
+- [x] Review rule catalog: единый источник rule metadata (catalog.go), CLI `--rules` и MCP `codebase_review_sql` валидация
+- [x] MCP limit clamp: `optionalLimit` ограничивается `queryMaxLimit` (защита от DoS через MCP)
+- [x] Конфигурация через PersistentPreRunE: отказ от `os.Exit` при ошибке загрузки конфига, корректная обработка через cobra error flow
+- [x] Транзакционная запись include-директив: `ExecContext` с `boundTx`, возврат ошибки вместо глушения
 
 ## Лицензия
 
