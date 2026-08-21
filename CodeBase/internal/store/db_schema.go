@@ -691,7 +691,7 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 	}
 
 	for _, stmt := range statements {
-		if _, err := db.execCtx(ctx, stmt); err != nil {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("failed to initialize schema: %w", err)
 		}
 	}

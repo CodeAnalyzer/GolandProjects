@@ -235,7 +235,7 @@ func (db *DB) FindPASFieldIDsByUnit(ctx context.Context, unitID int64) (map[stri
 
 // UpdatePASClassDFMForm РѕР±РЅРѕРІР»СЏРµС‚ dfm_form_id Сѓ PAS РєР»Р°СЃСЃР°.
 func (db *DB) UpdatePASClassDFMForm(ctx context.Context, classID int64, dfmFormID int64) error {
-	_, err := db.execCtx(ctx, `UPDATE pas_classes SET dfm_form_id = $1 WHERE id = $2`, NullableInt64(dfmFormID), classID)
+	_, err := db.ExecContext(ctx, `UPDATE pas_classes SET dfm_form_id = $1 WHERE id = $2`, NullableInt64(dfmFormID), classID)
 	if err != nil {
 		return fmt.Errorf("failed to update pas class dfm form: %w", err)
 	}
@@ -245,7 +245,7 @@ func (db *DB) UpdatePASClassDFMForm(ctx context.Context, classID int64, dfmFormI
 
 // UpdatePASFieldDFMComponent РѕР±РЅРѕРІР»СЏРµС‚ dfm_component_id Сѓ PAS РїРѕР»СЏ.
 func (db *DB) UpdatePASFieldDFMComponent(ctx context.Context, fieldID int64, dfmComponentID int64) error {
-	_, err := db.execCtx(ctx, `UPDATE pas_fields SET dfm_component_id = $1 WHERE id = $2`, NullableInt64(dfmComponentID), fieldID)
+	_, err := db.ExecContext(ctx, `UPDATE pas_fields SET dfm_component_id = $1 WHERE id = $2`, NullableInt64(dfmComponentID), fieldID)
 	if err != nil {
 		return fmt.Errorf("failed to update pas field dfm component: %w", err)
 	}
@@ -291,7 +291,7 @@ type PASFieldDFMLinkCandidate struct {
 
 // UpdatePASMethodClass РѕР±РЅРѕРІР»СЏРµС‚ class_id Сѓ PAS РјРµС‚РѕРґР°.
 func (db *DB) UpdatePASMethodClass(ctx context.Context, methodID int64, classID int64) error {
-	_, err := db.execCtx(ctx, `UPDATE pas_methods SET class_id = $1 WHERE id = $2`, classID, methodID)
+	_, err := db.ExecContext(ctx, `UPDATE pas_methods SET class_id = $1 WHERE id = $2`, classID, methodID)
 	if err != nil {
 		return fmt.Errorf("failed to update pas method class: %w", err)
 	}
@@ -300,7 +300,7 @@ func (db *DB) UpdatePASMethodClass(ctx context.Context, methodID int64, classID 
 
 // UpdatePASFieldClass РѕР±РЅРѕРІР»СЏРµС‚ class_id Сѓ PAS РїРѕР»СЏ.
 func (db *DB) UpdatePASFieldClass(ctx context.Context, fieldID int64, classID int64) error {
-	_, err := db.execCtx(ctx, `UPDATE pas_fields SET class_id = $1 WHERE id = $2`, classID, fieldID)
+	_, err := db.ExecContext(ctx, `UPDATE pas_fields SET class_id = $1 WHERE id = $2`, classID, fieldID)
 	if err != nil {
 		return fmt.Errorf("failed to update pas field class: %w", err)
 	}
@@ -326,7 +326,7 @@ func (db *DB) BatchUpdatePASClassDFMForm(ctx context.Context, pairs []PASUpdateP
 			ids[j] = p.ID
 			values[j] = p.ValueID
 		}
-		if _, err := db.execCtx(ctx, `
+		if _, err := db.ExecContext(ctx, `
 			UPDATE pas_classes c
 			SET dfm_form_id = v.dfm_form_id
 			FROM unnest($1::bigint[], $2::bigint[]) AS v(id, dfm_form_id)
@@ -356,7 +356,7 @@ func (db *DB) BatchUpdatePASMethodClass(ctx context.Context, pairs []PASUpdatePa
 			ids[j] = p.ID
 			classIDs[j] = p.ValueID
 		}
-		if _, err := db.execCtx(ctx, `
+		if _, err := db.ExecContext(ctx, `
 			UPDATE pas_methods m
 			SET class_id = v.class_id
 			FROM unnest($1::bigint[], $2::bigint[]) AS v(id, class_id)
@@ -386,7 +386,7 @@ func (db *DB) BatchUpdatePASFieldClass(ctx context.Context, pairs []PASUpdatePai
 			ids[j] = p.ID
 			classIDs[j] = p.ValueID
 		}
-		if _, err := db.execCtx(ctx, `
+		if _, err := db.ExecContext(ctx, `
 			UPDATE pas_fields f
 			SET class_id = v.class_id
 			FROM unnest($1::bigint[], $2::bigint[]) AS v(id, class_id)
@@ -416,7 +416,7 @@ func (db *DB) BatchUpdatePASFieldDFMComponent(ctx context.Context, pairs []PASUp
 			ids[j] = p.ID
 			componentIDs[j] = p.ValueID
 		}
-		if _, err := db.execCtx(ctx, `
+		if _, err := db.ExecContext(ctx, `
 			UPDATE pas_fields f
 			SET dfm_component_id = v.component_id
 			FROM unnest($1::bigint[], $2::bigint[]) AS v(id, component_id)

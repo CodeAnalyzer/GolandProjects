@@ -383,7 +383,7 @@ func (db *DB) FindLatestEventContractIDsByNames(ctx context.Context, names []str
 }
 
 func (db *DB) DeleteSubscribesToEventRelations(ctx context.Context) error {
-	_, err := db.execCtx(ctx, `
+	_, err := db.ExecContext(ctx, `
 		DELETE FROM relations
 		WHERE source_type = 'api_contract'
 		  AND target_type = 'api_contract'

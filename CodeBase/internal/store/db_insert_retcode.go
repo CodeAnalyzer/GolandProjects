@@ -78,6 +78,6 @@ func (db *DB) insertRetCodesBatch(ctx context.Context, entries []*model.RetCodeE
 	}
 	sb.WriteString(` ON CONFLICT (ret_code) DO UPDATE SET file_id=EXCLUDED.file_id, message=EXCLUDED.message, proc_name=EXCLUDED.proc_name, module_id=EXCLUDED.module_id`)
 
-	_, err := db.execCtx(ctx, sb.String(), args...)
+	_, err := db.ExecContext(ctx, sb.String(), args...)
 	return err
 }

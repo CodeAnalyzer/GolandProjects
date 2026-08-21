@@ -394,8 +394,7 @@ func (idx *Indexer) parseSQLLikeFile(ctx context.Context, file fswalk.FileInfo, 
 	// Обрабатываем include директивы (остаются как есть)
 	for _, inc := range result.Includes {
 		if err := idx.saveIncludeDirective(ctx, fileID, path, inc.IncludePath, inc.LineNumber); err != nil {
-			idx.logError(path, "Error saving include %s: %v", inc.IncludePath, err)
-			stats.Errors++
+			return fmt.Errorf("failed to save include directive %s: %w", inc.IncludePath, err)
 		}
 	}
 

@@ -63,7 +63,7 @@ func (db *DB) GetLatestFilesByRootPath(ctx context.Context, rootPath string) (ma
 
 // DeleteFilesByPath СѓРґР°Р»СЏРµС‚ РІСЃРµ Р·Р°РїРёСЃРё С„Р°Р№Р»Р° РїРѕ path РІРјРµСЃС‚Рµ СЃ Р·Р°РІРёСЃРёРјС‹РјРё СЃСѓС‰РЅРѕСЃС‚СЏРјРё.
 func (db *DB) DeleteFilesByPath(ctx context.Context, path string) error {
-	_, err := db.execCtx(ctx, `DELETE FROM files WHERE path = $1`, path)
+	_, err := db.ExecContext(ctx, `DELETE FROM files WHERE path = $1`, path)
 	if err != nil {
 		return fmt.Errorf("failed to delete file by path: %w", err)
 	}
@@ -72,7 +72,7 @@ func (db *DB) DeleteFilesByPath(ctx context.Context, path string) error {
 
 // DeleteFilesByPathExcept СѓРґР°Р»СЏРµС‚ РІСЃРµ Р·Р°РїРёСЃРё С„Р°Р№Р»Р° РїРѕ path, РєСЂРѕРјРµ СѓРєР°Р·Р°РЅРЅРѕР№.
 func (db *DB) DeleteFilesByPathExcept(ctx context.Context, path string, keepID int64) error {
-	_, err := db.execCtx(ctx, `DELETE FROM files WHERE path = $1 AND id <> $2`, path, keepID)
+	_, err := db.ExecContext(ctx, `DELETE FROM files WHERE path = $1 AND id <> $2`, path, keepID)
 	if err != nil {
 		return fmt.Errorf("failed to delete outdated file rows: %w", err)
 	}
@@ -91,7 +91,7 @@ func (db *DB) DeleteFilesByPaths(ctx context.Context, paths []string) error {
 			end = len(paths)
 		}
 		chunk := paths[i:end]
-		if _, err := db.execCtx(ctx, `DELETE FROM files WHERE path = ANY($1)`, pq.Array(chunk)); err != nil {
+		if _, err := db.ExecContext(ctx, `DELETE FROM files WHERE path = ANY($1)`, pq.Array(chunk)); err != nil {
 			return fmt.Errorf("failed to delete files by paths: %w", err)
 		}
 	}
@@ -112,7 +112,7 @@ func (db *DB) DeleteFilesByPathsExcept(ctx context.Context, paths []string, keep
 		}
 		withKeep, withoutKeep := splitPathsByKeepIDs(paths[i:end], keepIDs)
 		if len(withoutKeep) > 0 {
-			if _, err := db.execCtx(ctx, `DELETE FROM files WHERE path = ANY($1)`, pq.Array(withoutKeep)); err != nil {
+			if _, err := db.ExecContext(ctx, `DELETE FROM files WHERE path = ANY($1)`, pq.Array(withoutKeep)); err != nil {
 				return fmt.Errorf("failed to delete files by paths: %w", err)
 			}
 		}
@@ -123,7 +123,7 @@ func (db *DB) DeleteFilesByPathsExcept(ctx context.Context, paths []string, keep
 				keepPathArr[j] = p
 				keepIDArr[j] = keepIDs[p]
 			}
-			if _, err := db.execCtx(ctx, `
+			if _, err := db.ExecContext(ctx, `
 				DELETE FROM files
 				WHERE path = ANY($1) AND NOT (id = ANY($2))
 			`, pq.Array(keepPathArr), pq.Array(keepIDArr)); err != nil {

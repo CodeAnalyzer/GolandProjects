@@ -497,8 +497,7 @@ func (idx *Indexer) parseHFile(ctx context.Context, file fswalk.FileInfo, fileID
 
 	for _, inc := range result.Includes {
 		if err := idx.saveIncludeDirective(ctx, fileID, path, inc.IncludePath, inc.LineNumber); err != nil {
-			idx.logError(path, "Error saving include %s: %v", inc.IncludePath, err)
-			stats.Errors++
+			return fmt.Errorf("failed to save include directive %s: %w", inc.IncludePath, err)
 		}
 	}
 
@@ -909,8 +908,7 @@ func (idx *Indexer) parseTPRFile(ctx context.Context, file fswalk.FileInfo, file
 	}
 	for _, inc := range result.Includes {
 		if err := idx.saveIncludeDirective(ctx, fileID, path, inc.IncludePath, inc.LineNumber); err != nil {
-			idx.logError(path, "Error saving include %s: %v", inc.IncludePath, err)
-			stats.Errors++
+			return fmt.Errorf("failed to save include directive %s: %w", inc.IncludePath, err)
 		}
 	}
 	relations, err := idx.buildQueryFragmentRelations(ctx, fileID, result.Fragments)
@@ -1138,8 +1136,7 @@ func (idx *Indexer) parseSMFFile(ctx context.Context, file fswalk.FileInfo, file
 
 	for _, inc := range result.Includes {
 		if err := idx.saveIncludeDirective(ctx, fileID, path, inc, 1); err != nil {
-			idx.logError(path, "Error saving include %s: %v", inc, err)
-			stats.Errors++
+			return fmt.Errorf("failed to save include directive %s: %w", inc, err)
 		}
 	}
 
@@ -1629,7 +1626,7 @@ func (idx *Indexer) saveIncludeDirective(ctx context.Context, fileID int64, path
 		return err
 	}
 
-	_, err := idx.db.Exec(`
+	_, err := idx.db.ExecContext(ctx, `
 		INSERT INTO include_directives (file_id, include_path, resolved_file_id, line_number)
 		VALUES ($1, $2, $3, $4)
 	`, fileID, includePath, resolvedFileID, lineNum)

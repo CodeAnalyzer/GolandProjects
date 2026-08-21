@@ -49,8 +49,8 @@ func (db *DB) WithBatchTx(fn func(txdb *DB) error) (err error) {
 	return db.WithBatchTxCtx(context.Background(), fn)
 }
 
-// execCtx выполняет запрос в boundTx, если она задана, иначе напрямую.
-func (db *DB) execCtx(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+// ExecContext выполняет запрос в boundTx, если она задана, иначе напрямую.
+func (db *DB) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
 	if db.boundTx != nil {
 		return db.boundTx.ExecContext(ctx, query, args...)
 	}

@@ -10,7 +10,7 @@ import (
 // Р’С‹РїРѕР»РЅСЏРµС‚СЃСЏ РѕРґРЅРёРј SQL-Р·Р°РїСЂРѕСЃРѕРј UPDATE ... FROM.
 func (db *DB) ResolveRetCodeConstants(ctx context.Context) (int, error) {
 	// РћРґРёРЅ Р·Р°РїСЂРѕСЃ: UPDATE СЃ РїРѕРґР·Р°РїСЂРѕСЃРѕРј, РІС‹Р±РёСЂР°СЋС‰РёРј Р»СѓС‡С€РёРµ Р·РЅР°С‡РµРЅРёСЏ РёР· h_files_defines
-	tag, err := db.execCtx(ctx, `
+	tag, err := db.ExecContext(ctx, `
 		UPDATE ds_return_codes rc
 		SET message = dv.define_value
 		FROM (

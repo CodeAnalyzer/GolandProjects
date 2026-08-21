@@ -31,7 +31,7 @@ func (db *DB) HasCompletedInit(ctx context.Context) (bool, error) {
 
 // UpdateScanRun РѕР±РЅРѕРІР»СЏРµС‚ СЃС‚Р°С‚СѓСЃ СЃРєР°РЅРёСЂРѕРІР°РЅРёСЏ
 func (db *DB) UpdateScanRun(ctx context.Context, id int64, filesScanned, filesIndexed, errorsCount int, status string) error {
-	_, err := db.execCtx(ctx, `
+	_, err := db.ExecContext(ctx, `
 		UPDATE scan_runs 
 		SET finished_at = NOW(),
 		    status = $4,
