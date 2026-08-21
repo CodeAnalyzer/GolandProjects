@@ -8,8 +8,8 @@ import (
 
 // postProcessRetCodeConstants резолвит LOC_RETCODE_* константы в ds_return_codes
 // через h_files_defines, заменяя имена констант на реальные тексты сообщений.
-func (idx *Indexer) postProcessRetCodeConstants(collector *statsCollector) {
-	updated, err := idx.db.ResolveRetCodeConstants(context.Background())
+func (idx *Indexer) postProcessRetCodeConstants(ctx context.Context, collector *statsCollector) {
+	updated, err := idx.db.ResolveRetCodeConstants(ctx)
 	if err != nil {
 		idx.logError("<post-processing>", "Error resolving retcode constants: %v", err)
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })

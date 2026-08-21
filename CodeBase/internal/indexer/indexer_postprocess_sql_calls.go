@@ -9,14 +9,14 @@ import (
 	"github.com/codebase/internal/model"
 )
 
-func (idx *Indexer) postProcessSQLProcedureCallRelations(collector *statsCollector, parallel int) {
+func (idx *Indexer) postProcessSQLProcedureCallRelations(ctx context.Context, collector *statsCollector, parallel int) {
 	pending := idx.snapshotPendingSQLCalls()
 	if len(pending) == 0 {
 		return
 	}
 
 	calleeNames := collectUniqueSQLCallCalleeNames(pending)
-	targetIDs, err := idx.db.FindLatestSQLProcedureIDsByNames(context.Background(), calleeNames)
+	targetIDs, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, calleeNames)
 	if err != nil {
 		idx.logError("<post-processing>", "Error resolving SQL procedure call targets: %v", err)
 		collector.Add(func(stats *model.ScanStats) {
@@ -31,7 +31,7 @@ func (idx *Indexer) postProcessSQLProcedureCallRelations(collector *statsCollect
 		})
 	})
 	localStats := &model.ScanStats{}
-	if err := idx.saveRelations(relations, "<post-processing>", localStats); err != nil {
+	if err := idx.saveRelations(ctx, relations, "<post-processing>", localStats); err != nil {
 		collector.Add(func(stats *model.ScanStats) {
 			mergeScanStats(stats, localStats)
 		})

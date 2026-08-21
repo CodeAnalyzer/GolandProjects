@@ -411,7 +411,7 @@ func decodeIndexedFileContent(file fswalk.FileInfo) (string, error) {
 	return encoding.DecodeBytes(file.Content, encoding.Encoding(file.Encoding))
 }
 
-func (idx *Indexer) parseHFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+func (idx *Indexer) parseHFile(ctx context.Context, file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
 	path := file.Path
 	content, err := decodeIndexedFileContent(file)
 	if err != nil {
@@ -441,17 +441,17 @@ func (idx *Indexer) parseHFile(file fswalk.FileInfo, fileID int64, stats *model.
 		})
 	}
 
-	if err := idx.db.BatchInsertHDefines(context.Background(), definesBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertHDefines(ctx, definesBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	defineIDs, err := idx.db.FindHDefineIDsByFile(context.Background(), fileID)
+	defineIDs, err := idx.db.FindHDefineIDsByFile(ctx, fileID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve H define ids for symbols: %w", err)
 	}
 	for _, symbol := range symbolsBatch {
 		symbol.EntityID = defineIDs[store.BuildHDefineLookupKey(symbol.SymbolName, symbol.LineNumber)]
 	}
-	if err := idx.db.BatchInsertSymbols(context.Background(), symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSymbols(ctx, symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
 	stats.Defines += len(definesBatch)
@@ -482,13 +482,13 @@ func (idx *Indexer) parseHFile(file fswalk.FileInfo, fileID int64, stats *model.
 			})
 		}
 		if len(procBatch) > 0 {
-			if err := idx.db.BatchInsertSQLProcedures(context.Background(), procBatch, idx.config.Indexer.BatchSize); err != nil {
+			if err := idx.db.BatchInsertSQLProcedures(ctx, procBatch, idx.config.Indexer.BatchSize); err != nil {
 				idx.logError(path, "Error batch inserting H-file procedures: %v", err)
 				stats.Errors += len(procBatch)
 				return err
 			}
 			stats.Procedures += len(procBatch)
-			if err := idx.db.BatchInsertSymbols(context.Background(), procSymbols, idx.config.Indexer.BatchSize); err != nil {
+			if err := idx.db.BatchInsertSymbols(ctx, procSymbols, idx.config.Indexer.BatchSize); err != nil {
 				idx.logError(path, "Error batch inserting H-file procedure symbols: %v", err)
 				return err
 			}
@@ -496,7 +496,7 @@ func (idx *Indexer) parseHFile(file fswalk.FileInfo, fileID int64, stats *model.
 	}
 
 	for _, inc := range result.Includes {
-		if err := idx.saveIncludeDirective(fileID, path, inc.IncludePath, inc.LineNumber); err != nil {
+		if err := idx.saveIncludeDirective(ctx, fileID, path, inc.IncludePath, inc.LineNumber); err != nil {
 			idx.logError(path, "Error saving include %s: %v", inc.IncludePath, err)
 			stats.Errors++
 		}
@@ -530,7 +530,7 @@ func isLineInsideMacroDefinition(lines []string, lineNum int) bool {
 	return false
 }
 
-func (idx *Indexer) parseDFMFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+func (idx *Indexer) parseDFMFile(ctx context.Context, file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
 	path := file.Path
 	content, err := decodeIndexedFileContent(file)
 	if err != nil {
@@ -587,10 +587,10 @@ func (idx *Indexer) parseDFMFile(file fswalk.FileInfo, fileID int64, stats *mode
 		tablesBatch = append(tablesBatch, table)
 	}
 
-	if err := idx.db.BatchInsertDFMForms(context.Background(), formsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertDFMForms(ctx, formsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	formIDs, err := idx.db.FindDFMFormIDsByFile(context.Background(), fileID)
+	formIDs, err := idx.db.FindDFMFormIDsByFile(ctx, fileID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve DFM form ids for symbols: %w", err)
 	}
@@ -622,7 +622,7 @@ func (idx *Indexer) parseDFMFile(file fswalk.FileInfo, fileID int64, stats *mode
 		if fragment == nil || fragment.ParentType != "dfm_form" || fragment.ParentID > 0 {
 			continue
 		}
-		formID, err := idx.db.FindDFMFormIDByFileAndLine(context.Background(), fileID, fragment.LineNumber)
+		formID, err := idx.db.FindDFMFormIDByFileAndLine(ctx, fileID, fragment.LineNumber)
 		if err != nil {
 			if err == dbsql.ErrNoRows {
 				continue
@@ -631,17 +631,17 @@ func (idx *Indexer) parseDFMFile(file fswalk.FileInfo, fileID int64, stats *mode
 		}
 		fragment.ParentID = formID
 	}
-	if err := idx.db.BatchInsertQueryFragments(context.Background(), fragmentsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertQueryFragments(ctx, fragmentsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertDFMComponents(context.Background(), componentsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertDFMComponents(ctx, componentsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
 	// Cache FindDFMComponentIDsByForm per unique FormID to avoid N+1 queries.
 	componentIDsCache := make(map[int64]map[string]int64)
 	for _, component := range componentsBatch {
 		if _, cached := componentIDsCache[component.FormID]; !cached {
-			ids, err := idx.db.FindDFMComponentIDsByForm(context.Background(), component.FormID)
+			ids, err := idx.db.FindDFMComponentIDsByForm(ctx, component.FormID)
 			if err != nil {
 				return fmt.Errorf("failed to resolve DFM component ids for symbols: %w", err)
 			}
@@ -666,17 +666,17 @@ func (idx *Indexer) parseDFMFile(file fswalk.FileInfo, fileID int64, stats *mode
 			Signature:  signature,
 		})
 	}
-	if err := idx.db.BatchInsertSQLTables(context.Background(), tablesBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSQLTables(ctx, tablesBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertSymbols(context.Background(), symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSymbols(ctx, symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	relations, err := idx.buildQueryFragmentRelations(fileID, fragmentsBatch)
+	relations, err := idx.buildQueryFragmentRelations(ctx, fileID, fragmentsBatch)
 	if err != nil {
 		return fmt.Errorf("failed to build DFM query relations: %w", err)
 	}
-	if err := idx.saveRelations(relations, path, stats); err != nil {
+	if err := idx.saveRelations(ctx, relations, path, stats); err != nil {
 		return err
 	}
 
@@ -686,7 +686,7 @@ func (idx *Indexer) parseDFMFile(file fswalk.FileInfo, fileID int64, stats *mode
 	return nil
 }
 
-func (idx *Indexer) parseJSFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+func (idx *Indexer) parseJSFile(ctx context.Context, file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
 	path := file.Path
 	content, err := decodeIndexedFileContent(file)
 	if err != nil {
@@ -716,7 +716,7 @@ func (idx *Indexer) parseJSFile(file fswalk.FileInfo, fileID int64, stats *model
 	}
 
 	// Preload JS function ranges for local resolution (avoids N+1 DB queries)
-	funcRanges, err := idx.db.FindJSFunctionIDRangesByFile(context.Background(), fileID)
+	funcRanges, err := idx.db.FindJSFunctionIDRangesByFile(ctx, fileID)
 	if err != nil {
 		return fmt.Errorf("failed to load JS function ranges: %w", err)
 	}
@@ -744,35 +744,35 @@ func (idx *Indexer) parseJSFile(file fswalk.FileInfo, fileID int64, stats *model
 		})
 	}
 
-	if err := idx.db.BatchInsertJSFunctions(context.Background(), functionsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertJSFunctions(ctx, functionsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	functionIDs, err := idx.db.FindJSFunctionIDsByFile(context.Background(), fileID)
+	functionIDs, err := idx.db.FindJSFunctionIDsByFile(ctx, fileID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve JS function ids for symbols: %w", err)
 	}
 	for _, symbol := range symbolsBatch {
 		symbol.EntityID = functionIDs[store.BuildJSFunctionLookupKey(symbol.SymbolName, symbol.LineNumber)]
 	}
-	if err := idx.db.BatchInsertQueryFragments(context.Background(), fragmentsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertQueryFragments(ctx, fragmentsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.saveJSConstantSymbols(fileID, result.Constants); err != nil {
+	if err := idx.saveJSConstantSymbols(ctx, fileID, result.Constants); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertSymbols(context.Background(), symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSymbols(ctx, symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	relations, err := idx.buildQueryFragmentRelations(fileID, fragmentsBatch)
+	relations, err := idx.buildQueryFragmentRelations(ctx, fileID, fragmentsBatch)
 	if err != nil {
 		return fmt.Errorf("failed to build JS query relations: %w", err)
 	}
-	procedureRelations, err := idx.buildJSProcedureCallRelations(fileID, result.ProcedureCalls)
+	procedureRelations, err := idx.buildJSProcedureCallRelations(ctx, fileID, result.ProcedureCalls)
 	if err != nil {
 		return fmt.Errorf("failed to build JS procedure call relations: %w", err)
 	}
 	relations = append(relations, procedureRelations...)
-	if err := idx.saveRelations(relations, path, stats); err != nil {
+	if err := idx.saveRelations(ctx, relations, path, stats); err != nil {
 		return err
 	}
 
@@ -781,17 +781,17 @@ func (idx *Indexer) parseJSFile(file fswalk.FileInfo, fileID int64, stats *model
 	return nil
 }
 
-func (idx *Indexer) saveJSConstantSymbols(fileID int64, constants []*model.JSConstant) error {
+func (idx *Indexer) saveJSConstantSymbols(ctx context.Context, fileID int64, constants []*model.JSConstant) error {
 	for _, constant := range constants {
 		if constant == nil {
 			continue
 		}
 		constant.FileID = fileID
 	}
-	if err := idx.db.BatchInsertJSConstants(context.Background(), constants, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertJSConstants(ctx, constants, idx.config.Indexer.BatchSize); err != nil {
 		return fmt.Errorf("failed to save JS constants: %w", err)
 	}
-	constantIDs, err := idx.db.FindJSConstantIDsByFile(context.Background(), fileID)
+	constantIDs, err := idx.db.FindJSConstantIDsByFile(ctx, fileID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve JS constant ids for symbols: %w", err)
 	}
@@ -817,13 +817,13 @@ func (idx *Indexer) saveJSConstantSymbols(fileID int64, constants []*model.JSCon
 	if len(symbolsBatch) == 0 {
 		return nil
 	}
-	if err := idx.db.BatchInsertSymbols(context.Background(), symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSymbols(ctx, symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return fmt.Errorf("failed to save JS constant symbols: %w", err)
 	}
 	return nil
 }
 
-func (idx *Indexer) parseTPRFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+func (idx *Indexer) parseTPRFile(ctx context.Context, file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
 	path := file.Path
 	parser := tprparser.NewParser()
 	result, err := parser.ParseBytes(file.Content, path)
@@ -832,10 +832,10 @@ func (idx *Indexer) parseTPRFile(file fswalk.FileInfo, fileID int64, stats *mode
 	}
 
 	result.Form.FileID = fileID
-	if err := idx.db.BatchInsertReportForms(context.Background(), []*model.ReportForm{result.Form}, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertReportForms(ctx, []*model.ReportForm{result.Form}, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	reportFormID, err := idx.db.FindReportFormIDByFileAndLine(context.Background(), fileID, result.Form.LineStart)
+	reportFormID, err := idx.db.FindReportFormIDByFileAndLine(ctx, fileID, result.Form.LineStart)
 	if err != nil {
 		return fmt.Errorf("failed to resolve report form id: %w", err)
 	}
@@ -877,13 +877,13 @@ func (idx *Indexer) parseTPRFile(file fswalk.FileInfo, fileID int64, stats *mode
 		return fmt.Errorf("failed to parse TPR embedded SQL: %w", err)
 	}
 
-	if err := idx.db.BatchInsertReportFields(context.Background(), result.Fields, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertReportFields(ctx, result.Fields, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertReportParams(context.Background(), result.Params, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertReportParams(ctx, result.Params, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	paramIDs, err := idx.db.FindReportParamIDsByForm(context.Background(), reportFormID)
+	paramIDs, err := idx.db.FindReportParamIDsByForm(ctx, reportFormID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve TPR report param ids for symbols: %w", err)
 	}
@@ -895,43 +895,43 @@ func (idx *Indexer) parseTPRFile(file fswalk.FileInfo, fileID int64, stats *mode
 			symbol.EntityID = paramIDs[store.BuildReportParamLookupKey(symbol.SymbolName, symbol.LineNumber)]
 		}
 	}
-	if err := idx.db.BatchInsertSymbols(context.Background(), symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSymbols(ctx, symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertQueryFragments(context.Background(), result.Fragments, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertQueryFragments(ctx, result.Fragments, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertSQLTables(context.Background(), tablesBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSQLTables(ctx, tablesBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertSQLColumns(context.Background(), columnsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSQLColumns(ctx, columnsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
 	for _, inc := range result.Includes {
-		if err := idx.saveIncludeDirective(fileID, path, inc.IncludePath, inc.LineNumber); err != nil {
+		if err := idx.saveIncludeDirective(ctx, fileID, path, inc.IncludePath, inc.LineNumber); err != nil {
 			idx.logError(path, "Error saving include %s: %v", inc.IncludePath, err)
 			stats.Errors++
 		}
 	}
-	relations, err := idx.buildQueryFragmentRelations(fileID, result.Fragments)
+	relations, err := idx.buildQueryFragmentRelations(ctx, fileID, result.Fragments)
 	if err != nil {
 		return fmt.Errorf("failed to build TPR query relations: %w", err)
 	}
-	if err := idx.saveRelations(relations, path, stats); err != nil {
+	if err := idx.saveRelations(ctx, relations, path, stats); err != nil {
 		return err
 	}
-	structureRelations, err := idx.buildReportStructureRelations(reportFormID, result.Fields, result.Params)
+	structureRelations, err := idx.buildReportStructureRelations(ctx, reportFormID, result.Fields, result.Params)
 	if err != nil {
 		return fmt.Errorf("failed to build TPR report structure relations: %w", err)
 	}
-	if err := idx.saveRelations(structureRelations, path, stats); err != nil {
+	if err := idx.saveRelations(ctx, structureRelations, path, stats); err != nil {
 		return err
 	}
-	paramRelations, err := idx.buildReportParamUsageRelations(fileID, reportFormID, result.Fragments, result.Params)
+	paramRelations, err := idx.buildReportParamUsageRelations(ctx, fileID, reportFormID, result.Fragments, result.Params)
 	if err != nil {
 		return fmt.Errorf("failed to build TPR param usage relations: %w", err)
 	}
-	if err := idx.saveRelations(paramRelations, path, stats); err != nil {
+	if err := idx.saveRelations(ctx, paramRelations, path, stats); err != nil {
 		return err
 	}
 
@@ -944,7 +944,7 @@ func (idx *Indexer) parseTPRFile(file fswalk.FileInfo, fileID int64, stats *mode
 	return nil
 }
 
-func (idx *Indexer) parseRPTFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+func (idx *Indexer) parseRPTFile(ctx context.Context, file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
 	path := file.Path
 	content, err := decodeIndexedFileContent(file)
 	if err != nil {
@@ -957,10 +957,10 @@ func (idx *Indexer) parseRPTFile(file fswalk.FileInfo, fileID int64, stats *mode
 	}
 
 	result.Form.FileID = fileID
-	if err := idx.db.BatchInsertReportForms(context.Background(), []*model.ReportForm{result.Form}, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertReportForms(ctx, []*model.ReportForm{result.Form}, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	reportFormID, err := idx.db.FindReportFormIDByFileAndLine(context.Background(), fileID, result.Form.LineStart)
+	reportFormID, err := idx.db.FindReportFormIDByFileAndLine(ctx, fileID, result.Form.LineStart)
 	if err != nil {
 		return fmt.Errorf("failed to resolve report form id: %w", err)
 	}
@@ -1011,17 +1011,17 @@ func (idx *Indexer) parseRPTFile(file fswalk.FileInfo, fileID int64, stats *mode
 		return fmt.Errorf("failed to parse RPT embedded SQL: %w", err)
 	}
 
-	if err := idx.db.BatchInsertReportParams(context.Background(), result.Params, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertReportParams(ctx, result.Params, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertVBFunctions(context.Background(), result.Functions, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertVBFunctions(ctx, result.Functions, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	paramIDs, err := idx.db.FindReportParamIDsByForm(context.Background(), reportFormID)
+	paramIDs, err := idx.db.FindReportParamIDsByForm(ctx, reportFormID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve RPT report param ids for symbols: %w", err)
 	}
-	vbFunctionIDs, err := idx.db.FindVBFunctionIDsByForm(context.Background(), reportFormID)
+	vbFunctionIDs, err := idx.db.FindVBFunctionIDsByForm(ctx, reportFormID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve RPT vb function ids for symbols: %w", err)
 	}
@@ -1035,44 +1035,44 @@ func (idx *Indexer) parseRPTFile(file fswalk.FileInfo, fileID int64, stats *mode
 			symbol.EntityID = vbFunctionIDs[store.BuildVBFunctionLookupKey(symbol.SymbolName, symbol.LineNumber)]
 		}
 	}
-	if err := idx.db.BatchInsertSymbols(context.Background(), symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSymbols(ctx, symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertQueryFragments(context.Background(), result.Fragments, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertQueryFragments(ctx, result.Fragments, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertSQLTables(context.Background(), tablesBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSQLTables(ctx, tablesBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertSQLColumns(context.Background(), columnsBatch, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSQLColumns(ctx, columnsBatch, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	relations, err := idx.buildQueryFragmentRelations(fileID, result.Fragments)
+	relations, err := idx.buildQueryFragmentRelations(ctx, fileID, result.Fragments)
 	if err != nil {
 		return fmt.Errorf("failed to build RPT query relations: %w", err)
 	}
-	if err := idx.saveRelations(relations, path, stats); err != nil {
+	if err := idx.saveRelations(ctx, relations, path, stats); err != nil {
 		return err
 	}
-	structureRelations, err := idx.buildReportStructureRelations(reportFormID, nil, result.Params)
+	structureRelations, err := idx.buildReportStructureRelations(ctx, reportFormID, nil, result.Params)
 	if err != nil {
 		return fmt.Errorf("failed to build RPT report structure relations: %w", err)
 	}
-	if err := idx.saveRelations(structureRelations, path, stats); err != nil {
+	if err := idx.saveRelations(ctx, structureRelations, path, stats); err != nil {
 		return err
 	}
-	paramRelations, err := idx.buildReportParamUsageRelations(fileID, reportFormID, result.Fragments, result.Params)
+	paramRelations, err := idx.buildReportParamUsageRelations(ctx, fileID, reportFormID, result.Fragments, result.Params)
 	if err != nil {
 		return fmt.Errorf("failed to build RPT param usage relations: %w", err)
 	}
-	if err := idx.saveRelations(paramRelations, path, stats); err != nil {
+	if err := idx.saveRelations(ctx, paramRelations, path, stats); err != nil {
 		return err
 	}
-	vbRelations, err := idx.buildVBFunctionQueryRelations(fileID, reportFormID, result.Functions, result.Fragments)
+	vbRelations, err := idx.buildVBFunctionQueryRelations(ctx, fileID, reportFormID, result.Functions, result.Fragments)
 	if err != nil {
 		return fmt.Errorf("failed to build RPT vb-function query relations: %w", err)
 	}
-	if err := idx.saveRelations(vbRelations, path, stats); err != nil {
+	if err := idx.saveRelations(ctx, vbRelations, path, stats); err != nil {
 		return err
 	}
 
@@ -1085,7 +1085,7 @@ func (idx *Indexer) parseRPTFile(file fswalk.FileInfo, fileID int64, stats *mode
 	return nil
 }
 
-func (idx *Indexer) parseSMFFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+func (idx *Indexer) parseSMFFile(ctx context.Context, file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
 	path := file.Path
 	parser := smfparser.NewParser()
 	result, err := parser.ParseBytes(file.Content, path)
@@ -1095,7 +1095,7 @@ func (idx *Indexer) parseSMFFile(file fswalk.FileInfo, fileID int64, stats *mode
 
 	if result.Instrument != nil {
 		result.Instrument.FileID = fileID
-		if err := idx.db.BatchInsertSMFInstruments(context.Background(), []*model.SMFInstrument{result.Instrument}, idx.config.Indexer.BatchSize); err != nil {
+		if err := idx.db.BatchInsertSMFInstruments(ctx, []*model.SMFInstrument{result.Instrument}, idx.config.Indexer.BatchSize); err != nil {
 			return err
 		}
 		stats.SMFInstruments++
@@ -1104,7 +1104,7 @@ func (idx *Indexer) parseSMFFile(file fswalk.FileInfo, fileID int64, stats *mode
 	if strings.TrimSpace(result.PrequerySQL) != "" {
 		instrumentID := int64(0)
 		if result.Instrument != nil {
-			instrumentID, err = idx.db.FindLatestSMFInstrumentIDByFile(context.Background(), fileID)
+			instrumentID, err = idx.db.FindLatestSMFInstrumentIDByFile(ctx, fileID)
 			if err != nil {
 				if err != dbsql.ErrNoRows {
 					return fmt.Errorf("failed to resolve SMF instrument for query fragment: %w", err)
@@ -1123,21 +1123,21 @@ func (idx *Indexer) parseSMFFile(file fswalk.FileInfo, fileID int64, stats *mode
 			Context:       "smf_prequery",
 			LineNumber:    1,
 		}
-		if err := idx.db.BatchInsertQueryFragments(context.Background(), []*model.QueryFragment{fragment}, idx.config.Indexer.BatchSize); err != nil {
+		if err := idx.db.BatchInsertQueryFragments(ctx, []*model.QueryFragment{fragment}, idx.config.Indexer.BatchSize); err != nil {
 			return err
 		}
 		stats.QueryFragments++
-		relations, err := idx.buildQueryFragmentRelations(fileID, []*model.QueryFragment{fragment})
+		relations, err := idx.buildQueryFragmentRelations(ctx, fileID, []*model.QueryFragment{fragment})
 		if err != nil {
 			return fmt.Errorf("failed to build SMF query relations: %w", err)
 		}
-		if err := idx.saveRelations(relations, path, stats); err != nil {
+		if err := idx.saveRelations(ctx, relations, path, stats); err != nil {
 			return err
 		}
 	}
 
 	for _, inc := range result.Includes {
-		if err := idx.saveIncludeDirective(fileID, path, inc, 1); err != nil {
+		if err := idx.saveIncludeDirective(ctx, fileID, path, inc, 1); err != nil {
 			idx.logError(path, "Error saving include %s: %v", inc, err)
 			stats.Errors++
 		}
@@ -1158,27 +1158,27 @@ func (idx *Indexer) parseSMFFile(file fswalk.FileInfo, fileID int64, stats *mode
 				Signature:  fn.Signature,
 			})
 		}
-		if err := idx.db.BatchInsertJSFunctions(context.Background(), functionsBatch, idx.config.Indexer.BatchSize); err != nil {
+		if err := idx.db.BatchInsertJSFunctions(ctx, functionsBatch, idx.config.Indexer.BatchSize); err != nil {
 			return err
 		}
-		functionIDs, err := idx.db.FindJSFunctionIDsByFile(context.Background(), fileID)
+		functionIDs, err := idx.db.FindJSFunctionIDsByFile(ctx, fileID)
 		if err != nil {
 			return fmt.Errorf("failed to resolve SMF JS function ids for symbols: %w", err)
 		}
 		for _, symbol := range symbolsBatch {
 			symbol.EntityID = functionIDs[store.BuildJSFunctionLookupKey(symbol.SymbolName, symbol.LineNumber)]
 		}
-		if err := idx.saveJSConstantSymbols(fileID, result.JSResult.Constants); err != nil {
+		if err := idx.saveJSConstantSymbols(ctx, fileID, result.JSResult.Constants); err != nil {
 			return err
 		}
-		if err := idx.db.BatchInsertSymbols(context.Background(), symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+		if err := idx.db.BatchInsertSymbols(ctx, symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
 			return err
 		}
-		procedureRelations, err := idx.buildJSProcedureCallRelations(fileID, result.JSResult.ProcedureCalls)
+		procedureRelations, err := idx.buildJSProcedureCallRelations(ctx, fileID, result.JSResult.ProcedureCalls)
 		if err != nil {
 			return fmt.Errorf("failed to build SMF JS procedure call relations: %w", err)
 		}
-		if err := idx.saveRelations(procedureRelations, path, stats); err != nil {
+		if err := idx.saveRelations(ctx, procedureRelations, path, stats); err != nil {
 			return err
 		}
 		stats.JSFunctions += len(functionsBatch)
@@ -1187,7 +1187,7 @@ func (idx *Indexer) parseSMFFile(file fswalk.FileInfo, fileID int64, stats *mode
 	return nil
 }
 
-func (idx *Indexer) parseXMLFile(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+func (idx *Indexer) parseXMLFile(ctx context.Context, file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
 	path := file.Path
 	parser := dsxml.NewParser()
 	result, err := parser.ParseBytes(file.Content, path)
@@ -1206,10 +1206,10 @@ func (idx *Indexer) parseXMLFile(file fswalk.FileInfo, fileID int64, stats *mode
 	for _, item := range result.BusinessObjectTables {
 		item.FileID = fileID
 	}
-	if err := idx.db.BatchInsertAPIBusinessObjects(context.Background(), result.BusinessObjects, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertAPIBusinessObjects(ctx, result.BusinessObjects, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	businessObjectIDs, err := idx.db.FindAPIBusinessObjectIDsByFile(context.Background(), fileID)
+	businessObjectIDs, err := idx.db.FindAPIBusinessObjectIDsByFile(ctx, fileID)
 	if err != nil {
 		return err
 	}
@@ -1233,7 +1233,7 @@ func (idx *Indexer) parseXMLFile(file fswalk.FileInfo, fileID int64, stats *mode
 		})
 	}
 	if len(businessObjectSymbolsBatch) > 0 {
-		if err := idx.db.BatchInsertSymbols(context.Background(), businessObjectSymbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+		if err := idx.db.BatchInsertSymbols(ctx, businessObjectSymbolsBatch, idx.config.Indexer.BatchSize); err != nil {
 			return fmt.Errorf("failed to save API business object symbols: %w", err)
 		}
 	}
@@ -1242,10 +1242,10 @@ func (idx *Indexer) parseXMLFile(file fswalk.FileInfo, fileID int64, stats *mode
 			item.BusinessObjectID = businessObjectIDs[strings.ToLower(strings.TrimSpace(item.BusinessObject))]
 		}
 	}
-	if err := idx.db.BatchInsertAPIContracts(context.Background(), result.Contracts, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertAPIContracts(ctx, result.Contracts, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	contractIDs, err := idx.db.FindAPIContractIDsByFile(context.Background(), fileID)
+	contractIDs, err := idx.db.FindAPIContractIDsByFile(ctx, fileID)
 	if err != nil {
 		return err
 	}
@@ -1273,13 +1273,13 @@ func (idx *Indexer) parseXMLFile(file fswalk.FileInfo, fileID int64, stats *mode
 			item.ContractID = contractIDs[key]
 		}
 	}
-	if err := idx.db.BatchInsertAPIContractParams(context.Background(), result.Params, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertAPIContractParams(ctx, result.Params, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertAPIContractTables(context.Background(), result.Tables, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertAPIContractTables(ctx, result.Tables, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	contractTableIDs, err := idx.db.FindAPIContractTableIDsByFile(context.Background(), fileID)
+	contractTableIDs, err := idx.db.FindAPIContractTableIDsByFile(ctx, fileID)
 	if err != nil {
 		return err
 	}
@@ -1287,22 +1287,22 @@ func (idx *Indexer) parseXMLFile(file fswalk.FileInfo, fileID int64, stats *mode
 		key := store.BuildAPIContractTableLookupKey(item.ParentDirection, item.ParentTableName)
 		item.ContractTableID = contractTableIDs[key]
 	}
-	if err := idx.db.BatchInsertAPIContractTableFields(context.Background(), result.TableFields, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertAPIContractTableFields(ctx, result.TableFields, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertAPIContractReturnValues(context.Background(), result.ReturnValues, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertAPIContractReturnValues(ctx, result.ReturnValues, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertAPIContractContexts(context.Background(), result.Contexts, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertAPIContractContexts(ctx, result.Contexts, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertAPIBusinessObjectParams(context.Background(), result.BusinessObjectParams, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertAPIBusinessObjectParams(ctx, result.BusinessObjectParams, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertAPIBusinessObjectTables(context.Background(), result.BusinessObjectTables, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertAPIBusinessObjectTables(ctx, result.BusinessObjectTables, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	businessTableIDs, err := idx.db.FindAPIBusinessObjectTableIDsByFile(context.Background(), fileID)
+	businessTableIDs, err := idx.db.FindAPIBusinessObjectTableIDsByFile(ctx, fileID)
 	if err != nil {
 		return err
 	}
@@ -1314,13 +1314,13 @@ func (idx *Indexer) parseXMLFile(file fswalk.FileInfo, fileID int64, stats *mode
 		key := store.BuildAPIBusinessObjectTableLookupKey(item.BusinessObject, item.ParentTableName)
 		item.BusinessTableID = businessTableIDs[key]
 	}
-	if err := idx.db.BatchInsertAPIBusinessObjectTableFields(context.Background(), result.BusinessTableFields, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertAPIBusinessObjectTableFields(ctx, result.BusinessTableFields, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	if err := idx.db.BatchInsertAPIBusinessObjectTableIndexes(context.Background(), result.BusinessTableIndexes, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertAPIBusinessObjectTableIndexes(ctx, result.BusinessTableIndexes, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
-	businessTableIndexIDs, err := idx.db.FindAPIBusinessObjectTableIndexIDsByFile(context.Background(), fileID)
+	businessTableIndexIDs, err := idx.db.FindAPIBusinessObjectTableIndexIDsByFile(ctx, fileID)
 	if err != nil {
 		return err
 	}
@@ -1343,7 +1343,7 @@ func (idx *Indexer) parseXMLFile(file fswalk.FileInfo, fileID int64, stats *mode
 		key := store.BuildAPIBusinessObjectTableIndexLookupKey(item.BusinessObject, item.ParentTableName, item.ParentIndexName)
 		item.TableIndexID = businessTableIndexIDs[key]
 	}
-	if err := idx.db.BatchInsertAPIBusinessObjectTableIndexFields(context.Background(), result.BusinessIndexFields, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertAPIBusinessObjectTableIndexFields(ctx, result.BusinessIndexFields, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
 	for _, symbol := range result.Symbols {
@@ -1354,29 +1354,29 @@ func (idx *Indexer) parseXMLFile(file fswalk.FileInfo, fileID int64, stats *mode
 			}
 		}
 	}
-	if err := idx.db.BatchInsertSymbols(context.Background(), result.Symbols, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSymbols(ctx, result.Symbols, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
 	for _, item := range result.InternalPTables {
 		item.FileID = fileID
 	}
-	if err := idx.db.BatchInsertSQLTables(context.Background(), result.InternalPTables, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSQLTables(ctx, result.InternalPTables, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
 	for _, col := range result.InternalPTableColumns {
 		col.FileID = fileID
 	}
-	if err := idx.db.BatchInsertSQLColumnDefinitions(context.Background(), result.InternalPTableColumns, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSQLColumnDefinitions(ctx, result.InternalPTableColumns, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
 	for _, idxDef := range result.InternalPTableIndexes {
 		idxDef.FileID = fileID
 	}
-	if err := idx.db.BatchInsertSQLIndexDefinitions(context.Background(), result.InternalPTableIndexes, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertSQLIndexDefinitions(ctx, result.InternalPTableIndexes, idx.config.Indexer.BatchSize); err != nil {
 		return err
 	}
 	if len(result.InternalPTableIndexFields) > 0 {
-		indexIDs, err := idx.db.FindSQLIndexDefinitionIDsByFile(context.Background(), fileID)
+		indexIDs, err := idx.db.FindSQLIndexDefinitionIDsByFile(ctx, fileID)
 		if err != nil {
 			return fmt.Errorf("failed to resolve SQL index definition ids for internal p-table indexes: %w", err)
 		}
@@ -1393,7 +1393,7 @@ func (idx *Indexer) parseXMLFile(file fswalk.FileInfo, fileID int64, stats *mode
 			fieldsToPersist = append(fieldsToPersist, field)
 		}
 		if len(fieldsToPersist) > 0 {
-			if err := idx.db.BatchInsertSQLIndexDefinitionFields(context.Background(), fieldsToPersist, idx.config.Indexer.BatchSize); err != nil {
+			if err := idx.db.BatchInsertSQLIndexDefinitionFields(ctx, fieldsToPersist, idx.config.Indexer.BatchSize); err != nil {
 				return err
 			}
 		}
@@ -1407,11 +1407,11 @@ func (idx *Indexer) parseXMLFile(file fswalk.FileInfo, fileID int64, stats *mode
 	return nil
 }
 
-func (idx *Indexer) parseT01File(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
-	return idx.parseSQLLikeFile(file, fileID, stats, false, true)
+func (idx *Indexer) parseT01File(ctx context.Context, file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+	return idx.parseSQLLikeFile(ctx, file, fileID, stats, false, true)
 }
 
-func (idx *Indexer) indexAPIMacros(path string, content string, fileID int64) ([]*model.Relation, error) {
+func (idx *Indexer) indexAPIMacros(ctx context.Context, path string, content string, fileID int64) ([]*model.Relation, error) {
 	parser := apimacro.NewParser()
 	result, err := parser.ParseContent(path, content)
 	if err != nil {
@@ -1420,14 +1420,14 @@ func (idx *Indexer) indexAPIMacros(path string, content string, fileID int64) ([
 	if len(result.Invocations) == 0 {
 		return nil, nil
 	}
-	procedureIDs, err := idx.db.FindSQLProcedureIDsByFile(context.Background(), fileID)
+	procedureIDs, err := idx.db.FindSQLProcedureIDsByFile(ctx, fileID)
 	if err != nil {
 		procedureIDs = map[string]int64{}
 	}
 	for _, invocation := range result.Invocations {
 		invocation.FileID = fileID
 	}
-	if err := idx.db.BatchInsertAPIMacroInvocations(context.Background(), result.Invocations, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertAPIMacroInvocations(ctx, result.Invocations, idx.config.Indexer.BatchSize); err != nil {
 		return nil, err
 	}
 
@@ -1466,70 +1466,70 @@ func (idx *Indexer) processFileCtx(ctx context.Context, file fswalk.FileInfo, fi
 			errorLogger: idx.errorLogger,
 			shared:      idx.shared,
 		}
-		return fileIdx.processFileInTx(file, fileID, stats)
+		return fileIdx.processFileInTx(ctx, file, fileID, stats)
 	})
 }
 
-func (idx *Indexer) processFileInTx(file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
+func (idx *Indexer) processFileInTx(ctx context.Context, file fswalk.FileInfo, fileID int64, stats *model.ScanStats) error {
 	switch strings.ToUpper(file.Language) {
 	case "SQL":
 		stats.SQLFiles++
-		if err := idx.parseSQLFile(file, fileID, stats); err != nil {
+		if err := idx.parseSQLFile(ctx, file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "PAS":
 		stats.PASFiles++
-		if err := idx.parsePASFile(file, fileID, stats); err != nil {
+		if err := idx.parsePASFile(ctx, file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "JS":
 		stats.JSFiles++
-		if err := idx.parseJSFile(file, fileID, stats); err != nil {
+		if err := idx.parseJSFile(ctx, file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "H":
 		stats.HFiles++
-		if err := idx.parseHFile(file, fileID, stats); err != nil {
+		if err := idx.parseHFile(ctx, file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "DFM":
 		stats.DFMFiles++
-		if err := idx.parseDFMFile(file, fileID, stats); err != nil {
+		if err := idx.parseDFMFile(ctx, file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "SMF":
 		stats.SMFFiles++
-		if err := idx.parseSMFFile(file, fileID, stats); err != nil {
+		if err := idx.parseSMFFile(ctx, file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "TPR":
 		stats.TPRFiles++
-		if err := idx.parseTPRFile(file, fileID, stats); err != nil {
+		if err := idx.parseTPRFile(ctx, file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "RPT":
 		stats.RPTFiles++
-		if err := idx.parseRPTFile(file, fileID, stats); err != nil {
+		if err := idx.parseRPTFile(ctx, file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
 	case "XML":
 		if strings.Contains(filepath.ToSlash(file.Path), "/DSArchitectData/") {
 			stats.XMLFiles++
-			if err := idx.parseXMLFile(file, fileID, stats); err != nil {
+			if err := idx.parseXMLFile(ctx, file, fileID, stats); err != nil {
 				return err
 			}
 			stats.FilesIndexed++
 		}
 	case "T01":
-		if err := idx.parseT01File(file, fileID, stats); err != nil {
+		if err := idx.parseT01File(ctx, file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++
@@ -1538,13 +1538,13 @@ func (idx *Indexer) processFileInTx(file fswalk.FileInfo, fileID int64, stats *m
 	return nil
 }
 
-func (idx *Indexer) resolveDSProductID(productName string) (int64, error) {
+func (idx *Indexer) resolveDSProductID(ctx context.Context, productName string) (int64, error) {
 	idx.shared.dsProductMu.Lock()
 	defer idx.shared.dsProductMu.Unlock()
 	if id, ok := idx.shared.dsProductCache[productName]; ok {
 		return id, nil
 	}
-	productID, err := idx.db.GetOrCreateDSProductIDByName(context.Background(), productName)
+	productID, err := idx.db.GetOrCreateDSProductIDByName(ctx, productName)
 	if err != nil {
 		return 0, err
 	}
@@ -1556,7 +1556,7 @@ func (idx *Indexer) saveFileCtx(ctx context.Context, file fswalk.FileInfo, scanR
 	productName := extractCanonicalDSProductName(file.Path, file.RelPath)
 	var dsProductID interface{}
 	if productName != "" {
-		productID, err := idx.resolveDSProductID(productName)
+		productID, err := idx.resolveDSProductID(ctx, productName)
 		if err != nil {
 			return 0, fmt.Errorf("failed to resolve ds product id for %q: %w", productName, err)
 		}
@@ -1617,13 +1617,13 @@ func extractCanonicalDSProductFromPath(path string) string {
 	return ""
 }
 
-func (idx *Indexer) saveIncludeDirective(fileID int64, path string, includePath string, lineNum int) error {
+func (idx *Indexer) saveIncludeDirective(ctx context.Context, fileID int64, path string, includePath string, lineNum int) error {
 	var resolvedFileID interface{}
-	if id, err := idx.db.FindLatestFileIDByPaths(context.Background(), idx.buildIncludePathCandidates(path, includePath)); err == nil {
+	if id, err := idx.db.FindLatestFileIDByPaths(ctx, idx.buildIncludePathCandidates(path, includePath)); err == nil {
 		resolvedFileID = id
 	} else if err != dbsql.ErrNoRows {
 		return err
-	} else if id, err := idx.db.FindLatestHFileIDByNameLike(context.Background(), includePath); err == nil {
+	} else if id, err := idx.db.FindLatestHFileIDByNameLike(ctx, includePath); err == nil {
 		resolvedFileID = id
 	} else if err != dbsql.ErrNoRows {
 		return err

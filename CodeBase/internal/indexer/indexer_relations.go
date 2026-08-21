@@ -137,11 +137,11 @@ func (idx *Indexer) enrichQueryFragmentsWithSQL(fileID int64, fragments []*model
 	return tablesBatch, columnsBatch, nil
 }
 
-func (idx *Indexer) saveRelations(relations []*model.Relation, path string, stats *model.ScanStats) error {
+func (idx *Indexer) saveRelations(ctx context.Context, relations []*model.Relation, path string, stats *model.ScanStats) error {
 	if len(relations) == 0 {
 		return nil
 	}
-	if err := idx.db.BatchInsertRelations(context.Background(), relations, idx.config.Indexer.BatchSize); err != nil {
+	if err := idx.db.BatchInsertRelations(ctx, relations, idx.config.Indexer.BatchSize); err != nil {
 		idx.logError(path, "Error batch inserting relations: %v", err)
 		stats.Errors += len(relations)
 		return err
@@ -150,11 +150,11 @@ func (idx *Indexer) saveRelations(relations []*model.Relation, path string, stat
 	return nil
 }
 
-func (idx *Indexer) buildJSProcedureCallRelations(fileID int64, calls []*model.JSProcedureCall) ([]*model.Relation, error) {
+func (idx *Indexer) buildJSProcedureCallRelations(ctx context.Context, fileID int64, calls []*model.JSProcedureCall) ([]*model.Relation, error) {
 	pendingRefs := make([]*PendingJSCallRef, 0, len(calls))
 
 	// Preload JS function ranges for local resolution (avoids N+1 DB queries)
-	funcRanges, err := idx.db.FindJSFunctionIDRangesByFile(context.Background(), fileID)
+	funcRanges, err := idx.db.FindJSFunctionIDRangesByFile(ctx, fileID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load JS function ranges: %w", err)
 	}
@@ -344,11 +344,11 @@ func buildSQLProcedureCallRelationsWithTargetIDs(pending []*PendingSQLCallFile, 
 	return relations
 }
 
-func (idx *Indexer) buildReportStructureRelations(reportFormID int64, fields []*model.ReportField, params []*model.ReportParam) ([]*model.Relation, error) {
+func (idx *Indexer) buildReportStructureRelations(ctx context.Context, reportFormID int64, fields []*model.ReportField, params []*model.ReportParam) ([]*model.Relation, error) {
 	relations := make([]*model.Relation, 0, len(fields)+len(params))
 	seen := make(map[string]struct{})
 
-	fieldIDs, err := idx.db.FindReportFieldIDsByForm(context.Background(), reportFormID)
+	fieldIDs, err := idx.db.FindReportFieldIDsByForm(ctx, reportFormID)
 	if err != nil {
 		return nil, err
 	}
@@ -376,7 +376,7 @@ func (idx *Indexer) buildReportStructureRelations(reportFormID int64, fields []*
 		})
 	}
 
-	paramIDs, err := idx.db.FindReportParamIDsByForm(context.Background(), reportFormID)
+	paramIDs, err := idx.db.FindReportParamIDsByForm(ctx, reportFormID)
 	if err != nil {
 		return nil, err
 	}
@@ -443,12 +443,12 @@ func extractReportParamRefs(text string, params []*model.ReportParam) []string {
 	return result
 }
 
-func (idx *Indexer) buildReportParamUsageRelations(fileID int64, reportFormID int64, fragments []*model.QueryFragment, params []*model.ReportParam) ([]*model.Relation, error) {
-	fragmentIDs, err := idx.db.FindQueryFragmentIDsByFileAndHash(context.Background(), fileID)
+func (idx *Indexer) buildReportParamUsageRelations(ctx context.Context, fileID int64, reportFormID int64, fragments []*model.QueryFragment, params []*model.ReportParam) ([]*model.Relation, error) {
+	fragmentIDs, err := idx.db.FindQueryFragmentIDsByFileAndHash(ctx, fileID)
 	if err != nil {
 		return nil, err
 	}
-	paramIDs, err := idx.db.FindReportParamIDsByForm(context.Background(), reportFormID)
+	paramIDs, err := idx.db.FindReportParamIDsByForm(ctx, reportFormID)
 	if err != nil {
 		return nil, err
 	}
@@ -500,12 +500,12 @@ func findReportParamByName(params []*model.ReportParam, name string) *model.Repo
 	return nil
 }
 
-func (idx *Indexer) buildVBFunctionQueryRelations(fileID int64, reportFormID int64, functions []*model.VBFunction, fragments []*model.QueryFragment) ([]*model.Relation, error) {
-	fragmentIDs, err := idx.db.FindQueryFragmentIDsByFileAndHash(context.Background(), fileID)
+func (idx *Indexer) buildVBFunctionQueryRelations(ctx context.Context, fileID int64, reportFormID int64, functions []*model.VBFunction, fragments []*model.QueryFragment) ([]*model.Relation, error) {
+	fragmentIDs, err := idx.db.FindQueryFragmentIDsByFileAndHash(ctx, fileID)
 	if err != nil {
 		return nil, err
 	}
-	functionIDs, err := idx.db.FindVBFunctionIDsByForm(context.Background(), reportFormID)
+	functionIDs, err := idx.db.FindVBFunctionIDsByForm(ctx, reportFormID)
 	if err != nil {
 		return nil, err
 	}
@@ -552,8 +552,8 @@ func (idx *Indexer) buildVBFunctionQueryRelations(fileID int64, reportFormID int
 	return relations, nil
 }
 
-func (idx *Indexer) buildQueryFragmentRelations(fileID int64, fragments []*model.QueryFragment) ([]*model.Relation, error) {
-	fragmentIDs, err := idx.db.FindQueryFragmentIDsByFileAndHash(context.Background(), fileID)
+func (idx *Indexer) buildQueryFragmentRelations(ctx context.Context, fileID int64, fragments []*model.QueryFragment) ([]*model.Relation, error) {
+	fragmentIDs, err := idx.db.FindQueryFragmentIDsByFileAndHash(ctx, fileID)
 	if err != nil {
 		return nil, err
 	}

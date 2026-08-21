@@ -9,8 +9,8 @@ import (
 	"github.com/codebase/internal/store"
 )
 
-func (idx *Indexer) postProcessCallbackEventRelations(collector *statsCollector) {
-	callbacks, err := idx.db.FindAPIContractsByKind(context.Background(), "callback_event")
+func (idx *Indexer) postProcessCallbackEventRelations(ctx context.Context, collector *statsCollector) {
+	callbacks, err := idx.db.FindAPIContractsByKind(ctx, "callback_event")
 	if err != nil {
 		idx.logError("<post-processing>", "Error loading callback_event contracts: %v", err)
 		collector.Add(func(stats *model.ScanStats) {
@@ -31,7 +31,7 @@ func (idx *Indexer) postProcessCallbackEventRelations(collector *statsCollector)
 		}
 	}
 
-	lookup, err := idx.db.FindLatestEventContractIDsByNames(context.Background(), eventNames)
+	lookup, err := idx.db.FindLatestEventContractIDsByNames(ctx, eventNames)
 	if err != nil {
 		idx.logError("<post-processing>", "Error batch-loading event contracts: %v", err)
 		collector.Add(func(stats *model.ScanStats) {
@@ -43,7 +43,7 @@ func (idx *Indexer) postProcessCallbackEventRelations(collector *statsCollector)
 	relations := buildCallbackEventRelations(callbacks, lookup)
 
 	localStats := &model.ScanStats{}
-	if err := idx.saveRelations(relations, "<post-processing>", localStats); err != nil {
+	if err := idx.saveRelations(ctx, relations, "<post-processing>", localStats); err != nil {
 		collector.Add(func(stats *model.ScanStats) {
 			mergeScanStats(stats, localStats)
 		})

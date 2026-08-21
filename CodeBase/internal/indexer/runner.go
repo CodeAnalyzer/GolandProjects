@@ -320,23 +320,23 @@ func (idx *Indexer) runPostProcessingParallel(ctx context.Context, collector *st
 	wg.Add(5)
 	go func() {
 		defer wg.Done()
-		idx.postProcessPASPending(collector)
+		idx.postProcessPASPending(ctx, collector)
 	}()
 	go func() {
 		defer wg.Done()
-		idx.postProcessSQLProcedureCallRelations(collector, parallel)
+		idx.postProcessSQLProcedureCallRelations(ctx, collector, parallel)
 	}()
 	go func() {
 		defer wg.Done()
-		idx.postProcessCallbackEventRelations(collector)
+		idx.postProcessCallbackEventRelations(ctx, collector)
 	}()
 	go func() {
 		defer wg.Done()
-		idx.postProcessRetCodeConstants(collector)
+		idx.postProcessRetCodeConstants(ctx, collector)
 	}()
 	go func() {
 		defer wg.Done()
-		idx.postProcessAllFragmentRelations(collector)
+		idx.postProcessAllFragmentRelations(ctx, collector)
 	}()
 	wg.Wait()
 }
