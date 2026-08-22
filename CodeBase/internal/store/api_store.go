@@ -219,14 +219,14 @@ func (db *DB) FindLatestAPIContractIDByNameAndKind(ctx context.Context, name str
 	return id, nil
 }
 
-// APIContractNameKind вЂ” РїР°СЂР° (name, kind) РґР»СЏ batch-resolve.
+// APIContractNameKind — пара (name, kind) для batch-resolve.
 type APIContractNameKind struct {
 	Name string
 	Kind string
 }
 
-// FindLatestAPIContractIDsByNamesAndKinds Р·Р°РіСЂСѓР¶Р°РµС‚ API РєРѕРЅС‚СЂР°РєС‚С‹ РѕРґРЅРёРј Р·Р°РїСЂРѕСЃРѕРј
-// Рё СЃС‚СЂРѕРёС‚ in-memory map РґР»СЏ batch-resolve. Р—Р°РјРµРЅСЏРµС‚ N+1 РІС‹Р·РѕРІРѕРІ
+// FindLatestAPIContractIDsByNamesAndKinds загружает API контракты одним запросом
+// и строит in-memory map для batch-resolve. Заменяет N+1 вызовов
 // FindLatestAPIContractIDByNameAndKind.
 func (db *DB) FindLatestAPIContractIDsByNamesAndKinds(ctx context.Context, pairs []APIContractNameKind) (map[string]int64, error) {
 	type nkKey struct{ name, kind string }
@@ -316,15 +316,15 @@ func (db *DB) FindAPIContractsByKind(ctx context.Context, kind string) ([]*model
 	return result, rows.Err()
 }
 
-// EventContractLookupKey вЂ” РєР»СЋС‡ РґР»СЏ in-memory map event-РєРѕРЅС‚СЂР°РєС‚РѕРІ.
-// Р¤РѕСЂРјР°С‚: lower(name) + "|" + lower(module), РёР»Рё lower(name) + "|" РґР»СЏ fallback Р±РµР· module.
+// EventContractLookupKey — ключ для in-memory map event-контрактов.
+// Формат: lower(name) + "|" + lower(module), или lower(name) + "|" для fallback без module.
 type EventContractLookup struct {
 	ByNameAndModule map[string]int64 // key: lower(name)|lower(module) -> id
 	ByName          map[string]int64 // key: lower(name) -> id (fallback)
 }
 
-// FindLatestEventContractIDsByNames Р·Р°РіСЂСѓР¶Р°РµС‚ event-РєРѕРЅС‚СЂР°РєС‚С‹ РѕРґРЅРёРј Р·Р°РїСЂРѕСЃРѕРј
-// Рё СЃС‚СЂРѕРёС‚ in-memory map РґР»СЏ batch-resolve. Р—Р°РјРµРЅСЏРµС‚ N+1 РІС‹Р·РѕРІРѕРІ
+// FindLatestEventContractIDsByNames загружает event-контракты одним запросом
+// и строит in-memory map для batch-resolve. Заменяет N+1 вызовов
 // FindLatestAPIContractIDByNameKindAndOwnerModule.
 func (db *DB) FindLatestEventContractIDsByNames(ctx context.Context, names []string) (*EventContractLookup, error) {
 	normalizedNames := make([]string, 0, len(names))
@@ -349,8 +349,8 @@ func (db *DB) FindLatestEventContractIDsByNames(ctx context.Context, names []str
 		return lookup, nil
 	}
 
-	// Р—Р°РіСЂСѓР¶Р°РµРј РІСЃРµ event-РєРѕРЅС‚СЂР°РєС‚С‹, Сѓ РєРѕС‚РѕСЂС‹С… contract_name РІС…РѕРґРёС‚ РІ names.
-	// owner_module РјРѕР¶РµС‚ Р±С‹С‚СЊ Р»СЋР±С‹Рј (РІРєР»СЋС‡Р°СЏ РїСѓСЃС‚РѕР№), РїРѕСЌС‚РѕРјСѓ РЅРµ С„РёР»СЊС‚СЂСѓРµРј РїРѕ modules.
+	// Загружаем все event-контракты, у которых contract_name входит в names.
+	// owner_module может быть любым (включая пустой), поэтому не фильтруем по modules.
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, LOWER(contract_name) AS name_key, COALESCE(LOWER(owner_module), '') AS module_key
 		FROM api_contracts
@@ -369,12 +369,12 @@ func (db *DB) FindLatestEventContractIDsByNames(ctx context.Context, names []str
 		if err := rows.Scan(&id, &nameKey, &moduleKey); err != nil {
 			return nil, err
 		}
-		// ByNameAndModule: РїРµСЂРІС‹Р№ (latest) id РґР»СЏ name+module
+		// ByNameAndModule: первый (latest) id для name+module
 		nmKey := nameKey + "|" + moduleKey
 		if _, exists := lookup.ByNameAndModule[nmKey]; !exists {
 			lookup.ByNameAndModule[nmKey] = id
 		}
-		// ByName: РїРµСЂРІС‹Р№ (latest) id РґР»СЏ name (fallback)
+		// ByName: первый (latest) id для name (fallback)
 		if _, exists := lookup.ByName[nameKey]; !exists {
 			lookup.ByName[nameKey] = id
 		}

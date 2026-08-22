@@ -2,7 +2,7 @@ package store
 
 import "context"
 
-// FindReportFormIDByFileAndLine РІРѕР·РІСЂР°С‰Р°РµС‚ id report form, РґРёР°РїР°Р·РѕРЅ РєРѕС‚РѕСЂРѕР№ РІРєР»СЋС‡Р°РµС‚ СЃС‚СЂРѕРєСѓ.
+// FindReportFormIDByFileAndLine возвращает id report form, диапазон которой включает строку.
 func (db *DB) FindReportFormIDByFileAndLine(ctx context.Context, fileID int64, lineNumber int) (int64, error) {
 	var id int64
 	err := db.QueryRowContext(ctx, `
@@ -21,7 +21,7 @@ func (db *DB) FindReportFormIDByFileAndLine(ctx context.Context, fileID int64, l
 	return id, nil
 }
 
-// FindReportFieldIDsByForm РІРѕР·РІСЂР°С‰Р°РµС‚ id report fields РїРѕ С„РѕСЂРјРµ.
+// FindReportFieldIDsByForm возвращает id report fields по форме.
 func (db *DB) FindReportFieldIDsByForm(ctx context.Context, reportFormID int64) (map[string]int64, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, field_name, line_number
@@ -50,7 +50,7 @@ func (db *DB) FindReportFieldIDsByForm(ctx context.Context, reportFormID int64) 
 	return result, rows.Err()
 }
 
-// FindReportParamIDsByForm РІРѕР·РІСЂР°С‰Р°РµС‚ id report params РїРѕ С„РѕСЂРјРµ.
+// FindReportParamIDsByForm возвращает id report params по форме.
 func (db *DB) FindReportParamIDsByForm(ctx context.Context, reportFormID int64) (map[string]int64, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, param_name, line_number
@@ -79,7 +79,7 @@ func (db *DB) FindReportParamIDsByForm(ctx context.Context, reportFormID int64) 
 	return result, rows.Err()
 }
 
-// FindVBFunctionIDsByForm РІРѕР·РІСЂР°С‰Р°РµС‚ id VB functions РїРѕ С„РѕСЂРјРµ.
+// FindVBFunctionIDsByForm возвращает id VB functions по форме.
 func (db *DB) FindVBFunctionIDsByForm(ctx context.Context, reportFormID int64) (map[string]int64, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, function_name, line_start

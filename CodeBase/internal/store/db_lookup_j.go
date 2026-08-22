@@ -2,7 +2,7 @@ package store
 
 import "context"
 
-// FindJSFunctionIDsByFile РІРѕР·РІСЂР°С‰Р°РµС‚ id JS С„СѓРЅРєС†РёР№ С„Р°Р№Р»Р° РїРѕ РёРјРµРЅРё Рё line_start.
+// FindJSFunctionIDsByFile возвращает id JS функций файла по имени и line_start.
 func (db *DB) FindJSFunctionIDsByFile(ctx context.Context, fileID int64) (map[string]int64, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, function_name, line_start
@@ -35,7 +35,7 @@ func (db *DB) FindJSFunctionIDsByFile(ctx context.Context, fileID int64) (map[st
 	return result, nil
 }
 
-// FindJSFunctionIDByFileAndLine РІРѕР·РІСЂР°С‰Р°РµС‚ id JS С„СѓРЅРєС†РёРё, РІ РґРёР°РїР°Р·РѕРЅ РєРѕС‚РѕСЂРѕР№ РїРѕРїР°РґР°РµС‚ СЃС‚СЂРѕРєР°.
+// FindJSFunctionIDByFileAndLine возвращает id JS функции, в диапазон которой попадает строка.
 func (db *DB) FindJSFunctionIDByFileAndLine(ctx context.Context, fileID int64, lineNumber int) (int64, error) {
 	var id int64
 	err := db.QueryRowContext(ctx, `
@@ -85,15 +85,15 @@ func (db *DB) FindJSConstantIDsByFile(ctx context.Context, fileID int64) (map[st
 	return result, nil
 }
 
-// JSFuncRange РѕРїРёСЃС‹РІР°РµС‚ JS-С„СѓРЅРєС†РёСЋ СЃ РµС‘ line-РґРёР°РїР°Р·РѕРЅРѕРј РґР»СЏ Р»РѕРєР°Р»СЊРЅРѕРіРѕ СЂРµР·РѕР»РІР°.
+// JSFuncRange описывает JS-функцию с её line-диапазоном для локального резолва.
 type JSFuncRange struct {
 	ID        int64
 	LineStart int
 	LineEnd   int
 }
 
-// FindJSFunctionIDRangesByFile РІРѕР·РІСЂР°С‰Р°РµС‚ РІСЃРµ JS-С„СѓРЅРєС†РёРё С„Р°Р№Р»Р° СЃ РёС… line-РґРёР°РїР°Р·РѕРЅР°РјРё.
-// РћРґРёРЅ Р·Р°РїСЂРѕСЃ РІРјРµСЃС‚Рѕ N Р·Р°РїСЂРѕСЃРѕРІ FindJSFunctionIDByFileAndLine.
+// FindJSFunctionIDRangesByFile возвращает все JS-функции файла с их line-диапазонами.
+// Один запрос вместо N запросов FindJSFunctionIDByFileAndLine.
 func (db *DB) FindJSFunctionIDRangesByFile(ctx context.Context, fileID int64) ([]JSFuncRange, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, line_start, line_end
@@ -117,7 +117,7 @@ func (db *DB) FindJSFunctionIDRangesByFile(ctx context.Context, fileID int64) ([
 	return result, rows.Err()
 }
 
-// FindLatestSMFInstrumentIDByFile РІРѕР·РІСЂР°С‰Р°РµС‚ РїРѕСЃР»РµРґРЅРёР№ id SMF РёРЅСЃС‚СЂСѓРјРµРЅС‚Р° С„Р°Р№Р»Р°.
+// FindLatestSMFInstrumentIDByFile возвращает последний id SMF инструмента файла.
 func (db *DB) FindLatestSMFInstrumentIDByFile(ctx context.Context, fileID int64) (int64, error) {
 	var id int64
 	err := db.QueryRowContext(ctx, `

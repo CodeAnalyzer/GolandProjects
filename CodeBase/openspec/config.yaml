@@ -1,0 +1,54 @@
+schema: spec-driven
+
+context: |
+  CodeBase — локальный индексатор исходников Diasoft 5NT для семантической навигации.
+
+  Tech stack: Go 1.25+, PostgreSQL 14+, Cobra CLI, MCP (Model Context Protocol) stdio JSON-RPC.
+
+  Доменная структура спецификаций (openspec/specs/):
+
+    indexing/                    — индексация исходников
+      file-walking               — обход ФС, хеширование, include/exclude, параллельное сканирование
+      sql-parsing                — SQL-парсер: процедуры, таблицы, колонки, индексы, schema patches, query fragments
+      pas-dfm-parsing            — PAS + DFM: units, classes, methods, fields, forms, components, captions, связи PAS↔DFM
+      scripting-parsing          — JS + SMF: functions, constants, вызовы процедур, SQL-запросы, инструменты Ф.О.
+      h-report-parsing           — H + TPR + RPT: defines, report forms, fields, params, VB functions, include-директивы
+      dsxml-parsing              — DSArchitect XML: API contracts, tables, params, BObjects
+      api-macros-t01             — API-макросы из SQL + препроцессированные .t01 (generated subscriber calls)
+      relations-postprocessing   — граф связей между сущностями + постобработка (PAS↔DFM, SQL calls, retcode, callbacks)
+
+    query/                       — запросы к индексу
+      symbol-search              — unified symbols index — поиск сущностей по имени
+      entity-queries             — запросы по типам: table, table-schema, table-index, method, form, report, js-function, smf
+      api-relations-queries      — API queries (contracts, impl, publishers, consumers) + relations graph + inspect
+
+    review/                      — статический анализ SQL перед деплоем
+      deploy-stoppers            — severity 1: 25 правил, блокирующие деплой
+      postgre-requirements       — severity 2: 24 правила, требования PostgreSQL
+      fine-code                  — severity 3: 4 правила, рекомендации по качеству
+
+    rti-analysis/                — анализ RTI-трейс логов Diasoft 5NT
+      rti-parsing                — парсинг серверных вызовов, HRTI декодирование, enrichment
+      rti-client-events          — клиентские события d5nt: SQL blocks, tree, timeline, связывание с сервером
+      rti-storage                — управление сессиями: save, list, delete, prune (batch)
+
+    trc-analysis/                — анализ файлов SQL Server Profiler
+      trc-parsing                — парсинг .trc/.xml/.xel: header, events, XEL dictionary, enrichment
+      trc-aggregation-tree       — агрегация по процедурам, дерево вызовов по SPID, errors, slow
+      trc-storage                — управление сессиями: save, list, delete, prune (batch)
+
+    mcp-server/                  — MCP stdio JSON-RPC сервер
+      mcp-transport-tools        — транспорт, registry инструментов (query, RTI, TRC, review, health, stats)
+      mcp-pagination             — чанкинг больших ответов, TTL, codebase_read_more
+
+    infrastructure/              — инфраструктура
+      configuration              — codebase.toml: БД, indexer, query, rti, trc, mcp, logging
+      database-schema            — схема БД PostgreSQL, InitSchema, batch insert, lookup, scan runs
+      encoding-cli               — детекция кодировок CP866/CP1251/UTF8 + CLI framework (Cobra, JSON envelope, logging)
+
+  Конвенции:
+    - Спецификации описывают текущее состояние системы (как есть), не желаемое
+    - Требования используют SHALL/MUST (валидатор распознаёт только английские ключевые слова)
+    - Сценарии в формате GIVEN/WHEN/THEN с AND для дополнений
+    - Каждый spec.md: # Заголовок, ## Purpose, ## Requirements (### Requirement + #### Scenario), ## Related code, ## Notes
+    - Дельта-спецификации в changes/ используют ## ADDED/MODIFIED/REMOVED Requirements (мн.ч., уровень 2)

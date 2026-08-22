@@ -8,7 +8,7 @@ import (
 	"github.com/lib/pq"
 )
 
-// BatchInsertDFMComponents РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° DFM РєРѕРјРїРѕРЅРµРЅС‚РѕРІ
+// BatchInsertDFMComponents пакетная вставка DFM компонентов
 func (db *DB) BatchInsertDFMComponents(ctx context.Context, components []*model.DFMComponent, batchSize int) error {
 	if len(components) == 0 {
 		return nil
@@ -65,7 +65,7 @@ func (db *DB) insertDFMComponentsBatch(ctx context.Context, components []*model.
 	})
 }
 
-// BatchInsertDFMForms РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° DFM С„РѕСЂРј
+// BatchInsertDFMForms пакетная вставка DFM форм
 func (db *DB) BatchInsertDFMForms(ctx context.Context, forms []*model.DFMForm, batchSize int) error {
 	if len(forms) == 0 {
 		return nil

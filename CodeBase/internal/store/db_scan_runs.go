@@ -2,7 +2,7 @@ package store
 
 import "context"
 
-// CreateScanRun СЃРѕР·РґР°С‘С‚ Р·Р°РїРёСЃСЊ Рѕ Р·Р°РїСѓСЃРєРµ СЃРєР°РЅРёСЂРѕРІР°РЅРёСЏ
+// CreateScanRun создаёт запись о запуске сканирования
 func (db *DB) CreateScanRun(ctx context.Context, rootPath string) (int64, error) {
 	var id int64
 	err := db.QueryRowContext(ctx, `
@@ -13,7 +13,7 @@ func (db *DB) CreateScanRun(ctx context.Context, rootPath string) (int64, error)
 	return id, err
 }
 
-// HasCompletedInit РїСЂРѕРІРµСЂСЏРµС‚, Р±С‹Р»Р° Р»Рё СѓР¶Рµ Р·Р°РІРµСЂС€РµРЅР° РїРµСЂРІРёС‡РЅР°СЏ РёРЅРёС†РёР°Р»РёР·Р°С†РёСЏ РёРЅРґРµРєСЃР°.
+// HasCompletedInit проверяет, была ли уже завершена первичная инициализация индекса.
 func (db *DB) HasCompletedInit(ctx context.Context) (bool, error) {
 	var exists bool
 	err := db.QueryRowContext(ctx, `
@@ -29,7 +29,7 @@ func (db *DB) HasCompletedInit(ctx context.Context) (bool, error) {
 	return exists, nil
 }
 
-// UpdateScanRun РѕР±РЅРѕРІР»СЏРµС‚ СЃС‚Р°С‚СѓСЃ СЃРєР°РЅРёСЂРѕРІР°РЅРёСЏ
+// UpdateScanRun обновляет статус сканирования
 func (db *DB) UpdateScanRun(ctx context.Context, id int64, filesScanned, filesIndexed, errorsCount int, status string) error {
 	_, err := db.ExecContext(ctx, `
 		UPDATE scan_runs 

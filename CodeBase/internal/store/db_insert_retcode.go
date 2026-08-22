@@ -8,7 +8,7 @@ import (
 	"github.com/codebase/internal/model"
 )
 
-// BatchInsertRetCodes РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° return code Р·Р°РїРёСЃРµР№
+// BatchInsertRetCodes пакетная вставка return code записей
 func (db *DB) BatchInsertRetCodes(ctx context.Context, entries []*model.RetCodeEntry, batchSize int) error {
 	if len(entries) == 0 {
 		return nil
@@ -37,7 +37,7 @@ func (db *DB) insertRetCodesBatch(ctx context.Context, entries []*model.RetCodeE
 		return nil
 	}
 
-	// Р”РµРґСѓРїР»РёС†РёСЂСѓРµРј РїРѕ ret_code, РѕСЃС‚Р°РІР»СЏСЏ РїРѕСЃР»РµРґРЅРµРµ РІС…РѕР¶РґРµРЅРёРµ
+	// Дедуплицируем по ret_code, оставляя последнее вхождение
 	seen := make(map[int64]int, len(entries))
 	for i, e := range entries {
 		seen[e.RetCode] = i

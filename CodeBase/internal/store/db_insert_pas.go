@@ -9,7 +9,7 @@ import (
 	"github.com/lib/pq"
 )
 
-// BatchInsertPASUnits РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° PAS СЋРЅРёС‚РѕРІ
+// BatchInsertPASUnits пакетная вставка PAS юнитов
 func (db *DB) BatchInsertPASUnits(ctx context.Context, units []*model.PASUnit, batchSize int) error {
 	if len(units) == 0 {
 		return nil
@@ -33,7 +33,7 @@ func (db *DB) BatchInsertPASUnits(ctx context.Context, units []*model.PASUnit, b
 	return nil
 }
 
-// insertPASUnitsBatch РІСЃС‚Р°РІР»СЏРµС‚ РѕРґРЅСѓ РїР°С‡РєСѓ PAS СЋРЅРёС‚РѕРІ
+// insertPASUnitsBatch вставляет одну пачку PAS юнитов
 func (db *DB) insertPASUnitsBatch(ctx context.Context, units []*model.PASUnit) error {
 	if len(units) == 0 {
 		return nil
@@ -82,7 +82,7 @@ func (db *DB) insertPASUnitsBatch(ctx context.Context, units []*model.PASUnit) e
 	})
 }
 
-// BatchInsertPASClasses РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° PAS РєР»Р°СЃСЃРѕРІ
+// BatchInsertPASClasses пакетная вставка PAS классов
 func (db *DB) BatchInsertPASClasses(ctx context.Context, classes []*model.PASClass, batchSize int) error {
 	if len(classes) == 0 {
 		return nil
@@ -137,7 +137,7 @@ func (db *DB) insertPASClassesBatch(ctx context.Context, classes []*model.PASCla
 	})
 }
 
-// BatchInsertPASMethods РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° PAS РјРµС‚РѕРґРѕРІ
+// BatchInsertPASMethods пакетная вставка PAS методов
 func (db *DB) BatchInsertPASMethods(ctx context.Context, methods []*model.PASMethod, batchSize int) error {
 	if len(methods) == 0 {
 		return nil
@@ -192,7 +192,7 @@ func (db *DB) insertPASMethodsBatch(ctx context.Context, methods []*model.PASMet
 	})
 }
 
-// BatchInsertPASFields РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° PAS РїРѕР»РµР№
+// BatchInsertPASFields пакетная вставка PAS полей
 func (db *DB) BatchInsertPASFields(ctx context.Context, fields []*model.PASField, batchSize int) error {
 	if len(fields) == 0 {
 		return nil

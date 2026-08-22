@@ -5,7 +5,7 @@ import (
 	"database/sql"
 )
 
-// RetCodeLookup вЂ” СЂРµР·СѓР»СЊС‚Р°С‚ РїРѕРёСЃРєР° РєРѕРґР° РІРѕР·РІСЂР°С‚Р° РІ ds_return_codes
+// RetCodeLookup — результат поиска кода возврата в ds_return_codes
 type RetCodeLookup struct {
 	RetCode  int64
 	Message  string
@@ -13,7 +13,7 @@ type RetCodeLookup struct {
 	ModuleID int
 }
 
-// LookupRetCode РёС‰РµС‚ РѕРїРёСЃР°РЅРёРµ РєРѕРґР° РІРѕР·РІСЂР°С‚Р° РІ С‚Р°Р±Р»РёС†Рµ ds_return_codes.
+// LookupRetCode ищет описание кода возврата в таблице ds_return_codes.
 func (db *DB) LookupRetCode(ctx context.Context, retCode int64) (*RetCodeLookup, error) {
 	row := db.QueryRowContext(ctx, 
 		`SELECT ret_code, message, proc_name, module_id FROM ds_return_codes WHERE ret_code = $1`,
@@ -34,15 +34,15 @@ func (db *DB) LookupRetCode(ctx context.Context, retCode int64) (*RetCodeLookup,
 	return &r, nil
 }
 
-// LookupRetCodes вЂ” batch-lookup РґР»СЏ РЅРµСЃРєРѕР»СЊРєРёС… РєРѕРґРѕРІ РІРѕР·РІСЂР°С‚Р°.
-// Р’РѕР·РІСЂР°С‰Р°РµС‚ map[retCode]*RetCodeLookup.
+// LookupRetCodes — batch-lookup для нескольких кодов возврата.
+// Возвращает map[retCode]*RetCodeLookup.
 func (db *DB) LookupRetCodes(ctx context.Context, retCodes []int64) (map[int64]*RetCodeLookup, error) {
 	result := make(map[int64]*RetCodeLookup)
 	if len(retCodes) == 0 {
 		return result, nil
 	}
 
-	// РЈРЅРёРєР°Р»СЊРЅС‹Рµ РєРѕРґС‹
+	// Уникальные коды
 	seen := make(map[int64]bool)
 	codes := make([]int64, 0, len(retCodes))
 	for _, c := range retCodes {
@@ -64,8 +64,8 @@ func (db *DB) LookupRetCodes(ctx context.Context, retCodes []int64) (map[int64]*
 	return result, nil
 }
 
-// LookupRetCodeByMessage РёС‰РµС‚ РєРѕРґС‹ РІРѕР·РІСЂР°С‚Р° РїРѕ С„СЂР°РіРјРµРЅС‚Сѓ С‚РµРєСЃС‚Р° СЃРѕРѕР±С‰РµРЅРёСЏ (ILIKE).
-// Р’РѕР·РІСЂР°С‰Р°РµС‚ СЃРїРёСЃРѕРє РІСЃРµС… СЃРѕРІРїР°РґРµРЅРёР№.
+// LookupRetCodeByMessage ищет коды возврата по фрагменту текста сообщения (ILIKE).
+// Возвращает список всех совпадений.
 func (db *DB) LookupRetCodeByMessage(ctx context.Context, messagePattern string, limit int) ([]RetCodeLookup, error) {
 	if limit <= 0 {
 		limit = 50

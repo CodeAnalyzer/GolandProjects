@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// FindLatestHFileIDByNameLike РІРѕР·РІСЂР°С‰Р°РµС‚ РїРѕСЃР»РµРґРЅРёР№ file id H-С„Р°Р№Р»Р° РїРѕ РёРјРµРЅРё include С‡РµСЂРµР· LIKE.
+// FindLatestHFileIDByNameLike возвращает последний file id H-файла по имени include через LIKE.
 func (db *DB) FindLatestHFileIDByNameLike(ctx context.Context, fileName string) (int64, error) {
 	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(fileName), `\`, "/"))
 	if normalized == "" {
@@ -33,7 +33,7 @@ func (db *DB) FindLatestHFileIDByNameLike(ctx context.Context, fileName string) 
 	return id, nil
 }
 
-// FindHDefineIDsByFile РІРѕР·РІСЂР°С‰Р°РµС‚ id define-РѕРІ С„Р°Р№Р»Р° РїРѕ РёРјРµРЅРё Рё СЃС‚СЂРѕРєРµ.
+// FindHDefineIDsByFile возвращает id define-ов файла по имени и строке.
 func (db *DB) FindHDefineIDsByFile(ctx context.Context, fileID int64) (map[string]int64, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, define_name, line_number
@@ -66,7 +66,7 @@ func (db *DB) FindHDefineIDsByFile(ctx context.Context, fileID int64) (map[strin
 	return result, nil
 }
 
-// FindHDefineExistsByName РїСЂРѕРІРµСЂСЏРµС‚, СЃСѓС‰РµСЃС‚РІСѓРµС‚ Р»Рё define СЃ СѓРєР°Р·Р°РЅРЅС‹Рј РёРјРµРЅРµРј РІ h_files_defines.
+// FindHDefineExistsByName проверяет, существует ли define с указанным именем в h_files_defines.
 func (db *DB) FindHDefineExistsByName(ctx context.Context, defineName string) (bool, error) {
 	normalized := strings.ToLower(strings.TrimSpace(defineName))
 	if normalized == "" {

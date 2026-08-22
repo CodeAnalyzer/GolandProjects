@@ -11,16 +11,16 @@ func normalizeDSProductName(productName string) string {
 	return strings.ToLower(strings.TrimSpace(productName))
 }
 
-// GetOrCreateDSProductIDByName РІРѕР·РІСЂР°С‰Р°РµС‚ id РїСЂРѕРґСѓРєС‚Р° РїРѕ РєР°РЅРѕРЅРёС‡РµСЃРєРѕРјСѓ РёРјРµРЅРё,
-// СЃРѕР·РґР°РІР°СЏ Р·Р°РїРёСЃСЊ РїСЂРё РѕС‚СЃСѓС‚СЃС‚РІРёРё.
+// GetOrCreateDSProductIDByName возвращает id продукта по каноническому имени,
+// создавая запись при отсутствии.
 func (db *DB) GetOrCreateDSProductIDByName(ctx context.Context, productName string) (int64, error) {
 	normalizedName := normalizeDSProductName(productName)
 	if normalizedName == "" {
 		return 0, fmt.Errorf("empty ds product name")
 	}
 
-	// ON CONFLICT DO NOTHING РЅРµ С‚СЂРѕРіР°РµС‚ СЃСѓС‰РµСЃС‚РІСѓСЋС‰СѓСЋ СЃС‚СЂРѕРєСѓ (РЅРµС‚ dead tuples),
-	// РЅРѕ С‚РѕРіРґР° RETURNING РїСѓСЃС‚ вЂ” РґРѕР±РёСЂР°РµРј id РѕС‚РґРµР»СЊРЅС‹Рј SELECT.
+	// ON CONFLICT DO NOTHING не трогает существующую строку (нет dead tuples),
+	// но тогда RETURNING пуст — добираем id отдельным SELECT.
 	var id int64
 	err := db.QueryRowContext(ctx, `
 		INSERT INTO ds_products (product_name)

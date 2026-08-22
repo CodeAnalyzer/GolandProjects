@@ -7,7 +7,7 @@ import (
 	"github.com/lib/pq"
 )
 
-// FindLatestDFMFormIDByClassName РІРѕР·РІСЂР°С‰Р°РµС‚ РїРѕСЃР»РµРґРЅРёР№ id DFM С„РѕСЂРјС‹ РїРѕ РёРјРµРЅРё РєР»Р°СЃСЃР° С„РѕСЂРјС‹.
+// FindLatestDFMFormIDByClassName возвращает последний id DFM формы по имени класса формы.
 func (db *DB) FindLatestDFMFormIDByClassName(ctx context.Context, className string) (int64, error) {
 	var id int64
 	err := db.QueryRowContext(ctx, `
@@ -24,7 +24,7 @@ func (db *DB) FindLatestDFMFormIDByClassName(ctx context.Context, className stri
 	return id, nil
 }
 
-// FindLatestDFMComponentIDByFormAndName РІРѕР·РІСЂР°С‰Р°РµС‚ РїРѕСЃР»РµРґРЅРёР№ id DFM-РєРѕРјРїРѕРЅРµРЅС‚Р° РїРѕ С„РѕСЂРјРµ Рё РёРјРµРЅРё РєРѕРјРїРѕРЅРµРЅС‚Р°.
+// FindLatestDFMComponentIDByFormAndName возвращает последний id DFM-компонента по форме и имени компонента.
 func (db *DB) FindLatestDFMComponentIDByFormAndName(ctx context.Context, formID int64, componentName string) (int64, error) {
 	var id int64
 	err := db.QueryRowContext(ctx, `
@@ -42,8 +42,8 @@ func (db *DB) FindLatestDFMComponentIDByFormAndName(ctx context.Context, formID 
 	return id, nil
 }
 
-// FindLatestDFMFormIDsByClassNames РІРѕР·РІСЂР°С‰Р°РµС‚ map РЅРёР¶РЅРµРіРѕ РёРјРµРЅРё РєР»Р°СЃСЃР° -> РїРѕСЃР»РµРґРЅРёР№ id DFM С„РѕСЂРјС‹.
-// РћРґРёРЅ SQL-Р·Р°РїСЂРѕСЃ РІРјРµСЃС‚Рѕ N РІС‹Р·РѕРІРѕРІ FindLatestDFMFormIDByClassName.
+// FindLatestDFMFormIDsByClassNames возвращает map нижнего имени класса -> последний id DFM формы.
+// Один SQL-запрос вместо N вызовов FindLatestDFMFormIDByClassName.
 func (db *DB) FindLatestDFMFormIDsByClassNames(ctx context.Context, classNames []string) (map[string]int64, error) {
 	normalized := make([]string, 0, len(classNames))
 	seen := make(map[string]struct{})
@@ -86,8 +86,8 @@ func (db *DB) FindLatestDFMFormIDsByClassNames(ctx context.Context, classNames [
 	return result, rows.Err()
 }
 
-// FindLatestDFMComponentIDsByFormAndNames РІРѕР·РІСЂР°С‰Р°РµС‚ map РЅРёР¶РЅРµРіРѕ РёРјРµРЅРё РєРѕРјРїРѕРЅРµРЅС‚Р° -> РїРѕСЃР»РµРґРЅРёР№ id
-// РґР»СЏ Р·Р°РґР°РЅРЅРѕР№ С„РѕСЂРјС‹. РћРґРёРЅ SQL-Р·Р°РїСЂРѕСЃ РІРјРµСЃС‚Рѕ N РІС‹Р·РѕРІРѕРІ FindLatestDFMComponentIDByFormAndName.
+// FindLatestDFMComponentIDsByFormAndNames возвращает map нижнего имени компонента -> последний id
+// для заданной формы. Один SQL-запрос вместо N вызовов FindLatestDFMComponentIDByFormAndName.
 func (db *DB) FindLatestDFMComponentIDsByFormAndNames(ctx context.Context, formID int64, componentNames []string) (map[string]int64, error) {
 	normalized := make([]string, 0, len(componentNames))
 	seen := make(map[string]struct{})
@@ -131,7 +131,7 @@ func (db *DB) FindLatestDFMComponentIDsByFormAndNames(ctx context.Context, formI
 	return result, rows.Err()
 }
 
-// FindDFMComponentIDsByForm РІРѕР·РІСЂР°С‰Р°РµС‚ id РєРѕРјРїРѕРЅРµРЅС‚РѕРІ С„РѕСЂРјС‹ РїРѕ РёРјРµРЅРё Рё line_start.
+// FindDFMComponentIDsByForm возвращает id компонентов формы по имени и line_start.
 func (db *DB) FindDFMComponentIDsByForm(ctx context.Context, formID int64) (map[string]int64, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, component_name, line_start
@@ -164,7 +164,7 @@ func (db *DB) FindDFMComponentIDsByForm(ctx context.Context, formID int64) (map[
 	return result, nil
 }
 
-// FindDFMFormIDsByFile РІРѕР·РІСЂР°С‰Р°РµС‚ id DFM С„РѕСЂРј С„Р°Р№Р»Р° РїРѕ РёРјРµРЅРё Рё line_start.
+// FindDFMFormIDsByFile возвращает id DFM форм файла по имени и line_start.
 func (db *DB) FindDFMFormIDsByFile(ctx context.Context, fileID int64) (map[string]int64, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, form_name, line_start
@@ -197,7 +197,7 @@ func (db *DB) FindDFMFormIDsByFile(ctx context.Context, fileID int64) (map[strin
 	return result, nil
 }
 
-// FindDFMFormIDByFileAndLine РІРѕР·РІСЂР°С‰Р°РµС‚ id DFM С„РѕСЂРјС‹, РґРёР°РїР°Р·РѕРЅ РєРѕС‚РѕСЂРѕР№ РІРєР»СЋС‡Р°РµС‚ СЃС‚СЂРѕРєСѓ.
+// FindDFMFormIDByFileAndLine возвращает id DFM формы, диапазон которой включает строку.
 func (db *DB) FindDFMFormIDByFileAndLine(ctx context.Context, fileID int64, lineNumber int) (int64, error) {
 	var id int64
 	err := db.QueryRowContext(ctx, `

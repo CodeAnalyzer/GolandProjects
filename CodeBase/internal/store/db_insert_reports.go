@@ -9,7 +9,7 @@ import (
 	"github.com/lib/pq"
 )
 
-// BatchInsertReportForms РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° report forms.
+// BatchInsertReportForms пакетная вставка report forms.
 func (db *DB) BatchInsertReportForms(ctx context.Context, forms []*model.ReportForm, batchSize int) error {
 	if len(forms) == 0 {
 		return nil
@@ -65,7 +65,7 @@ func (db *DB) insertReportFormsBatch(ctx context.Context, forms []*model.ReportF
 	})
 }
 
-// BatchInsertReportFields РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° report fields.
+// BatchInsertReportFields пакетная вставка report fields.
 func (db *DB) BatchInsertReportFields(ctx context.Context, fields []*model.ReportField, batchSize int) error {
 	if len(fields) == 0 {
 		return nil
@@ -130,7 +130,7 @@ func (db *DB) insertReportFieldsBatch(ctx context.Context, fields []*model.Repor
 	})
 }
 
-// BatchInsertReportParams РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° report params.
+// BatchInsertReportParams пакетная вставка report params.
 func (db *DB) BatchInsertReportParams(ctx context.Context, params []*model.ReportParam, batchSize int) error {
 	if len(params) == 0 {
 		return nil
@@ -192,7 +192,7 @@ func (db *DB) insertReportParamsBatch(ctx context.Context, params []*model.Repor
 	})
 }
 
-// BatchInsertVBFunctions РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° vb functions.
+// BatchInsertVBFunctions пакетная вставка vb functions.
 func (db *DB) BatchInsertVBFunctions(ctx context.Context, functions []*model.VBFunction, batchSize int) error {
 	if len(functions) == 0 {
 		return nil

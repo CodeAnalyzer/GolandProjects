@@ -48,7 +48,7 @@ func (db *DB) insertJSConstantsBatch(ctx context.Context, constants []*model.JSC
 	})
 }
 
-// BatchInsertJSFunctions РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° JS С„СѓРЅРєС†РёР№
+// BatchInsertJSFunctions пакетная вставка JS функций
 func (db *DB) BatchInsertJSFunctions(ctx context.Context, functions []*model.JSFunction, batchSize int) error {
 	if len(functions) == 0 {
 		return nil
@@ -104,7 +104,7 @@ func (db *DB) insertJSFunctionsBatch(ctx context.Context, functions []*model.JSF
 	})
 }
 
-// BatchInsertSymbols РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° СЃРёРјРІРѕР»РѕРІ
+// BatchInsertSymbols пакетная вставка символов
 func (db *DB) BatchInsertSymbols(ctx context.Context, symbols []*model.Symbol, batchSize int) error {
 	if len(symbols) == 0 {
 		return nil
@@ -128,7 +128,7 @@ func (db *DB) BatchInsertSymbols(ctx context.Context, symbols []*model.Symbol, b
 	return nil
 }
 
-// insertSymbolsBatch РІСЃС‚Р°РІР»СЏРµС‚ РѕРґРЅСѓ РїР°С‡РєСѓ СЃРёРјРІРѕР»РѕРІ
+// insertSymbolsBatch вставляет одну пачку символов
 func (db *DB) insertSymbolsBatch(ctx context.Context, symbols []*model.Symbol) error {
 	if len(symbols) == 0 {
 		return nil
@@ -161,7 +161,7 @@ func (db *DB) insertSymbolsBatch(ctx context.Context, symbols []*model.Symbol) e
 	})
 }
 
-// BatchInsertSMFInstruments РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° SMF РёРЅСЃС‚СЂСѓРјРµРЅС‚РѕРІ
+// BatchInsertSMFInstruments пакетная вставка SMF инструментов
 func (db *DB) BatchInsertSMFInstruments(ctx context.Context, instruments []*model.SMFInstrument, batchSize int) error {
 	if len(instruments) == 0 {
 		return nil

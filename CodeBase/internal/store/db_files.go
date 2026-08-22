@@ -10,7 +10,7 @@ import (
 	"github.com/lib/pq"
 )
 
-// GetLatestFilesByRootPath РІРѕР·РІСЂР°С‰Р°РµС‚ РїРѕСЃР»РµРґРЅРµРµ РёР·РІРµСЃС‚РЅРѕРµ СЃРѕСЃС‚РѕСЏРЅРёРµ С„Р°Р№Р»РѕРІ РґР»СЏ СѓРєР°Р·Р°РЅРЅРѕРіРѕ root path.
+// GetLatestFilesByRootPath возвращает последнее известное состояние файлов для указанного root path.
 func (db *DB) GetLatestFilesByRootPath(ctx context.Context, rootPath string) (map[string]*model.File, error) {
 	normalizedRoot := strings.ReplaceAll(strings.TrimSpace(rootPath), `\`, "/")
 	normalizedRoot = strings.TrimSuffix(normalizedRoot, "/")
@@ -61,7 +61,7 @@ func (db *DB) GetLatestFilesByRootPath(ctx context.Context, rootPath string) (ma
 	return files, nil
 }
 
-// DeleteFilesByPath СѓРґР°Р»СЏРµС‚ РІСЃРµ Р·Р°РїРёСЃРё С„Р°Р№Р»Р° РїРѕ path РІРјРµСЃС‚Рµ СЃ Р·Р°РІРёСЃРёРјС‹РјРё СЃСѓС‰РЅРѕСЃС‚СЏРјРё.
+// DeleteFilesByPath удаляет все записи файла по path вместе с зависимыми сущностями.
 func (db *DB) DeleteFilesByPath(ctx context.Context, path string) error {
 	_, err := db.ExecContext(ctx, `DELETE FROM files WHERE path = $1`, path)
 	if err != nil {
@@ -70,7 +70,7 @@ func (db *DB) DeleteFilesByPath(ctx context.Context, path string) error {
 	return nil
 }
 
-// DeleteFilesByPathExcept СѓРґР°Р»СЏРµС‚ РІСЃРµ Р·Р°РїРёСЃРё С„Р°Р№Р»Р° РїРѕ path, РєСЂРѕРјРµ СѓРєР°Р·Р°РЅРЅРѕР№.
+// DeleteFilesByPathExcept удаляет все записи файла по path, кроме указанной.
 func (db *DB) DeleteFilesByPathExcept(ctx context.Context, path string, keepID int64) error {
 	_, err := db.ExecContext(ctx, `DELETE FROM files WHERE path = $1 AND id <> $2`, path, keepID)
 	if err != nil {
@@ -79,7 +79,7 @@ func (db *DB) DeleteFilesByPathExcept(ctx context.Context, path string, keepID i
 	return nil
 }
 
-// DeleteFilesByPaths СѓРґР°Р»СЏРµС‚ РІСЃРµ Р·Р°РїРёСЃРё С„Р°Р№Р»РѕРІ РїРѕ СЃРїРёСЃРєСѓ path РѕРґРЅРёРј Р±Р°С‚С‡РµРј.
+// DeleteFilesByPaths удаляет все записи файлов по списку path одним батчем.
 func (db *DB) DeleteFilesByPaths(ctx context.Context, paths []string) error {
 	if len(paths) == 0 {
 		return nil
@@ -98,8 +98,8 @@ func (db *DB) DeleteFilesByPaths(ctx context.Context, paths []string) error {
 	return nil
 }
 
-// DeleteFilesByPathsExcept СѓРґР°Р»СЏРµС‚ РІСЃРµ Р·Р°РїРёСЃРё С„Р°Р№Р»РѕРІ РїРѕ СЃРїРёСЃРєСѓ path, РєСЂРѕРјРµ СѓРєР°Р·Р°РЅРЅС‹С… ID.
-// keepIDs вЂ” map[path]id, РєРѕС‚РѕСЂС‹Рµ РЅСѓР¶РЅРѕ СЃРѕС…СЂР°РЅРёС‚СЊ.
+// DeleteFilesByPathsExcept удаляет все записи файлов по списку path, кроме указанных ID.
+// keepIDs — map[path]id, которые нужно сохранить.
 func (db *DB) DeleteFilesByPathsExcept(ctx context.Context, paths []string, keepIDs map[string]int64) error {
 	if len(paths) == 0 {
 		return nil
@@ -162,7 +162,7 @@ func chunkStrings(values []string, chunkSize int) [][]string {
 	return chunks
 }
 
-// FindLatestFileIDByPaths РІРѕР·РІСЂР°С‰Р°РµС‚ РїРѕСЃР»РµРґРЅРёР№ file id, РЅР°Р№РґРµРЅРЅС‹Р№ РїРѕ РѕРґРЅРѕРјСѓ РёР· path/rel_path РєР°РЅРґРёРґР°С‚РѕРІ.
+// FindLatestFileIDByPaths возвращает последний file id, найденный по одному из path/rel_path кандидатов.
 func (db *DB) FindLatestFileIDByPaths(ctx context.Context, paths []string) (int64, error) {
 	if len(paths) == 0 {
 		return 0, sql.ErrNoRows

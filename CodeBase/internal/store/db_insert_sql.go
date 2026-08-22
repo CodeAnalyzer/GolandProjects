@@ -9,7 +9,7 @@ import (
 	"github.com/lib/pq"
 )
 
-// BatchInsertSQLProcedures РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° SQL РїСЂРѕС†РµРґСѓСЂ
+// BatchInsertSQLProcedures пакетная вставка SQL процедур
 func (db *DB) BatchInsertSQLProcedures(ctx context.Context, procedures []*model.SQLProcedure, batchSize int) error {
 	if len(procedures) == 0 {
 		return nil
@@ -33,7 +33,7 @@ func (db *DB) BatchInsertSQLProcedures(ctx context.Context, procedures []*model.
 	return nil
 }
 
-// insertSQLProceduresBatch РІСЃС‚Р°РІР»СЏРµС‚ РѕРґРЅСѓ РїР°С‡РєСѓ SQL РїСЂРѕС†РµРґСѓСЂ
+// insertSQLProceduresBatch вставляет одну пачку SQL процедур
 func (db *DB) insertSQLProceduresBatch(ctx context.Context, procedures []*model.SQLProcedure) error {
 	if len(procedures) == 0 {
 		return nil
@@ -74,7 +74,7 @@ func (db *DB) insertSQLProceduresBatch(ctx context.Context, procedures []*model.
 	})
 }
 
-// BatchInsertSQLTables РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° SQL С‚Р°Р±Р»РёС†
+// BatchInsertSQLTables пакетная вставка SQL таблиц
 func (db *DB) BatchInsertSQLTables(ctx context.Context, tables []*model.SQLTable, batchSize int) error {
 	if len(tables) == 0 {
 		return nil
@@ -98,7 +98,7 @@ func (db *DB) BatchInsertSQLTables(ctx context.Context, tables []*model.SQLTable
 	return nil
 }
 
-// insertSQLTablesBatch РІСЃС‚Р°РІР»СЏРµС‚ РѕРґРЅСѓ РїР°С‡РєСѓ SQL С‚Р°Р±Р»РёС†
+// insertSQLTablesBatch вставляет одну пачку SQL таблиц
 func (db *DB) insertSQLTablesBatch(ctx context.Context, tables []*model.SQLTable) error {
 	if len(tables) == 0 {
 		return nil
@@ -130,7 +130,7 @@ func (db *DB) insertSQLTablesBatch(ctx context.Context, tables []*model.SQLTable
 	})
 }
 
-// BatchInsertSQLColumns РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° SQL РєРѕР»РѕРЅРѕРє
+// BatchInsertSQLColumns пакетная вставка SQL колонок
 func (db *DB) BatchInsertSQLColumns(ctx context.Context, columns []*model.SQLColumn, batchSize int) error {
 	if len(columns) == 0 {
 		return nil
@@ -154,7 +154,7 @@ func (db *DB) BatchInsertSQLColumns(ctx context.Context, columns []*model.SQLCol
 	return nil
 }
 
-// insertSQLColumnsBatch РІСЃС‚Р°РІР»СЏРµС‚ РѕРґРЅСѓ РїР°С‡РєСѓ SQL РєРѕР»РѕРЅРѕРє
+// insertSQLColumnsBatch вставляет одну пачку SQL колонок
 func (db *DB) insertSQLColumnsBatch(ctx context.Context, columns []*model.SQLColumn) error {
 	if len(columns) == 0 {
 		return nil
@@ -185,7 +185,7 @@ func (db *DB) insertSQLColumnsBatch(ctx context.Context, columns []*model.SQLCol
 	})
 }
 
-// BatchInsertSQLColumnDefinitions РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° РѕРїСЂРµРґРµР»РµРЅРёР№ SQL РєРѕР»РѕРЅРѕРє
+// BatchInsertSQLColumnDefinitions пакетная вставка определений SQL колонок
 func (db *DB) BatchInsertSQLColumnDefinitions(ctx context.Context, columns []*model.SQLColumnDefinition, batchSize int) error {
 	if len(columns) == 0 {
 		return nil
@@ -209,7 +209,7 @@ func (db *DB) BatchInsertSQLColumnDefinitions(ctx context.Context, columns []*mo
 	return nil
 }
 
-// insertSQLColumnDefinitionsBatch РІСЃС‚Р°РІР»СЏРµС‚ РѕРґРЅСѓ РїР°С‡РєСѓ РѕРїСЂРµРґРµР»РµРЅРёР№ SQL РєРѕР»РѕРЅРѕРє
+// insertSQLColumnDefinitionsBatch вставляет одну пачку определений SQL колонок
 func (db *DB) insertSQLColumnDefinitionsBatch(ctx context.Context, columns []*model.SQLColumnDefinition) error {
 	if len(columns) == 0 {
 		return nil
@@ -242,7 +242,7 @@ func (db *DB) insertSQLColumnDefinitionsBatch(ctx context.Context, columns []*mo
 	})
 }
 
-// BatchInsertSQLIndexDefinitions РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° РѕРїСЂРµРґРµР»РµРЅРёР№ SQL РёРЅРґРµРєСЃРѕРІ.
+// BatchInsertSQLIndexDefinitions пакетная вставка определений SQL индексов.
 func (db *DB) BatchInsertSQLIndexDefinitions(ctx context.Context, items []*model.SQLIndexDefinition, batchSize int) error {
 	if len(items) == 0 {
 		return nil
@@ -282,7 +282,7 @@ func (db *DB) insertSQLIndexDefinitionsBatch(ctx context.Context, items []*model
 	})
 }
 
-// BatchInsertSQLIndexDefinitionFields РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° РїРѕР»РµР№ SQL РёРЅРґРµРєСЃРѕРІ.
+// BatchInsertSQLIndexDefinitionFields пакетная вставка полей SQL индексов.
 func (db *DB) BatchInsertSQLIndexDefinitionFields(ctx context.Context, items []*model.SQLIndexDefinitionField, batchSize int) error {
 	if len(items) == 0 {
 		return nil
@@ -322,7 +322,7 @@ func (db *DB) insertSQLIndexDefinitionFieldsBatch(ctx context.Context, items []*
 	})
 }
 
-// BatchInsertQueryFragments РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° SQL С„СЂР°РіРјРµРЅС‚РѕРІ
+// BatchInsertQueryFragments пакетная вставка SQL фрагментов
 func (db *DB) BatchInsertQueryFragments(ctx context.Context, fragments []*model.QueryFragment, batchSize int) error {
 	if len(fragments) == 0 {
 		return nil
@@ -390,7 +390,7 @@ func (db *DB) insertQueryFragmentsBatch(ctx context.Context, fragments []*model.
 	})
 }
 
-// BatchInsertRelations РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° СЃРІСЏР·РµР№ РјРµР¶РґСѓ СЃСѓС‰РЅРѕСЃС‚СЏРјРё.
+// BatchInsertRelations пакетная вставка связей между сущностями.
 func (db *DB) BatchInsertRelations(ctx context.Context, relations []*model.Relation, batchSize int) error {
 	if len(relations) == 0 {
 		return nil

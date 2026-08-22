@@ -8,7 +8,7 @@ import (
 	"github.com/lib/pq"
 )
 
-// BatchInsertHDefines РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° H define-РѕРІ
+// BatchInsertHDefines пакетная вставка H define-ов
 func (db *DB) BatchInsertHDefines(ctx context.Context, defines []*model.HDefine, batchSize int) error {
 	if len(defines) == 0 {
 		return nil
@@ -62,7 +62,7 @@ func (db *DB) insertHDefinesBatch(ctx context.Context, defines []*model.HDefine)
 	})
 }
 
-// BatchInsertAPIMacroInvocations РїР°РєРµС‚РЅР°СЏ РІСЃС‚Р°РІРєР° APIMacroInvocations
+// BatchInsertAPIMacroInvocations пакетная вставка APIMacroInvocations
 func (db *DB) BatchInsertAPIMacroInvocations(ctx context.Context, invocations []*model.APIMacroInvocation, batchSize int) error {
 	if len(invocations) == 0 {
 		return nil

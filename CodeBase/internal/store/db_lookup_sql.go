@@ -9,7 +9,7 @@ import (
 	"github.com/lib/pq"
 )
 
-// FindLatestSQLProcedureIDByName РІРѕР·РІСЂР°С‰Р°РµС‚ РїРѕСЃР»РµРґРЅРёР№ id SQL РїСЂРѕС†РµРґСѓСЂС‹ РїРѕ РёРјРµРЅРё.
+// FindLatestSQLProcedureIDByName возвращает последний id SQL процедуры по имени.
 func (db *DB) FindLatestSQLProcedureIDByName(ctx context.Context, procName string) (int64, error) {
 	var id int64
 	err := db.QueryRowContext(ctx, `
@@ -74,7 +74,7 @@ func (db *DB) FindLatestSQLProcedureIDsByNames(ctx context.Context, procNames []
 	return result, nil
 }
 
-// FindSQLProcedureIDsByFile РІРѕР·РІСЂР°С‰Р°РµС‚ id РїСЂРѕС†РµРґСѓСЂ С„Р°Р№Р»Р° РїРѕ РёРјРµРЅРё.
+// FindSQLProcedureIDsByFile возвращает id процедур файла по имени.
 func (db *DB) FindSQLProcedureIDsByFile(ctx context.Context, fileID int64) (map[string]int64, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, proc_name
@@ -109,7 +109,7 @@ func (db *DB) FindSQLProcedureIDsByFile(ctx context.Context, fileID int64) (map[
 	return result, nil
 }
 
-// FindLatestSQLTableIDByName РІРѕР·РІСЂР°С‰Р°РµС‚ РїРѕСЃР»РµРґРЅРёР№ id SQL С‚Р°Р±Р»РёС†С‹ РїРѕ РёРјРµРЅРё.
+// FindLatestSQLTableIDByName возвращает последний id SQL таблицы по имени.
 func (db *DB) FindLatestSQLTableIDByName(ctx context.Context, tableName string) (int64, error) {
 	var id int64
 	err := db.QueryRowContext(ctx, `
@@ -126,8 +126,8 @@ func (db *DB) FindLatestSQLTableIDByName(ctx context.Context, tableName string) 
 	return id, nil
 }
 
-// FindLatestSQLTableIDsByNames РІРѕР·РІСЂР°С‰Р°РµС‚ map РЅРёР¶РЅРµРіРѕ РёРјРµРЅРё С‚Р°Р±Р»РёС†С‹ -> РїРѕСЃР»РµРґРЅРёР№ id.
-// РћРґРёРЅ SQL-Р·Р°РїСЂРѕСЃ РІРјРµСЃС‚Рѕ N РІС‹Р·РѕРІРѕРІ FindLatestSQLTableIDByName.
+// FindLatestSQLTableIDsByNames возвращает map нижнего имени таблицы -> последний id.
+// Один SQL-запрос вместо N вызовов FindLatestSQLTableIDByName.
 func (db *DB) FindLatestSQLTableIDsByNames(ctx context.Context, tableNames []string) (map[string]int64, error) {
 	normalized := make([]string, 0, len(tableNames))
 	seen := make(map[string]struct{})
@@ -188,8 +188,8 @@ func (db *DB) FindLatestSQLColumnDefinitionType(ctx context.Context, tableName s
 	return strings.TrimSpace(dataType), nil
 }
 
-// FindAPIColumnDefinitionType РёС‰РµС‚ С‚РёРї РєРѕР»РѕРЅРєРё РІ API-РєРѕРЅС‚СЂР°РєС‚Р°С… Рё business objects.
-// РСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РєР°Рє fallback, РєРѕРіРґР° С‚РёРї РЅРµ РЅР°Р№РґРµРЅ РІ sql_column_definitions (РЅР°РїСЂРёРјРµСЂ, РґР»СЏ ptable).
+// FindAPIColumnDefinitionType ищет тип колонки в API-контрактах и business objects.
+// Используется как fallback, когда тип не найден в sql_column_definitions (например, для ptable).
 func (db *DB) FindAPIColumnDefinitionType(ctx context.Context, tableName string, columnName string) (string, error) {
 	var dataType string
 	err := db.QueryRowContext(ctx, `
@@ -217,9 +217,9 @@ func (db *DB) FindAPIColumnDefinitionType(ctx context.Context, tableName string,
 	return strings.TrimSpace(dataType), nil
 }
 
-// BatchFindColumnDefinitionTypes РІРѕР·РІСЂР°С‰Р°РµС‚ РєР°СЂС‚Сѓ "table|col" -> data_type РґР»СЏ РІСЃРµС…
-// РєРѕР»РѕРЅРѕРє СѓРєР°Р·Р°РЅРЅС‹С… С‚Р°Р±Р»РёС† РѕРґРЅРёРј Р·Р°РїСЂРѕСЃРѕРј. РСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РґР»СЏ РїСЂРµРґР·Р°РіСЂСѓР·РєРё РєСЌС€Р° С‚РёРїРѕРІ
-// РїРµСЂРµРґ Р·Р°РїСѓСЃРєРѕРј РїСЂР°РІРёР» review, С‡С‚РѕР±С‹ РёР·Р±РµР¶Р°С‚СЊ С‚С‹СЃСЏС‡ РѕС‚РґРµР»СЊРЅС‹С… DB-Р·Р°РїСЂРѕСЃРѕРІ.
+// BatchFindColumnDefinitionTypes возвращает карту "table|col" -> data_type для всех
+// колонок указанных таблиц одним запросом. Используется для предзагрузки кэша типов
+// перед запуском правил review, чтобы избежать тысяч отдельных DB-запросов.
 func (db *DB) BatchFindColumnDefinitionTypes(ctx context.Context, tableNames []string) (map[string]string, error) {
 	if len(tableNames) == 0 {
 		return map[string]string{}, nil
@@ -255,7 +255,7 @@ func (db *DB) BatchFindColumnDefinitionTypes(ctx context.Context, tableNames []s
 	return result, rows.Err()
 }
 
-// FindSQLTableIDsByFileAndLine РІРѕР·РІСЂР°С‰Р°РµС‚ id С‚Р°Р±Р»РёС† С„Р°Р№Р»Р° РїРѕ РёРјРµРЅРё, РєРѕРЅС‚РµРєСЃС‚Сѓ Рё СЃС‚СЂРѕРєРµ.
+// FindSQLTableIDsByFileAndLine возвращает id таблиц файла по имени, контексту и строке.
 func (db *DB) FindSQLTableIDsByFileAndLine(ctx context.Context, fileID int64) (map[string]int64, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, table_name, context, line_number
@@ -319,7 +319,7 @@ func (db *DB) FindSQLColumnDefinitionIDsByFile(ctx context.Context, fileID int64
 	return result, rows.Err()
 }
 
-// FindSQLIndexDefinitionIDsByFile РІРѕР·РІСЂР°С‰Р°РµС‚ id SQL-РёРЅРґРµРєСЃРѕРІ РїРѕ file_id.
+// FindSQLIndexDefinitionIDsByFile возвращает id SQL-индексов по file_id.
 func (db *DB) FindSQLIndexDefinitionIDsByFile(ctx context.Context, fileID int64) (map[string]int64, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, table_name, index_name, line_number
@@ -349,7 +349,7 @@ func (db *DB) FindSQLIndexDefinitionIDsByFile(ctx context.Context, fileID int64)
 	return result, rows.Err()
 }
 
-// FindQueryFragmentIDsByFileAndHash РІРѕР·РІСЂР°С‰Р°РµС‚ id query fragments С„Р°Р№Р»Р° РїРѕ hash/context/line.
+// FindQueryFragmentIDsByFileAndHash возвращает id query fragments файла по hash/context/line.
 func (db *DB) FindQueryFragmentIDsByFileAndHash(ctx context.Context, fileID int64) (map[string]int64, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, COALESCE(query_hash, ''), context, line_number
@@ -383,9 +383,9 @@ func (db *DB) FindQueryFragmentIDsByFileAndHash(ctx context.Context, fileID int6
 	return result, nil
 }
 
-// BatchLookupProcedureParams РІРѕР·РІСЂР°С‰Р°РµС‚ map: LOWER(proc_name) -> []SQLParam
-// РґР»СЏ РІСЃРµС… СѓРєР°Р·Р°РЅРЅС‹С… РёРјС‘РЅ РїСЂРѕС†РµРґСѓСЂ РѕРґРЅРёРј Р·Р°РїСЂРѕСЃРѕРј. Р‘РµСЂС‘С‚СЃСЏ РїРѕСЃР»РµРґРЅСЏСЏ РїРѕ id Р·Р°РїРёСЃСЊ
-// РґР»СЏ РєР°Р¶РґРѕРіРѕ РёРјРµРЅРё (Р°РЅР°Р»РѕРі ORDER BY id DESC LIMIT 1 РІ СЃРєР°Р»СЏСЂРЅРѕР№ РІРµСЂСЃРёРё).
+// BatchLookupProcedureParams возвращает map: LOWER(proc_name) -> []SQLParam
+// для всех указанных имён процедур одним запросом. Берётся последняя по id запись
+// для каждого имени (аналог ORDER BY id DESC LIMIT 1 в скалярной версии).
 func (db *DB) BatchLookupProcedureParams(ctx context.Context, names []string) (map[string][]model.SQLParam, error) {
 	normalized := make([]string, 0, len(names))
 	seen := make(map[string]struct{}, len(names))
@@ -438,8 +438,8 @@ func (db *DB) BatchLookupProcedureParams(ctx context.Context, names []string) (m
 	return result, rows.Err()
 }
 
-// BatchLookupProcedureProductIDs РІРѕР·РІСЂР°С‰Р°РµС‚ map: LOWER(proc_name) -> ds_product_id
-// РґР»СЏ РІСЃРµС… СѓРєР°Р·Р°РЅРЅС‹С… РёРјС‘РЅ РїСЂРѕС†РµРґСѓСЂ РѕРґРЅРёРј Р·Р°РїСЂРѕСЃРѕРј.
+// BatchLookupProcedureProductIDs возвращает map: LOWER(proc_name) -> ds_product_id
+// для всех указанных имён процедур одним запросом.
 func (db *DB) BatchLookupProcedureProductIDs(ctx context.Context, names []string) (map[string]int64, error) {
 	normalized := make([]string, 0, len(names))
 	seen := make(map[string]struct{}, len(names))
@@ -486,12 +486,12 @@ func (db *DB) BatchLookupProcedureProductIDs(ctx context.Context, names []string
 	return result, rows.Err()
 }
 
-// BatchLookupTableProductIDs РІРѕР·РІСЂР°С‰Р°РµС‚ map: LOWER(table_name) -> set of ds_product_id
-// РґР»СЏ РІСЃРµС… СѓРєР°Р·Р°РЅРЅС‹С… С‚Р°Р±Р»РёС†. РСЃРїРѕР»СЊР·СѓРµС‚ 3 РёСЃС‚РѕС‡РЅРёРєР° (РєР°Рє lookupTableProductIDs):
+// BatchLookupTableProductIDs возвращает map: LOWER(table_name) -> set of ds_product_id
+// для всех указанных таблиц. Использует 3 источника (как lookupTableProductIDs):
 // 1) sql_tables WHERE context IN ('create','select_into')
 // 2) sql_column_definitions WHERE definition_kind IN ('create','select_into')
 // 3) sql_tables WHERE context = 'dfm_embedded' (fallback)
-// РСЃС‚РѕС‡РЅРёРєРё 2 Рё 3 РѕРїСЂР°С€РёРІР°СЋС‚СЃСЏ С‚РѕР»СЊРєРѕ РґР»СЏ РёРјС‘РЅ, РЅРµ РЅР°Р№РґРµРЅРЅС‹С… РІ РїСЂРµРґС‹РґСѓС‰РёС….
+// Источники 2 и 3 опрашиваются только для имён, не найденных в предыдущих.
 func (db *DB) BatchLookupTableProductIDs(ctx context.Context, names []string) (map[string]map[int64]struct{}, error) {
 	normalized := make([]string, 0, len(names))
 	seen := make(map[string]struct{}, len(names))

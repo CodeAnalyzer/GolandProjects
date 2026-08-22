@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// GetStats РІРѕР·РІСЂР°С‰Р°РµС‚ СЃС‚Р°С‚РёСЃС‚РёРєСѓ РёРЅРґРµРєСЃР°
+// GetStats возвращает статистику индекса
 func (db *DB) GetStats(ctx context.Context) (*Stats, error) {
 	stats := &Stats{}
 
