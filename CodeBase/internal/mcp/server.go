@@ -17,7 +17,7 @@ import (
 // RunStdio запускает минимальный MCP JSON-RPC сервер поверх stdin/stdout.
 // stdout используется только для protocol-сообщений.
 // logger — опциональный логгер для записи длительности каждого tool-вызова; nil отключает логирование.
-func RunStdio(serverVersion string, logger *log.Logger) error {
+func RunStdio(serverVersion string, profile string, logger *log.Logger) error {
 	cfg := config.Get()
 	if cfg == nil {
 		return fmt.Errorf("config not loaded")
@@ -44,12 +44,16 @@ func RunStdio(serverVersion string, logger *log.Logger) error {
 		Version: serverVersion,
 	}, nil)
 
-	registerSDKCoreTools(server, buildToolRegistry(db), logger)
+	registry, err := buildToolRegistryForProfile(db, profile)
+	if err != nil {
+		return err
+	}
+	registerSDKCoreTools(server, registry, profile, logger)
 
 	return server.Run(context.Background(), &mcpsdk.StdioTransport{})
 }
 
-func registerSDKCoreTools(server *mcpsdk.Server, registry map[string]registeredTool, logger *log.Logger) {
+func registerSDKCoreTools(server *mcpsdk.Server, registry map[string]registeredTool, profile string, logger *log.Logger) {
 	for _, tool := range registry {
 		server.AddTool(&mcpsdk.Tool{
 			Name:         tool.Definition.Name,
@@ -61,7 +65,7 @@ func registerSDKCoreTools(server *mcpsdk.Server, registry map[string]registeredT
 
 			args, err := decodeSDKToolArgs(req)
 			if err != nil {
-				logMCPToolCall(logger, tool.Definition.Name, nil, time.Since(start), err)
+				logMCPToolCall(logger, profile, tool.Definition.Name, nil, time.Since(start), err)
 				return sdkToolErrorResult(err), nil
 			}
 
@@ -77,7 +81,7 @@ func registerSDKCoreTools(server *mcpsdk.Server, registry map[string]registeredT
 			}
 			result, err := tool.Handler(ctx, args)
 			elapsed := time.Since(start)
-			logMCPToolCall(logger, tool.Definition.Name, args, elapsed, err)
+			logMCPToolCall(logger, profile, tool.Definition.Name, args, elapsed, err)
 			if err != nil {
 				return sdkToolErrorResult(err), nil
 			}
@@ -132,9 +136,12 @@ func sdkToolPagedResult(value interface{}) (*mcpsdk.CallToolResult, error) {
 	}, nil
 }
 
-func logMCPToolCall(logger *log.Logger, toolName string, args map[string]interface{}, duration time.Duration, callErr error) {
+func logMCPToolCall(logger *log.Logger, profile string, toolName string, args map[string]interface{}, duration time.Duration, callErr error) {
 	if logger == nil {
 		return
+	}
+	if profile == "" {
+		profile = "all"
 	}
 	status := "success"
 	errorText := ""
@@ -143,7 +150,8 @@ func logMCPToolCall(logger *log.Logger, toolName string, args map[string]interfa
 		errorText = strings.Join(strings.Fields(callErr.Error()), " ")
 	}
 	logger.Printf(
-		"tool=%s args=%s duration=%s duration_ms=%d status=%s error=%q",
+		"profile=%s tool=%s args=%s duration=%s duration_ms=%d status=%s error=%q",
+		profile,
 		toolName,
 		formatToolArgs(args),
 		duration.Round(time.Millisecond),

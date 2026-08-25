@@ -748,6 +748,48 @@ codebase mcp
 - `stdout` зарезервирован под JSON-RPC транспорт (без баннера и лишнего текстового вывода)
 - инструменты MCP реализованы поверх внутреннего сервисного слоя, без вызова Cobra-команд
 
+#### Профили инструментов (--profile)
+
+Флаг `--profile` позволяет зарегистрировать только подмножество инструментов, релевантное профилю. Без флага регистрируются все 55 инструментов (текущее поведение). Это решает проблему обрезки `tools/list` response некоторыми IDE MCP-клиентами при превышении лимита размера JSON-RPC сообщения.
+
+```bash
+codebase mcp --profile=query
+codebase mcp --profile=rti
+codebase mcp --profile=trc
+codebase mcp --profile=review
+```
+
+Доступные профили:
+
+| Профиль | Инструментов | Размер `tools/list` | Описание |
+|---------|-------------|---------------------|----------|
+| (без флага) | 55 | ~43 KB | Все инструменты |
+| `query` | ~30 | ~24 KB | Базовые + query инструменты |
+| `rti` | ~16 | ~13 KB | Базовые + RTI инструменты |
+| `trc` | ~14 | ~9 KB | Базовые + TRC инструменты |
+| `review` | ~5 | ~4 KB | Базовые + review инструмент |
+
+Базовые инструменты (`codebase_ping`, `codebase_health`, `codebase_stats`, `codebase_read_more`) доступны во всех профилях.
+
+IDE может подключить несколько MCP-серверов на один бинарник с разными профилями:
+
+```json
+"codebase-query": {
+  "args": ["mcp", "--profile=query", "--config", "D:\\path\\codebase.toml"],
+  "command": "D:\\path\\CodeBase.exe",
+  "disabled": false
+},
+"codebase-rti": {
+  "args": ["mcp", "--profile=rti", "--config", "D:\\path\\codebase.toml"],
+  "command": "D:\\path\\CodeBase.exe",
+  "disabled": false
+}
+```
+
+При неизвестном профиле возвращается ошибка с перечислением доступных профилей.
+
+В логировании tool-вызовов каждое сообщение содержит поле `profile=<name>` (при запуске без флага — `profile=all`), что позволяет отличить записи от разных MCP-серверов при одновременном запуске нескольких профилей.
+
 Ключевые MCP tools:
 
 - `codebase.ping` — проверка живости MCP-сервера
@@ -868,7 +910,7 @@ CodeBase/
 │   ├── trc.go                     # TRC-анализатор: parse/summary/events/procedures/tree/errors/slow/list/delete/prune
 │   ├── stats.go                   # Команда stats
 │   ├── health.go                  # Команда health
-│   └── mcp.go                     # Команда запуска MCP сервера
+│   └── mcp.go                     # Команда запуска MCP сервера (с флагом --profile)
 ├── internal/
 │   ├── config/                    # Конфигурация
 │   ├── encoding/                  # Кодировки CP866/WIN1251
@@ -943,7 +985,7 @@ CodeBase/
 │   │   └── store.go               # SaveSession, LoadEvents, ListSessions, DeleteSession, PruneSessions
 │   ├── mcp/                       # MCP stdio JSON-RPC transport, tools registry, handlers, пагинация
 │   │   ├── server.go              # MCP SDK server, stdio transport, tool dispatch
-│   │   ├── registry.go            # Registry всех MCP tools (query, RTI, TRC, review, health, stats)
+│   │   ├── registry.go            # Registry всех MCP tools (query, RTI, TRC, review, health, stats), profile filtering
 │   │   ├── pagination.go          # Пагинация больших MCP-ответов (chunking, TTL)
 │   │   ├── tools.go               # Вспомогательные типы для tool definitions
 │   │   └── types.go               # Внутренние типы MCP
@@ -1138,6 +1180,7 @@ $env:CODEBASE_TEST_DSN = "postgres://postgres:123456@localhost:5435/postgres?ssl
 - [x] MCP limit clamp: `optionalLimit` ограничивается `queryMaxLimit` (защита от DoS через MCP)
 - [x] Конфигурация через PersistentPreRunE: отказ от `os.Exit` при ошибке загрузки конфига, корректная обработка через cobra error flow
 - [x] Транзакционная запись include-директив: `ExecContext` с `boundTx`, возврат ошибки вместо глушения
+- [x] MCP tool profiles: флаг `--profile` (query, rti, trc, review) для раздельной регистрации инструментов; один бинарник — несколько MCP-серверов в IDE с разными подмножествами tools
 
 ## Лицензия
 

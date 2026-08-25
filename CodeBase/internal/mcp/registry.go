@@ -78,6 +78,132 @@ func requiredInt(args map[string]interface{}, key string) (int, error) {
 
 var toolRegistry = buildToolRegistry(nil)
 
+// baseTools — инструменты, доступные во всех профилях.
+var baseTools = map[string]bool{
+	"codebase_ping":      true,
+	"codebase_health":    true,
+	"codebase_stats":     true,
+	"codebase_read_more": true,
+}
+
+// queryTools — codebase_query_* инструменты.
+var queryTools = map[string]bool{
+	"codebase_query_symbol":          true,
+	"codebase_query_table":           true,
+	"codebase_query_table_schema":    true,
+	"codebase_query_table_index":     true,
+	"codebase_query_procedure":       true,
+	"codebase_query_callers":         true,
+	"codebase_query_methods":         true,
+	"codebase_query_method":          true,
+	"codebase_query_form":            true,
+	"codebase_query_form_component":  true,
+	"codebase_query_sql_fragment":    true,
+	"codebase_query_relations":       true,
+	"codebase_query_inspect":         true,
+	"codebase_query_js_function":     true,
+	"codebase_query_smf_instrument":  true,
+	"codebase_query_smf_type":        true,
+	"codebase_query_report_form":     true,
+	"codebase_query_report_field":    true,
+	"codebase_query_report_param":    true,
+	"codebase_query_vb_function":     true,
+	"codebase_query_api_contract":    true,
+	"codebase_query_api_table":       true,
+	"codebase_query_api_table_index": true,
+	"codebase_query_api_param":       true,
+	"codebase_query_api_impl":        true,
+	"codebase_query_api_publishers":  true,
+	"codebase_query_api_consumers":   true,
+	"codebase_query_retcode":         true,
+}
+
+// rtiTools — codebase_rti_* инструменты.
+var rtiTools = map[string]bool{
+	"codebase_rti_parse":       true,
+	"codebase_rti_list":        true,
+	"codebase_rti_summary":     true,
+	"codebase_rti_tree":        true,
+	"codebase_rti_errors":      true,
+	"codebase_rti_slow":        true,
+	"codebase_rti_details":     true,
+	"codebase_rti_delete":      true,
+	"codebase_rti_prune":       true,
+	"codebase_rti_blog":        true,
+	"codebase_rti_client_tree": true,
+	"codebase_rti_timeline":    true,
+}
+
+// trcTools — codebase_trc_* инструменты.
+var trcTools = map[string]bool{
+	"codebase_trc_parse":      true,
+	"codebase_trc_list":       true,
+	"codebase_trc_summary":    true,
+	"codebase_trc_events":     true,
+	"codebase_trc_procedures": true,
+	"codebase_trc_tree":       true,
+	"codebase_trc_errors":     true,
+	"codebase_trc_slow":       true,
+	"codebase_trc_delete":     true,
+	"codebase_trc_prune":      true,
+}
+
+// reviewTools — codebase_review_sql инструмент.
+var reviewTools = map[string]bool{
+	"codebase_review_sql": true,
+}
+
+// profileToolSets — маппинг профиль → whitelist имён инструментов.
+var profileToolSets = map[string]map[string]bool{
+	"query":  mergeMaps(baseTools, queryTools),
+	"rti":    mergeMaps(baseTools, rtiTools),
+	"trc":    mergeMaps(baseTools, trcTools),
+	"review": mergeMaps(baseTools, reviewTools),
+}
+
+// ValidProfiles возвращает список имён валидных профилей.
+func ValidProfiles() []string {
+profiles := make([]string, 0, len(profileToolSets))
+for name := range profileToolSets {
+	profiles = append(profiles, name)
+}
+return profiles
+}
+
+// mergeMaps объединяет две map[string]bool в новую.
+func mergeMaps(a, b map[string]bool) map[string]bool {
+result := make(map[string]bool, len(a)+len(b))
+for k, v := range a {
+	result[k] = v
+}
+for k, v := range b {
+	result[k] = v
+}
+return result
+}
+
+// buildToolRegistryForProfile возвращает registry, отфильтрованный по профилю.
+// При пустом profile — все инструменты (buildToolRegistry).
+// При известном profile — только инструменты из whitelist.
+// При неизвестном profile — ошибка.
+func buildToolRegistryForProfile(db *store.DB, profile string) (map[string]registeredTool, error) {
+full := buildToolRegistry(db)
+if profile == "" {
+	return full, nil
+}
+whitelist, ok := profileToolSets[profile]
+if !ok {
+	return nil, fmt.Errorf("unknown profile %q, valid profiles: %v", profile, ValidProfiles())
+}
+filtered := make(map[string]registeredTool, len(whitelist))
+for name, rt := range full {
+	if whitelist[name] {
+		filtered[name] = rt
+	}
+}
+return filtered, nil
+}
+
 func buildToolRegistry(db *store.DB) map[string]registeredTool {
 	return map[string]registeredTool{
 		"codebase_read_more": {
