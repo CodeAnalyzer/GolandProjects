@@ -91,10 +91,11 @@ type EventsParams struct {
 
 // TreeParams — параметры для ExecuteTree.
 type TreeParams struct {
-	Source   SessionSource
-	SPID     int
-	MaxDepth int
-	Limit    int
+	Source    SessionSource
+	SPID      int
+	MaxDepth  int
+	Limit     int
+	Procedure string
 }
 
 // SlowParams — параметры для ExecuteSlow.

@@ -213,3 +213,76 @@ func TestLimitTrees_ChildLimit(t *testing.T) {
 		t.Fatalf("limit=2: expected 2 children, got %d", len(root.Children))
 	}
 }
+
+// TestFilterTreesByProcedure — дерево ProcA→ProcB→ProcC, фильтр по ProcB
+// возвращает поддерево ProcB с ProcC.
+func TestFilterTreesByProcedure(t *testing.T) {
+	events := []TRCEvent{
+		{EventClass: 10, EventName: "RPC:Starting", Columns: map[int]any{12: int32(55)}, Procedure: "ProcA"},
+		{EventClass: 44, EventName: "SP:StmtStarting", Columns: map[int]any{12: int32(55)}, Procedure: "ProcB"},
+		{EventClass: 44, EventName: "SP:StmtStarting", Columns: map[int]any{12: int32(55)}, Procedure: "ProcC"},
+		{EventClass: 45, EventName: "SP:StmtCompleted", Columns: map[int]any{12: int32(55)}, Procedure: "ProcC"},
+		{EventClass: 45, EventName: "SP:StmtCompleted", Columns: map[int]any{12: int32(55)}, Procedure: "ProcB"},
+		{EventClass: 11, EventName: "RPC:Completed", Columns: map[int]any{12: int32(55)}, Procedure: "ProcA"},
+	}
+	trees := BuildTrees(events)
+	filtered := FilterTreesByProcedure(trees, "ProcB")
+	roots, ok := filtered[55]
+	if !ok || len(roots) != 1 {
+		t.Fatalf("expected 1 root for ProcB in SPID 55, got %v", filtered)
+	}
+	if roots[0].Start.Procedure != "ProcB" {
+		t.Errorf("root procedure = %q, want ProcB", roots[0].Start.Procedure)
+	}
+	if len(roots[0].Children) != 1 {
+		t.Fatalf("expected 1 child (ProcC), got %d", len(roots[0].Children))
+	}
+	if roots[0].Children[0].Start.Procedure != "ProcC" {
+		t.Errorf("child procedure = %q, want ProcC", roots[0].Children[0].Start.Procedure)
+	}
+}
+
+// TestFilterTreesByProcedure_MultipleMatches — несколько вызовов одной процедуры
+// в одном SPID возвращают несколько поддеревьев.
+func TestFilterTreesByProcedure_MultipleMatches(t *testing.T) {
+	events := []TRCEvent{
+		{EventClass: 10, EventName: "RPC:Starting", Columns: map[int]any{12: int32(55)}, Procedure: "ProcA"},
+		{EventClass: 44, EventName: "SP:StmtStarting", Columns: map[int]any{12: int32(55)}, Procedure: "Target"},
+		{EventClass: 45, EventName: "SP:StmtCompleted", Columns: map[int]any{12: int32(55)}, Procedure: "Target"},
+		{EventClass: 44, EventName: "SP:StmtStarting", Columns: map[int]any{12: int32(55)}, Procedure: "Target"},
+		{EventClass: 45, EventName: "SP:StmtCompleted", Columns: map[int]any{12: int32(55)}, Procedure: "Target"},
+		{EventClass: 11, EventName: "RPC:Completed", Columns: map[int]any{12: int32(55)}, Procedure: "ProcA"},
+	}
+	trees := BuildTrees(events)
+	filtered := FilterTreesByProcedure(trees, "Target")
+	roots, ok := filtered[55]
+	if !ok || len(roots) != 2 {
+		t.Fatalf("expected 2 roots for Target, got %d", len(roots))
+	}
+}
+
+// TestFilterTreesByProcedure_NotFound — процедура не найдена → пустой результат.
+func TestFilterTreesByProcedure_NotFound(t *testing.T) {
+	events := []TRCEvent{
+		{EventClass: 10, EventName: "RPC:Starting", Columns: map[int]any{12: int32(55)}, Procedure: "ProcA"},
+		{EventClass: 11, EventName: "RPC:Completed", Columns: map[int]any{12: int32(55)}, Procedure: "ProcA"},
+	}
+	trees := BuildTrees(events)
+	filtered := FilterTreesByProcedure(trees, "NonExistent")
+	if len(filtered) != 0 {
+		t.Fatalf("expected empty map, got %v", filtered)
+	}
+}
+
+// TestFilterTreesByProcedure_EmptyProcedure — пустая процедура возвращает trees без изменений.
+func TestFilterTreesByProcedure_EmptyProcedure(t *testing.T) {
+	events := []TRCEvent{
+		{EventClass: 10, EventName: "RPC:Starting", Columns: map[int]any{12: int32(55)}, Procedure: "ProcA"},
+		{EventClass: 11, EventName: "RPC:Completed", Columns: map[int]any{12: int32(55)}, Procedure: "ProcA"},
+	}
+	trees := BuildTrees(events)
+	filtered := FilterTreesByProcedure(trees, "")
+	if len(filtered) != len(trees) {
+		t.Fatalf("empty procedure should return trees unchanged, got %v", filtered)
+	}
+}

@@ -151,6 +151,58 @@ func TestExecuteTree_FileMode(t *testing.T) {
 	}
 }
 
+func TestExecuteTree_Procedure(t *testing.T) {
+	p := trcTestPath(t)
+	ctx := context.Background()
+
+	// First get procedures to find a real one.
+	procResult, err := ExecuteProcedures(ctx, nil, SessionSource{FilePath: p})
+	if err != nil {
+		t.Fatalf("ExecuteProcedures error: %v", err)
+	}
+	if procResult.Count == 0 {
+		t.Skip("no procedures in test file")
+	}
+	procName := procResult.Procedures[0].Procedure
+	if procName == "" {
+		t.Skip("first procedure has empty name")
+	}
+
+	// Now build tree filtered by that procedure.
+	result, err := ExecuteTree(ctx, nil, TreeParams{
+		Source:    SessionSource{FilePath: p},
+		Procedure: procName,
+		MaxDepth:  5,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTree error: %v", err)
+	}
+
+	// All root nodes in the filtered tree should have the matching procedure.
+	for _, roots := range result.Trees {
+		for _, root := range roots {
+			if root.Start.Procedure != procName {
+				t.Errorf("root procedure = %q, want %q", root.Start.Procedure, procName)
+			}
+		}
+	}
+}
+
+func TestExecuteTree_ProcedureNotFound(t *testing.T) {
+	p := trcTestPath(t)
+	ctx := context.Background()
+	result, err := ExecuteTree(ctx, nil, TreeParams{
+		Source:    SessionSource{FilePath: p},
+		Procedure: "NonExistentProcXYZ",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTree error: %v", err)
+	}
+	if len(result.Trees) != 0 {
+		t.Errorf("expected empty trees for non-existent procedure, got %d SPIDs", len(result.Trees))
+	}
+}
+
 func TestExecuteErrors_FileMode(t *testing.T) {
 	p := trcTestPath(t)
 	ctx := context.Background()

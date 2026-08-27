@@ -200,7 +200,7 @@ func ExecuteProcedures(ctx context.Context, db *store.DB, src SessionSource) (*P
 // ExecuteTree строит деревья вызовов по SPID.
 func ExecuteTree(ctx context.Context, db *store.DB, p TreeParams) (*TreeResult, error) {
 	if p.Source.SessionID > 0 && db != nil {
-		treeEvents, err := trc.LoadEventsForTree(ctx, db, p.Source.SessionID, p.SPID, p.MaxDepth, p.Limit)
+		treeEvents, err := trc.LoadEventsForTree(ctx, db, p.Source.SessionID, p.SPID, p.MaxDepth, p.Limit, p.Procedure)
 		if err != nil {
 			return nil, err
 		}
@@ -224,6 +224,7 @@ func ExecuteTree(ctx context.Context, db *store.DB, p TreeParams) (*TreeResult, 
 			trees = map[int][]*trc.TRCTreeNode{}
 		}
 	}
+	trees = trc.FilterTreesByProcedure(trees, p.Procedure)
 	trc.LimitTrees(trees, p.Limit)
 	return &TreeResult{Trees: trees}, nil
 }

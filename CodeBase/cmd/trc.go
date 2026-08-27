@@ -234,10 +234,11 @@ func runTRCTree(cmd *cobra.Command, args []string) error {
 	db := openDB()
 	defer closeDB(db)
 	result, err := trcsvc.ExecuteTree(ctx, db, trcsvc.TreeParams{
-		Source:   trcSource(args),
-		SPID:     trcSPID,
-		MaxDepth: trcMaxDepth,
-		Limit:    trcTreeLimit,
+		Source:    trcSource(args),
+		SPID:      trcSPID,
+		MaxDepth:  trcMaxDepth,
+		Limit:     trcTreeLimit,
+		Procedure: trcProcedure,
 	})
 	if err != nil {
 		return err
@@ -378,6 +379,7 @@ func init() {
 	trcTreeCmd.Flags().IntVar(&trcSPID, "spid", 0, "filter by SPID (0 = all)")
 	trcTreeCmd.Flags().IntVar(&trcMaxDepth, "max-depth", 0, "maximum tree depth (0 = unlimited)")
 	trcTreeCmd.Flags().IntVar(&trcTreeLimit, "limit", 0, "maximum root nodes and children per node (0 = unlimited)")
+	trcTreeCmd.Flags().StringVar(&trcProcedure, "proc", "", "filter tree by procedure name (exact match)")
 
 	trcErrorsCmd.Flags().Int64Var(&trcSessionID, "session", 0, "load from saved session ID instead of file")
 	trcErrorsCmd.Flags().IntVar(&trcLimit, "limit", 100, "max events to return (max 1000)")

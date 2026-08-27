@@ -32,6 +32,44 @@
 - **WHEN** выполняется `codebase trc tree file.trc --max-depth 3`
 - **THEN** дерево ограничено глубиной 3 уровня
 
+### Requirement: Фильтрация дерева по имени процедуры
+
+Система SHALL предоставлять фильтрацию дерева вызовов по имени процедуры через параметр `procedure` в CLI (`--proc`) и MCP (`procedure`). При заданном имени процедуры возвращаются только поддеревья, корневые узлы которых имеют `Start.Procedure` совпадающий с указанным именем.
+
+При серверном режиме (session_id > 0) фильтрация SHALL выполняться в SQL внутри recursive CTE `LoadEventsForTree`: anchor ищет события с `procedure = $procedure` (вместо `parent_id IS NULL`), recursive part спускается только от них. Это загружает из БД только поддерево нужной процедуры.
+
+При файловом режиме (без БД) фильтрация SHALL выполняться в памяти: дерево строится по всем событиям, затем `FilterTreesByProcedure` находит узлы с совпадающей процедурой и возвращает их поддеревья.
+
+#### Scenario: Дерево от конкретной процедуры через CLI
+
+- **GIVEN** .trc файл с событиями процедур `ProcA`, `ProcB`, `ProcC` в одном SPID
+- **WHEN** выполняется `codebase trc tree file.trc --proc ProcB`
+- **THEN** возвращено только поддерево `ProcB` с её дочерними вызовами
+
+#### Scenario: Дерево от конкретной процедуры через MCP
+
+- **GIVEN** сохранённая TRC-сессия с событиями процедур `ProcA`, `ProcB`, `ProcC`
+- **WHEN** вызывается MCP-инструмент `codebase_trc_tree` с `procedure = "ProcB"`
+- **THEN** возвращено только поддерево `ProcB` (серверная фильтрация в CTE)
+
+#### Scenario: Дерево от процедуры с фильтром по SPID
+
+- **GIVEN** .trc файл с событиями процедуры `ProcB` в SPID 55 и SPID 66
+- **WHEN** выполняется `codebase trc tree file.trc --proc ProcB --spid 55`
+- **THEN** возвращено только поддерево `ProcB` для SPID 55
+
+#### Scenario: Процедура не найдена
+
+- **GIVEN** .trc файл без событий процедуры `NonExistentProc`
+- **WHEN** выполняется `codebase trc tree file.trc --proc NonExistentProc`
+- **THEN** возвращён пустой результат (нет деревьев)
+
+#### Scenario: Дерево без фильтра по процедуре
+
+- **GIVEN** .trc файл с событиями
+- **WHEN** выполняется `codebase trc tree file.trc` без `--proc`
+- **THEN** возвращён полный лес деревьев по всем SPID (существующее поведение не изменяется)
+
 ### Requirement: Поиск ошибок
 
 Система SHALL предоставлять команду `trc errors` для поиска событий с ненулевой колонкой Error(31).
@@ -108,10 +146,10 @@
 ## Related code
 
 - `internal/trc/aggregate.go` — `AggregateByProcedure` (клиентская агрегация)
-- `internal/trc/tree.go` — `BuildTreesWithDepth`, `BuildTrees`, восстановление вложенности, `ComputeParentIDs`
+- `internal/trc/tree.go` — `BuildTreesWithDepth`, `BuildTrees`, восстановление вложенности, `ComputeParentIDs`, `FilterTreesByProcedure`
 - `internal/trc/parent_tracker.go` — `IncrementalParentTracker`, tracker вложенности событий для tree building
 - `internal/trc/format.go` — `FormatTrees`, текстовое форматирование дерева
-- `internal/trc/store.go` — `LoadProceduresAggregated` (серверная агрегация), `LoadEventsForTree`, `LoadEventsFiltered`, `LoadSlowEvents`, `LoadErrorEvents`, `LoadEventCount`
+- `internal/trc/store.go` — `LoadProceduresAggregated` (серверная агрегация), `LoadEventsForTree` (с фильтром по procedure в CTE), `LoadEventsFiltered`, `LoadSlowEvents`, `LoadErrorEvents`, `LoadEventCount`
 - `internal/trc/enrich.go` — `EnrichEvents`, `EnrichAggregates`
 - `cmd/trc.go` — CLI commands `trc procedures`, `trc tree`, `trc errors`, `trc slow`, `trc events`
 
@@ -125,3 +163,4 @@
 - `IncrementalParentTracker`/`ComputeParentIDs` восстанавливают `ParentID`/`Depth` инкрементально по потоку событий, без перестроения дерева; корректно работают с несбалансированными Starting/Completed (потерянные события)
 - При работе из БД (`session_id > 0`) агрегация выполняется серверно через `LoadProceduresAggregated` (GROUP BY в PostgreSQL); из файла — клиентски через `AggregateByProcedure`
 - `EnrichAggregates` переносит enrichment из sample-событий в агрегации — не делает lookup для каждой агрегации, что устраняет N+1
+- `--proc` для `trc tree` фильтрует дерево по имени процедуры: при серверном режиме — в CTE (anchor по `procedure` вместо `parent_id IS NULL`), при файловом — через `FilterTreesByProcedure` в памяти

@@ -941,18 +941,20 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_trc_tree": {
-			Definition: toolDefinition{Name: "codebase_trc_tree", Description: "Build call trees from a trc session, grouped by SPID, restoring nesting via Starting/Completed event pairs (RPC, SQL:Batch, SQL:Stmt, SP, SP:Stmt). Uses server-side recursive CTE when session_id is provided. If spid is given, returns only that SPID's tree. max_depth limits tree depth (0 = unlimited). limit caps the number of root nodes and children per node (0 = unlimited).", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spid": intProp("Optional SPID filter (0 = auto-select busiest SPID)"), "max_depth": intProp("Maximum tree depth (0 = unlimited)"), "limit": intProp("Maximum root nodes and children per node (0 = unlimited)")})},
+			Definition: toolDefinition{Name: "codebase_trc_tree", Description: "Build call trees from a trc session, grouped by SPID, restoring nesting via Starting/Completed event pairs (RPC, SQL:Batch, SQL:Stmt, SP, SP:Stmt). Uses server-side recursive CTE when session_id is provided. If spid is given, returns only that SPID's tree. max_depth limits tree depth (0 = unlimited). limit caps the number of root nodes and children per node (0 = unlimited). procedure filters the tree to show only subtrees rooted at events with the matching procedure name.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spid": intProp("Optional SPID filter (0 = auto-select busiest SPID)"), "max_depth": intProp("Maximum tree depth (0 = unlimited)"), "limit": intProp("Maximum root nodes and children per node (0 = unlimited)"), "procedure": stringProp("Optional procedure name filter — show only subtrees rooted at events with this procedure")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				maxDepth, _ := optionalInt(args, "max_depth")
 				limit, _ := optionalInt(args, "limit")
 				spidFilter, _ := optionalInt(args, "spid")
 				sessionID, _ := optionalInt64(args, "session_id")
 				filePath, _ := optionalString(args, "file_path")
+				procedure, _ := optionalString(args, "procedure")
 				return trcsvc.ExecuteTree(ctx, db, trcsvc.TreeParams{
-					Source:   trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
-					SPID:     spidFilter,
-					MaxDepth: maxDepth,
-					Limit:    limit,
+					Source:    trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					SPID:      spidFilter,
+					MaxDepth:  maxDepth,
+					Limit:     limit,
+					Procedure: procedure,
 				})
 			},
 		},

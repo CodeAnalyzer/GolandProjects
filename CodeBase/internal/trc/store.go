@@ -690,15 +690,27 @@ func LoadProceduresAggregated(ctx context.Context, db *store.DB, sessionID int64
 // spid: 0 = выбрать SPID с наибольшим числом событий.
 // maxDepth: 0 = без ограничения глубины.
 // maxNodes: 0 = без ограничения количества узлов.
-func LoadEventsForTree(ctx context.Context, db *store.DB, sessionID int64, spid, maxDepth, maxNodes int) ([]TRCEvent, error) {
-	// Если SPID не указан, выбираем SPID с наибольшим числом корневых событий.
+// procedure: если не пустой — anchor CTE ищет события с этой процедурой
+// вместо parent_id IS NULL, и дерево строится только от них.
+func LoadEventsForTree(ctx context.Context, db *store.DB, sessionID int64, spid, maxDepth, maxNodes int, procedure string) ([]TRCEvent, error) {
+	// Если SPID не указан, выбираем SPID с наибольшим числом событий.
 	if spid <= 0 {
-		err := db.QueryRowContext(ctx, 
-			`SELECT spid FROM trc_events
-			 WHERE session_id = $1 AND parent_id IS NULL AND spid IS NOT NULL
-			 GROUP BY spid ORDER BY count(*) DESC LIMIT 1`,
-			sessionID,
-		).Scan(&spid)
+		var err error
+		if procedure != "" {
+			err = db.QueryRowContext(ctx,
+				`SELECT spid FROM trc_events
+				 WHERE session_id = $1 AND procedure = $2 AND spid IS NOT NULL
+				 GROUP BY spid ORDER BY count(*) DESC LIMIT 1`,
+				sessionID, procedure,
+			).Scan(&spid)
+		} else {
+			err = db.QueryRowContext(ctx,
+				`SELECT spid FROM trc_events
+				 WHERE session_id = $1 AND parent_id IS NULL AND spid IS NOT NULL
+				 GROUP BY spid ORDER BY count(*) DESC LIMIT 1`,
+				sessionID,
+			).Scan(&spid)
+		}
 		if err != nil {
 			return nil, nil // нет событий
 		}
@@ -706,6 +718,15 @@ func LoadEventsForTree(ctx context.Context, db *store.DB, sessionID int64, spid,
 
 	// Recursive CTE: нумеруем строки сессии row_number, маппим parent_id
 	// (1-based offset) на реальный id через join с numbered CTE.
+	// Если procedure задан, anchor ищет события с этой процедурой
+	// вместо parent_id IS NULL — дерево строится только от них.
+	anchorWhere := "e.session_id = $1 AND e.spid = $2 AND e.parent_id IS NULL"
+	args := []interface{}{sessionID, spid, maxDepth}
+	if procedure != "" {
+		anchorWhere = "e.session_id = $1 AND e.spid = $2 AND e.procedure = $4"
+		args = append(args, procedure)
+	}
+
 	query := `WITH RECURSIVE numbered AS (
 		SELECT id, row_number() OVER (ORDER BY id) AS rn
 		FROM trc_events WHERE session_id = $1
@@ -715,7 +736,7 @@ func LoadEventsForTree(ctx context.Context, db *store.DB, sessionID int64, spid,
 		       e.params, e.columns, e.parent_id, e.depth, e.id, 1 AS tree_depth
 		FROM trc_events e
 		JOIN numbered n ON e.id = n.id
-		WHERE e.session_id = $1 AND e.spid = $2 AND e.parent_id IS NULL
+		WHERE ` + anchorWhere + `
 		UNION ALL
 		SELECT c.event_class, c.event_name, c.procedure, c.duration_ms,
 		       c.params, c.columns, c.parent_id, c.depth, c.id, t.tree_depth + 1
@@ -728,10 +749,13 @@ func LoadEventsForTree(ctx context.Context, db *store.DB, sessionID int64, spid,
 	SELECT event_class, event_name, procedure, duration_ms, params, columns,
 	       parent_id, depth
 	FROM tree`
-	args := []interface{}{sessionID, spid, maxDepth}
 
 	if maxNodes > 0 {
-		query += ` LIMIT $4`
+		paramIdx := "$4"
+		if procedure != "" {
+			paramIdx = "$5"
+		}
+		query += ` LIMIT ` + paramIdx
 		args = append(args, maxNodes)
 	}
 

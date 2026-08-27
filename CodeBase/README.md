@@ -591,6 +591,10 @@ codebase trc procedures --session 42 --json
 codebase trc tree path/to/file.trc
 codebase trc tree --session 42 --spid 55 --max-depth 3 --limit 50
 
+# Дерево от конкретной процедуры (только её поддерево)
+codebase trc tree path/to/file.trc --proc MyProc
+codebase trc tree --session 42 --proc MyProc --spid 55
+
 # События с ошибками (Error(31) ≠ 0)
 codebase trc errors path/to/file.trc
 codebase trc errors --session 42 --json
@@ -631,7 +635,7 @@ codebase trc prune --keep-last 5
 
 Командно-специфичные флаги:
 - `--spid N` — фильтр по SPID (для `events`, `tree`, 0 = все)
-- `--proc NAME` — фильтр по имени процедуры (для `events`, exact match)
+- `--proc NAME` — фильтр по имени процедуры (для `events` и `tree`, exact match)
 - `--slow-ms N` — порог медленности в миллисекундах (для `slow`, по умолчанию из `[trc] slow_threshold_ms`)
 - `--max-depth N` — максимальная глубина дерева (для `tree`, 0 = без лимита)
 - `--limit N` — максимум root nodes и children per node (для `tree`, 0 = без лимита)
@@ -846,7 +850,7 @@ IDE может подключить несколько MCP-серверов на
 | `codebase_trc_summary` | Сводка сессии: total_events, метаданные | `session_id` или `file_path` |
 | `codebase_trc_events` | Декодированные события с фильтрами | `session_id` или `file_path`, опц. `spid`/`procedure`/`limit` |
 | `codebase_trc_procedures` | Агрегация по процедурам с enrichment | `session_id` или `file_path` |
-| `codebase_trc_tree` | Дерево вызовов по SPID | `session_id` или `file_path`, опц. `spid`/`max_depth`/`limit` |
+| `codebase_trc_tree` | Дерево вызовов по SPID с опц. фильтром по процедуре | `session_id` или `file_path`, опц. `spid`/`max_depth`/`limit`/`procedure` |
 | `codebase_trc_errors` | События с ненулевой Error(31) | `session_id` или `file_path` |
 | `codebase_trc_slow` | Медленные события (порог DurationMs) | `session_id` или `file_path`, опц. `threshold_ms` |
 | `codebase_trc_delete` | Удалить сессию | `session_id` |

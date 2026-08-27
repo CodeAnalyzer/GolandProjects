@@ -247,3 +247,38 @@ func formatTreeNode(sb *strings.Builder, node *TRCTreeNode, depth int) {
 		formatTreeNode(sb, child, depth+1)
 	}
 }
+
+// FilterTreesByProcedure фильтрует деревья по имени процедуры: находит все
+// узлы, где Start.Procedure совпадает с procedure, и возвращает новые деревья
+// с этими узлами как корнями (со всеми их детьми). Если procedure пустой,
+// возвращает trees без изменений.
+func FilterTreesByProcedure(trees map[int][]*TRCTreeNode, procedure string) map[int][]*TRCTreeNode {
+	if procedure == "" {
+		return trees
+	}
+	result := make(map[int][]*TRCTreeNode)
+	for spid, roots := range trees {
+		var filtered []*TRCTreeNode
+		for _, root := range roots {
+			filtered = append(filtered, findNodesByProcedure(root, procedure)...)
+		}
+		if len(filtered) > 0 {
+			result[spid] = filtered
+		}
+	}
+	return result
+}
+
+// findNodesByProcedure рекурсивно обходит дерево и возвращает все узлы,
+// где Start.Procedure совпадает с procedure (вместе с их поддеревьями).
+func findNodesByProcedure(node *TRCTreeNode, procedure string) []*TRCTreeNode {
+	var result []*TRCTreeNode
+	if node.Start != nil && node.Start.Procedure == procedure {
+		result = append(result, node)
+		return result
+	}
+	for _, child := range node.Children {
+		result = append(result, findNodesByProcedure(child, procedure)...)
+	}
+	return result
+}
