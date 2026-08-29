@@ -174,6 +174,17 @@ func splitSQLByTopLevelComma(text string) []string {
 			continue
 		}
 		if !inSingleQuote {
+			if r == '-' && i+1 < len(runes) && runes[i+1] == '-' {
+				part := strings.TrimSpace(current.String())
+				if part != "" {
+					parts = append(parts, part)
+				}
+				current.Reset()
+				for i < len(runes) && runes[i] != '\n' {
+					i++
+				}
+				continue
+			}
 			switch r {
 			case '(':
 				parenDepth++
@@ -763,6 +774,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		}
 		if strings.Contains(line, "/*") && !strings.Contains(line, "*/") {
 			inBlockComment = true
+			continue
 		}
 
 		trimmed := strings.TrimSpace(line)
@@ -841,7 +853,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 			if projectionPart, tableName, ok := findTopLevelIntoClause(candidate); ok {
 				if projectionPart != "" {
 					if selectIntoProjection.Len() > 0 {
-						selectIntoProjection.WriteString(" ")
+						selectIntoProjection.WriteString("\n")
 					}
 					selectIntoProjection.WriteString(projectionPart)
 				}
@@ -856,7 +868,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 					} else {
 						if candidate != "" {
 							if selectIntoProjection.Len() > 0 {
-								selectIntoProjection.WriteString(" ")
+								selectIntoProjection.WriteString("\n")
 							}
 							selectIntoProjection.WriteString(candidate)
 						}
@@ -864,7 +876,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 				} else {
 					if candidate != "" {
 						if selectIntoProjection.Len() > 0 {
-							selectIntoProjection.WriteString(" ")
+							selectIntoProjection.WriteString("\n")
 						}
 						selectIntoProjection.WriteString(candidate)
 					}
@@ -1853,7 +1865,7 @@ func (p *Parser) isKeyword(word string) bool {
 		"LIKE": true, "IS": true, "NULL": true, "AS": true, "DISTINCT": true,
 		"GROUP": true, "BY": true, "HAVING": true, "ORDER": true, "ASC": true,
 		"DESC": true, "UNION": true, "ALL": true, "TOP": true, "CASE": true,
-		"WHEN": true, "THEN": true, "END": true, "INSERT": true,
+		"WHEN": true, "THEN": true, "ELSE": true, "END": true, "INSERT": true,
 		"INTO": true, "VALUES": true, "UPDATE": true, "SET": true, "DELETE": true,
 		"CREATE": true, "TABLE": true, "INDEX": true, "VIEW": true, "PROC": true,
 		"PROCEDURE": true, "FUNCTION": true, "DECLARE": true, "BEGIN": true,

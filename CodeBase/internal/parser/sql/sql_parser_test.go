@@ -696,3 +696,176 @@ X_ANYMODE(Ins_Check_ExistsLinkObject)
 		t.Fatalf("real procedure line end should be set, got 0")
 	}
 }
+
+func TestBlockCommentCreateTable(t *testing.T) {
+	parser := NewParser()
+	content := `/*  create table tFoo
+    (
+       FooID DSIDENTIFIER,
+       Brief DSBRIEFNAME
+    )  */
+select tal.FooID as FooID,
+       tal.Brief as Brief
+  into tFoo
+  from tAnother tal
+`
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	for _, col := range result.ColumnDefinitions {
+		if col == nil || col.TableName != "tFoo" {
+			continue
+		}
+		if col.DefinitionKind == "create_table" {
+			t.Fatalf("unexpected create_table column %q (dataType=%q) — block comment should be skipped", col.ColumnName, col.DataType)
+		}
+		if col.DefinitionKind != "select_into" {
+			t.Fatalf("unexpected definition_kind %q for column %q, want select_into", col.DefinitionKind, col.ColumnName)
+		}
+	}
+
+	hasFooID := false
+	hasBrief := false
+	for _, col := range result.ColumnDefinitions {
+		if col == nil || col.TableName != "tFoo" || col.DefinitionKind != "select_into" {
+			continue
+		}
+		if col.ColumnName == "FooID" {
+			hasFooID = true
+		}
+		if col.ColumnName == "Brief" {
+			hasBrief = true
+		}
+	}
+	if !hasFooID {
+		t.Fatal("missing select_into column FooID")
+	}
+	if !hasBrief {
+		t.Fatal("missing select_into column Brief")
+	}
+}
+
+func TestCaseElseKeyword(t *testing.T) {
+	parser := NewParser()
+	if !parser.isKeyword("else") {
+		t.Fatal("isKeyword(\"else\") = false, want true")
+	}
+	if !parser.isKeyword("ELSE") {
+		t.Fatal("isKeyword(\"ELSE\") = false, want true")
+	}
+
+	content := `select case rn.ResourceType
+         when 0 then 1
+         when 1 then 2
+         else ""
+       end as NodeNumber,
+       tal.FundID as CurrencyID
+  into tTestElse
+  from tAnother tal
+`
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	for _, col := range result.ColumnDefinitions {
+		if col == nil {
+			continue
+		}
+		if strings.EqualFold(col.ColumnName, "else") {
+			t.Fatalf("found column named 'else' — should be filtered as keyword: %+v", col)
+		}
+	}
+}
+
+func TestSplitSQLByTopLevelComma_DashComment(t *testing.T) {
+	input := "tal.NodeID, --- Идентификатор Узла или Идентификатор счёта, общего для ФО"
+	got := splitSQLByTopLevelComma(input)
+	want := []string{"tal.NodeID"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("splitSQLByTopLevelComma(%q) = %#v, want %#v", input, got, want)
+	}
+
+	input2 := "a, b, --- comment with, comma"
+	got2 := splitSQLByTopLevelComma(input2)
+	want2 := []string{"a", "b"}
+	if !reflect.DeepEqual(got2, want2) {
+		t.Fatalf("splitSQLByTopLevelComma(%q) = %#v, want %#v", input2, got2, want2)
+	}
+
+	input3 := "a, b -- trailing comment, with comma"
+	got3 := splitSQLByTopLevelComma(input3)
+	want3 := []string{"a", "b"}
+	if !reflect.DeepEqual(got3, want3) {
+		t.Fatalf("splitSQLByTopLevelComma(%q) = %#v, want %#v", input3, got3, want3)
+	}
+}
+
+func TestSelectIntoPatch7_2_1056(t *testing.T) {
+	parser := NewParser()
+	content := `/*  create table tConsRuleAccSync
+    (
+       RuleID DSIDENTIFIER,
+       Brief DSACCNUMBER,
+       TypeRule DSBRIEFNAME,
+       Name DSNAME,
+       NodeNumber DSIDENTIFIER,
+       CurrencyID DSIDENTIFIER,
+       FindExist DSIDENTIFIER,
+       MaskAccountPicture DSMASK
+    )  */
+select tal.TypeAccLinkID as RuleID,    --- Идентификатор правила
+       tal.Brief as Brief,             --- Бrief
+       lat.Brief as TypeRule,
+       tal.Name as Name,
+       case rn.ResourceType
+         when 0 then rn.NodeID
+         when 1 then isnull(convert(varchar(40),trim(rn.ParentMask)+
+         replicate("-",sign(len(trim(rn.ParentMask))))+
+         trim(rn.Brief)), "")
+         else ""
+       end as NodeNumber,
+       tal.FundID as CurrencyID,
+       (tal.Flags&TAL_FINDEXISTENT)/TAL_FINDEXISTENT as FindExist,
+       tal.MaskAccountPicture as MaskAccountPicture
+  into tConsRuleAccSync
+  from tAnother tal
+`
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	for _, col := range result.ColumnDefinitions {
+		if col == nil || col.TableName != "tConsRuleAccSync" {
+			continue
+		}
+		if col.DefinitionKind == "create_table" {
+			t.Fatalf("unexpected create_table column %q (dataType=%q) — block comment should be skipped", col.ColumnName, col.DataType)
+		}
+		if strings.EqualFold(col.ColumnName, "else") {
+			t.Fatalf("found column named 'else' — should be filtered as keyword")
+		}
+		if strings.EqualFold(col.ColumnName, "lat.Brief") {
+			t.Fatalf("found column 'lat.Brief' — should be 'TypeRule' (alias)")
+		}
+		if strings.Contains(strings.ToLower(col.ColumnName), "trim(rn.brief)") {
+			t.Fatalf("found expression fragment as column name: %q", col.ColumnName)
+		}
+	}
+
+	hasTypeRule := false
+	for _, col := range result.ColumnDefinitions {
+		if col == nil || col.TableName != "tConsRuleAccSync" || col.DefinitionKind != "select_into" {
+			continue
+		}
+		if col.ColumnName == "TypeRule" {
+			hasTypeRule = true
+		}
+	}
+	if !hasTypeRule {
+		t.Fatal("missing select_into column TypeRule (should be extracted from 'lat.Brief as TypeRule')")
+	}
+}

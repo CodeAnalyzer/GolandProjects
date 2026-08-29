@@ -635,6 +635,17 @@ func splitSQLByTopLevelCommaLocal(text string) []string {
 			continue
 		}
 		if !inSingleQuote {
+			if r == '-' && i+1 < len(runes) && runes[i+1] == '-' {
+				part := strings.TrimSpace(current.String())
+				if part != "" {
+					parts = append(parts, part)
+				}
+				current.Reset()
+				for i < len(runes) && runes[i] != '\n' {
+					i++
+				}
+				continue
+			}
 			switch r {
 			case '(':
 				parenDepth++
