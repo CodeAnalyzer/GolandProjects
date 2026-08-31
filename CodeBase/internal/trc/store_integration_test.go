@@ -81,3 +81,56 @@ func TestPruneAndDeleteTRCSessions(t *testing.T) {
 		t.Fatal("insert after truncate failed")
 	}
 }
+
+func TestLoadEventsForTree_DiagnosticFilteredFromRoot(t *testing.T) {
+	db := testutil.Open(t)
+
+	var sessionID int64
+	err := db.QueryRow(
+		`INSERT INTO trc_sessions (file_path, file_size, total_events)
+		 VALUES ($1, 10, 4) RETURNING id`,
+		"diag-test.trc",
+	).Scan(&sessionID)
+	if err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	defer func() {
+		_ = DeleteSession(context.Background(), db, sessionID)
+	}()
+
+	events := []struct {
+		name      string
+		class     int
+		spid      int
+		parentID  *int
+		procedure string
+	}{
+		{"SP:Recompile", 37, 76, nil, ""},
+		{"SQL:StmtRecompile", 166, 76, nil, ""},
+		{"RPC:Starting", 10, 76, nil, "ProcA"},
+		{"RPC:Completed", 11, 76, nil, "ProcA"},
+	}
+	for _, e := range events {
+		_, err := db.Exec(
+			`INSERT INTO trc_events (session_id, event_class, event_name, spid, parent_id, procedure, duration_ms)
+			 VALUES ($1, $2, $3, $4, $5, $6, 0)`,
+			sessionID, e.class, e.name, e.spid, e.parentID, e.procedure,
+		)
+		if err != nil {
+			t.Fatalf("insert event %s: %v", e.name, err)
+		}
+	}
+
+	treeEvents, err := LoadEventsForTree(context.Background(), db, sessionID, 76, 0, 0, "")
+	if err != nil {
+		t.Fatalf("LoadEventsForTree: %v", err)
+	}
+	for _, ev := range treeEvents {
+		if ev.EventName != "RPC:Starting" && ev.EventName != "RPC:Completed" {
+			t.Errorf("diagnostic event %q leaked into tree", ev.EventName)
+		}
+	}
+	if len(treeEvents) == 0 {
+		t.Fatal("expected at least RPC:Starting/Completed events in tree, got 0")
+	}
+}

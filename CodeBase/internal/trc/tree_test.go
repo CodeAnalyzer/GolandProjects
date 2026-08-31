@@ -80,19 +80,16 @@ func TestBuildTrees_UnmatchedCompleted(t *testing.T) {
 	}
 }
 
-// TestBuildTrees_SimpleEvent — событие без Starting/Completed суффикса
-// (например, SP:Recompile) становится отдельным узлом.
+// TestBuildTrees_SimpleEvent — diagnostic-событие без Starting/Completed
+// контекста (например, SP:Recompile) не становится корневым узлом.
 func TestBuildTrees_SimpleEvent(t *testing.T) {
 	events := []TRCEvent{
 		{EventClass: 37, EventName: "SP:Recompile", Columns: map[int]any{12: int32(9)}},
 	}
 	trees := BuildTrees(events)
 	roots := trees[9]
-	if len(roots) != 1 {
-		t.Fatalf("expected 1 root, got %d", len(roots))
-	}
-	if roots[0].Start.EventName != "SP:Recompile" {
-		t.Errorf("root = %q, want SP:Recompile", roots[0].Start.EventName)
+	if len(roots) != 0 {
+		t.Fatalf("expected 0 roots (diagnostic without parent), got %d", len(roots))
 	}
 }
 
@@ -284,5 +281,55 @@ func TestFilterTreesByProcedure_EmptyProcedure(t *testing.T) {
 	filtered := FilterTreesByProcedure(trees, "")
 	if len(filtered) != len(trees) {
 		t.Fatalf("empty procedure should return trees unchanged, got %v", filtered)
+	}
+}
+
+// TestBuildSPIDTree_DiagnosticNoRoot — diagnostic-события (SP:Recompile,
+// SQL:StmtRecompile) перед любым Starting не должны становиться корневыми узлами.
+func TestBuildSPIDTree_DiagnosticNoRoot(t *testing.T) {
+	events := []TRCEvent{
+		{EventClass: 37, EventName: "SP:Recompile", Columns: map[int]any{12: int32(76)}},
+		{EventClass: 166, EventName: "SQL:StmtRecompile", Columns: map[int]any{12: int32(76)}},
+		{EventClass: 10, EventName: "RPC:Starting", Columns: map[int]any{12: int32(76)}, Procedure: "ProcA"},
+		{EventClass: 11, EventName: "RPC:Completed", Columns: map[int]any{12: int32(76)}, Procedure: "ProcA", DurationMs: 100},
+	}
+	trees := BuildTrees(events)
+	roots, ok := trees[76]
+	if !ok {
+		t.Fatalf("no tree for SPID 76, got SPIDs: %v", trees)
+	}
+	if len(roots) != 1 {
+		t.Fatalf("expected 1 root (RPC:Starting), got %d roots", len(roots))
+	}
+	if roots[0].Start.EventName != "RPC:Starting" {
+		t.Errorf("root event = %q, want RPC:Starting", roots[0].Start.EventName)
+	}
+}
+
+// TestBuildSPIDTree_DiagnosticInsideCall — diagnostic-событие между Starting
+// и Completed сохраняется как ребёнок узла Starting.
+func TestBuildSPIDTree_DiagnosticInsideCall(t *testing.T) {
+	events := []TRCEvent{
+		{EventClass: 10, EventName: "RPC:Starting", Columns: map[int]any{12: int32(55)}, Procedure: "ProcA"},
+		{EventClass: 37, EventName: "SP:Recompile", Columns: map[int]any{12: int32(55)}},
+		{EventClass: 11, EventName: "RPC:Completed", Columns: map[int]any{12: int32(55)}, Procedure: "ProcA", DurationMs: 100},
+	}
+	trees := BuildTrees(events)
+	roots, ok := trees[55]
+	if !ok {
+		t.Fatalf("no tree for SPID 55, got SPIDs: %v", trees)
+	}
+	if len(roots) != 1 {
+		t.Fatalf("expected 1 root, got %d", len(roots))
+	}
+	root := roots[0]
+	if root.Start.EventName != "RPC:Starting" {
+		t.Errorf("root event = %q, want RPC:Starting", root.Start.EventName)
+	}
+	if len(root.Children) != 1 {
+		t.Fatalf("expected 1 child (SP:Recompile), got %d", len(root.Children))
+	}
+	if root.Children[0].Start.EventName != "SP:Recompile" {
+		t.Errorf("child event = %q, want SP:Recompile", root.Children[0].Start.EventName)
 	}
 }

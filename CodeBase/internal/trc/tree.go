@@ -199,6 +199,9 @@ func buildSPIDTree(events []*TRCEvent) []*TRCTreeNode {
 				attach(&TRCTreeNode{Start: ev})
 			}
 		default:
+			if len(stack) == 0 {
+				continue
+			}
 			attach(&TRCTreeNode{Start: ev})
 		}
 	}

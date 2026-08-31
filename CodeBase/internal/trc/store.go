@@ -720,7 +720,7 @@ func LoadEventsForTree(ctx context.Context, db *store.DB, sessionID int64, spid,
 	// (1-based offset) на реальный id через join с numbered CTE.
 	// Если procedure задан, anchor ищет события с этой процедурой
 	// вместо parent_id IS NULL — дерево строится только от них.
-	anchorWhere := "e.session_id = $1 AND e.spid = $2 AND e.parent_id IS NULL"
+	anchorWhere := "e.session_id = $1 AND e.spid = $2 AND e.parent_id IS NULL AND (e.event_name LIKE '%Starting' OR e.event_name LIKE '%Completed')"
 	args := []interface{}{sessionID, spid, maxDepth}
 	if procedure != "" {
 		anchorWhere = "e.session_id = $1 AND e.spid = $2 AND e.procedure = $4"
