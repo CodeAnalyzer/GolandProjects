@@ -56,10 +56,9 @@ func RunStdio(serverVersion string, profile string, logger *log.Logger) error {
 func registerSDKCoreTools(server *mcpsdk.Server, registry map[string]registeredTool, profile string, logger *log.Logger) {
 	for _, tool := range registry {
 		server.AddTool(&mcpsdk.Tool{
-			Name:         tool.Definition.Name,
-			Description:  tool.Definition.Description,
-			InputSchema:  tool.Definition.InputSchema,
-			OutputSchema: defaultToolOutputSchema,
+			Name:        tool.Definition.Name,
+			Description: tool.Definition.Description,
+			InputSchema: tool.Definition.InputSchema,
 		}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 			start := time.Now()
 

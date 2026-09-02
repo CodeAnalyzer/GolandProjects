@@ -3,9 +3,12 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/codebase/internal/config"
 )
 
 func TestToolRegistryContainsPing(t *testing.T) {
@@ -314,5 +317,92 @@ func TestTRCPruneHandlerAcceptsZeroKeepLast(t *testing.T) {
 	})
 	if err != nil && err.Error() == "keep_last must be >= 0" {
 		t.Fatalf("keep_last=0 should be accepted, got: %v", err)
+	}
+}
+
+func newSDKTestClientSession(t *testing.T, profile string) *mcpsdk.ClientSession {
+	t.Helper()
+	config.CreateDefault("")
+	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "codebase-test", Version: "test"}, nil)
+	registry, err := buildToolRegistryForProfile(nil, profile)
+	if err != nil {
+		t.Fatalf("buildToolRegistryForProfile: %v", err)
+	}
+	registerSDKCoreTools(server, registry, profile, nil)
+	serverTransport, clientTransport := mcpsdk.NewInMemoryTransports()
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	t.Cleanup(func() { _ = serverSession.Close() })
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "client-test", Version: "test"}, nil)
+	clientSession, err := client.Connect(context.Background(), clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { _ = clientSession.Close() })
+	return clientSession
+}
+
+func TestSDKToolsList_NoOutputSchema(t *testing.T) {
+	for _, profile := range []string{"", "query", "rti", "trc", "review"} {
+		t.Run("profile="+profile, func(t *testing.T) {
+			cs := newSDKTestClientSession(t, profile)
+			res, err := cs.ListTools(context.Background(), &mcpsdk.ListToolsParams{})
+			if err != nil {
+				t.Fatalf("ListTools: %v", err)
+			}
+			if len(res.Tools) == 0 {
+				t.Fatal("no tools registered")
+			}
+			for _, tool := range res.Tools {
+				if tool.OutputSchema != nil {
+					t.Errorf("tool %s declares outputSchema", tool.Name)
+				}
+			}
+		})
+	}
+}
+
+func TestSDKCallTool_Ping_NoValidationError(t *testing.T) {
+	cs := newSDKTestClientSession(t, "")
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "codebase_ping"})
+	if err != nil {
+		t.Fatalf("CallTool codebase_ping: %v", err)
+	}
+	if res.IsError {
+		t.Fatal("unexpected isError result for codebase_ping")
+	}
+	if len(res.Content) != 1 {
+		t.Fatalf("expected exactly 1 content block, got %d", len(res.Content))
+	}
+	if _, ok := res.Content[0].(*mcpsdk.TextContent); !ok {
+		t.Fatalf("expected TextContent, got %T", res.Content[0])
+	}
+	if res.StructuredContent != nil {
+		t.Fatal("expected no structuredContent in ping result")
+	}
+}
+
+func TestSDKCallTool_ErrorPath_TextOnly(t *testing.T) {
+	cs := newSDKTestClientSession(t, "rti")
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "codebase_rti_parse",
+		Arguments: map[string]interface{}{"file_path": filepath.Join(t.TempDir(), "missing.rti")},
+	})
+	if err != nil {
+		t.Fatalf("CallTool must not fail with protocol error, got: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("expected isError=true for missing file")
+	}
+	if len(res.Content) != 1 {
+		t.Fatalf("expected exactly 1 content block, got %d", len(res.Content))
+	}
+	if _, ok := res.Content[0].(*mcpsdk.TextContent); !ok {
+		t.Fatalf("expected TextContent, got %T", res.Content[0])
+	}
+	if res.StructuredContent != nil {
+		t.Fatal("expected no structuredContent in error result")
 	}
 }
