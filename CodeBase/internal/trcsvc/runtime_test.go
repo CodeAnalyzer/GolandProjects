@@ -4,7 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/codebase/internal/trc"
 )
 
 // modificationsDir — папка с тестовыми файлами (.trc/.xml), относительно
@@ -273,5 +276,81 @@ func TestNormalizeLimit(t *testing.T) {
 		if got != tc.expected {
 			t.Errorf("normalizeLimit(%d) = %d, want %d", tc.input, got, tc.expected)
 		}
+	}
+}
+
+// TestExecuteTree_CompletedOnlyFileMode — проверяет, что для SPID с только
+// Completed-событиями дерево имеет вложенную структуру (не плоский список).
+// Тест парсит DIAPR-391.trc, находит SPID без Starting-событий, и проверяет
+// что ExecuteTree строит дерево с глубиной > 0 для этого SPID.
+func TestExecuteTree_CompletedOnlyFileMode(t *testing.T) {
+	p := trcTestPath(t)
+
+	// Парсим файл, чтобы найти Completed-only SPID.
+	parseResult, err := trc.ParseFile(p)
+	if err != nil {
+		t.Fatalf("ParseFile error: %v", err)
+	}
+
+	// Группируем события по SPID и ищем SPID без Starting.
+	spidHasStarting := make(map[int]bool)
+	spidEventCount := make(map[int]int)
+	for _, ev := range parseResult.Events {
+		spidVal, ok := ev.Columns[12].(int32)
+		if !ok {
+			continue
+		}
+		s := int(spidVal)
+		spidEventCount[s]++
+		if strings.HasSuffix(ev.EventName, "Starting") {
+			spidHasStarting[s] = true
+		}
+	}
+
+	var completedOnlySPID int
+	for s, cnt := range spidEventCount {
+		if !spidHasStarting[s] && cnt >= 2 {
+			completedOnlySPID = s
+			break
+		}
+	}
+	if completedOnlySPID == 0 {
+		t.Skip("no Completed-only SPID with >= 2 events found in test file")
+	}
+
+	// Вызываем ExecuteTree для найденного SPID.
+	ctx := context.Background()
+	result, err := ExecuteTree(ctx, nil, TreeParams{
+		Source:   SessionSource{FilePath: p},
+		SPID:     completedOnlySPID,
+		MaxDepth: 10,
+		Limit:    1000,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTree error: %v", err)
+	}
+
+	roots, ok := result.Trees[completedOnlySPID]
+	if !ok || len(roots) == 0 {
+		t.Fatalf("expected non-empty trees for SPID %d, got %v", completedOnlySPID, result.Trees)
+	}
+
+	// Проверяем, что хотя бы один корень имеет детей (вложенность).
+	hasNesting := false
+	var checkNode func(n *trc.TRCTreeNode)
+	checkNode = func(n *trc.TRCTreeNode) {
+		if len(n.Children) > 0 {
+			hasNesting = true
+		}
+		for _, c := range n.Children {
+			checkNode(c)
+		}
+	}
+	for _, root := range roots {
+		checkNode(root)
+	}
+
+	if !hasNesting {
+		t.Errorf("expected nested tree structure for Completed-only SPID %d, but all roots are flat", completedOnlySPID)
 	}
 }

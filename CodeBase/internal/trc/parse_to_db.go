@@ -1,8 +1,8 @@
 package trc
 
 import (
-	"context"
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -161,6 +161,9 @@ func ParseFileToDB(ctx context.Context, path string, db *store.DB) (sessionID in
 	if parseErr != nil {
 		return sessionID, totalEvents, fmt.Errorf("trc: parse events %s: %w", path, parseErr)
 	}
+
+	// Flush remaining pendingCompleted buffers (Completed-only SPID fallback).
+	tracker.Flush()
 
 	// Вставляем остаток батча.
 	if err := flushBatch(); err != nil {

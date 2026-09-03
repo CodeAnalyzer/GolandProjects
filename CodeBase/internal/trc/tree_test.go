@@ -333,3 +333,248 @@ func TestBuildSPIDTree_DiagnosticInsideCall(t *testing.T) {
 		t.Errorf("child event = %q, want SP:Recompile", root.Children[0].Start.EventName)
 	}
 }
+
+// makeCompletedEventWithTime создаёт TRCEvent Completed с заданными временами.
+func makeCompletedEventWithTime(eventClass int, eventName string, spid int, proc string, start, end SystemTime) TRCEvent {
+	return TRCEvent{
+		EventClass: eventClass,
+		EventName:  eventName,
+		Columns:    map[int]any{12: int32(spid), 14: start, 15: end},
+		Procedure:  proc,
+	}
+}
+
+func st(h, m, s int) SystemTime {
+	return SystemTime{Year: 2026, Month: 1, Day: 1, Hour: uint16(h), Minute: uint16(m), Second: uint16(s)}
+}
+
+// TestEventClassRank — проверка иерархии EventClass.
+func TestEventClassRank(t *testing.T) {
+	tests := []struct {
+		eventClass int
+		want       int
+	}{
+		{11, 4},  // RPC:Completed
+		{43, 3},  // SP:Completed
+		{45, 2},  // SP:StmtCompleted
+		{12, 1},  // SQL:BatchCompleted
+		{41, 0},  // SQL:StmtCompleted
+		{99, -1}, // unknown
+	}
+	for _, tt := range tests {
+		got := eventClassRank(tt.eventClass)
+		if got != tt.want {
+			t.Errorf("eventClassRank(%d) = %d, want %d", tt.eventClass, got, tt.want)
+		}
+	}
+}
+
+// TestHasStartingEvents — проверка детекции Starting-событий.
+func TestHasStartingEvents(t *testing.T) {
+	completedOnly := []*TRCEvent{
+		{EventName: "SP:Completed", Columns: map[int]any{12: int32(1)}},
+		{EventName: "SP:StmtCompleted", Columns: map[int]any{12: int32(1)}},
+	}
+	if hasStartingEvents(completedOnly) {
+		t.Error("expected false for Completed-only events")
+	}
+
+	mixed := []*TRCEvent{
+		{EventName: "SP:Completed", Columns: map[int]any{12: int32(1)}},
+		{EventName: "SP:Starting", Columns: map[int]any{12: int32(1)}},
+	}
+	if !hasStartingEvents(mixed) {
+		t.Error("expected true for mixed events")
+	}
+}
+
+// TestBuildTrees_CompletedOnlyNesting — 3 уровня вложенности (RPC → SP → SP:Stmt).
+func TestBuildTrees_CompletedOnlyNesting(t *testing.T) {
+	events := []TRCEvent{
+		makeCompletedEventWithTime(11, "RPC:Completed", 88, "ProcA", st(10, 0, 0), st(10, 5, 0)),
+		makeCompletedEventWithTime(43, "SP:Completed", 88, "ProcB", st(10, 1, 0), st(10, 4, 0)),
+		makeCompletedEventWithTime(45, "SP:StmtCompleted", 88, "ProcC", st(10, 2, 0), st(10, 3, 0)),
+	}
+	trees := BuildTrees(events)
+	roots := trees[88]
+	if len(roots) != 1 {
+		t.Fatalf("expected 1 root, got %d", len(roots))
+	}
+	if roots[0].Start.EventName != "RPC:Completed" {
+		t.Errorf("root = %q, want RPC:Completed", roots[0].Start.EventName)
+	}
+	if len(roots[0].Children) != 1 {
+		t.Fatalf("expected 1 child, got %d", len(roots[0].Children))
+	}
+	child := roots[0].Children[0]
+	if child.Start.EventName != "SP:Completed" {
+		t.Errorf("child = %q, want SP:Completed", child.Start.EventName)
+	}
+	if len(child.Children) != 1 {
+		t.Fatalf("expected 1 grandchild, got %d", len(child.Children))
+	}
+	grandchild := child.Children[0]
+	if grandchild.Start.EventName != "SP:StmtCompleted" {
+		t.Errorf("grandchild = %q, want SP:StmtCompleted", grandchild.Start.EventName)
+	}
+}
+
+// TestBuildTrees_CompletedOnly_RealWorldPattern — паттерн из trc-tree-flat.txt:
+// SP:Completed + SP:StmtCompleted с совпадающими интервалами.
+func TestBuildTrees_CompletedOnly_RealWorldPattern(t *testing.T) {
+	events := []TRCEvent{
+		makeCompletedEventWithTime(43, "SP:Completed", 122, "MassDoc_Add", st(9, 42, 55), st(9, 43, 24)),
+		makeCompletedEventWithTime(45, "SP:StmtCompleted", 122, "MassDoc_Add", st(9, 42, 55), st(9, 43, 24)),
+	}
+	trees := BuildTrees(events)
+	roots := trees[122]
+	if len(roots) != 1 {
+		t.Fatalf("expected 1 root, got %d", len(roots))
+	}
+	if roots[0].Start.EventName != "SP:Completed" {
+		t.Errorf("root = %q, want SP:Completed", roots[0].Start.EventName)
+	}
+	if len(roots[0].Children) != 1 {
+		t.Fatalf("expected 1 child, got %d", len(roots[0].Children))
+	}
+	if roots[0].Children[0].Start.EventName != "SP:StmtCompleted" {
+		t.Errorf("child = %q, want SP:StmtCompleted", roots[0].Children[0].Start.EventName)
+	}
+}
+
+// TestBuildTrees_CompletedOnly_OverlappingNotNested — перекрывающиеся, но не
+// вложенные интервалы → siblings (оба root).
+func TestBuildTrees_CompletedOnly_OverlappingNotNested(t *testing.T) {
+	events := []TRCEvent{
+		makeCompletedEventWithTime(43, "SP:Completed", 77, "ProcA", st(10, 0, 0), st(10, 3, 0)),
+		makeCompletedEventWithTime(43, "SP:Completed", 77, "ProcB", st(10, 1, 0), st(10, 4, 0)),
+	}
+	trees := BuildTrees(events)
+	roots := trees[77]
+	if len(roots) != 2 {
+		t.Fatalf("expected 2 roots (siblings), got %d", len(roots))
+	}
+}
+
+// TestBuildTrees_CompletedOnly_SameEventClassSameInterval — одинаковый EventClass
+// с одинаковым интервалом → siblings.
+func TestBuildTrees_CompletedOnly_SameEventClassSameInterval(t *testing.T) {
+	events := []TRCEvent{
+		makeCompletedEventWithTime(43, "SP:Completed", 99, "ProcA", st(10, 0, 0), st(10, 5, 0)),
+		makeCompletedEventWithTime(43, "SP:Completed", 99, "ProcB", st(10, 0, 0), st(10, 5, 0)),
+	}
+	trees := BuildTrees(events)
+	roots := trees[99]
+	if len(roots) != 2 {
+		t.Fatalf("expected 2 roots (same rank = siblings), got %d", len(roots))
+	}
+}
+
+// TestBuildTrees_CompletedOnly_DifferentSPIDNoNesting — события из разных SPID
+// не образуют parent-child, даже если интервалы вложены.
+func TestBuildTrees_CompletedOnly_DifferentSPIDNoNesting(t *testing.T) {
+	events := []TRCEvent{
+		makeCompletedEventWithTime(43, "SP:Completed", 100, "ProcA", st(10, 0, 0), st(10, 5, 0)),
+		makeCompletedEventWithTime(45, "SP:StmtCompleted", 200, "ProcB", st(10, 1, 0), st(10, 4, 0)),
+	}
+	trees := BuildTrees(events)
+	if len(trees) != 2 {
+		t.Fatalf("expected 2 SPIDs, got %d", len(trees))
+	}
+	if len(trees[100]) != 1 || trees[100][0].Start.Procedure != "ProcA" {
+		t.Errorf("SPID 100 should have 1 root ProcA")
+	}
+	if len(trees[200]) != 1 || trees[200][0].Start.Procedure != "ProcB" {
+		t.Errorf("SPID 200 should have 1 root ProcB")
+	}
+}
+
+// TestBuildTrees_MixedStartingCompleted_NoFallback — при наличии Starting
+// используется стековый алгоритм, не интервальный.
+func TestBuildTrees_MixedStartingCompleted_NoFallback(t *testing.T) {
+	events := []TRCEvent{
+		{EventClass: 10, EventName: "RPC:Starting", Columns: map[int]any{12: int32(55)}, Procedure: "ProcA"},
+		{EventClass: 44, EventName: "SP:StmtStarting", Columns: map[int]any{12: int32(55)}, Procedure: "ProcB"},
+		{EventClass: 45, EventName: "SP:StmtCompleted", Columns: map[int]any{12: int32(55)}, Procedure: "ProcB"},
+		{EventClass: 11, EventName: "RPC:Completed", Columns: map[int]any{12: int32(55)}, Procedure: "ProcA"},
+	}
+	trees := BuildTrees(events)
+	roots := trees[55]
+	if len(roots) != 1 {
+		t.Fatalf("expected 1 root, got %d", len(roots))
+	}
+	if roots[0].Start.EventName != "RPC:Starting" {
+		t.Errorf("root = %q, want RPC:Starting (stack algorithm)", roots[0].Start.EventName)
+	}
+	if len(roots[0].Children) != 1 {
+		t.Fatalf("expected 1 child, got %d", len(roots[0].Children))
+	}
+}
+
+// TestComputeParentIDs_IntervalNesting — 3 события (RPC → SP → SP:Stmt) с
+// вложенными интервалами, проверка ParentID и Depth.
+func TestComputeParentIDs_IntervalNesting(t *testing.T) {
+	events := []TRCEvent{
+		makeCompletedEventWithTime(11, "RPC:Completed", 88, "ProcA", st(10, 0, 0), st(10, 5, 0)),
+		makeCompletedEventWithTime(43, "SP:Completed", 88, "ProcB", st(10, 1, 0), st(10, 4, 0)),
+		makeCompletedEventWithTime(45, "SP:StmtCompleted", 88, "ProcC", st(10, 2, 0), st(10, 3, 0)),
+	}
+	ComputeParentIDs(events)
+	if events[0].ParentID != -1 || events[0].Depth != 0 {
+		t.Errorf("RPC:Completed: ParentID=%d, Depth=%d, want -1/0", events[0].ParentID, events[0].Depth)
+	}
+	if events[1].ParentID != 0 || events[1].Depth != 1 {
+		t.Errorf("SP:Completed: ParentID=%d, Depth=%d, want 0/1", events[1].ParentID, events[1].Depth)
+	}
+	if events[2].ParentID != 1 || events[2].Depth != 2 {
+		t.Errorf("SP:StmtCompleted: ParentID=%d, Depth=%d, want 1/2", events[2].ParentID, events[2].Depth)
+	}
+}
+
+// TestComputeParentIDs_CompletedOnlySPID — SPID с только Completed-событиями
+// получает корректные ParentID/Depth через интервальный fallback.
+func TestComputeParentIDs_CompletedOnlySPID(t *testing.T) {
+	events := []TRCEvent{
+		makeCompletedEventWithTime(43, "SP:Completed", 122, "ProcA", st(9, 42, 55), st(9, 43, 24)),
+		makeCompletedEventWithTime(45, "SP:StmtCompleted", 122, "MassDoc_Add", st(9, 42, 55), st(9, 43, 24)),
+	}
+	ComputeParentIDs(events)
+	if events[0].ParentID != -1 || events[0].Depth != 0 {
+		t.Errorf("SP:Completed: ParentID=%d, Depth=%d, want -1/0", events[0].ParentID, events[0].Depth)
+	}
+	if events[1].ParentID != 0 || events[1].Depth != 1 {
+		t.Errorf("SP:StmtCompleted: ParentID=%d, Depth=%d, want 0/1", events[1].ParentID, events[1].Depth)
+	}
+}
+
+// TestComputeParentIDs_OverlappingNotNested — перекрывающиеся, но не вложенные
+// интервалы → siblings (оба root).
+func TestComputeParentIDs_OverlappingNotNested(t *testing.T) {
+	events := []TRCEvent{
+		makeCompletedEventWithTime(43, "SP:Completed", 77, "ProcA", st(10, 0, 0), st(10, 3, 0)),
+		makeCompletedEventWithTime(43, "SP:Completed", 77, "ProcB", st(10, 1, 0), st(10, 4, 0)),
+	}
+	ComputeParentIDs(events)
+	if events[0].ParentID != -1 {
+		t.Errorf("ProcA: ParentID=%d, want -1 (root)", events[0].ParentID)
+	}
+	if events[1].ParentID != -1 {
+		t.Errorf("ProcB: ParentID=%d, want -1 (root)", events[1].ParentID)
+	}
+}
+
+// TestComputeParentIDs_SameEventClassSameInterval — одинаковый EventClass с
+// одинаковым интервалом → siblings.
+func TestComputeParentIDs_SameEventClassSameInterval(t *testing.T) {
+	events := []TRCEvent{
+		makeCompletedEventWithTime(43, "SP:Completed", 99, "ProcA", st(10, 0, 0), st(10, 5, 0)),
+		makeCompletedEventWithTime(43, "SP:Completed", 99, "ProcB", st(10, 0, 0), st(10, 5, 0)),
+	}
+	ComputeParentIDs(events)
+	if events[0].ParentID != -1 {
+		t.Errorf("ProcA: ParentID=%d, want -1 (root)", events[0].ParentID)
+	}
+	if events[1].ParentID != -1 {
+		t.Errorf("ProcB: ParentID=%d, want -1 (root)", events[1].ParentID)
+	}
+}

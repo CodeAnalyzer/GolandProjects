@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // TRCTreeNode — узел дерева вызовов, восстановленного по SPID из
@@ -99,6 +100,66 @@ func limitTreeNodeChildren(node *TRCTreeNode, limit int) {
 	}
 }
 
+// eventClassRank возвращает уровень иерархии EventClass для fallback-
+// алгоритма интервального вложения. Более высокое значение = более
+// внешний (родительский) уровень.
+// RPC:Completed(11)=4 > SP:Completed(43)=3 > SP:StmtCompleted(45)=2 >
+// SQL:BatchCompleted(12)=1 > SQL:StmtCompleted(41)=0. Прочие = -1.
+func eventClassRank(eventClass int) int {
+	switch eventClass {
+	case 11: // RPC:Completed
+		return 4
+	case 43: // SP:Completed
+		return 3
+	case 45: // SP:StmtCompleted
+		return 2
+	case 12: // SQL:BatchCompleted
+		return 1
+	case 41: // SQL:StmtCompleted
+		return 0
+	default:
+		return -1
+	}
+}
+
+// hasStartingEvents возвращает true, если среди событий есть хотя бы одно
+// с именем, заканчивающимся на "Starting". Используется для определения,
+// нужно ли применять fallback-алгоритм интервального вложения.
+func hasStartingEvents(events []*TRCEvent) bool {
+	for _, ev := range events {
+		if strings.HasSuffix(ev.EventName, "Starting") {
+			return true
+		}
+	}
+	return false
+}
+
+// eventStartTime извлекает время начала события из колонки 14 (StartTime).
+// Возвращает ok=false, если колонка отсутствует или невалидна.
+func eventStartTime(ev *TRCEvent) (time.Time, bool) {
+	st, ok := ev.Columns[14].(SystemTime)
+	if !ok {
+		return time.Time{}, false
+	}
+	return st.ToTime()
+}
+
+// eventEndTime извлекает время завершения события из колонки 15 (EndTime).
+// Если EndTime отсутствует, вычисляет как StartTime + DurationMs.
+// Возвращает ok=false, если StartTime также отсутствует.
+func eventEndTime(ev *TRCEvent) (time.Time, bool) {
+	if et, ok := ev.Columns[15].(SystemTime); ok {
+		if t, ok2 := et.ToTime(); ok2 {
+			return t, true
+		}
+	}
+	st, ok := eventStartTime(ev)
+	if !ok {
+		return time.Time{}, false
+	}
+	return st.Add(time.Duration(ev.DurationMs) * time.Millisecond), true
+}
+
 type openFrame struct {
 	family string
 	node   *TRCTreeNode
@@ -118,8 +179,8 @@ func ComputeParentIDs(events []TRCEvent) {
 
 	// Группируем по SPID, сохраняя порядок событий.
 	type spidFrame struct {
-		family  string
-		idx     int // индекс события Starting в срезе events
+		family string
+		idx    int // индекс события Starting в срезе events
 	}
 
 	bySPID := make(map[int][]int) // spid -> indices
@@ -133,6 +194,22 @@ func ComputeParentIDs(events []TRCEvent) {
 	}
 
 	for _, indices := range bySPID {
+		// Проверяем, есть ли Starting-события для этого SPID.
+		hasStarting := false
+		for _, idx := range indices {
+			if strings.HasSuffix(events[idx].EventName, "Starting") {
+				hasStarting = true
+				break
+			}
+		}
+
+		if !hasStarting {
+			// Fallback: интервальный алгоритм для Completed-only SPID.
+			computeParentIDsInterval(events, indices)
+			continue
+		}
+
+		// Основной алгоритм: стек Starting/Completed пар.
 		var stack []spidFrame
 		for _, idx := range indices {
 			ev := &events[idx]
@@ -170,7 +247,94 @@ func ComputeParentIDs(events []TRCEvent) {
 	}
 }
 
+// computeParentIDsInterval вычисляет ParentID и Depth для событий одного SPID
+// с использованием интервального вложения (fallback для Completed-only трейсов).
+// indices — индексы событий данного SPID в срезе events (в исходном порядке).
+func computeParentIDsInterval(events []TRCEvent, indices []int) {
+	type intervalEntry struct {
+		idx   int // индекс в events
+		start time.Time
+		end   time.Time
+		rank  int
+	}
+
+	var entries []intervalEntry
+	for _, idx := range indices {
+		ev := &events[idx]
+		start, ok := eventStartTime(ev)
+		if !ok {
+			continue
+		}
+		end, _ := eventEndTime(ev)
+		entries = append(entries, intervalEntry{
+			idx:   idx,
+			start: start,
+			end:   end,
+			rank:  eventClassRank(ev.EventClass),
+		})
+	}
+
+	// Сортируем по start time, сохраняя исходный порядок для равных временных меткам.
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].start.Before(entries[j].start)
+	})
+
+	type stackFrame struct {
+		idx   int // индекс в events
+		depth int
+		rank  int
+		end   time.Time
+	}
+	var stack []stackFrame
+
+	for _, e := range entries {
+		// Pop событий, чей интервал уже закончился до start текущего.
+		for len(stack) > 0 {
+			top := stack[len(stack)-1]
+			if !top.end.Before(e.start) {
+				break
+			}
+			stack = stack[:len(stack)-1]
+		}
+
+		// Ищем родителя: ближайший открытый интервал с более высоким rank.
+		var parentIdx int = -1
+		var parentDepth int
+		for i := len(stack) - 1; i >= 0; i-- {
+			if stack[i].rank > e.rank {
+				parentIdx = stack[i].idx
+				parentDepth = stack[i].depth
+				break
+			}
+		}
+
+		ev := &events[e.idx]
+		if parentIdx >= 0 {
+			ev.ParentID = parentIdx
+			ev.Depth = parentDepth + 1
+		} else {
+			ev.ParentID = -1
+			ev.Depth = 0
+		}
+
+		stack = append(stack, stackFrame{
+			idx:   e.idx,
+			depth: ev.Depth,
+			rank:  e.rank,
+			end:   e.end,
+		})
+	}
+}
+
 func buildSPIDTree(events []*TRCEvent) []*TRCTreeNode {
+	if !hasStartingEvents(events) {
+		return buildSPIDTreeInterval(events)
+	}
+	return buildSPIDTreeStack(events)
+}
+
+// buildSPIDTreeStack строит дерево вызовов по Starting/Completed парам (существующий алгоритм).
+func buildSPIDTreeStack(events []*TRCEvent) []*TRCTreeNode {
 	var roots []*TRCTreeNode
 	var stack []openFrame
 
@@ -205,6 +369,82 @@ func buildSPIDTree(events []*TRCEvent) []*TRCTreeNode {
 			attach(&TRCTreeNode{Start: ev})
 		}
 	}
+	return roots
+}
+
+// intervalFrame — элемент интервального стека для fallback-дерева.
+type intervalFrame struct {
+	node *TRCTreeNode
+	end  time.Time
+	rank int
+}
+
+// buildSPIDTreeInterval строит дерево вызовов по временному вложению интервалов
+// для Completed-only трейсов. События сортируются по start time, затем для
+// каждого события ищется родитель: ближайший открытый интервал с более высоким
+// eventClassRank. События без родителя становятся корневыми узлами.
+func buildSPIDTreeInterval(events []*TRCEvent) []*TRCTreeNode {
+	var roots []*TRCTreeNode
+
+	// Фильтруем события с валидным временем начала.
+	type sortedEvent struct {
+		ev    *TRCEvent
+		start time.Time
+		end   time.Time
+	}
+	var sorted []sortedEvent
+	for _, ev := range events {
+		start, ok := eventStartTime(ev)
+		if !ok {
+			// События без времени: Completed → корневой узел, диагностические → пропускаем.
+			if strings.HasSuffix(ev.EventName, "Completed") {
+				roots = append(roots, &TRCTreeNode{Start: ev})
+			}
+			continue
+		}
+		end, _ := eventEndTime(ev)
+		sorted = append(sorted, sortedEvent{ev: ev, start: start, end: end})
+	}
+
+	// Сортируем по start time.
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return sorted[i].start.Before(sorted[j].start)
+	})
+
+	var stack []intervalFrame
+
+	attach := func(node *TRCTreeNode, parentRank int) {
+		// Ищем родителя: ближайший открытый интервал с более высоким rank.
+		var parent *TRCTreeNode
+		for i := len(stack) - 1; i >= 0; i-- {
+			if stack[i].rank > parentRank {
+				parent = stack[i].node
+				break
+			}
+		}
+		if parent != nil {
+			parent.Children = append(parent.Children, node)
+		} else {
+			roots = append(roots, node)
+		}
+	}
+
+	for _, se := range sorted {
+		// Pop событий, чей интервал уже закончился до start текущего.
+		for len(stack) > 0 {
+			top := stack[len(stack)-1]
+			if !top.end.Before(se.start) {
+				break
+			}
+			stack = stack[:len(stack)-1]
+		}
+
+		rank := eventClassRank(se.ev.EventClass)
+		node := &TRCTreeNode{Start: se.ev}
+		attach(node, rank)
+		stack = append(stack, intervalFrame{node: node, end: se.end, rank: rank})
+	}
+
 	return roots
 }
 

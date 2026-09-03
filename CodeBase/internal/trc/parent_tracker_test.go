@@ -153,3 +153,199 @@ func TestIncrementalParentTracker_NestedCalls(t *testing.T) {
 		}
 	}
 }
+
+// TestIncrementalParentTracker_CompletedOnlyFallback — SPID с только Completed
+// событиями получает ParentID/Depth через интервальный fallback после Flush.
+func TestIncrementalParentTracker_CompletedOnlyFallback(t *testing.T) {
+	events := []TRCEvent{
+		makeCompletedEventWithTime(11, "RPC:Completed", 88, "ProcA", st(10, 0, 0), st(10, 5, 0)),
+		makeCompletedEventWithTime(43, "SP:Completed", 88, "ProcB", st(10, 1, 0), st(10, 4, 0)),
+		makeCompletedEventWithTime(45, "SP:StmtCompleted", 88, "ProcC", st(10, 2, 0), st(10, 3, 0)),
+	}
+
+	tracker := NewIncrementalParentTracker()
+	for i := range events {
+		tracker.Process(&events[i])
+	}
+	tracker.Flush()
+
+	if events[0].ParentID != -1 || events[0].Depth != 0 {
+		t.Errorf("RPC:Completed: ParentID=%d, Depth=%d, want -1/0", events[0].ParentID, events[0].Depth)
+	}
+	if events[1].ParentID != 0 || events[1].Depth != 1 {
+		t.Errorf("SP:Completed: ParentID=%d, Depth=%d, want 0/1", events[1].ParentID, events[1].Depth)
+	}
+	if events[2].ParentID != 1 || events[2].Depth != 2 {
+		t.Errorf("SP:StmtCompleted: ParentID=%d, Depth=%d, want 1/2", events[2].ParentID, events[2].Depth)
+	}
+}
+
+// TestIncrementalParentTracker_CompletedOnly_RealWorldPattern — паттерн из
+// trc-tree-flat.txt: SP:Completed + SP:StmtCompleted с одинаковыми интервалами.
+func TestIncrementalParentTracker_CompletedOnly_RealWorldPattern(t *testing.T) {
+	events := []TRCEvent{
+		makeCompletedEventWithTime(43, "SP:Completed", 122, "MassDoc_Add", st(9, 42, 55), st(9, 43, 24)),
+		makeCompletedEventWithTime(45, "SP:StmtCompleted", 122, "MassDoc_Add", st(9, 42, 55), st(9, 43, 24)),
+	}
+
+	tracker := NewIncrementalParentTracker()
+	for i := range events {
+		tracker.Process(&events[i])
+	}
+	tracker.Flush()
+
+	if events[0].ParentID != -1 || events[0].Depth != 0 {
+		t.Errorf("SP:Completed: ParentID=%d, Depth=%d, want -1/0", events[0].ParentID, events[0].Depth)
+	}
+	if events[1].ParentID != 0 || events[1].Depth != 1 {
+		t.Errorf("SP:StmtCompleted: ParentID=%d, Depth=%d, want 0/1", events[1].ParentID, events[1].Depth)
+	}
+}
+
+// TestIncrementalParentTracker_CompletedOnly_SameRankSiblings — одинаковый
+// EventClass с одинаковым интервалом → siblings (оба root).
+func TestIncrementalParentTracker_CompletedOnly_SameRankSiblings(t *testing.T) {
+	events := []TRCEvent{
+		makeCompletedEventWithTime(43, "SP:Completed", 99, "ProcA", st(10, 0, 0), st(10, 5, 0)),
+		makeCompletedEventWithTime(43, "SP:Completed", 99, "ProcB", st(10, 0, 0), st(10, 5, 0)),
+	}
+
+	tracker := NewIncrementalParentTracker()
+	for i := range events {
+		tracker.Process(&events[i])
+	}
+	tracker.Flush()
+
+	if events[0].ParentID != -1 {
+		t.Errorf("ProcA: ParentID=%d, want -1 (root)", events[0].ParentID)
+	}
+	if events[1].ParentID != -1 {
+		t.Errorf("ProcB: ParentID=%d, want -1 (root)", events[1].ParentID)
+	}
+}
+
+// TestIncrementalParentTracker_CompletedOnlyDifferentSPID — события из разных
+// SPID не образуют parent-child.
+func TestIncrementalParentTracker_CompletedOnlyDifferentSPID(t *testing.T) {
+	events := []TRCEvent{
+		makeCompletedEventWithTime(43, "SP:Completed", 100, "ProcA", st(10, 0, 0), st(10, 5, 0)),
+		makeCompletedEventWithTime(45, "SP:StmtCompleted", 200, "ProcB", st(10, 1, 0), st(10, 4, 0)),
+	}
+
+	tracker := NewIncrementalParentTracker()
+	for i := range events {
+		tracker.Process(&events[i])
+	}
+	tracker.Flush()
+
+	if events[0].ParentID != -1 || events[0].Depth != 0 {
+		t.Errorf("SPID 100: ParentID=%d, Depth=%d, want -1/0", events[0].ParentID, events[0].Depth)
+	}
+	if events[1].ParentID != -1 || events[1].Depth != 0 {
+		t.Errorf("SPID 200: ParentID=%d, Depth=%d, want -1/0", events[1].ParentID, events[1].Depth)
+	}
+}
+
+// TestIncrementalParentTracker_MixedSPID_CompletedAndNormal — один SPID с
+// Starting, другой Completed-only. Проверка что fallback применяется только
+// к Completed-only SPID.
+func TestIncrementalParentTracker_MixedSPID_CompletedAndNormal(t *testing.T) {
+	events := []TRCEvent{
+		// SPID 50 — normal mode (Starting/Completed pairs)
+		makeTestEvent("RPC:Starting", 50),
+		makeTestEvent("SP:StmtStarting", 50),
+		makeTestEvent("SP:StmtCompleted", 50),
+		makeTestEvent("RPC:Completed", 50),
+		// SPID 60 — completed-only mode
+		makeCompletedEventWithTime(43, "SP:Completed", 60, "ProcX", st(10, 0, 0), st(10, 5, 0)),
+		makeCompletedEventWithTime(45, "SP:StmtCompleted", 60, "ProcY", st(10, 1, 0), st(10, 4, 0)),
+	}
+
+	tracker := NewIncrementalParentTracker()
+	for i := range events {
+		tracker.Process(&events[i])
+	}
+	tracker.Flush()
+
+	// SPID 50 — normal mode: RPC:Starting root, SP:StmtStarting child
+	if events[0].ParentID != -1 || events[0].Depth != 0 {
+		t.Errorf("SPID 50 RPC:Starting: ParentID=%d, Depth=%d, want -1/0", events[0].ParentID, events[0].Depth)
+	}
+	if events[1].ParentID != 0 || events[1].Depth != 1 {
+		t.Errorf("SPID 50 SP:StmtStarting: ParentID=%d, Depth=%d, want 0/1", events[1].ParentID, events[1].Depth)
+	}
+
+	// SPID 60 — fallback: SP:Completed root, SP:StmtCompleted child
+	if events[4].ParentID != -1 || events[4].Depth != 0 {
+		t.Errorf("SPID 60 SP:Completed: ParentID=%d, Depth=%d, want -1/0", events[4].ParentID, events[4].Depth)
+	}
+	if events[5].ParentID != 4 || events[5].Depth != 1 {
+		t.Errorf("SPID 60 SP:StmtCompleted: ParentID=%d, Depth=%d, want 4/1", events[5].ParentID, events[5].Depth)
+	}
+}
+
+// TestIncrementalParentTracker_CompletedOnly_MatchesComputeParentIDs —
+// сравнение IncrementalParentTracker с ComputeParentIDs на Completed-only
+// событиях.
+func TestIncrementalParentTracker_CompletedOnly_MatchesComputeParentIDs(t *testing.T) {
+	events := []TRCEvent{
+		makeCompletedEventWithTime(11, "RPC:Completed", 88, "ProcA", st(10, 0, 0), st(10, 5, 0)),
+		makeCompletedEventWithTime(43, "SP:Completed", 88, "ProcB", st(10, 1, 0), st(10, 4, 0)),
+		makeCompletedEventWithTime(45, "SP:StmtCompleted", 88, "ProcC", st(10, 2, 0), st(10, 3, 0)),
+		makeCompletedEventWithTime(43, "SP:Completed", 88, "ProcD", st(10, 1, 0), st(10, 2, 0)),
+	}
+
+	// Reference: ComputeParentIDs
+	ref := make([]TRCEvent, len(events))
+	copy(ref, events)
+	ComputeParentIDs(ref)
+
+	// Incremental
+	inc := make([]TRCEvent, len(events))
+	copy(inc, events)
+	tracker := NewIncrementalParentTracker()
+	for i := range inc {
+		tracker.Process(&inc[i])
+	}
+	tracker.Flush()
+
+	for i := range events {
+		if inc[i].ParentID != ref[i].ParentID {
+			t.Errorf("event %d (%s): ParentID incremental=%d, reference=%d",
+				i, events[i].EventName, inc[i].ParentID, ref[i].ParentID)
+		}
+		if inc[i].Depth != ref[i].Depth {
+			t.Errorf("event %d (%s): Depth incremental=%d, reference=%d",
+				i, events[i].EventName, inc[i].Depth, ref[i].Depth)
+		}
+	}
+}
+
+// TestIncrementalParentTracker_StartingAfterCompleted — если после Completed-only
+// событий приходит Starting, трекер переключается в normal mode.
+func TestIncrementalParentTracker_StartingAfterCompleted(t *testing.T) {
+	events := []TRCEvent{
+		makeCompletedEventWithTime(43, "SP:Completed", 55, "ProcA", st(10, 0, 0), st(10, 1, 0)),
+		makeTestEvent("RPC:Starting", 55),
+		makeTestEvent("RPC:Completed", 55),
+	}
+
+	tracker := NewIncrementalParentTracker()
+	for i := range events {
+		tracker.Process(&events[i])
+	}
+	tracker.Flush()
+
+	// First event (SP:Completed) was in pending buffer, flushed with interval.
+	if events[0].ParentID != -1 || events[0].Depth != 0 {
+		t.Errorf("SP:Completed: ParentID=%d, Depth=%d, want -1/0", events[0].ParentID, events[0].Depth)
+	}
+	// RPC:Starting — normal mode, root.
+	if events[1].ParentID != -1 || events[1].Depth != 0 {
+		t.Errorf("RPC:Starting: ParentID=%d, Depth=%d, want -1/0", events[1].ParentID, events[1].Depth)
+	}
+	// RPC:Completed — pops RPC, root.
+	if events[2].ParentID != -1 || events[2].Depth != 0 {
+		t.Errorf("RPC:Completed: ParentID=%d, Depth=%d, want -1/0", events[2].ParentID, events[2].Depth)
+	}
+}
