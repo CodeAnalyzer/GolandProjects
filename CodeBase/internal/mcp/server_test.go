@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -404,5 +405,83 @@ func TestSDKCallTool_ErrorPath_TextOnly(t *testing.T) {
 	}
 	if res.StructuredContent != nil {
 		t.Fatal("expected no structuredContent in error result")
+	}
+}
+
+func TestTimeoutForTool_ParseTRC(t *testing.T) {
+	cfg := &config.Config{
+		MCP: config.MCPConfig{QueryTimeoutSec: 30, ReviewTimeoutSec: 120},
+		TRC: config.TRCConfig{ParseTimeoutSec: 300},
+		RTI: config.RTIConfig{ParseTimeoutSec: 300},
+	}
+	got := timeoutForTool("codebase_trc_parse", cfg)
+	want := 300 * time.Second
+	if got != want {
+		t.Fatalf("codebase_trc_parse: got %v, want %v", got, want)
+	}
+}
+
+func TestTimeoutForTool_ParseRTI(t *testing.T) {
+	cfg := &config.Config{
+		MCP: config.MCPConfig{QueryTimeoutSec: 30, ReviewTimeoutSec: 120},
+		TRC: config.TRCConfig{ParseTimeoutSec: 300},
+		RTI: config.RTIConfig{ParseTimeoutSec: 300},
+	}
+	got := timeoutForTool("codebase_rti_parse", cfg)
+	want := 300 * time.Second
+	if got != want {
+		t.Fatalf("codebase_rti_parse: got %v, want %v", got, want)
+	}
+}
+
+func TestTimeoutForTool_ReviewSQL(t *testing.T) {
+	cfg := &config.Config{
+		MCP: config.MCPConfig{QueryTimeoutSec: 30, ReviewTimeoutSec: 120},
+		TRC: config.TRCConfig{ParseTimeoutSec: 300},
+		RTI: config.RTIConfig{ParseTimeoutSec: 300},
+	}
+	got := timeoutForTool("codebase_review_sql", cfg)
+	want := 120 * time.Second
+	if got != want {
+		t.Fatalf("codebase_review_sql: got %v, want %v", got, want)
+	}
+}
+
+func TestTimeoutForTool_DefaultQuery(t *testing.T) {
+	cfg := &config.Config{
+		MCP: config.MCPConfig{QueryTimeoutSec: 30, ReviewTimeoutSec: 120},
+		TRC: config.TRCConfig{ParseTimeoutSec: 300},
+		RTI: config.RTIConfig{ParseTimeoutSec: 300},
+	}
+	for _, name := range []string{
+		"codebase_query_symbol",
+		"codebase_trc_summary",
+		"codebase_rti_tree",
+		"codebase_ping",
+	} {
+		got := timeoutForTool(name, cfg)
+		want := 30 * time.Second
+		if got != want {
+			t.Fatalf("%s: got %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestTimeoutForTool_ZeroDisablesTimeout(t *testing.T) {
+	cfg := &config.Config{
+		MCP: config.MCPConfig{QueryTimeoutSec: 0, ReviewTimeoutSec: 0},
+		TRC: config.TRCConfig{ParseTimeoutSec: 0},
+		RTI: config.RTIConfig{ParseTimeoutSec: 0},
+	}
+	for _, name := range []string{
+		"codebase_query_symbol",
+		"codebase_trc_parse",
+		"codebase_rti_parse",
+		"codebase_review_sql",
+	} {
+		got := timeoutForTool(name, cfg)
+		if got != 0 {
+			t.Fatalf("%s: got %v, want 0", name, got)
+		}
 	}
 }

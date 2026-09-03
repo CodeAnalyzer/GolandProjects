@@ -109,17 +109,21 @@ max_limit = 1000
 [rti]
 slow_threshold_ms = 100
 top_slow_count = 10
+parse_timeout_sec = 300  # Таймаут MCP codebase_rti_parse (0 = без таймаута)
 
 # Настройки TRC-анализатора
 [trc]
 slow_threshold_ms = 100
 max_enrich_workers = 16
 min_procs_for_parallel_enrich = 16
+parse_timeout_sec = 300  # Таймаут MCP codebase_trc_parse (0 = без таймаута)
 
 # Настройки MCP-сервера
 [mcp]
 pagination_chunk_size = 8000
 pagination_ttl = "15m"
+query_timeout_sec = 30    # Таймаут для query-инструментов (0 = без таймаута)
+review_timeout_sec = 120  # Таймаут для codebase_review_sql (0 = без таймаута)
 ```
 
 Все параметры имеют значения по умолчанию и могут быть опущены — старый `codebase.toml` без новых секций работает без изменений.
@@ -891,10 +895,25 @@ IDE может подключить несколько MCP-серверов на
 [mcp]
 pagination_chunk_size = 8000
 pagination_ttl = "15m"
+query_timeout_sec = 30
+review_timeout_sec = 120
 regexp_cache_max_entries = 10000
 ```
 
 `regexp_cache_max_entries` — лимит кэша скомпилированных regexp-паттернов (по умолчанию без лимита).
+
+#### Таймауты tool-вызовов
+
+Каждый MCP tool-вызов получает `context.Context` с таймаутом, определяемым по имени инструмента:
+
+| Инструмент | Источник таймаута | По умолчанию |
+|------------|-------------------|--------------|
+| `codebase_review_sql` | `[mcp] review_timeout_sec` | 120 сек |
+| `codebase_trc_parse` | `[trc] parse_timeout_sec` | 300 сек |
+| `codebase_rti_parse` | `[rti] parse_timeout_sec` | 300 сек |
+| Остальные инструменты | `[mcp] query_timeout_sec` | 30 сек |
+
+Значение `0` отключает таймаут для соответствующей группы. Отдельные `parse_timeout_sec` для RTI и TRC позволяют задать увеличенный таймаут для тяжёлых операций парсинга, не влияя на query-инструменты.
 
 ## Архитектура
 
@@ -1185,6 +1204,7 @@ $env:CODEBASE_TEST_DSN = "postgres://postgres:123456@localhost:5435/postgres?ssl
 - [x] Конфигурация через PersistentPreRunE: отказ от `os.Exit` при ошибке загрузки конфига, корректная обработка через cobra error flow
 - [x] Транзакционная запись include-директив: `ExecContext` с `boundTx`, возврат ошибки вместо глушения
 - [x] MCP tool profiles: флаг `--profile` (query, rti, trc, review) для раздельной регистрации инструментов; один бинарник — несколько MCP-серверов в IDE с разными подмножествами tools
+- [x] MCP parse timeout: отдельные `parse_timeout_sec` для RTI и TRC парсинга (по умолчанию 300 сек), маршрутизация таймаута через switch по имени инструмента
 
 ## Лицензия
 

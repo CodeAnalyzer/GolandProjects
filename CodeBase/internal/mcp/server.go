@@ -69,10 +69,7 @@ func registerSDKCoreTools(server *mcpsdk.Server, registry map[string]registeredT
 			}
 
 			cfg := config.Get()
-			timeout := time.Duration(cfg.MCP.QueryTimeoutSec) * time.Second
-			if tool.Definition.Name == "codebase_review_sql" {
-				timeout = time.Duration(cfg.MCP.ReviewTimeoutSec) * time.Second
-			}
+			timeout := timeoutForTool(tool.Definition.Name, cfg)
 			if timeout > 0 {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -89,6 +86,19 @@ func registerSDKCoreTools(server *mcpsdk.Server, registry map[string]registeredT
 	}
 
 	registerSDKEmptyFeatures(server)
+}
+
+func timeoutForTool(toolName string, cfg *config.Config) time.Duration {
+	timeout := time.Duration(cfg.MCP.QueryTimeoutSec) * time.Second
+	switch toolName {
+	case "codebase_review_sql":
+		timeout = time.Duration(cfg.MCP.ReviewTimeoutSec) * time.Second
+	case "codebase_trc_parse":
+		timeout = time.Duration(cfg.TRC.ParseTimeoutSec) * time.Second
+	case "codebase_rti_parse":
+		timeout = time.Duration(cfg.RTI.ParseTimeoutSec) * time.Second
+	}
+	return timeout
 }
 
 func registerSDKEmptyFeatures(server *mcpsdk.Server) {

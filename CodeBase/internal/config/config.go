@@ -54,6 +54,7 @@ type QueryConfig struct {
 type RTIConfig struct {
 	SlowThresholdMs int `toml:"slow_threshold_ms"`
 	TopSlowCount    int `toml:"top_slow_count"`
+	ParseTimeoutSec int `toml:"parse_timeout_sec"` // таймаут MCP codebase_rti_parse (0 = без таймаута)
 }
 
 // TRCConfig настройки TRC-анализатора
@@ -61,6 +62,7 @@ type TRCConfig struct {
 	SlowThresholdMs           int `toml:"slow_threshold_ms"`
 	MaxEnrichWorkers          int `toml:"max_enrich_workers"`
 	MinProcsForParallelEnrich int `toml:"min_procs_for_parallel_enrich"`
+	ParseTimeoutSec           int `toml:"parse_timeout_sec"` // таймаут MCP codebase_trc_parse (0 = без таймаута)
 }
 
 type LoggingConfig struct {
@@ -171,6 +173,9 @@ func Load() error {
 	if cfg.RTI.TopSlowCount <= 0 {
 		cfg.RTI.TopSlowCount = 10
 	}
+	if cfg.RTI.ParseTimeoutSec <= 0 {
+		cfg.RTI.ParseTimeoutSec = 300
+	}
 	if cfg.TRC.SlowThresholdMs <= 0 {
 		cfg.TRC.SlowThresholdMs = 100
 	}
@@ -179,6 +184,9 @@ func Load() error {
 	}
 	if cfg.TRC.MinProcsForParallelEnrich <= 0 {
 		cfg.TRC.MinProcsForParallelEnrich = 16
+	}
+	if cfg.TRC.ParseTimeoutSec <= 0 {
+		cfg.TRC.ParseTimeoutSec = 300
 	}
 	if len(cfg.Indexer.IncludePatterns) == 0 {
 		cfg.Indexer.IncludePatterns = []string{
@@ -281,11 +289,13 @@ func CreateDefault(rootPath string) *Config {
 		RTI: RTIConfig{
 			SlowThresholdMs: 100,
 			TopSlowCount:    10,
+			ParseTimeoutSec: 300,
 		},
 		TRC: TRCConfig{
 			SlowThresholdMs:           100,
 			MaxEnrichWorkers:          16,
 			MinProcsForParallelEnrich: 16,
+			ParseTimeoutSec:           300,
 		},
 		Logging: LoggingConfig{
 			CommandEnabled: boolPtr(true),
