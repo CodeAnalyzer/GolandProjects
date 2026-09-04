@@ -21,7 +21,7 @@ func SaveSession(ctx context.Context, db *store.DB, result *TRCParseResult, file
 	if sourceFormat == "" {
 		sourceFormat = "trc_binary"
 	}
-	err := db.QueryRowContext(ctx, 
+	err := db.QueryRowContext(ctx,
 		`INSERT INTO trc_sessions (file_path, file_size, total_events, provider_name, server_name, major_version, minor_version, build_number, source_format)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
 		filePath, fileSize, len(result.Events),
@@ -48,8 +48,14 @@ func SaveSession(ctx context.Context, db *store.DB, result *TRCParseResult, file
 //
 // parent_id вычисляется в ComputeParentIDs (tree.go) как индекс родительского
 // события в срезе events. Поскольку trc_events.id генерируется БД (BIGSERIAL),
-// parent_id хранит не абсолютный id, а относительный индекс + 1 (1-based),
-// который можно разрешить через подзапрос при tree loading.
+// parent_id при COPY IN хранит 1-based offset (индекс + 1). После завершения
+// всех батчей выполняется Go-маппинг offset → реальный id строки:
+//  1. SELECT id FROM trc_events WHERE session_id ORDER BY id → ids[]
+//  2. Go: realParentID = ids[ev.ParentID] для каждого события с ParentID >= 0
+//  3. COPY IN во temp table (id, parent_id) + UPDATE ... JOIN по PK
+//
+// Это гарантирует O(N) сложность и index scan по PK, в отличие от SQL UPDATE
+// с row_number() который может выбрать nested loop O(N²).
 //
 // Для больших файлов (миллионы событий) insert выполняется батчами по
 // trcBatchSize событий: каждый батч — отдельная транзакция с CopyIn.
@@ -135,6 +141,113 @@ func insertTRCEvents(ctx context.Context, db *store.DB, events []TRCEvent, sessi
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+	}
+
+	// Фаза 3: Go-маппинг parent_id из 1-based offset → реальный id строки.
+	// Выполняется один раз после завершения всех батчей COPY IN.
+	if err := mapParentIDs(ctx, db, events, sessionID); err != nil {
+		return fmt.Errorf("failed to map parent_id offsets to ids: %w", err)
+	}
+
+	return nil
+}
+
+// mapParentIDs маппит parent_id из 1-based offset в реальный id строки.
+// Алгоритм O(N):
+//  1. SELECT id FROM trc_events WHERE session_id ORDER BY id → ids[]
+//  2. Go: realParentID = ids[ev.ParentID] (ev.ParentID — 0-based индекс)
+//  3. COPY IN во temp table (id, parent_id) + UPDATE JOIN по PK
+func mapParentIDs(ctx context.Context, db *store.DB, events []TRCEvent, sessionID int64) error {
+	// Шаг 1: загружаем id строк в порядке вставки (ORDER BY id).
+	rows, err := db.QueryContext(ctx,
+		`SELECT id FROM trc_events WHERE session_id = $1 ORDER BY id`,
+		sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("select ids: %w", err)
+	}
+	defer rows.Close()
+
+	ids := make([]int64, 0, len(events))
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("scan id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("rows iteration: %w", err)
+	}
+
+	if len(ids) != len(events) {
+		return fmt.Errorf("id count mismatch: got %d ids, expected %d events", len(ids), len(events))
+	}
+
+	// Шаг 2: вычисляем реальный parent_id для каждого события.
+	// ev.ParentID — 0-based индекс в срезе events. ids[ev.ParentID] — реальный id.
+	// События с ParentID < 0 (root) имеют parent_id = NULL, пропускаем.
+	type parentUpdate struct {
+		id       int64
+		parentID int64
+	}
+	updates := make([]parentUpdate, 0, len(events))
+	for i, ev := range events {
+		if ev.ParentID >= 0 {
+			if ev.ParentID >= len(ids) {
+				return fmt.Errorf("parent index %d out of range (have %d ids) for event %d", ev.ParentID, len(ids), i)
+			}
+			updates = append(updates, parentUpdate{
+				id:       ids[i],
+				parentID: ids[ev.ParentID],
+			})
+		}
+	}
+
+	if len(updates) == 0 {
+		return nil // все события — root
+	}
+
+	// Шаг 3: COPY IN во temp table + UPDATE JOIN по PK.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE _parent_map (id BIGINT, parent_id BIGINT) ON COMMIT DROP`); err != nil {
+		return fmt.Errorf("create temp table: %w", err)
+	}
+
+	stmt, err := tx.PrepareContext(ctx, pq.CopyIn("_parent_map", "id", "parent_id"))
+	if err != nil {
+		return fmt.Errorf("prepare copy in: %w", err)
+	}
+
+	for _, u := range updates {
+		if _, err := stmt.Exec(u.id, u.parentID); err != nil {
+			_ = stmt.Close()
+			return fmt.Errorf("copy in temp: %w", err)
+		}
+	}
+
+	if _, err := stmt.Exec(); err != nil {
+		_ = stmt.Close()
+		return fmt.Errorf("flush copy in temp: %w", err)
+	}
+	stmt.Close()
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE trc_events e
+		 SET parent_id = m.parent_id
+		 FROM _parent_map m
+		 WHERE e.id = m.id`,
+	); err != nil {
+		return fmt.Errorf("update from temp: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
 	}
 
 	return nil
@@ -274,7 +387,7 @@ func ListSessions(ctx context.Context, db *store.DB, limit int) ([]TRCSession, e
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := db.QueryContext(ctx, 
+	rows, err := db.QueryContext(ctx,
 		`SELECT id, file_path, file_size, parsed_at, total_events, provider_name, server_name, major_version, minor_version, build_number
 		 FROM trc_sessions ORDER BY parsed_at DESC LIMIT $1`,
 		limit,
@@ -303,7 +416,7 @@ func ListSessions(ctx context.Context, db *store.DB, limit int) ([]TRCSession, e
 func GetSession(ctx context.Context, db *store.DB, sessionID int64) (*TRCSession, error) {
 	var s TRCSession
 	var provider, server sql.NullString
-	err := db.QueryRowContext(ctx, 
+	err := db.QueryRowContext(ctx,
 		`SELECT id, file_path, file_size, parsed_at, total_events, provider_name, server_name, major_version, minor_version, build_number
 		 FROM trc_sessions WHERE id = $1`,
 		sessionID,
@@ -333,7 +446,7 @@ func GetLatestSessionID(ctx context.Context, db *store.DB) (int64, error) {
 func DeleteSession(ctx context.Context, db *store.DB, sessionID int64) error {
 	// Пакетное удаление событий из trc_events
 	for {
-		res, err := db.ExecContext(ctx, 
+		res, err := db.ExecContext(ctx,
 			`DELETE FROM trc_events WHERE session_id = $1 AND id IN (
 				SELECT id FROM trc_events WHERE session_id = $1 LIMIT $2
 			)`,
@@ -373,7 +486,7 @@ func PruneSessions(ctx context.Context, db *store.DB, keepLast int) (int64, erro
 	}
 
 	// Найти ID сессий на удаление
-	rows, err := db.QueryContext(ctx, 
+	rows, err := db.QueryContext(ctx,
 		`SELECT id FROM trc_sessions WHERE id NOT IN (
 			SELECT id FROM trc_sessions ORDER BY parsed_at DESC LIMIT $1
 		)`,
@@ -399,7 +512,7 @@ func PruneSessions(ctx context.Context, db *store.DB, keepLast int) (int64, erro
 	// Пакетное удаление событий для каждой сессии
 	for _, sid := range ids {
 		for {
-			res, err := db.ExecContext(ctx, 
+			res, err := db.ExecContext(ctx,
 				`DELETE FROM trc_events WHERE session_id = $1 AND id IN (
 					SELECT id FROM trc_events WHERE session_id = $1 LIMIT $2
 				)`,
@@ -416,7 +529,7 @@ func PruneSessions(ctx context.Context, db *store.DB, keepLast int) (int64, erro
 	}
 
 	// Удаление сессий (CASCADE уже нечего удалять)
-	result, err := db.ExecContext(ctx, 
+	result, err := db.ExecContext(ctx,
 		`DELETE FROM trc_sessions WHERE id NOT IN (
 			SELECT id FROM trc_sessions ORDER BY parsed_at DESC LIMIT $1
 		)`,
@@ -434,7 +547,7 @@ func PruneSessions(ctx context.Context, db *store.DB, keepLast int) (int64, erro
 // LoadEvents загружает события сессии из БД, восстанавливая полный набор
 // декодированных Columns из JSONB-снапшота (см. marshalColumns).
 func LoadEvents(ctx context.Context, db *store.DB, sessionID int64) ([]TRCEvent, error) {
-	rows, err := db.QueryContext(ctx, 
+	rows, err := db.QueryContext(ctx,
 		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
 		        parent_id, depth
 		 FROM trc_events WHERE session_id = $1 ORDER BY id`,
@@ -469,7 +582,7 @@ func scanEventRow(rows *sql.Rows) (TRCEvent, error) {
 	ev.EventName = eventName.String
 	ev.Procedure = procedure.String
 	if parentID.Valid {
-		ev.ParentID = int(parentID.Int64) - 1 // convert 1-based back to 0-based
+		ev.ParentID = int(parentID.Int64) // real row id of parent
 	} else {
 		ev.ParentID = -1
 	}
@@ -555,7 +668,7 @@ func LoadSlowEvents(ctx context.Context, db *store.DB, sessionID int64, threshol
 	if limit > 1000 {
 		limit = 1000
 	}
-	rows, err := db.QueryContext(ctx, 
+	rows, err := db.QueryContext(ctx,
 		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
 		        parent_id, depth
 		 FROM trc_events
@@ -587,7 +700,7 @@ func LoadErrorEvents(ctx context.Context, db *store.DB, sessionID int64, limit i
 	if limit > 1000 {
 		limit = 1000
 	}
-	rows, err := db.QueryContext(ctx, 
+	rows, err := db.QueryContext(ctx,
 		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
 		        parent_id, depth
 		 FROM trc_events
@@ -619,7 +732,7 @@ func LoadEventsByProcedure(ctx context.Context, db *store.DB, sessionID int64, p
 	if limit > 1000 {
 		limit = 1000
 	}
-	rows, err := db.QueryContext(ctx, 
+	rows, err := db.QueryContext(ctx,
 		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
 		        parent_id, depth
 		 FROM trc_events
@@ -646,7 +759,7 @@ func LoadEventsByProcedure(ctx context.Context, db *store.DB, sessionID int64, p
 // LoadEventCount возвращает количество событий в сессии без их загрузки.
 func LoadEventCount(ctx context.Context, db *store.DB, sessionID int64) (int, error) {
 	var count int
-	err := db.QueryRowContext(ctx, 
+	err := db.QueryRowContext(ctx,
 		`SELECT count(*) FROM trc_events WHERE session_id = $1`,
 		sessionID,
 	).Scan(&count)
@@ -655,7 +768,7 @@ func LoadEventCount(ctx context.Context, db *store.DB, sessionID int64) (int, er
 
 // LoadProceduresAggregated агрегирует статистику по процедурам на стороне БД.
 func LoadProceduresAggregated(ctx context.Context, db *store.DB, sessionID int64) ([]TRCProcAgg, error) {
-	rows, err := db.QueryContext(ctx, 
+	rows, err := db.QueryContext(ctx,
 		`SELECT procedure,
 		        count(*) AS cnt,
 		        COALESCE(sum(duration_ms), 0) AS total_ms,
@@ -685,8 +798,8 @@ func LoadProceduresAggregated(ctx context.Context, db *store.DB, sessionID int64
 }
 
 // LoadEventsForTree загружает события для построения дерева через recursive CTE.
-// parent_id в trc_events хранит 1-based offset внутри сессии. Через CTE с
-// row_number() маппим offset на реальный id и строим дерево на стороне БД.
+// parent_id в trc_events хранит реальный id родительской строки. Recursive CTE
+// использует прямой JOIN по parent_id без промежуточного numbered CTE.
 // spid: 0 = выбрать SPID с наибольшим числом событий.
 // maxDepth: 0 = без ограничения глубины.
 // maxNodes: 0 = без ограничения количества узлов.
@@ -707,6 +820,7 @@ func LoadEventsForTree(ctx context.Context, db *store.DB, sessionID int64, spid,
 			err = db.QueryRowContext(ctx,
 				`SELECT spid FROM trc_events
 				 WHERE session_id = $1 AND parent_id IS NULL AND spid IS NOT NULL
+				   AND (event_name LIKE '%Starting' OR event_name LIKE '%Completed')
 				 GROUP BY spid ORDER BY count(*) DESC LIMIT 1`,
 				sessionID,
 			).Scan(&spid)
@@ -716,8 +830,8 @@ func LoadEventsForTree(ctx context.Context, db *store.DB, sessionID int64, spid,
 		}
 	}
 
-	// Recursive CTE: нумеруем строки сессии row_number, маппим parent_id
-	// (1-based offset) на реальный id через join с numbered CTE.
+	// Recursive CTE: прямой JOIN по parent_id (реальный id строки)
+	// без промежуточного numbered CTE.
 	// Если procedure задан, anchor ищет события с этой процедурой
 	// вместо parent_id IS NULL — дерево строится только от них.
 	anchorWhere := "e.session_id = $1 AND e.spid = $2 AND e.parent_id IS NULL AND (e.event_name LIKE '%Starting' OR e.event_name LIKE '%Completed')"
@@ -727,23 +841,16 @@ func LoadEventsForTree(ctx context.Context, db *store.DB, sessionID int64, spid,
 		args = append(args, procedure)
 	}
 
-	query := `WITH RECURSIVE numbered AS (
-		SELECT id, row_number() OVER (ORDER BY id) AS rn
-		FROM trc_events WHERE session_id = $1
-	),
-	tree AS (
+	query := `WITH RECURSIVE tree AS (
 		SELECT e.event_class, e.event_name, e.procedure, e.duration_ms,
 		       e.params, e.columns, e.parent_id, e.depth, e.id, 1 AS tree_depth
 		FROM trc_events e
-		JOIN numbered n ON e.id = n.id
 		WHERE ` + anchorWhere + `
 		UNION ALL
 		SELECT c.event_class, c.event_name, c.procedure, c.duration_ms,
 		       c.params, c.columns, c.parent_id, c.depth, c.id, t.tree_depth + 1
 		FROM trc_events c
-		JOIN numbered nc ON c.id = nc.id
-		JOIN numbered np ON c.parent_id = np.rn
-		JOIN tree t ON np.id = t.id
+		JOIN tree t ON c.parent_id = t.id
 		WHERE c.session_id = $1 AND c.spid = $2 AND ($3 = 0 OR t.tree_depth < $3)
 	)
 	SELECT event_class, event_name, procedure, duration_ms, params, columns,

@@ -20,7 +20,7 @@
 
 Система SHALL строить дерево вызовов, сгруппированное по SPID, с восстановлением вложенности через Starting/Completed пары событий (RPC, SQL:Batch, SQL:Stmt, SP, SP:Stmt). Корневыми узлами дерева SHALL быть только события, чьи имена заканчиваются на `Starting` или `Completed`. События, не попадающие в эти два класса (diagnostic: SP:Recompile, SQL:StmtRecompile, Audit Login/Logout, ExistingConnection, Attention и др.), SHALL быть вложены как дети в текущий открытый фрейм, если он есть, и SHALL NOT становиться корневыми узлами, когда стек пуст.
 
-При серверном режиме (session_id > 0) фильтрация SHALL выполняться в SQL: anchor CTE в `LoadEventsForTree` выбирает только события с `event_name LIKE '%Starting' OR event_name LIKE '%Completed'` в качестве корней. Recursive part подтягивает детей по parent_id без изменений — parent_id у Starting/Completed событий никогда не указывает на diagnostic-события.
+При серверном режиме (session_id > 0) `parent_id` в таблице `trc_events` SHALL хранить реальный `id` родительской строки (не 1-based offset). Recursive CTE в `LoadEventsForTree` SHALL использовать прямой `JOIN tree t ON c.parent_id = t.id` по индексу `idx_trc_events_session_parent` без промежуточного `numbered` CTE. Anchor CTE выбирает только события с `event_name LIKE '%Starting' OR event_name LIKE '%Completed'` в качестве корней.
 
 При файловом режиме (без БД) фильтрация SHALL выполняться в памяти: `buildSPIDTree` в ветке `default` (non-Starting/Completed события) не создаёт корневой узел, когда стек пуст — событие пропускается. Когда стек не пуст, событие прикрепляется как ребёнок текущего фрейма (существующее поведение).
 
@@ -63,11 +63,18 @@
 - **WHEN** выполняется `codebase trc tree file.trc --spid 76`
 - **THEN** размер ответа существенно уменьшен по сравнению с поведением до фильтрации
 
+#### Scenario: Дерево из БД для большой сессии без таймаута
+
+- **GIVEN** сохранённая TRC-сессия с 500K событий на 50 SPID, SPID 95 имеет 10K событий
+- **WHEN** вызывается MCP-инструмент `codebase_trc_tree` с `session_id` и `spid=95`
+- **THEN** дерево вызовов возвращается за время менее 5 секунд
+- **AND** recursive CTE использует прямой JOIN по индексу `idx_trc_events_session_parent` без `numbered` CTE
+
 ### Requirement: Фильтрация дерева по имени процедуры
 
 Система SHALL предоставлять фильтрацию дерева вызовов по имени процедуры через параметр `procedure` в CLI (`--proc`) и MCP (`procedure`). При заданном имени процедуры возвращаются только поддеревья, корневые узлы которых имеют `Start.Procedure` совпадающий с указанным именем.
 
-При серверном режиме (session_id > 0) фильтрация SHALL выполняться в SQL внутри recursive CTE `LoadEventsForTree`: anchor ищет события с `procedure = $procedure` (вместо `parent_id IS NULL`), recursive part спускается только от них. Это загружает из БД только поддерево нужной процедуры.
+При серверном режиме (session_id > 0) фильтрация SHALL выполняться в SQL внутри recursive CTE `LoadEventsForTree`: anchor ищет события с `procedure = $procedure` (вместо `parent_id IS NULL`), recursive part спускается только от них через прямой `JOIN tree t ON c.parent_id = t.id`. Это загружает из БД только поддерево нужной процедуры.
 
 При файловом режиме (без БД) фильтрация SHALL выполняться в памяти: дерево строится по всем событиям, затем `FilterTreesByProcedure` находит узлы с совпадающей процедурой и возвращает их поддеревья.
 
@@ -88,6 +95,13 @@
 - **GIVEN** .trc файл с событиями процедуры `ProcB` в SPID 55 и SPID 66
 - **WHEN** выполняется `codebase trc tree file.trc --proc ProcB --spid 55`
 - **THEN** возвращено только поддерево `ProcB` для SPID 55
+
+#### Scenario: Дерево от процедуры в большой сессии без таймаута
+
+- **GIVEN** сохранённая TRC-сессия с 500K событий, процедура `ProcB` имеет 1000 событий на SPID 95
+- **WHEN** вызывается MCP-инструмент `codebase_trc_tree` с `session_id` и `procedure = "ProcB"`
+- **THEN** поддерево `ProcB` возвращается за время менее 5 секунд
+- **AND** recursive CTE использует прямой JOIN по `parent_id` без `numbered` CTE
 
 #### Scenario: Процедура не найдена
 
@@ -222,6 +236,30 @@ Fallback SHALL применяться в трёх компонентах:
 - **AND** `SP:StmtCompleted` в SPID 200 — корневой узел дерева SPID 200
 - **AND** между ними нет отношения родитель-потомок, несмотря на вложенность интервалов
 
+### Requirement: Маппинг parent_id из offset в реальный id при сохранении в БД
+
+Система SHALL после вставки событий в `trc_events` через `COPY IN` выполнять Go-маппинг `parent_id` из 1-based offset в реальный `id` строки. `ComputeParentIDs` вычисляет `ParentID` как 0-based индекс в срезе events; при сохранении добавляется +1 (1-based offset). После присвоения `id` базой (BIGSERIAL) система SHALL:
+1. загрузить `id` через `SELECT id FROM trc_events WHERE session_id = $1 ORDER BY id`;
+2. вычислить `realParentID = ids[ev.ParentID]` в Go для каждого события с `ParentID >= 0`;
+3. выполнить `COPY IN` во временную таблицу `(id, parent_id)` и `UPDATE trc_events e SET parent_id = t.parent_id FROM temp t WHERE e.id = t.id` — JOIN по PK.
+
+Этот маппинг SHALL выполняться один раз при парсинге (в `insertTRCEvents`), не при каждом запросе дерева. Корневые события (parent_id IS NULL) SHALL NOT затрагиваться этим маппингом.
+
+#### Scenario: Маппинг parent_id после COPY IN
+
+- **GIVEN** 3 события: event[0] (root, ParentID=-1), event[1] (child of 0, ParentID=0), event[2] (child of 1, ParentID=1)
+- **WHEN** `insertTRCEvents` завершает COPY IN и выполняет Go-маппинг
+- **THEN** event[0] имеет `parent_id IS NULL` в БД
+- **AND** event[1] имеет `parent_id` = реальный `id` event[0] в БД
+- **AND** event[2] имеет `parent_id` = реальный `id` event[1] в БД
+
+#### Scenario: Маппинг для большой сессии без таймаута
+
+- **GIVEN** TRC-сессия с 40K событий, которые вставлены через COPY IN батчами
+- **WHEN** `insertTRCEvents` выполняет Go-маппинг parent_id
+- **THEN** маппинг завершается за время менее 10 секунд
+- **AND** UPDATE выполняется через temp table с JOIN по PK (index scan), не через row_number() self-join
+
 ### Requirement: Серверная агрегация LoadProceduresAggregated и LimitTrees
 
 Система SHALL при работе из сохранённой сессии (БД) использовать серверную агрегацию `LoadProceduresAggregated` (`store.go:656-675`) вместо клиентской `AggregateByProcedure`, что переносит группировку по процедурам в PostgreSQL. Деревья ограничиваются через `LimitTrees` (root nodes + children per node) после построения.
@@ -269,3 +307,4 @@ Fallback SHALL применяться в трёх компонентах:
 - При работе из БД (`session_id > 0`) агрегация выполняется серверно через `LoadProceduresAggregated` (GROUP BY в PostgreSQL); из файла — клиентски через `AggregateByProcedure`
 - `EnrichAggregates` переносит enrichment из sample-событий в агрегации — не делает lookup для каждой агрегации, что устраняет N+1
 - `--proc` для `trc tree` фильтрует дерево по имени процедуры: при серверном режиме — в CTE (anchor по `procedure` вместо `parent_id IS NULL`), при файловом — через `FilterTreesByProcedure` в памяти
+- `parent_id` в `trc_events` хранит реальный `id` родительской строки (после Go-маппинга в `insertTRCEvents`), не 1-based offset. `LoadEventsForTree` использует прямой `JOIN tree t ON c.parent_id = t.id` без промежуточного `numbered` CTE
