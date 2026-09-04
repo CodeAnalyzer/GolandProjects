@@ -32,8 +32,17 @@ func SaveSession(ctx context.Context, db *store.DB, result *TRCParseResult, file
 		return 0, fmt.Errorf("failed to insert trc_sessions: %w", err)
 	}
 
-	if err := insertTRCEvents(ctx, db, result.Events, sessionID); err != nil {
+	baseID, err := getBaseID(ctx, db)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get base id: %w", err)
+	}
+
+	if err := insertTRCEvents(ctx, db, result.Events, sessionID, baseID); err != nil {
 		return 0, fmt.Errorf("failed to insert trc_events: %w", err)
+	}
+
+	if err := syncSequence(ctx, db); err != nil {
+		return 0, fmt.Errorf("failed to sync sequence: %w", err)
 	}
 
 	return sessionID, nil
@@ -46,16 +55,12 @@ func SaveSession(ctx context.Context, db *store.DB, result *TRCParseResult, file
 // clientEventPayload в internal/rti/store.go) — без потери данных для
 // колонок, не вынесенных в отдельные поля.
 //
-// parent_id вычисляется в ComputeParentIDs (tree.go) как индекс родительского
-// события в срезе events. Поскольку trc_events.id генерируется БД (BIGSERIAL),
-// parent_id при COPY IN хранит 1-based offset (индекс + 1). После завершения
-// всех батчей выполняется Go-маппинг offset → реальный id строки:
-//  1. SELECT id FROM trc_events WHERE session_id ORDER BY id → ids[]
-//  2. Go: realParentID = ids[ev.ParentID] для каждого события с ParentID >= 0
-//  3. COPY IN во temp table (id, parent_id) + UPDATE ... JOIN по PK
-//
-// Это гарантирует O(N) сложность и index scan по PK, в отличие от SQL UPDATE
-// с row_number() который может выбрать nested loop O(N²).
+// parent_id вычисляется в ComputeParentIDs (tree.go) / IncrementalParentTracker
+// (parent_tracker.go) как 0-based индекс родительского события в потоке.
+// EventIndex — 0-based порядковый номер события. При COPY IN вставляется явный
+// id = baseID + EventIndex, а parent_id = baseID + ParentID (если >= 0, иначе NULL).
+// baseID = COALESCE(MAX(id), 0) + 1 определяется перед вставкой. После вставки
+// sequence синхронизируется через syncSequence.
 //
 // Для больших файлов (миллионы событий) insert выполняется батчами по
 // trcBatchSize событий: каждый батч — отдельная транзакция с CopyIn.
@@ -68,7 +73,7 @@ func SetBatchSize(size int) {
 	}
 }
 
-func insertTRCEvents(ctx context.Context, db *store.DB, events []TRCEvent, sessionID int64) error {
+func insertTRCEvents(ctx context.Context, db *store.DB, events []TRCEvent, sessionID int64, baseID int64) error {
 	if len(events) == 0 {
 		return nil
 	}
@@ -83,6 +88,10 @@ func insertTRCEvents(ctx context.Context, db *store.DB, events []TRCEvent, sessi
 	// Фаза 2: последовательный COPY IN (pq.CopyIn не потокобезопасен)
 	// Батчами по trcBatchSize событий, каждая батч — отдельная транзакция.
 	for batchStart := 0; batchStart < len(events); batchStart += trcBatchSize {
+		if ctx.Err() != nil {
+			return fmt.Errorf("insert trc_events cancelled: %w", ctx.Err())
+		}
+
 		batchEnd := batchStart + trcBatchSize
 		if batchEnd > len(events) {
 			batchEnd = len(events)
@@ -94,7 +103,7 @@ func insertTRCEvents(ctx context.Context, db *store.DB, events []TRCEvent, sessi
 		}
 
 		stmt, err := tx.PrepareContext(ctx, pq.CopyIn("trc_events",
-			"session_id", "event_class", "event_name", "text_data", "procedure",
+			"id", "session_id", "event_class", "event_name", "text_data", "procedure",
 			"spid", "database_id", "database_name", "application_name", "login_name", "host_name",
 			"start_time", "end_time", "duration_ms", "cpu", "reads", "writes", "row_counts",
 			"object_id", "object_name", "event_sequence", "nest_level", "line_number",
@@ -110,9 +119,10 @@ func insertTRCEvents(ctx context.Context, db *store.DB, events []TRCEvent, sessi
 			ev := events[i]
 			var parentID interface{}
 			if ev.ParentID >= 0 {
-				parentID = ev.ParentID + 1 // 1-based offset within session
+				parentID = baseID + int64(ev.ParentID)
 			}
 			_, err = stmt.Exec(
+				baseID+int64(ev.EventIndex),
 				sessionID, ev.EventClass, nullableString(ev.EventName), nullableString(strVal(ev.Columns[1])), nullableString(ev.Procedure),
 				nullableInt32(ev.Columns[12]), nullableInt32(ev.Columns[3]), nullableString(strVal(ev.Columns[35])),
 				nullableString(strVal(ev.Columns[10])), nullableString(strVal(ev.Columns[11])), nullableString(strVal(ev.Columns[8])),
@@ -138,119 +148,35 @@ func insertTRCEvents(ctx context.Context, db *store.DB, events []TRCEvent, sessi
 		}
 		stmt.Close()
 
+		if ctx.Err() != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("insert trc_events batch cancelled: %w", ctx.Err())
+		}
+
 		if err := tx.Commit(); err != nil {
 			return err
 		}
 	}
 
-	// Фаза 3: Go-маппинг parent_id из 1-based offset → реальный id строки.
-	// Выполняется один раз после завершения всех батчей COPY IN.
-	if err := mapParentIDs(ctx, db, events, sessionID); err != nil {
-		return fmt.Errorf("failed to map parent_id offsets to ids: %w", err)
-	}
-
 	return nil
 }
 
-// mapParentIDs маппит parent_id из 1-based offset в реальный id строки.
-// Алгоритм O(N):
-//  1. SELECT id FROM trc_events WHERE session_id ORDER BY id → ids[]
-//  2. Go: realParentID = ids[ev.ParentID] (ev.ParentID — 0-based индекс)
-//  3. COPY IN во temp table (id, parent_id) + UPDATE JOIN по PK
-func mapParentIDs(ctx context.Context, db *store.DB, events []TRCEvent, sessionID int64) error {
-	// Шаг 1: загружаем id строк в порядке вставки (ORDER BY id).
-	rows, err := db.QueryContext(ctx,
-		`SELECT id FROM trc_events WHERE session_id = $1 ORDER BY id`,
-		sessionID,
-	)
+// getBaseID возвращает следующий доступный id для trc_events:
+// COALESCE(MAX(id), 0) + 1. Используется перед COPY IN с явными id.
+func getBaseID(ctx context.Context, db *store.DB) (int64, error) {
+	var baseID int64
+	err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) + 1 FROM trc_events`).Scan(&baseID)
 	if err != nil {
-		return fmt.Errorf("select ids: %w", err)
+		return 0, err
 	}
-	defer rows.Close()
+	return baseID, nil
+}
 
-	ids := make([]int64, 0, len(events))
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return fmt.Errorf("scan id: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("rows iteration: %w", err)
-	}
-
-	if len(ids) != len(events) {
-		return fmt.Errorf("id count mismatch: got %d ids, expected %d events", len(ids), len(events))
-	}
-
-	// Шаг 2: вычисляем реальный parent_id для каждого события.
-	// ev.ParentID — 0-based индекс в срезе events. ids[ev.ParentID] — реальный id.
-	// События с ParentID < 0 (root) имеют parent_id = NULL, пропускаем.
-	type parentUpdate struct {
-		id       int64
-		parentID int64
-	}
-	updates := make([]parentUpdate, 0, len(events))
-	for i, ev := range events {
-		if ev.ParentID >= 0 {
-			if ev.ParentID >= len(ids) {
-				return fmt.Errorf("parent index %d out of range (have %d ids) for event %d", ev.ParentID, len(ids), i)
-			}
-			updates = append(updates, parentUpdate{
-				id:       ids[i],
-				parentID: ids[ev.ParentID],
-			})
-		}
-	}
-
-	if len(updates) == 0 {
-		return nil // все события — root
-	}
-
-	// Шаг 3: COPY IN во temp table + UPDATE JOIN по PK.
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE _parent_map (id BIGINT, parent_id BIGINT) ON COMMIT DROP`); err != nil {
-		return fmt.Errorf("create temp table: %w", err)
-	}
-
-	stmt, err := tx.PrepareContext(ctx, pq.CopyIn("_parent_map", "id", "parent_id"))
-	if err != nil {
-		return fmt.Errorf("prepare copy in: %w", err)
-	}
-
-	for _, u := range updates {
-		if _, err := stmt.Exec(u.id, u.parentID); err != nil {
-			_ = stmt.Close()
-			return fmt.Errorf("copy in temp: %w", err)
-		}
-	}
-
-	if _, err := stmt.Exec(); err != nil {
-		_ = stmt.Close()
-		return fmt.Errorf("flush copy in temp: %w", err)
-	}
-	stmt.Close()
-
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE trc_events e
-		 SET parent_id = m.parent_id
-		 FROM _parent_map m
-		 WHERE e.id = m.id`,
-	); err != nil {
-		return fmt.Errorf("update from temp: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
-
-	return nil
+// syncSequence синхронизирует trc_events_id_seq с MAX(id) после вставки
+// с явными id, чтобы future nextval() не конфликтовал с существующими строками.
+func syncSequence(ctx context.Context, db *store.DB) error {
+	_, err := db.ExecContext(ctx, `SELECT setval('trc_events_id_seq', (SELECT MAX(id) FROM trc_events))`)
+	return err
 }
 
 // jsonColumn — сериализуемое представление одной декодированной колонки

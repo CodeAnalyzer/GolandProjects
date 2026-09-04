@@ -68,6 +68,12 @@ func ParseFileToDB(ctx context.Context, path string, db *store.DB) (sessionID in
 		return 0, 0, fmt.Errorf("failed to insert trc_sessions: %w", insertErr)
 	}
 
+	// Получаем baseID для явных id при COPY IN.
+	baseID, err := getBaseID(ctx, db)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to get base id: %w", err)
+	}
+
 	// Подготовка общих компонентов streaming-записи.
 	tracker := NewIncrementalParentTracker()
 	batch := make([]TRCEvent, 0, trcBatchSize)
@@ -77,7 +83,7 @@ func ParseFileToDB(ctx context.Context, path string, db *store.DB) (sessionID in
 		if len(batch) == 0 {
 			return nil
 		}
-		if err := insertTRCEvents(ctx, db, batch, sessionID); err != nil {
+		if err := insertTRCEvents(ctx, db, batch, sessionID, baseID); err != nil {
 			return fmt.Errorf("failed to insert trc_events batch: %w", err)
 		}
 		batch = batch[:0]
@@ -168,6 +174,11 @@ func ParseFileToDB(ctx context.Context, path string, db *store.DB) (sessionID in
 	// Вставляем остаток батча.
 	if err := flushBatch(); err != nil {
 		return sessionID, totalEvents, err
+	}
+
+	// Синхронизируем sequence после вставки с явными id.
+	if err := syncSequence(ctx, db); err != nil {
+		return sessionID, totalEvents, fmt.Errorf("failed to sync sequence: %w", err)
 	}
 
 	// Обновляем сессию: real header + total_events + source_format.

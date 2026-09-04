@@ -12,7 +12,8 @@ import (
 )
 
 // TestInsertTRCEvents_ParentIDMapping проверяет, что после SaveSession
-// parent_id в БД содержит реальный id родительской строки, а не offset.
+// (insertTRCEvents с явным id) parent_id в БД содержит реальный id
+// родительской строки, без post-insert маппинга.
 func TestInsertTRCEvents_ParentIDMapping(t *testing.T) {
 	db := testutil.Open(t)
 
@@ -88,6 +89,100 @@ func TestInsertTRCEvents_ParentIDMapping(t *testing.T) {
 	}
 	if dbRows[3].parentID != nil {
 		t.Errorf("event 3 (%s): parent_id = %v, want NULL (root)", dbRows[3].name, dbRows[3].parentID)
+	}
+}
+
+// TestInsertTRCEvents_ExplicitID_MultiBatch проверяет, что insertTRCEvents
+// с явным id корректно вставляет parent_id при стриминг-режиме: 2 батча
+// insertTRCEvents с одним baseID. Parent может находиться в другом батче.
+func TestInsertTRCEvents_ExplicitID_MultiBatch(t *testing.T) {
+	db := testutil.Open(t)
+
+	var sessionID int64
+	err := db.QueryRow(
+		`INSERT INTO trc_sessions (file_path, file_size, total_events)
+		 VALUES ($1, 10, 0) RETURNING id`,
+		"test-streaming-multibatch.trc",
+	).Scan(&sessionID)
+	if err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	defer func() { _ = DeleteSession(context.Background(), db, sessionID) }()
+
+	// 3 события: root (ParentID=-1), child of root (ParentID=0), child of child (ParentID=1).
+	// ComputeParentIDs вычисляет ParentID как 0-based индекс и EventIndex.
+	events := []TRCEvent{
+		{EventClass: 10, EventName: "RPC:Starting", Procedure: "ProcA", ParentID: -1, Depth: 0,
+			Columns: map[int]any{12: int32(55)}},
+		{EventClass: 43, EventName: "SP:Starting", Procedure: "ProcB", ParentID: 0, Depth: 1,
+			Columns: map[int]any{12: int32(55)}},
+		{EventClass: 45, EventName: "SP:StmtStarting", Procedure: "ProcC", ParentID: 1, Depth: 2,
+			Columns: map[int]any{12: int32(55)}},
+	}
+	ComputeParentIDs(events)
+
+	// Получаем baseID для явных id.
+	ctx := context.Background()
+	baseID, err := getBaseID(ctx, db)
+	if err != nil {
+		t.Fatalf("getBaseID: %v", err)
+	}
+
+	// Разбиваем на 2 батча: [0,1] и [2].
+	// event[2] (ParentID=1) ссылается на event[1] из первого батча.
+	batch1 := events[:2]
+	batch2 := events[2:]
+
+	if err := insertTRCEvents(ctx, db, batch1, sessionID, baseID); err != nil {
+		t.Fatalf("insertTRCEvents batch1: %v", err)
+	}
+	if err := insertTRCEvents(ctx, db, batch2, sessionID, baseID); err != nil {
+		t.Fatalf("insertTRCEvents batch2: %v", err)
+	}
+
+	// Проверяем parent_id в БД.
+	rows, err := db.Query(
+		`SELECT id, parent_id, event_name FROM trc_events
+		 WHERE session_id = $1 ORDER BY id`,
+		sessionID,
+	)
+	if err != nil {
+		t.Fatalf("query events: %v", err)
+	}
+	defer rows.Close()
+
+	type dbRow struct {
+		id       int64
+		parentID *int64
+		name     string
+	}
+	var dbRows []dbRow
+	for rows.Next() {
+		var r dbRow
+		if err := rows.Scan(&r.id, &r.parentID, &r.name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		dbRows = append(dbRows, r)
+	}
+	if len(dbRows) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(dbRows))
+	}
+
+	// event[0]: root, parent_id = NULL
+	if dbRows[0].parentID != nil {
+		t.Errorf("event 0 (%s): parent_id = %v, want NULL", dbRows[0].name, dbRows[0].parentID)
+	}
+	// event[1]: child of event[0], parent_id = id of event[0]
+	if dbRows[1].parentID == nil {
+		t.Errorf("event 1 (%s): parent_id is NULL, want %d", dbRows[1].name, dbRows[0].id)
+	} else if *dbRows[1].parentID != dbRows[0].id {
+		t.Errorf("event 1 (%s): parent_id = %d, want %d", dbRows[1].name, *dbRows[1].parentID, dbRows[0].id)
+	}
+	// event[2]: child of event[1] (cross-batch!), parent_id = id of event[1]
+	if dbRows[2].parentID == nil {
+		t.Errorf("event 2 (%s): parent_id is NULL, want %d (cross-batch)", dbRows[2].name, dbRows[1].id)
+	} else if *dbRows[2].parentID != dbRows[1].id {
+		t.Errorf("event 2 (%s): parent_id = %d, want %d (cross-batch)", dbRows[2].name, *dbRows[2].parentID, dbRows[1].id)
 	}
 }
 

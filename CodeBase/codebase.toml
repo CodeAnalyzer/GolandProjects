@@ -68,7 +68,7 @@ parse_timeout_sec = 300  # Таймаут MCP codebase_rti_parse (секунды
 slow_threshold_ms = 100  # События длительнее этого значения считаются медленными (мс)
 max_enrich_workers = 16  # Лимит конкурентных SQL-запросов при обогащении
 min_procs_for_parallel_enrich = 16  # Порог параллельного обогащения
-parse_timeout_sec = 300  # Таймаут MCP codebase_trc_parse (секунды, 0 = без таймаута)
+parse_timeout_sec = 900  # Таймаут MCP codebase_trc_parse (секунды, 0 = без таймаута)
 
 # Настройки MCP-сервера
 [mcp]
