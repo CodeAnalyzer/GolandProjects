@@ -45,20 +45,37 @@ func (idx *Indexer) postProcessSpecDependencies(ctx context.Context, collector *
 		slugToID[specSlugKey(c.SpecConfigID, c.CapabilityName)] = c.ID
 	}
 
+	// 2a. Строим иерархические map'ы для раскрытия depends_on_capability
+	childrenOf := map[int64][]int64{}
+	parentOf := map[int64]int64{}
+	for _, c := range caps {
+		if c.ParentID > 0 {
+			childrenOf[c.ParentID] = append(childrenOf[c.ParentID], c.ID)
+			parentOf[c.ID] = c.ParentID
+		}
+	}
+
 	// 3. Извлекаем depends_on_capability из текстов
-	var depRelations []*model.Relation
-	depSeen := map[string]struct{}{}
+	var rawDepRelations []*model.Relation
 	for _, c := range caps {
 		deps := extractCapabilityDeps(c, slugToID)
-		for _, dep := range deps {
-			dedupKey := fmt.Sprintf("spec_capability|%d|spec_capability|%d|depends_on_capability",
-				c.ID, dep.TargetID)
-			if _, exists := depSeen[dedupKey]; exists {
-				continue
-			}
-			depSeen[dedupKey] = struct{}{}
-			depRelations = append(depRelations, dep)
+		rawDepRelations = append(rawDepRelations, deps...)
+	}
+
+	// 3a. Раскрываем иерархические зависимости (parent → children, child → parent)
+	expandedRelations := expandHierarchyDeps(rawDepRelations, childrenOf, parentOf)
+
+	// 3b. Дедупликация
+	var depRelations []*model.Relation
+	depSeen := map[string]struct{}{}
+	for _, dep := range expandedRelations {
+		dedupKey := fmt.Sprintf("spec_capability|%d|spec_capability|%d|depends_on_capability",
+			dep.SourceID, dep.TargetID)
+		if _, exists := depSeen[dedupKey]; exists {
+			continue
 		}
+		depSeen[dedupKey] = struct{}{}
+		depRelations = append(depRelations, dep)
 	}
 
 	usecaseRefs, err := idx.db.LoadSpecUsecaseRefs(ctx)
@@ -153,7 +170,7 @@ func extractCapabilityDeps(cap *model.SpecCapability, slugToID map[string]int64)
 	}
 
 	// 2. "Связан с доменами: `slug1`, `slug2`"
-	if m := reLinkedDomains.FindStringSubmatch(combinedText); m != nil {
+	for _, m := range reLinkedDomains.FindAllStringSubmatch(combinedText, -1) {
 		for _, slugRaw := range reBacktickSlugs.FindAllString(m[1], -1) {
 			slug := strings.Trim(slugRaw, "`")
 			targetID := resolveSlug(slug, cap.CapabilityName, cap.SpecConfigID, slugToID)
@@ -186,7 +203,29 @@ func extractCapabilityDeps(cap *model.SpecCapability, slugToID map[string]int64)
 		}
 	}
 
-	// 4. cci:-хвост в имени capability
+	// 4. "поддомену/поддоменам: `slug1`, `slug2`"
+	for _, m := range reSubdomains.FindAllStringSubmatch(combinedText, -1) {
+		for _, slugRaw := range reBacktickSlugs.FindAllString(m[1], -1) {
+			slug := strings.Trim(slugRaw, "`")
+			// Поддомены — дети текущей capability: prepends parent prefix
+			if !strings.Contains(slug, "/") {
+				slug = cap.CapabilityName + "/" + slug
+			}
+			targetID := resolveSlug(slug, cap.CapabilityName, cap.SpecConfigID, slugToID)
+			if targetID > 0 {
+				relations = append(relations, &model.Relation{
+					SourceType:   "spec_capability",
+					SourceID:     cap.ID,
+					TargetType:   "spec_capability",
+					TargetID:     targetID,
+					RelationType: "depends_on_capability",
+					Confidence:   "notes",
+				})
+			}
+		}
+	}
+
+	// 5. cci:-хвост в имени capability
 	if idx := strings.Index(strings.ToLower(cap.CapabilityName), "cci:"); idx >= 0 {
 		cciPart := cap.CapabilityName[idx+4:]
 		for _, slug := range strings.Split(cciPart, ",") {
@@ -205,7 +244,7 @@ func extractCapabilityDeps(cap *model.SpecCapability, slugToID map[string]int64)
 		}
 	}
 
-	// 5. Извлекаем из ExtractSpecReferences (переиспользуем парсер)
+	// 6. Извлекаем из ExtractSpecReferences (переиспользуем парсер)
 	for slug := range openspecmd.ExtractSpecReferences(combinedText) {
 		targetID := resolveSlug(slug, cap.CapabilityName, cap.SpecConfigID, slugToID)
 		if targetID > 0 {
@@ -234,6 +273,64 @@ func extractCapabilityDeps(cap *model.SpecCapability, slugToID map[string]int64)
 	}
 
 	return relations
+}
+
+// expandHierarchyDeps раскрывает неявные иерархические зависимости:
+//   - parent → children: если прямая зависимость на parent, добавляем зависимости на каждого ребёнка
+//   - child → parent: если прямая зависимость на child, добавляем зависимость на родителя
+//
+// Прямые связи имеют приоритет — иерархические дедуплицируются с ними через depSeen в вызывающем коде.
+func expandHierarchyDeps(relations []*model.Relation, childrenOf map[int64][]int64, parentOf map[int64]int64) []*model.Relation {
+	if len(childrenOf) == 0 && len(parentOf) == 0 {
+		return relations
+	}
+	result := make([]*model.Relation, 0, len(relations)*2)
+	seen := map[string]struct{}{}
+	// First pass: add all direct relations (they have priority)
+	for _, r := range relations {
+		key := fmt.Sprintf("%d|%d", r.SourceID, r.TargetID)
+		if _, exists := seen[key]; !exists {
+			seen[key] = struct{}{}
+			result = append(result, r)
+		}
+	}
+	// Second pass: add hierarchy relations only if not already covered by direct
+	for _, r := range relations {
+		// Вниз: parent → children
+		for _, childID := range childrenOf[r.TargetID] {
+			childKey := fmt.Sprintf("%d|%d", r.SourceID, childID)
+			if _, exists := seen[childKey]; !exists && childID != r.SourceID {
+				seen[childKey] = struct{}{}
+				result = append(result, &model.Relation{
+					SourceType:   "spec_capability",
+					SourceID:     r.SourceID,
+					TargetType:   "spec_capability",
+					TargetID:     childID,
+					RelationType: "depends_on_capability",
+					Confidence:   "hierarchy",
+				})
+			}
+		}
+		// Вверх: child → parent (пропускаем если source — тоже ребёнок того же parent,
+		// чтобы избежать циклов между siblings внутри одного домена)
+		if parentID, ok := parentOf[r.TargetID]; ok && parentID > 0 && parentID != r.SourceID {
+			if sourceParent, ok := parentOf[r.SourceID]; !ok || sourceParent != parentID {
+				parentKey := fmt.Sprintf("%d|%d", r.SourceID, parentID)
+				if _, exists := seen[parentKey]; !exists {
+					seen[parentKey] = struct{}{}
+					result = append(result, &model.Relation{
+						SourceType:   "spec_capability",
+						SourceID:     r.SourceID,
+						TargetType:   "spec_capability",
+						TargetID:     parentID,
+						RelationType: "depends_on_capability",
+						Confidence:   "hierarchy",
+					})
+				}
+			}
+		}
+	}
+	return result
 }
 
 // resolveSlug находит capability ID по slug, пытаясь резолвить по полному пути
@@ -375,7 +472,8 @@ type SpecChangeProposalRef struct {
 
 var (
 	reMDSpecLinkDeps = regexp.MustCompile(`\]\((?:\.\./)+(?:specs/)?([A-Za-z0-9_.\-/]+)/spec\.md\)`)
-	reLinkedDomains  = regexp.MustCompile(`(?i)связан\s+с\s+доменами?\s*:\s*(.+)`)
+	reLinkedDomains  = regexp.MustCompile(`(?i)связан\s+с\s+доменами?\s*:?\s*(.+)`)
+	reSubdomains     = regexp.MustCompile(`(?i)поддомен(?:у|ам|а|ов)?\s*:?\s*(.+)`)
 	reBacktickSlugs  = regexp.MustCompile("`[^`]+`")
 	reSeeAlso        = regexp.MustCompile(`(?i)\(см\.\s*\x60([A-Za-z0-9_\-/]+)\x60\)`)
 )

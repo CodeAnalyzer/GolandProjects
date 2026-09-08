@@ -10,7 +10,7 @@ import (
 // LoadAllSpecCapabilitiesForDeps загружает все capabilities с текстами для построения depends_on.
 func (db *DB) LoadAllSpecCapabilitiesForDeps(ctx context.Context) ([]*model.SpecCapability, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, spec_config_id, COALESCE(ds_product_id, 0), capability_name, COALESCE(purpose, ''), COALESCE(notes, ''), COALESCE(related_code, '')
+		SELECT id, spec_config_id, COALESCE(ds_product_id, 0), COALESCE(parent_id, 0), capability_name, COALESCE(purpose, ''), COALESCE(notes, ''), COALESCE(related_code, '')
 		FROM spec_capabilities
 		ORDER BY id
 	`)
@@ -22,7 +22,7 @@ func (db *DB) LoadAllSpecCapabilitiesForDeps(ctx context.Context) ([]*model.Spec
 	var result []*model.SpecCapability
 	for rows.Next() {
 		var c model.SpecCapability
-		if err := rows.Scan(&c.ID, &c.SpecConfigID, &c.DsProductID, &c.CapabilityName, &c.Purpose, &c.Notes, &c.RelatedCode); err != nil {
+		if err := rows.Scan(&c.ID, &c.SpecConfigID, &c.DsProductID, &c.ParentID, &c.CapabilityName, &c.Purpose, &c.Notes, &c.RelatedCode); err != nil {
 			return nil, err
 		}
 		result = append(result, &c)
