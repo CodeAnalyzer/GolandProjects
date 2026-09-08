@@ -159,6 +159,14 @@ func mergeScanStats(dst *model.ScanStats, src *model.ScanStats) {
 	dst.APITables += src.APITables
 	dst.APITableFields += src.APITableFields
 	dst.APITableIndexes += src.APITableIndexes
+	dst.MDFiles += src.MDFiles
+	dst.YAMLFiles += src.YAMLFiles
+	dst.SpecConfigs += src.SpecConfigs
+	dst.SpecCapabilities += src.SpecCapabilities
+	dst.SpecRequirements += src.SpecRequirements
+	dst.SpecScenarios += src.SpecScenarios
+	dst.SpecUsecases += src.SpecUsecases
+	dst.SpecChanges += src.SpecChanges
 	dst.Procedures += src.Procedures
 	dst.Tables += src.Tables
 	dst.Columns += src.Columns
@@ -1527,6 +1535,18 @@ func (idx *Indexer) processFileInTx(ctx context.Context, file fswalk.FileInfo, f
 		}
 	case "T01":
 		if err := idx.parseT01File(ctx, file, fileID, stats); err != nil {
+			return err
+		}
+		stats.FilesIndexed++
+	case "MD":
+		stats.MDFiles++
+		if err := idx.parseMDFile(ctx, file, fileID, stats); err != nil {
+			return err
+		}
+		stats.FilesIndexed++
+	case "YAML":
+		stats.YAMLFiles++
+		if err := idx.parseYAMLFile(ctx, file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++

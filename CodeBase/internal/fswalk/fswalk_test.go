@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"golang.org/x/text/encoding/charmap"
 )
 
 func TestPatternToRegexp(t *testing.T) {
@@ -90,6 +92,8 @@ func TestGetEncodingAndLanguage(t *testing.T) {
 		{ext: "rpt", wantEncoding: "WIN1251", wantLanguage: "RPT"},
 		{ext: "xml", wantEncoding: "UTF8", wantLanguage: "XML"},
 		{ext: "t01", wantEncoding: "CP866", wantLanguage: "T01"},
+		{ext: "md", wantEncoding: "AUTO", wantLanguage: "MD"},
+		{ext: "yaml", wantEncoding: "UTF8", wantLanguage: "YAML"},
 		{ext: "txt", wantEncoding: "UTF8", wantLanguage: "UNKNOWN"},
 	}
 
@@ -104,7 +108,7 @@ func TestGetEncodingAndLanguage(t *testing.T) {
 }
 
 func TestGetSupportedExtensions(t *testing.T) {
-	want := []string{".sql", ".h", ".pas", ".inc", ".js", ".smf", ".dfm", ".tpr", ".rpt", ".xml", ".t01"}
+	want := []string{".sql", ".h", ".pas", ".inc", ".js", ".smf", ".dfm", ".tpr", ".rpt", ".xml", ".t01", ".md", ".yaml"}
 	if got := GetSupportedExtensions(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("GetSupportedExtensions() = %v, want %v", got, want)
 	}
@@ -403,5 +407,96 @@ func TestWalkParallelCtx_PreFilterNoPanic(t *testing.T) {
 
 	if count != 100 {
 		t.Fatalf("expected 100 pre-filtered files, got %d", count)
+	}
+}
+
+func TestWalkMarkdownAndYamlFiles(t *testing.T) {
+	root := t.TempDir()
+	// openspec-спека в UTF-8 (типичный случай)
+	writeTestFile(t, filepath.Join(root, "fa-cards", "openspec", "specs", "card-limits", "spec.md"), "# Карта\n\n## Purpose\n\nЛимиты по операциям.\n")
+	// посторонний README в CP1251 (legacy)
+	cp1251Data, err := charmap.Windows1251.NewEncoder().Bytes([]byte("# Привет из legacy README\n"))
+	if err != nil {
+		t.Fatalf("encode CP1251: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0755); err != nil {
+		t.Fatalf("create docs dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "readme.md"), cp1251Data, 0644); err != nil {
+		t.Fatalf("write readme.md: %v", err)
+	}
+	// config.yaml openspec-корня
+	writeTestFile(t, filepath.Join(root, "fa-cards", "openspec", "config.yaml"), "schema: spec-driven\n")
+
+	w := NewWalker(root, []string{"*.md", "*.yaml"}, nil)
+	filesChan, errorsChan := w.Walk()
+
+	var files []FileInfo
+	for file := range filesChan {
+		files = append(files, file)
+	}
+	for err := range errorsChan {
+		if err != nil {
+			t.Fatalf("Walk returned error: %v", err)
+		}
+	}
+
+	byRelPath := map[string]FileInfo{}
+	for _, file := range files {
+		byRelPath[file.RelPath] = file
+	}
+	if len(byRelPath) != 3 {
+		t.Fatalf("walked files = %v, want 3 (spec.md, readme.md, config.yaml)", byRelPath)
+	}
+
+	spec := byRelPath["fa-cards/openspec/specs/card-limits/spec.md"]
+	if spec.Language != "MD" || spec.Encoding != "UTF8" {
+		t.Fatalf("spec.md metadata: language=%q encoding=%q, want MD/UTF8", spec.Language, spec.Encoding)
+	}
+	readme := byRelPath["docs/readme.md"]
+	if readme.Language != "MD" || readme.Encoding != "WIN1251" {
+		t.Fatalf("readme.md metadata: language=%q encoding=%q, want MD/WIN1251 (auto-detect)", readme.Language, readme.Encoding)
+	}
+	cfg := byRelPath["fa-cards/openspec/config.yaml"]
+	if cfg.Language != "YAML" || cfg.Encoding != "UTF8" {
+		t.Fatalf("config.yaml metadata: language=%q encoding=%q, want YAML/UTF8", cfg.Language, cfg.Encoding)
+	}
+}
+
+func TestWalkPreFilterSkipsUnchangedMarkdown(t *testing.T) {
+	root := t.TempDir()
+	mdPath := filepath.Join(root, "openspec", "specs", "a", "spec.md")
+	writeTestFile(t, mdPath, "# A\n")
+
+	info, err := os.Stat(mdPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	preFilter := map[string]FileFingerprint{
+		filepath.ToSlash(mdPath): {Size: info.Size(), ModTime: info.ModTime()},
+	}
+
+	w := NewWalker(root, []string{"*.md"}, nil)
+	w.SetPreFilter(preFilter)
+
+	filesChan, errorsChan := w.Walk()
+	var files []FileInfo
+	for file := range filesChan {
+		files = append(files, file)
+	}
+	for err := range errorsChan {
+		if err != nil {
+			t.Fatalf("Walk returned error: %v", err)
+		}
+	}
+
+	if len(files) != 1 {
+		t.Fatalf("files = %d, want 1", len(files))
+	}
+	if files[0].Hash != "" {
+		t.Fatalf("pre-filtered spec.md must have empty Hash (not read), got %q", files[0].Hash)
+	}
+	if files[0].Language != "MD" {
+		t.Fatalf("pre-filtered spec.md language = %q, want MD", files[0].Language)
 	}
 }

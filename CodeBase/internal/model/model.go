@@ -4,19 +4,19 @@ import "time"
 
 // File файл проекта
 type File struct {
-	ID         int64
-	ScanRunID  int64
+	ID          int64
+	ScanRunID   int64
 	DsProductID int64
-	Path       string
-	RelPath    string
-	Extension  string
-	SizeBytes  int64
-	HashSHA256 string
-	ModifiedAt time.Time
-	Encoding   string
-	Language   string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	Path        string
+	RelPath     string
+	Extension   string
+	SizeBytes   int64
+	HashSHA256  string
+	ModifiedAt  time.Time
+	Encoding    string
+	Language    string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // ReportForm отчётная форма TPR/RPT
@@ -376,44 +376,54 @@ type Symbol struct {
 
 // ScanStats Статистика сканирования
 type ScanStats struct {
-	FilesScanned    int
-	FilesIndexed    int
-	FilesUpdated    int
-	FilesAdded      int
-	FilesDeleted    int
-	SQLFiles        int
-	PASFiles        int
-	JSFiles         int
-	HFiles          int
-	DFMFiles        int
-	SMFFiles        int
-	TPRFiles        int
-	RPTFiles        int
-	Procedures      int
-	Tables          int
-	Columns         int
-	Units           int
-	Classes         int
-	Methods         int
-	PASFields       int
-	JSFunctions     int
-	SMFInstruments  int
-	Forms           int
-	Defines         int
-	ReportFields    int
-	ReportParams    int
-	VBFunctions     int
-	QueryFragments  int
-	Relations       int
-	Errors          int
-	PostProcessed   int
+	FilesScanned     int
+	FilesIndexed     int
+	FilesUpdated     int
+	FilesAdded       int
+	FilesDeleted     int
+	SQLFiles         int
+	PASFiles         int
+	JSFiles          int
+	HFiles           int
+	DFMFiles         int
+	SMFFiles         int
+	TPRFiles         int
+	RPTFiles         int
+	Procedures       int
+	Tables           int
+	Columns          int
+	Units            int
+	Classes          int
+	Methods          int
+	PASFields        int
+	JSFunctions      int
+	SMFInstruments   int
+	Forms            int
+	Defines          int
+	ReportFields     int
+	ReportParams     int
+	VBFunctions      int
+	QueryFragments   int
+	Relations        int
+	Errors           int
+	PostProcessed    int
 	PreFilteredFiles int // файлы, пропущенные по mtime+size pre-filter (Update only)
-	XMLFiles        int
-	APIContracts    int
-	APIParams       int
-	APITables       int
-	APITableFields  int
-	APITableIndexes int
+	XMLFiles         int
+	APIContracts     int
+	APIParams        int
+	APITables        int
+	APITableFields   int
+	APITableIndexes  int
+	MDFiles          int
+	YAMLFiles        int
+	SpecConfigs      int
+	SpecCapabilities int
+	SpecRequirements int
+	SpecScenarios    int
+	SpecUsecases     int
+	SpecChanges      int
+	SpecChangeDeltas int
+	SpecCodeMentions int
 
 	// Тайминги стадий пайплайна (миллисекунды).
 	WalkSaveMs    int64 // wall-clock: старт → завершение walk+save
@@ -611,11 +621,164 @@ type APIMacroInvocation struct {
 
 // RetCodeEntry — запись о коде возврата из SQL-файла (ReturnCode_Insert, макросы)
 type RetCodeEntry struct {
+	FileID     int64
+	RetCode    int64
+	Message    string
+	ProcName   string
+	ModuleID   int
+	IsConstant bool // true если message — имя константы из H-файла (нужен lookup)
+	LineNumber int
+}
+
+// ==== OpenSpec-артефакты финпродуктов ====
+
+// SpecConfig — профиль продукта: один на openspec-корень (config.yaml)
+type SpecConfig struct {
+	ID              int64
+	FileID          int64
+	DsProductID     int64
+	RootDir         string
+	SchemaName      string
+	ProductName     string
+	UsecaseLayout   string // scenarios | usecases | business-processes | none
+	IDStyle         string // dir | full_path
+	CrossRefStyle   string // explicit | notes | inline | mixed
+	NormativeLang   string // en | ru
+	Traceability    string // html_comment | pageid | none
+	HasChanges      bool
+	HasAudit        bool
+	HasADR          bool
+	CoverageMetrics bool
+	ContextText     string
+}
+
+// SpecCapability — capability из spec.md (или директория-контейнер без spec.md)
+type SpecCapability struct {
+	ID             int64
+	FileID         int64
+	SpecConfigID   int64
+	DsProductID    int64
+	ParentID       int64
+	CapabilityName string // slug: полный путь от specs/
+	Title          string
+	Purpose        string
+	Notes          string
+	RelatedCode    string
+	LineStart      int
+	LineEnd        int
+	ApiTotal       *int // покрытие из Notes; nil = считать из relations
+	ApiCovered     *int
+	CodeTotal      *int
+	CodeListed     *int
+}
+
+// SpecRequirement — блок "### Requirement:" в spec.md
+type SpecRequirement struct {
+	ID              int64
+	FileID          int64
+	CapabilityID    int64
+	RequirementName string
+	BodyText        string
+	LineStart       int
+	LineEnd         int
+	ReqOrder        int
+}
+
+// SpecScenario — блок "#### Scenario:" (WHEN/THEN) внутри требования
+type SpecScenario struct {
+	ID            int64
+	FileID        int64
+	RequirementID int64
+	ScenarioName  string
+	GivenText     string
+	WhenText      string
+	ThenText      string
+	LineStart     int
+	LineEnd       int
+	ScnOrder      int
+}
+
+// SpecUsecase — сценарий использования: scenarios/*.md, usecases/**, business-processes/**
+type SpecUsecase struct {
+	ID             int64
+	FileID         int64
+	SpecConfigID   int64
+	UsecaseName    string
+	Title          string
+	Description    string
+	Actors         string
+	Preconditions  string
+	Postconditions string
+	BusinessValue  string
+	Architecture   string
+	DataSchema     string
+	SourceDir      string // scenarios | usecases | business-processes
+	UsecaseKind    string // scenario | usecase | business-process
+	PageID         int64  // Confluence pageId
+	LineStart      int
+	LineEnd        int
+}
+
+// SpecUsecaseStep — шаг потока usecase (main | alternative)
+type SpecUsecaseStep struct {
+	ID         int64
+	FileID     int64
+	UsecaseID  int64
+	FlowKind   string
+	StepOrder  int
+	StepText   string
+	LineNumber int
+}
+
+// SpecChange — change-директория (changes/<name>/, активная или архивная); FileID = proposal.md
+type SpecChange struct {
+	ID           int64
+	FileID       int64
+	SpecConfigID int64
+	ChangeName   string
+	Status       string // active | archived
+	DirPath      string // путь директории change от корня репо
+}
+
+// SpecChangeDelta — delta-требование из секции ## ADDED/MODIFIED/REMOVED Requirements
+type SpecChangeDelta struct {
+	ID              int64
+	FileID          int64
+	ChangeID        int64
+	Section         string // ADDED | MODIFIED | REMOVED
+	CapabilitySlug  string
+	RequirementName string
+	BodyText        string
+	LineStart       int
+	LineEnd         int
+}
+
+// SpecCodeMention — сырое упоминание код-сущности в тексте спеки (staging для references_code)
+type SpecCodeMention struct {
+	ID          int64
 	FileID      int64
-	RetCode     int64
-	Message     string
-	ProcName    string
-	ModuleID    int
-	IsConstant  bool   // true если message — имя константы из H-файла (нужен lookup)
+	SourceType  string // spec_capability | spec_requirement | spec_scenario | spec_usecase
+	SourceID    int64
+	MentionName string
+	MentionKind string // procedure | api | table | form | smf | method | unknown
 	LineNumber  int
+}
+
+// SpecVocabTerm — термин словаря полнотекстового слоя (LSA)
+type SpecVocabTerm struct {
+	ID      int
+	Term    string
+	DocFreq int
+	IDF     float64
+}
+
+// SpecEmbedding — LSA-вектор документа (embed_level="spec" → capability)
+type SpecEmbedding struct {
+	ID          int
+	SpecID      int64
+	EmbedLevel  string
+	EmbedText   string
+	Embedding   []float64
+	EmbedMethod string
+	EmbedDim    int
 }

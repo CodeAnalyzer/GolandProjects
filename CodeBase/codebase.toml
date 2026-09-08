@@ -35,7 +35,9 @@ include_patterns = [
     "*.dfm",
     "*.tpr",
     "*.rpt",
-    "*.xml"
+    "*.xml",
+    "*.md",
+    "*.yaml"
 ]
 
 # Исключаемые файлы и директории
@@ -44,7 +46,6 @@ exclude_patterns = [
     "*~",          # Backup файлы
     "*.bak",
     "*.old",
-    "*/archive/*",
     "*/backup/*"
 ]
 
@@ -69,6 +70,16 @@ slow_threshold_ms = 100  # События длительнее этого зна
 max_enrich_workers = 16  # Лимит конкурентных SQL-запросов при обогащении
 min_procs_for_parallel_enrich = 16  # Порог параллельного обогащения
 parse_timeout_sec = 900  # Таймаут MCP codebase_trc_parse (секунды, 0 = без таймаута)
+
+# Настройки полнотекстового слоя OpenSpec (LSA)
+[spec]
+lsa_enabled = true           # Включить LSA-постпроцессинг
+lsa_k = 128                  # Размерность LSA (число сингулярных компонент)
+lsa_min_df = 3               # Минимальная document frequency термина (термины в <3 документах отбрасываются)
+lsa_max_df = 0.3             # Максимальная доля документов (термины в >30% документов отбрасываются)
+lsa_min_corpus = 100         # Минимальный размер корпуса для обучения (при меньшем — skip)
+lsa_retrain_threshold = 50   # Порог изменённых capability для пересчёта модели при update
+# lsa_model_path = ""        # Путь к файлу модели (по умолчанию: рядом с codebase.toml)
 
 # Настройки MCP-сервера
 [mcp]

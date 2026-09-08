@@ -23,8 +23,8 @@ import (
 
 var (
 	appName        = "CodeBase"
-	version        = "0.9.0"
-	buildNumber    = "1383"
+	version        = "0.9.1"
+	buildNumber    = "1447"
 	copyright      = "Copyright (c) 2026"
 	cfgFile        string
 	commandLogger  *log.Logger
@@ -35,7 +35,7 @@ var (
 		Use:   "codebase",
 		Short: "Local indexer for Diasoft 5NT source code",
 		Long: `CodeBase - tool for indexing and semantic navigation
-of Diasoft 5NT codebase (SQL, H, PAS, DFM, SMF, JS, TPR, RPT, XML files).
+of Diasoft 5NT codebase (SQL, H, PAS, DFM, SMF, JS, TPR, RPT, XML, MD, YAML files).
 
 Supported modes:
   init   - full scan and index building

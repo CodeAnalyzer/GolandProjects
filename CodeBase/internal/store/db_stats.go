@@ -22,7 +22,9 @@ func (db *DB) GetStats(ctx context.Context) (*Stats, error) {
 			COUNT(*) FILTER (WHERE UPPER(extension) = 'SMF') AS smf_files,
 			COUNT(*) FILTER (WHERE UPPER(extension) = 'DFM') AS dfm_files,
 			COUNT(*) FILTER (WHERE UPPER(extension) = 'TPR') AS tpr_files,
-			COUNT(*) FILTER (WHERE UPPER(extension) = 'RPT') AS rpt_files
+			COUNT(*) FILTER (WHERE UPPER(extension) = 'RPT') AS rpt_files,
+			COUNT(*) FILTER (WHERE UPPER(extension) = 'MD') AS md_files,
+			COUNT(*) FILTER (WHERE UPPER(extension) IN ('YAML','YML')) AS yaml_files
 		FROM files
 	`).Scan(
 		&stats.TotalFiles,
@@ -36,6 +38,8 @@ func (db *DB) GetStats(ctx context.Context) (*Stats, error) {
 		&stats.DFMFiles,
 		&stats.TPRFiles,
 		&stats.RPTFiles,
+		&stats.MDFiles,
+		&stats.YAMLFiles,
 	); err != nil {
 		return nil, fmt.Errorf("failed to get file stats: %w", err)
 	}
@@ -72,6 +76,16 @@ func (db *DB) GetStats(ctx context.Context) (*Stats, error) {
 		{`SELECT COUNT(*) FROM api_macro_invocations`, &stats.APIMacros, "api macro invocations"},
 		{`SELECT COUNT(*) FROM query_fragments`, &stats.QueryFragments, "query fragments"},
 		{`SELECT COUNT(*) FROM relations`, &stats.Relations, "relations"},
+		{`SELECT COUNT(*) FROM spec_configs`, &stats.SpecConfigs, "spec configs"},
+		{`SELECT COUNT(*) FROM spec_capabilities`, &stats.SpecCapabilities, "spec capabilities"},
+		{`SELECT COUNT(*) FROM spec_requirements`, &stats.SpecRequirements, "spec requirements"},
+		{`SELECT COUNT(*) FROM spec_scenarios`, &stats.SpecScenarios, "spec scenarios"},
+		{`SELECT COUNT(*) FROM spec_usecases`, &stats.SpecUsecases, "spec usecases"},
+		{`SELECT COUNT(*) FROM spec_changes`, &stats.SpecChanges, "spec changes"},
+		{`SELECT COUNT(*) FROM spec_change_delta`, &stats.SpecChangeDeltas, "spec change deltas"},
+		{`SELECT COUNT(*) FROM spec_code_mentions`, &stats.SpecCodeMentions, "spec code mentions"},
+		{`SELECT COUNT(*) FROM spec_vocab`, &stats.SpecVocabTerms, "spec vocab terms"},
+		{`SELECT COUNT(*) FROM spec_embeddings`, &stats.SpecEmbeddings, "spec embeddings"},
 	}
 
 	for _, aggregate := range aggregates {

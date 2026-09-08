@@ -34,6 +34,8 @@ type Stats struct {
 	DFMFiles           int
 	TPRFiles           int
 	RPTFiles           int
+	MDFiles            int
+	YAMLFiles          int
 	Procedures         int
 	Tables             int
 	Columns            int
@@ -62,6 +64,16 @@ type Stats struct {
 	SQLTableIndexes    int
 	APITableIndexes    int
 	APIMacros          int
+	SpecConfigs        int
+	SpecCapabilities   int
+	SpecRequirements   int
+	SpecScenarios      int
+	SpecUsecases       int
+	SpecChanges        int
+	SpecChangeDeltas   int
+	SpecCodeMentions   int
+	SpecVocabTerms     int
+	SpecEmbeddings     int
 	Errors             int
 	PASFields          int
 	LastScanID         int64

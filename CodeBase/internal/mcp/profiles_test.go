@@ -43,7 +43,7 @@ func TestBuildToolRegistryForProfile_Query(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := mergeMaps(baseTools, queryTools)
+	expected := mergeMaps(baseTools, mergeMaps(queryTools, specTools))
 	if len(registry) != len(expected) {
 		t.Errorf("query profile: got %d tools, want %d", len(registry), len(expected))
 	}
@@ -98,7 +98,7 @@ func TestBuildToolRegistryForProfile_Unknown_Error(t *testing.T) {
 
 func TestBuildToolRegistryForProfile_AllToolsCoveredByProfiles(t *testing.T) {
 	full := buildToolRegistry(nil)
-	covered := mergeMaps(baseTools, mergeMaps(queryTools, mergeMaps(rtiTools, mergeMaps(trcTools, reviewTools))))
+	covered := mergeMaps(baseTools, mergeMaps(queryTools, mergeMaps(specTools, mergeMaps(rtiTools, mergeMaps(trcTools, reviewTools)))))
 	for name := range full {
 		if !covered[name] {
 			t.Errorf("tool %q is not present in any profile", name)

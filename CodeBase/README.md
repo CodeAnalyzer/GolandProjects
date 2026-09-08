@@ -4,7 +4,7 @@
 
 ## Возможности
 
-- **Индексация файлов**: SQL, H, PAS, INC, JS, SMF, DFM, TPR, RPT, XML; опционально `.t01`
+- **Индексация файлов**: SQL, H, PAS, INC, JS, SMF, DFM, TPR, RPT, XML, MD, YAML; опционально `.t01`
 - **Извлечение сущностей**:
   - SQL: процедуры, таблицы, поля, определения колонок, определения индексов, отдельные SQL statements/query fragments, schema patches (ALTER TABLE ... ADD, M_ADD_FIELD, CREATE INDEX, M_CRT_INDEX)
   - H-файлы: константы, макросы, определения
@@ -18,6 +18,7 @@
   - DSArchitect XML: `service` (сервисные контракты), `event` (событийные контракты), `used_service` (используемые сервисы), `callback_event` (callback-события), `api_table` (табличные структуры), `api_table_index` (индексы standalone API-таблиц), `api_param` (параметры BObject)
   - API macros (макросы API) из SQL: `API_CREATE_PROC`, `API_INIT_EVENT`, `API_EXEC`
   - `.t01`: препроцессированный SQL (процедуры, таблицы, поля, SQL statements/query fragments, вызовы процедур) и generated subscriber calls/dispatch-вызовы из раскрытых `API_INIT_EVENT`
+  - OpenSpec-артефакты (markdown/yaml из `openspec/` директорий финпродуктов): capabilities, requirements, scenarios, usecases (+steps), changes (+delta), code mentions, профиль продукта
 - **Граф связей**:
   - SQL procedure -> SQL procedure / SQL table
   - parent entity -> query fragment
@@ -28,6 +29,10 @@
   - SQL procedure -> event contract (`publishes_event`)
   - SQL procedure -> API contract (`executes_contract`)
   - SQL procedure -> SQL procedure (`dispatches_to_subscriber`) для generated subscriber calls из `.t01`
+  - Spec entity -> code entity (`references_code`) — упоминания кода в текстах спек, разрешённые в пост-обработке
+  - Capability -> Capability (`depends_on_capability`) — зависимости между спецификациями
+  - Change -> Capability (`change_modifies`) — изменения, затрагивающие спецификации
+  - Usecase -> Capability (`usecase_involves`) — usecase-сценарии и связанные capabilities
 - **Поиск и запросы**:
   - Поиск сущностей по имени через unified symbols index
   - Поиск использований таблиц с точным совпадением по умолчанию и опциональным нечётким режимом
@@ -45,11 +50,12 @@
   - Поиск report params (параметров отчёта)
   - Поиск VBScript functions (VBScript-функций)
   - Поиск API contracts (контрактов API), API tables (таблиц API), API table indexes (индексов API-таблиц), API params (параметров API), implementations (реализаций), publishers (публикаторов событий), consumers (потребителей контрактов)
-  - Unified `query symbol` для SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects и XML/API symbols
+  - Unified `query symbol` для SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects, XML/API symbols и spec-сущностей (capabilities, requirements, scenarios, usecases, changes)
+  - **Спеки**: полнотекстовый поиск по спецификациям (лексический tsvector+trgm и семантический LSA), спецификации по имени код-сущности, граф зависимостей capability, usecase-слой с involved capabilities, покрытие кода спеками, история изменения capability по changes
 - **Review (проверка SQL перед деплоем)**: статический анализ SQL-файлов с детекцией deploy stoppers (использование внешних таблиц/процедур, небезопасные конструкции IF/EXISTS, отсутствие required hints, и т.д.)
 - **RTI-анализатор** (`codebase rti`): парсинг и анализ RTI-трейс логов Diasoft 5NT; извлечение вызовов процедур, параметров, контрольных точек, кодов ошибок, бизнес-лог блоков (`M_BUSINESSLOG_BLOCK_BEGIN/END`), checkpoint-временных меток, дампов таблиц (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`), клиентских событий (thick client d5nt: SQL blocks, recordset open, connection, BPL load, errors, memory); enrichment из индекса (PAS-файлы, DFM-формы, SQL-фрагменты); сохранение в БД для повторного анализа
 - **TRC-анализатор** (`codebase trc`): парсинг и анализ файлов SQL Server Profiler — бинарных `.trc`, XML-экспортов `.xml` и Extended Events `.xel`; декодирование событий (RPC:Completed, SQL:BatchCompleted, SP:StmtCompleted и др.), извлечение вызовов процедур и параметров из TextData, агрегация по процедурам (count/min/max/avg/total duration), дерево вызовов по SPID с восстановлением вложенности через Starting/Completed пары, enrichment из индекса (путь к файлу и строки); сохранение в БД для повторного анализа
-- **Кодировки**: CP866/WIN1251/UTF8 с эвристическим выбором для legacy-форматов, включая TPR и препроцессированные `.t01`
+- **Кодировки**: CP866/WIN1251/UTF8 с эвристическим выбором для legacy-форматов, включая TPR и препроцессированные `.t01`; MD — авто-детекция (UTF-8 приоритет, CP1251 fallback), YAML — UTF-8
 
 ## Требования
 
@@ -94,7 +100,7 @@ parallel = 12
 batch_size = 500
 batch_insert_size = 50000
 progress_interval_ms = 250
-include_patterns = ["*.sql", "*.h", "*.pas", "*.inc", "*.js", "*.smf", "*.dfm", "*.tpr", "*.rpt", "*.xml"]
+include_patterns = ["*.sql", "*.h", "*.pas", "*.inc", "*.js", "*.smf", "*.dfm", "*.tpr", "*.rpt", "*.xml", "*.md", "*.yaml"]
 exclude_patterns = ["*/.*", "*~", "*.bak", "*.old"]
 
 [logging]
@@ -133,6 +139,8 @@ review_timeout_sec = 120  # Таймаут для codebase_review_sql (0 = бе�
 Если вы хотите индексировать препроцессированные `.t01`, добавьте `*.t01` в `indexer.include_patterns`.
 
 Если в вашем конфиге ещё нет поддержки DSArchitect XML, также добавьте `*.xml` в `indexer.include_patterns`.
+
+`.md` и `.yaml` включены в дефолтные `include_patterns`. Если вы переопределили `include_patterns` в своём `codebase.toml`, добавьте их явно для индексации OpenSpec-артефактов.
 
 `.sql` остаётся первичным дистрибутивным источником, а `.t01` рассматривается как опциональный временный артефакт препроцессора: он может отсутствовать и может лежать в отдельном рабочем каталоге препроцессора.
 
@@ -428,6 +436,32 @@ codebase query inspect --name Cons_Check_Restr_API
 codebase query inspect --name Cons_Check_Restr_API --json
 codebase query inspect --name MassAccrual_Start --type procedure --json
 ```
+
+#### Спеки: поиск и навигация
+
+```bash
+# Полнотекстовый поиск по спецификациям (лексический + семантический)
+codebase query spec search --text "отключение SMS-уведомлений"
+codebase query spec search --text "арест счёта" --layer both --json
+
+# Спеки по имени код-сущности (обратные references_code)
+codebase query spec by-code --name API_DepoAccount_MassInsert
+
+# Граф зависимостей capability
+codebase query spec deps --slug card-limits --direction depends_on --depth 2
+
+# Usecase-слой с involved capabilities
+codebase query spec usecase --name scenario-sms-disable
+
+# Покрытие кода спеками (метрики и пробелы)
+codebase query spec coverage --product fa-cards
+codebase query spec coverage --product fa-cards --mode gaps
+
+# История изменения capability по changes
+codebase query spec history --slug card-limits
+```
+
+Спеки индексируются из `openspec/` директорий финпродуктов: capabilities, requirements, scenarios, usecases, changes. Поиск поддерживает два слоя: лексический (tsvector 'russian' + pg_trgm) и семантический (TF-IDF + LSA). Фильтры: `--product`, `--level` (capability|requirement|scenario|usecase), `--layer` (exact|semantic|both).
 
 Опции для всех запросов:
 - `--json` - вывод в формате JSON
@@ -758,7 +792,7 @@ codebase mcp
 
 #### Профили инструментов (--profile)
 
-Флаг `--profile` позволяет зарегистрировать только подмножество инструментов, релевантное профилю. Без флага регистрируются все 55 инструментов (текущее поведение). Это решает проблему обрезки `tools/list` response некоторыми IDE MCP-клиентами при превышении лимита размера JSON-RPC сообщения.
+Флаг `--profile` позволяет зарегистрировать только подмножество инструментов, релевантное профилю. Без флага регистрируются все 61 инструмент (текущее поведение). Это решает проблему обрезки `tools/list` response некоторыми IDE MCP-клиентами при превышении лимита размера JSON-RPC сообщения.
 
 ```bash
 codebase mcp --profile=query
@@ -771,8 +805,8 @@ codebase mcp --profile=review
 
 | Профиль | Инструментов | Размер `tools/list` | Описание |
 |---------|-------------|---------------------|----------|
-| (без флага) | 55 | ~43 KB | Все инструменты |
-| `query` | ~30 | ~24 KB | Базовые + query инструменты |
+| (без флага) | 61 | ~48 KB | Все инструменты |
+| `query` | ~36 | ~30 KB | Базовые + query инструменты (включая spec) |
 | `rti` | ~16 | ~13 KB | Базовые + RTI инструменты |
 | `trc` | ~14 | ~9 KB | Базовые + TRC инструменты |
 | `review` | ~5 | ~4 KB | Базовые + review инструмент |
@@ -803,9 +837,20 @@ IDE может подключить несколько MCP-серверов на
 - `codebase.ping` — проверка живости MCP-сервера
 - `codebase.health` — проверка готовности БД и индекса
 - `codebase.stats` — статистика индекса
-- `codebase.query.*` для всех query-подкоманд CLI
+- `codebase.query.*` для всех query-подкоманд CLI (включая spec-запросы)
 - `codebase_review_sql` — статический анализ SQL-файла (review rules)
 - `codebase_read_more` — пагинация MCP-ответов
+
+**Spec tools:**
+
+| Tool | Описание | Обязательные параметры |
+|------|----------|------------------------|
+| `codebase_query_spec_search` | Полнотекстовый поиск по спецификациям (лексический + семантический LSA) | `query`, опц. `product`/`level`/`layer`/`limit` |
+| `codebase_query_spec_by_code` | Спеки, ссылающиеся на код-сущность | `name` |
+| `codebase_query_spec_deps` | Граф зависимостей capability | `name`, опц. `direction`/`max_depth`/`product` |
+| `codebase_query_spec_usecase` | Usecase-слой с involved capabilities | `name` |
+| `codebase_query_spec_coverage` | Покрытие кода спеками (метрики или пробелы) | `name`, опц. `mode`/`product` |
+| `codebase_query_spec_history` | История изменения capability по changes | `name`, опц. `change`/`product` |
 
 **RTI tools:**
 
@@ -936,15 +981,17 @@ CodeBase/
 │   └── mcp.go                     # Команда запуска MCP сервера (с флагом --profile)
 ├── internal/
 │   ├── config/                    # Конфигурация
-│   ├── encoding/                  # Кодировки CP866/WIN1251
+│   ├── encoding/                  # Кодировки CP866/WIN1251/UTF8, авто-детект MD
 │   ├── fswalk/                    # Обход файловой системы
 │   ├── indexer/
 │   │   ├── indexer.go             # Базовый тип Indexer и общие file processors
 │   │   ├── runner.go              # Init/Update pipeline, worker pool, progress
 │   │   ├── indexer_sql_pas.go     # Индексация SQL/PAS и SQL-like pipeline для препроцессированных `.t01`
 │   │   ├── indexer_relations.go   # Построение relations и query-fragment helpers
-│   │   └── indexer_postprocess_pas.go # Постобработка PAS классов/методов/полей
-│   ├── model/                     # Модели данных
+│   │   ├── indexer_postprocess_pas.go # Постобработка PAS классов/методов/полей
+│   │   ├── indexer_postprocess_spec.go # Спек-постпроцессор: резолв code mentions, depends_on_capability, change_modifies
+│   │   └── indexer_spec.go        # Индексация OpenSpec-артефактов (MD/YAML)
+│   ├── model/                     # Модели данных (включая spec-сущности)
 │   ├── parser/
 │   │   ├── sql/                   # SQL-парсер
 │   │   ├── h/                     # H-файлов парсер
@@ -955,13 +1002,15 @@ CodeBase/
 │   │   ├── tpr/                   # TPR-парсер
 │   │   ├── rpt/                   # RPT-парсер
 │   │   ├── dsxml/                 # DSArchitect XML-парсер
-│   │   └── apimacro/              # API macro parser для исходных SQL
+│   │   ├── apimacro/              # API macro parser для исходных SQL
+│   │   └── openspecmd/            # OpenSpec markdown-парсер: capabilities, requirements, scenarios, usecases, changes, code mentions
 │   ├── query/
 │   │   ├── query.go               # Базовые query-типы и прочие read-model сценарии
 │   │   ├── query_sql.go           # SQL/table/procedure query-сценарии
 │   │   ├── query_relations.go     # Запросы relation graph
 │   │   └── api_query.go           # Query API-контрактов и DSArchitect сущностей
 │   ├── querysvc/                  # Внутренний runtime и compose-логика query (CLI + MCP)
+│   ├── specsvc/                   # Спек-сервис: ExecuteSpecSearch (LSA), ExecuteSpecByCode, ExecuteSpecDeps, ExecuteSpecUsecase, ExecuteSpecCoverage, ExecuteSpecHistory
 │   ├── systemsvc/                 # Внутренний runtime для health/stats (CLI + MCP)
 │   ├── review/                    # Review rules engine и SQL checker
 │   │   ├── types.go               # Типы Finding, RuleID, Severity
@@ -1024,6 +1073,7 @@ CodeBase/
 │       ├── db_insert_j.go         # BatchInsert для JS functions/constants
 │       ├── db_insert_reports.go   # BatchInsert для report forms/fields/params/VB functions
 │       ├── db_insert_retcode.go   # BatchInsert для ds_return_codes
+│       ├── db_insert_spec.go      # BatchInsert для spec-сущностей (COPY IN, to_tsvector)
 │       ├── db_lookup_sql.go       # Lookup для SQL entities (procedures, tables, columns, indexes)
 │       ├── db_lookup_pas.go       # Lookup для PAS entities + batch update DFM links
 │       ├── db_lookup_dfm.go       # Lookup для DFM forms/components
@@ -1031,6 +1081,7 @@ CodeBase/
 │       ├── db_lookup_j.go         # Lookup для JS functions/constants
 │       ├── db_lookup_reports.go   # Lookup для report forms/fields/params
 │       ├── db_lookup_retcode.go   # Lookup для ds_return_codes
+│       ├── db_lookup_spec.go      # Lookup для spec-сущностей и code-mention resolution
 │       ├── db_lookup_keys.go      # Lookup key builders (unified symbol index keys)
 │       ├── db_resolve_retcode.go  # ResolveRetCodeConstants — замена LOC_RETCODE_* на значения
 │       ├── db_scan_runs.go        # CreateScanRun, UpdateScanRun
@@ -1095,6 +1146,17 @@ CodeBase/
 - `query_fragments` - SQL-фрагменты в коде, включая отдельные SQL statements из `.sql` и препроцессированных `.t01` procedures/scripts, пригодные для текстового поиска
 - `include_directives` - include-директивы и их разрешение
 - `symbols` - Унифицированный индекс для поиска
+- `spec_configs` — конфигурация OpenSpec-продуктов (schema_name, product_name, context_text, профиль: usecase_layout, id_style, has_changes, has_adr, normative_lang, cross_ref_style)
+- `spec_capabilities` — capabilities из spec.md (slug, title, purpose, notes, related_code, line ranges)
+- `spec_requirements` — требования (body_text, given/when/then, req_order, line ranges; GIN search_vector + pg_trgm)
+- `spec_scenarios` — сценарии (given/when/then, scn_order, line ranges)
+- `spec_usecases` — usecase-сценарии (actors, preconditions, postconditions, pageId)
+- `spec_usecase_steps` — шаги usecase (step_order, action, expected_result, involved capability)
+- `spec_changes` — changes (name, status, artifacts, skip_specs)
+- `spec_change_deltas` — delta-секции changes (section: ADDED/MODIFIED/REMOVED, requirement_name, body_text)
+- `spec_code_mentions` — staging-таблица упоминаний кода в текстах спек (kind, target_name, source_entity)
+- `spec_vocab` — словарь терминов для LSA (term, doc_freq)
+- `spec_embeddings` — LSA-эмбеддинги спек (embed_level, vector)
 
 ## Актуальные детали индексации
 
@@ -1126,6 +1188,17 @@ CodeBase/
 - Поверх SQL parsing для `.t01` дополнительно извлекаются generated subscriber calls по паттернам `exec GetAPIProcessID ...` и `exec @RetVal = <proc> ... @ProcessID = @GlobalProcessID`.
 - Такие вызовы сохраняются в graph как relation `dispatches_to_subscriber`.
 - Индексация `.t01` остаётся опциональной: отсутствие `.t01` не мешает базовой индексации проекта по исходным `.sql`.
+
+### OpenSpec-артефакты
+
+- Поддерживается индексация markdown- и YAML-файлов из `openspec/` директорий финпродуктов.
+- Парсер `openspecmd` извлекает: capabilities (из `spec.md`), requirements (`### Requirement:`), scenarios (`#### Scenario:`), usecases (3 формата: `scenarios/`, `usecases/`, `business-processes/`), changes (активные + `archive/`), delta-секций (`## ADDED/MODIFIED/REMOVED Requirements`).
+- Упоминания кода извлекаются из Related code, inline-текстов требований/сценариев и delta-текстов; разрешаются в пост-обработке в relations `references_code`.
+- Строятся relations: `depends_on_capability` (5 маркеров: markdown-ссылки, «Связан с доменами», inline-упоминания, cci:-хвост, sibling-резолв), `change_modifies` (из delta и proposal-извлечений).
+- Dual-write: spec-сущности дублируются в `symbols` для unified `query symbol`.
+- Полнотекстовый поиск: лексический слой (tsvector 'russian' + pg_trgm) + семантический слой (TF-IDF + LSA через gonum, k=128). Модель пересчитывается при достижении порога изменённых capability.
+- Профиль продукта детектируется автоматически: usecase_layout, id_style, has_changes, has_adr, normative_lang, cross_ref_style.
+- Инкрементальность: `codebase update` переиндексирует только изменённые `.md`/`.yaml` файлы.
 
 ### Логирование
 
@@ -1205,6 +1278,9 @@ $env:CODEBASE_TEST_DSN = "postgres://postgres:123456@localhost:5435/postgres?ssl
 - [x] Транзакционная запись include-директив: `ExecContext` с `boundTx`, возврат ошибки вместо глушения
 - [x] MCP tool profiles: флаг `--profile` (query, rti, trc, review) для раздельной регистрации инструментов; один бинарник — несколько MCP-серверов в IDE с разными подмножествами tools
 - [x] MCP parse timeout: отдельные `parse_timeout_sec` для RTI и TRC парсинга (по умолчанию 300 сек), маршрутизация таймаута через switch по имени инструмента
+- [x] OpenSpec-индексация: парсер `openspecmd` (capabilities, requirements, scenarios, usecases, changes, delta, code mentions), MD/YAML в walker, авто-детект кодировки MD, dual-write в symbols, spec-постпроцессор (references_code, depends_on_capability, change_modifies), профиль продукта
+- [x] Спек-полнотекстовый поиск: лексический (tsvector 'russian' + pg_trgm) и семантический (TF-IDF + LSA через gonum), пересчёт модели по порогу
+- [x] Spec query CLI и MCP tools: `spec search`, `spec by-code`, `spec deps`, `spec usecase`, `spec coverage`, `spec history`
 
 ## Лицензия
 

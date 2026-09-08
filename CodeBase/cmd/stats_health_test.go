@@ -18,6 +18,8 @@ func TestBuildStatsResponse(t *testing.T) {
 		SQLFiles:           2,
 		HFiles:             1,
 		PASFiles:           3,
+		MDFiles:            14,
+		YAMLFiles:          15,
 		Procedures:         4,
 		Tables:             5,
 		APIContracts:       6,
@@ -26,6 +28,16 @@ func TestBuildStatsResponse(t *testing.T) {
 		APIContractFields:  9,
 		APIBusinessObjects: 10,
 		Relations:          11,
+		SpecConfigs:        16,
+		SpecCapabilities:   17,
+		SpecRequirements:   18,
+		SpecScenarios:      19,
+		SpecUsecases:       20,
+		SpecChanges:        21,
+		SpecChangeDeltas:   22,
+		SpecCodeMentions:   23,
+		SpecVocabTerms:     24,
+		SpecEmbeddings:     25,
 		Errors:             12,
 		LastScanID:         13,
 		LastScanStatus:     "completed",
@@ -37,11 +49,17 @@ func TestBuildStatsResponse(t *testing.T) {
 	if !response.Success || response.FormatVersion != "1.0" || response.Command != "stats" {
 		t.Fatalf("unexpected response header: %+v", response)
 	}
-	if response.Files.Total != 10 || response.Files.SQL != 2 || response.Files.H != 1 || response.Files.PAS != 3 {
+	if response.Files.Total != 10 || response.Files.SQL != 2 || response.Files.H != 1 || response.Files.PAS != 3 || response.Files.MD != 14 || response.Files.YAML != 15 {
 		t.Fatalf("unexpected files summary: %+v", response.Files)
 	}
 	if response.Entities.Procedures != 4 || response.Entities.Tables != 5 || response.Entities.APIContracts != 6 || response.Entities.Relations != 11 {
 		t.Fatalf("unexpected entities summary: %+v", response.Entities)
+	}
+	if response.Entities.SpecConfigs != 16 || response.Entities.SpecCapabilities != 17 || response.Entities.SpecRequirements != 18 ||
+		response.Entities.SpecScenarios != 19 || response.Entities.SpecUsecases != 20 || response.Entities.SpecChanges != 21 ||
+		response.Entities.SpecChangeDeltas != 22 || response.Entities.SpecCodeMentions != 23 || response.Entities.SpecVocabTerms != 24 ||
+		response.Entities.SpecEmbeddings != 25 {
+		t.Fatalf("unexpected spec entities summary: %+v", response.Entities)
 	}
 	if response.LastScan.RunID != 13 || response.LastScan.Status != "completed" || response.LastScan.Errors != 12 {
 		t.Fatalf("unexpected last scan summary: %+v", response.LastScan)

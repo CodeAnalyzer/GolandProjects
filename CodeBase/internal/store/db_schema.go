@@ -514,7 +514,7 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			build_number INTEGER NOT NULL DEFAULT 0,
 			source_format TEXT NOT NULL DEFAULT 'trc_binary'
 		)`,
-	`ALTER TABLE trc_sessions ADD COLUMN IF NOT EXISTS source_format TEXT NOT NULL DEFAULT 'trc_binary'`,
+		`ALTER TABLE trc_sessions ADD COLUMN IF NOT EXISTS source_format TEXT NOT NULL DEFAULT 'trc_binary'`,
 		`CREATE TABLE IF NOT EXISTS trc_events (
 			id             BIGSERIAL PRIMARY KEY,
 			session_id     BIGINT NOT NULL REFERENCES trc_sessions(id) ON DELETE CASCADE,
@@ -567,6 +567,176 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			elapsed_ms     INTEGER NOT NULL DEFAULT 0,
 			payload        JSONB,
 			server_call_id BIGINT REFERENCES rti_calls(id)
+		)`,
+		// ==== OpenSpec-артефакты финпродуктов ====
+		// Профиль продукта: один на openspec-корень (config.yaml)
+		`CREATE TABLE IF NOT EXISTS spec_configs (
+			id              BIGSERIAL PRIMARY KEY,
+			file_id         BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+			ds_product_id   BIGINT REFERENCES ds_products(id) ON DELETE SET NULL,
+			root_dir        TEXT,
+			schema_name     TEXT,
+			product_name    TEXT NOT NULL DEFAULT '',
+			usecase_layout  TEXT NOT NULL DEFAULT 'none',   -- scenarios | usecases | business-processes | none
+			id_style        TEXT NOT NULL DEFAULT 'dir',     -- dir | full_path
+			cross_ref_style TEXT NOT NULL DEFAULT 'mixed',  -- explicit | notes | inline | mixed
+			normative_lang  TEXT NOT NULL DEFAULT 'en',     -- en | ru
+			traceability    TEXT NOT NULL DEFAULT 'none',   -- html_comment | pageid | none
+			has_changes     BOOLEAN NOT NULL DEFAULT FALSE,
+			has_audit       BOOLEAN NOT NULL DEFAULT FALSE,
+			has_adr         BOOLEAN NOT NULL DEFAULT FALSE,
+			coverage_metrics BOOLEAN NOT NULL DEFAULT FALSE,
+			context_text    TEXT,
+			search_vector   TSVECTOR
+		)`,
+		`ALTER TABLE spec_configs ADD COLUMN IF NOT EXISTS root_dir TEXT`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_spec_configs_product_root
+			ON spec_configs(ds_product_id, root_dir)
+			WHERE root_dir IS NOT NULL`,
+		// ALTER для существующих БД: product_name создан как NOT NULL без DEFAULT
+		`ALTER TABLE spec_configs ALTER COLUMN product_name SET DEFAULT ''`,
+		// Capability: spec.md (или директория-контейнер без spec.md)
+		`CREATE TABLE IF NOT EXISTS spec_capabilities (
+			id              BIGSERIAL PRIMARY KEY,
+			file_id         BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+			spec_config_id  BIGINT NOT NULL REFERENCES spec_configs(id) ON DELETE CASCADE,
+			ds_product_id   BIGINT REFERENCES ds_products(id) ON DELETE SET NULL,
+			parent_id       BIGINT REFERENCES spec_capabilities(id) ON DELETE SET NULL,
+			capability_name TEXT NOT NULL,                  -- slug: полный путь от specs/
+			title           TEXT NOT NULL DEFAULT '',
+			purpose         TEXT,
+			notes           TEXT,
+			related_code    TEXT,
+			line_start      INTEGER NOT NULL DEFAULT 1,
+			line_end        INTEGER NOT NULL DEFAULT 0,
+			api_total       INTEGER,                        -- покрытие из Notes, NULL = считать из relations
+			api_covered     INTEGER,
+			code_total      INTEGER,
+			code_listed     INTEGER,
+			search_vector   TSVECTOR
+		)`,
+		`CREATE TABLE IF NOT EXISTS spec_requirements (
+			id               BIGSERIAL PRIMARY KEY,
+			file_id          BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+			capability_id    BIGINT NOT NULL REFERENCES spec_capabilities(id) ON DELETE CASCADE,
+			requirement_name TEXT NOT NULL,
+			body_text        TEXT NOT NULL,
+			line_start       INTEGER NOT NULL DEFAULT 0,
+			line_end         INTEGER NOT NULL DEFAULT 0,
+			req_order        INTEGER NOT NULL DEFAULT 0,
+			search_vector    TSVECTOR
+		)`,
+		`CREATE TABLE IF NOT EXISTS spec_scenarios (
+			id            BIGSERIAL PRIMARY KEY,
+			file_id       BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+			requirement_id BIGINT NOT NULL REFERENCES spec_requirements(id) ON DELETE CASCADE,
+			scenario_name TEXT NOT NULL,
+			given_text    TEXT,
+			when_text     TEXT,
+			then_text     TEXT,
+			line_start    INTEGER NOT NULL DEFAULT 0,
+			line_end      INTEGER NOT NULL DEFAULT 0,
+			scn_order     INTEGER NOT NULL DEFAULT 0,
+			search_vector TSVECTOR
+		)`,
+		`CREATE TABLE IF NOT EXISTS spec_usecases (
+			id             BIGSERIAL PRIMARY KEY,
+			file_id        BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+			spec_config_id BIGINT NOT NULL REFERENCES spec_configs(id) ON DELETE CASCADE,
+			usecase_name   TEXT NOT NULL,
+			title          TEXT NOT NULL DEFAULT '',
+			description    TEXT,
+			actors         TEXT,
+			preconditions  TEXT,
+			postconditions TEXT,
+			business_value TEXT,
+			architecture   TEXT,
+			data_schema    TEXT,
+			source_dir     TEXT NOT NULL DEFAULT '',   -- scenarios | usecases | business-processes
+			usecase_kind   TEXT NOT NULL DEFAULT '',   -- scenario | usecase | business-process
+			page_id        BIGINT,                     -- Confluence pageId
+			line_start     INTEGER NOT NULL DEFAULT 1,
+			line_end       INTEGER NOT NULL DEFAULT 0,
+			search_vector  TSVECTOR
+		)`,
+		`CREATE TABLE IF NOT EXISTS spec_usecase_steps (
+			id          BIGSERIAL PRIMARY KEY,
+			file_id     BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+			usecase_id  BIGINT NOT NULL REFERENCES spec_usecases(id) ON DELETE CASCADE,
+			flow_kind   TEXT NOT NULL DEFAULT 'main',  -- main | alternative
+			step_order  INTEGER NOT NULL DEFAULT 0,
+			step_text   TEXT NOT NULL,
+			line_number INTEGER NOT NULL DEFAULT 0
+		)`,
+		`ALTER TABLE spec_usecase_steps ADD COLUMN IF NOT EXISTS file_id BIGINT`,
+		`UPDATE spec_usecase_steps s
+		 SET file_id = u.file_id
+		 FROM spec_usecases u
+		 WHERE s.usecase_id = u.id AND s.file_id IS NULL`,
+		`ALTER TABLE spec_usecase_steps ALTER COLUMN file_id SET NOT NULL`,
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conrelid = 'spec_usecase_steps'::regclass
+				  AND conname = 'spec_usecase_steps_file_id_fkey'
+			) THEN
+				ALTER TABLE spec_usecase_steps
+					ADD CONSTRAINT spec_usecase_steps_file_id_fkey
+					FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE;
+			END IF;
+		END $$`,
+		// Change: директория changes/<name>/; file_id = proposal.md (главный артефакт);
+		// артефакты change — файлы под dir_path (files по префиксу пути)
+		`CREATE TABLE IF NOT EXISTS spec_changes (
+			id             BIGSERIAL PRIMARY KEY,
+			file_id        BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+			spec_config_id BIGINT NOT NULL REFERENCES spec_configs(id) ON DELETE CASCADE,
+			change_name    TEXT NOT NULL,
+			status         TEXT NOT NULL DEFAULT 'active', -- active | archived
+			dir_path       TEXT NOT NULL,                  -- путь директории change от корня репо
+			search_vector  TSVECTOR
+		)`,
+		// Delta-требование change: file_id = файл delta-спеки; пересоздаётся при изменении своего файла
+		`CREATE TABLE IF NOT EXISTS spec_change_delta (
+			id               BIGSERIAL PRIMARY KEY,
+			file_id          BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+			change_id        BIGINT NOT NULL REFERENCES spec_changes(id) ON DELETE CASCADE,
+			section          TEXT NOT NULL,                -- ADDED | MODIFIED | REMOVED
+			capability_slug  TEXT NOT NULL,
+			requirement_name TEXT NOT NULL,
+			body_text        TEXT NOT NULL,
+			line_start       INTEGER NOT NULL DEFAULT 0,
+			line_end         INTEGER NOT NULL DEFAULT 0
+		)`,
+		// Staging: сырые упоминания кода в спеках; резолвятся в relations(references_code) постпроцессором;
+		// нерезолвнутые остаются как пробелы покрытия
+		`CREATE TABLE IF NOT EXISTS spec_code_mentions (
+			id           BIGSERIAL PRIMARY KEY,
+			file_id      BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+			source_type  TEXT NOT NULL,                    -- spec_capability | spec_requirement | spec_scenario | spec_usecase
+			source_id    BIGINT NOT NULL,
+			mention_name TEXT NOT NULL,
+			mention_kind TEXT NOT NULL DEFAULT 'unknown',  -- procedure | api | table | form | smf | method | unknown
+			line_number  INTEGER NOT NULL DEFAULT 0
+		)`,
+		// Полнотекстовый слой: словарь LSA
+		`CREATE TABLE IF NOT EXISTS spec_vocab (
+			id       SERIAL PRIMARY KEY,
+			term     TEXT NOT NULL UNIQUE,
+			doc_freq INTEGER NOT NULL,
+			idf      DOUBLE PRECISION
+		)`,
+		// Полнотекстовый слой: LSA-векторы документов (embed_level='spec' → capability)
+		`CREATE TABLE IF NOT EXISTS spec_embeddings (
+			id           SERIAL PRIMARY KEY,
+			spec_id      BIGINT NOT NULL REFERENCES spec_capabilities(id) ON DELETE CASCADE,
+			embed_level  TEXT NOT NULL DEFAULT 'spec',
+			embed_text   TEXT NOT NULL,
+			embedding    DOUBLE PRECISION[],
+			embed_method TEXT NOT NULL DEFAULT 'tfidf-lsa',
+			embed_dim    INTEGER NOT NULL DEFAULT 128,
+			updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ds_products_product_name ON ds_products(product_name)`,
@@ -674,6 +844,35 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_parent ON trc_events(session_id, parent_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_error ON trc_events(session_id) WHERE error IS NOT NULL AND error <> 0`,
 		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_event_name ON trc_events(session_id, event_name)`,
+		// ==== Индексы OpenSpec-артефактов ====
+		`CREATE INDEX IF NOT EXISTS idx_spec_configs_product_name ON spec_configs(product_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_capabilities_name_lower ON spec_capabilities(LOWER(capability_name))`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_spec_capabilities_config_name_unique ON spec_capabilities(spec_config_id, capability_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_capabilities_config ON spec_capabilities(spec_config_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_capabilities_parent ON spec_capabilities(parent_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_capabilities_file_id ON spec_capabilities(file_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_requirements_cap ON spec_requirements(capability_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_requirements_file_id ON spec_requirements(file_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_scenarios_req ON spec_scenarios(requirement_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_usecases_config ON spec_usecases(spec_config_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_usecase_steps_file_id ON spec_usecase_steps(file_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_usecase_steps_uc ON spec_usecase_steps(usecase_id, flow_kind, step_order)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_spec_changes_config_name_unique ON spec_changes(spec_config_id, change_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_changes_config_name ON spec_changes(spec_config_id, change_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_change_delta_change ON spec_change_delta(change_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_code_mentions_name_lower ON spec_code_mentions(LOWER(mention_name))`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_code_mentions_source ON spec_code_mentions(source_type, source_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_spec_vocab_term ON spec_vocab(term)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_embeddings_spec ON spec_embeddings(spec_id, embed_level)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_capabilities_fts ON spec_capabilities USING GIN (search_vector)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_requirements_fts ON spec_requirements USING GIN (search_vector)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_scenarios_fts ON spec_scenarios USING GIN (search_vector)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_usecases_fts ON spec_usecases USING GIN (search_vector)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_capabilities_related_code_trgm ON spec_capabilities USING GIN (related_code gin_trgm_ops)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_requirements_body_trgm ON spec_requirements USING GIN (body_text gin_trgm_ops)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_scenarios_text_trgm ON spec_scenarios USING GIN ((scenario_name || ' ' || COALESCE(given_text, '') || ' ' || COALESCE(when_text, '') || ' ' || COALESCE(then_text, '')) gin_trgm_ops)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_usecases_text_trgm ON spec_usecases USING GIN ((usecase_name || ' ' || title || ' ' || COALESCE(description, '') || ' ' || COALESCE(actors, '') || ' ' || COALESCE(preconditions, '') || ' ' || COALESCE(postconditions, '') || ' ' || COALESCE(business_value, '') || ' ' || COALESCE(architecture, '') || ' ' || COALESCE(data_schema, '')) gin_trgm_ops)`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_code_mentions_name_trgm ON spec_code_mentions USING GIN (mention_name gin_trgm_ops)`,
 		// Удаление избыточных standalone-индексов, дублируемых составными с session_id
 		`DROP INDEX IF EXISTS idx_trc_events_session_id`,
 		`DROP INDEX IF EXISTS idx_trc_events_procedure`,
@@ -698,7 +897,6 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 
 	return nil
 }
-
 
 // InitSchema - deprecated thin wrapper, uses context.Background().
 func (db *DB) InitSchema() error {

@@ -11,4 +11,7 @@ var (
 	ErrReviewFailed      = errors.New("review failed")
 	ErrStatsFailed       = errors.New("failed to get stats")
 	ErrHealthCheckFailed = errors.New("failed to inspect index readiness")
+	ErrSpecNotFound      = errors.New("spec entity not found")
+	ErrSpecSearchEmpty   = errors.New("spec search query is empty")
+	ErrSpecModelNotFound = errors.New("lsa model not found or not trained")
 )

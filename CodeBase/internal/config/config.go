@@ -32,6 +32,7 @@ type Config struct {
 	TRC      TRCConfig     `toml:"trc"`
 	Logging  LoggingConfig `toml:"logging"`
 	MCP      MCPConfig     `toml:"mcp"`
+	Spec     SpecConfig    `toml:"spec"`
 }
 
 // IndexerConfig конфигурация индексатора
@@ -76,6 +77,17 @@ type MCPConfig struct {
 	QueryTimeoutSec       int    `toml:"query_timeout_sec"`  // default 30
 	ReviewTimeoutSec      int    `toml:"review_timeout_sec"` // default 120
 	RegexpCacheMaxEntries int    `toml:"regexp_cache_max_entries"`
+}
+
+// SpecConfig конфигурация полнотекстового слоя OpenSpec (LSA)
+type SpecConfig struct {
+	LSAEnabled       bool    `toml:"lsa_enabled"`         // включить LSA-постпроцессинг (default: true)
+	LSAK             int     `toml:"lsa_k"`               // размерность LSA (default: 128)
+	LSAMinDF         int     `toml:"lsa_min_df"`          // минимальная document frequency (default: 3)
+	LSAMaxDF         float64 `toml:"lsa_max_df"`          // максимальная доля документов (default: 0.3)
+	LSAMinCorpus     int     `toml:"lsa_min_corpus"`      // минимальный размер корпуса для обучения (default: 100)
+	LSARetrainThreshold int  `toml:"lsa_retrain_threshold"` // порог изменённых capability для пересчёта (default: 50)
+	LSAModelPath     string  `toml:"lsa_model_path"`      // путь к файлу модели (default: рядом с БД)
 }
 
 var (
@@ -218,6 +230,23 @@ func Load() error {
 		cfg.MCP.ReviewTimeoutSec = 120
 	}
 
+	// Spec defaults
+	if cfg.Spec.LSAK <= 0 {
+		cfg.Spec.LSAK = 128
+	}
+	if cfg.Spec.LSAMinDF <= 0 {
+		cfg.Spec.LSAMinDF = 3
+	}
+	if cfg.Spec.LSAMaxDF <= 0 {
+		cfg.Spec.LSAMaxDF = 0.3
+	}
+	if cfg.Spec.LSAMinCorpus <= 0 {
+		cfg.Spec.LSAMinCorpus = 100
+	}
+	if cfg.Spec.LSARetrainThreshold <= 0 {
+		cfg.Spec.LSARetrainThreshold = 50
+	}
+
 	return nil
 }
 
@@ -306,6 +335,14 @@ func CreateDefault(rootPath string) *Config {
 			QueryTimeoutSec:       30,
 			ReviewTimeoutSec:      120,
 			RegexpCacheMaxEntries: 2048,
+		},
+		Spec: SpecConfig{
+			LSAEnabled:          true,
+			LSAK:                128,
+			LSAMinDF:            3,
+			LSAMaxDF:            0.3,
+			LSAMinCorpus:        100,
+			LSARetrainThreshold: 50,
 		},
 	}
 	return cfg

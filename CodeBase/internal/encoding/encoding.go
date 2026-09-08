@@ -248,6 +248,79 @@ func isLikelyUTF8(data []byte) bool {
 	return validBytes*100/total >= 80
 }
 
+// DetectMarkdownEncoding определяет кодировку markdown-файла по содержимому.
+// Openspec-артефакты финпродуктов хранятся в UTF-8 (с BOM и без), но в дереве
+// встречаются legacy-файлы в CP1251. Приоритет UTF-8: валидный UTF-8 (BOM —
+// валидная UTF-8 последовательность) → UTF8; иначе — CP1251 fallback.
+func DetectMarkdownEncoding(data []byte) Encoding {
+	if utf8.Valid(data) {
+		return UTF8
+	}
+	return WIN1251
+}
+
+// NormalizeMojibake восстанавливает UTF-8-текст, который уже был ошибочно
+// интерпретирован как CP866 или Windows-1251. Нормальный UTF-8-текст не меняется.
+func NormalizeMojibake(input string) string {
+	if input == "" {
+		return input
+	}
+
+	originalScore := mojibakeScore(input)
+	if originalScore == 0 {
+		return input
+	}
+
+	best := input
+	bestScore := originalScore
+	for _, sourceEncoding := range []Encoding{CP866, WIN1251} {
+		bytes, err := charmapEncoder(sourceEncoding, input)
+		if err != nil || !utf8.Valid(bytes) {
+			continue
+		}
+		candidate := string(bytes)
+		score := mojibakeScore(candidate)
+		if score < bestScore && hasCyrillicText(candidate) {
+			best = candidate
+			bestScore = score
+		}
+	}
+	return best
+}
+
+func charmapEncoder(sourceEncoding Encoding, input string) ([]byte, error) {
+	var encoder *charmap.Charmap
+	switch sourceEncoding {
+	case CP866:
+		encoder = charmap.CodePage866
+	case WIN1251:
+		encoder = charmap.Windows1251
+	default:
+		return []byte(input), nil
+	}
+	return encoder.NewEncoder().Bytes([]byte(input))
+}
+
+func mojibakeScore(input string) int {
+	score := 0
+	for _, r := range input {
+		switch r {
+		case '╨', '╤', 'Р', 'С', 'в', '•', '�':
+			score++
+		}
+	}
+	return score
+}
+
+func hasCyrillicText(input string) bool {
+	for _, r := range input {
+		if (r >= 'А' && r <= 'я') || r == 'Ё' || r == 'ё' {
+			return true
+		}
+	}
+	return false
+}
+
 // DecodeBytes декодирует байты из указанной кодировки в UTF-8 строку
 func DecodeBytes(data []byte, encoding Encoding) (string, error) {
 	if encoding == UTF8 {

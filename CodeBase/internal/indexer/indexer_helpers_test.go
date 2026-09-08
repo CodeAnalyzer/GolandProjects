@@ -46,6 +46,17 @@ func TestMergeScanStatsAndCollector(t *testing.T) {
 		t.Fatalf("PreFilteredFiles merge: got %d, want 300", dst3.PreFilteredFiles)
 	}
 
+	// Spec-счётчики должны суммироваться (параллельные воркеры спек)
+	dst4 := &model.ScanStats{MDFiles: 1, YAMLFiles: 2, SpecCapabilities: 3, SpecRequirements: 4, SpecScenarios: 5, SpecUsecases: 6, SpecChanges: 7, SpecConfigs: 1}
+	src4 := &model.ScanStats{MDFiles: 10, YAMLFiles: 20, SpecCapabilities: 30, SpecRequirements: 40, SpecScenarios: 50, SpecUsecases: 60, SpecChanges: 70, SpecConfigs: 2}
+	mergeScanStats(dst4, src4)
+	if dst4.MDFiles != 11 || dst4.YAMLFiles != 22 || dst4.SpecConfigs != 3 ||
+		dst4.SpecCapabilities != 33 || dst4.SpecRequirements != 44 ||
+		dst4.SpecScenarios != 55 || dst4.SpecUsecases != 66 || dst4.SpecChanges != 77 {
+		t.Fatalf("spec stats merge: got MD=%d YAML=%d configs=%d caps=%d reqs=%d scn=%d uc=%d ch=%d",
+			dst4.MDFiles, dst4.YAMLFiles, dst4.SpecConfigs, dst4.SpecCapabilities, dst4.SpecRequirements, dst4.SpecScenarios, dst4.SpecUsecases, dst4.SpecChanges)
+	}
+
 	c := &statsCollector{}
 	c.Add(func(stats *model.ScanStats) {
 		stats.FilesScanned = 7
@@ -120,6 +131,7 @@ func TestWalkerPatterns_FiltersUnsupportedAndDedups(t *testing.T) {
 	if !reflect.DeepEqual(exclude, []string{"*/archive/*"}) {
 		t.Fatalf("exclude = %#v", exclude)
 	}
+	// «readme.md» — точное имя (не *.ext): не проходит фильтр расширений (существующее поведение walkerPatterns)
 	if !reflect.DeepEqual(include, []string{"*.sql"}) {
 		t.Fatalf("include = %#v, want [*.sql]", include)
 	}
@@ -184,5 +196,26 @@ func TestBuildFragmentAndJSCallRefRelations(t *testing.T) {
 	}, map[string]int64{"calleeb": 88})
 	if len(js) != 1 || js[0].SourceType != "js_function" || js[0].TargetID != 88 {
 		t.Fatalf("js relations = %+v", js)
+	}
+}
+
+func TestBuildSpecRelationsPreservesSourcesAndUsecaseTargets(t *testing.T) {
+	mentions := []*model.SpecCodeMention{
+		{SourceType: "spec_requirement", SourceID: 41, MentionName: "ProcA", MentionKind: "procedure", LineNumber: 12},
+		{SourceType: "spec_scenario", SourceID: 42, MentionName: "API_A", MentionKind: "api", LineNumber: 18},
+	}
+	lookup := &specMentionLookup{Procedures: map[string]int64{"proca": 101}, APIs: map[string]int64{"api_a": 102}}
+	relations := buildSpecMentionRelations(mentions, lookup)
+	if len(relations) != 2 || relations[0].SourceID != 41 || relations[1].SourceID != 42 {
+		t.Fatalf("spec mention relations = %+v", relations)
+	}
+
+	usecaseRelations := buildUsecaseInvolvesRelations([]store.SpecUsecaseRefRow{
+		{UsecaseID: 7, SpecConfigID: 3, Slug: "cards/service"},
+		{UsecaseID: 7, SpecConfigID: 3, Slug: "cards/service"},
+		{UsecaseID: 8, SpecConfigID: 4, Slug: "cards/service"},
+	}, map[string]int64{specSlugKey(3, "cards/service"): 55, specSlugKey(4, "cards/service"): 66})
+	if len(usecaseRelations) != 2 || usecaseRelations[0].SourceID != 7 || usecaseRelations[0].TargetID != 55 || usecaseRelations[0].RelationType != "usecase_involves" || usecaseRelations[1].TargetID != 66 {
+		t.Fatalf("usecase relations = %+v", usecaseRelations)
 	}
 }

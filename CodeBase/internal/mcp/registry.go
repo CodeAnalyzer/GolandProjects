@@ -12,6 +12,7 @@ import (
 	"github.com/codebase/internal/review"
 	"github.com/codebase/internal/reviewsvc"
 	"github.com/codebase/internal/rtisvc"
+	"github.com/codebase/internal/specsvc"
 	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/systemsvc"
 	"github.com/codebase/internal/trcsvc"
@@ -153,9 +154,19 @@ var reviewTools = map[string]bool{
 	"codebase_review_sql": true,
 }
 
+// specTools — codebase_query_spec_* инструменты.
+var specTools = map[string]bool{
+	"codebase_query_spec_search":   true,
+	"codebase_query_spec_by_code":  true,
+	"codebase_query_spec_deps":     true,
+	"codebase_query_spec_usecase":  true,
+	"codebase_query_spec_coverage": true,
+	"codebase_query_spec_history":  true,
+}
+
 // profileToolSets — маппинг профиль → whitelist имён инструментов.
 var profileToolSets = map[string]map[string]bool{
-	"query":  mergeMaps(baseTools, queryTools),
+	"query":  mergeMaps(baseTools, mergeMaps(queryTools, specTools)),
 	"rti":    mergeMaps(baseTools, rtiTools),
 	"trc":    mergeMaps(baseTools, trcTools),
 	"review": mergeMaps(baseTools, reviewTools),
@@ -163,23 +174,23 @@ var profileToolSets = map[string]map[string]bool{
 
 // ValidProfiles возвращает список имён валидных профилей.
 func ValidProfiles() []string {
-profiles := make([]string, 0, len(profileToolSets))
-for name := range profileToolSets {
-	profiles = append(profiles, name)
-}
-return profiles
+	profiles := make([]string, 0, len(profileToolSets))
+	for name := range profileToolSets {
+		profiles = append(profiles, name)
+	}
+	return profiles
 }
 
 // mergeMaps объединяет две map[string]bool в новую.
 func mergeMaps(a, b map[string]bool) map[string]bool {
-result := make(map[string]bool, len(a)+len(b))
-for k, v := range a {
-	result[k] = v
-}
-for k, v := range b {
-	result[k] = v
-}
-return result
+	result := make(map[string]bool, len(a)+len(b))
+	for k, v := range a {
+		result[k] = v
+	}
+	for k, v := range b {
+		result[k] = v
+	}
+	return result
 }
 
 // buildToolRegistryForProfile возвращает registry, отфильтрованный по профилю.
@@ -187,21 +198,21 @@ return result
 // При известном profile — только инструменты из whitelist.
 // При неизвестном profile — ошибка.
 func buildToolRegistryForProfile(db *store.DB, profile string) (map[string]registeredTool, error) {
-full := buildToolRegistry(db)
-if profile == "" {
-	return full, nil
-}
-whitelist, ok := profileToolSets[profile]
-if !ok {
-	return nil, fmt.Errorf("unknown profile %q, valid profiles: %v", profile, ValidProfiles())
-}
-filtered := make(map[string]registeredTool, len(whitelist))
-for name, rt := range full {
-	if whitelist[name] {
-		filtered[name] = rt
+	full := buildToolRegistry(db)
+	if profile == "" {
+		return full, nil
 	}
-}
-return filtered, nil
+	whitelist, ok := profileToolSets[profile]
+	if !ok {
+		return nil, fmt.Errorf("unknown profile %q, valid profiles: %v", profile, ValidProfiles())
+	}
+	filtered := make(map[string]registeredTool, len(whitelist))
+	for name, rt := range full {
+		if whitelist[name] {
+			filtered[name] = rt
+		}
+	}
+	return filtered, nil
 }
 
 func buildToolRegistry(db *store.DB) map[string]registeredTool {
@@ -1005,6 +1016,87 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				return trcsvc.ExecutePrune(ctx, db, keepLast)
+			},
+		},
+		"codebase_query_spec_search": {
+			Definition: toolDefinition{Name: "codebase_query_spec_search", Description: "Two-layer full-text search across OpenSpec capabilities: exact (tsvector + trigram) and semantic (LSA). Returns separate sections for exact and semantic matches. Use filters product (DS product name) and level (capability, requirement, scenario, usecase) to narrow results.", InputSchema: querySchema("query", stringProp("Search text"), map[string]interface{}{"product": stringProp("Filter by DS product name"), "level": stringProp("Filter by spec level: capability, requirement, scenario, usecase"), "layer": stringProp("Search layer: exact, semantic, or both"), "limit": intProp("Max results per section")})},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				q, err := requiredString(args, "query")
+				if err != nil {
+					return nil, err
+				}
+				product, _ := optionalString(args, "product")
+				level, _ := optionalString(args, "level")
+				layer, _ := optionalString(args, "layer")
+				limit := optionalLimit(args)
+				return specsvc.ExecuteSpecSearch(ctx, db, q, product, level, layer, limit)
+			},
+		},
+		"codebase_query_spec_by_code": {
+			Definition: toolDefinition{Name: "codebase_query_spec_by_code", Description: "Find OpenSpec specifications that reference a code entity (procedure, table, method, etc.) by name. Returns capability name, title, file path and the matching context. Use when you need to find which specs describe a particular code symbol.", InputSchema: querySchema("name", stringProp("Code entity name"), map[string]interface{}{"limit": intProp("Max results")})},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				limit := optionalLimit(args)
+				return specsvc.ExecuteSpecByCode(ctx, db, name, limit)
+			},
+		},
+		"codebase_query_spec_deps": {
+			Definition: toolDefinition{Name: "codebase_query_spec_deps", Description: "Build a dependency tree for an OpenSpec capability (depends_on_capability relations). Supports depends_on and depended_by directions with configurable max depth. Cycle-safe traversal. Use for impact analysis of capability changes.", InputSchema: querySchema("name", stringProp("Capability name (slug)"), map[string]interface{}{"product": stringProp("Filter by DS product name"), "direction": stringProp("depends_on or depended_by (default: depends_on)"), "max_depth": intProp("Max traversal depth (default: 2)")})},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				product, _ := optionalString(args, "product")
+				direction, _ := optionalString(args, "direction")
+				maxDepth, _ := optionalInt(args, "max_depth")
+				if maxDepth <= 0 {
+					maxDepth = 2
+				}
+				return specsvc.ExecuteSpecDeps(ctx, db, name, direction, maxDepth, product)
+			},
+		},
+		"codebase_query_spec_usecase": {
+			Definition: toolDefinition{Name: "codebase_query_spec_usecase", Description: "Return a usecase with its steps and involved entities (capabilities, requirements, code mentions). Returns an honest empty result if the usecase is not found or has no steps in the product profile. Use when you need to understand a user scenario workflow.", InputSchema: querySchema("name", stringProp("Usecase name"), map[string]interface{}{})},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				return specsvc.ExecuteSpecUsecase(ctx, db, name)
+			},
+		},
+		"codebase_query_spec_coverage": {
+			Definition: toolDefinition{Name: "codebase_query_spec_coverage", Description: "Return coverage metrics for an OpenSpec capability. Mode 'saved' returns stored API/code coverage counts. Mode 'gaps' computes unresolved code mentions (entities referenced in specs but not found in the index). Use to assess specification completeness.", InputSchema: querySchema("name", stringProp("Capability name (slug)"), map[string]interface{}{"product": stringProp("Filter by DS product name"), "mode": stringProp("saved (stored metrics) or gaps (unresolved mentions), default: saved")})},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				name, err := requiredString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				product, _ := optionalString(args, "product")
+				mode, _ := optionalString(args, "mode")
+				return specsvc.ExecuteSpecCoverage(ctx, db, name, mode, product)
+			},
+		},
+		"codebase_query_spec_history": {
+			Definition: toolDefinition{Name: "codebase_query_spec_history", Description: "Return changes that modified an OpenSpec capability, or capabilities modified by a change. Exactly one selector, name or change, is required. Includes active and archived changes, delta details, and proposal-derived changes without deltas.", InputSchema: func() map[string]interface{} {
+				s := objectSchema(map[string]interface{}{"name": stringProp("Capability name (slug)"), "change": stringProp("Change name"), "product": stringProp("Filter by DS product name")})
+				s["oneOf"] = []interface{}{map[string]interface{}{"required": []string{"name"}}, map[string]interface{}{"required": []string{"change"}}}
+				return s
+			}()},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				name, err := optionalString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				change, err := optionalString(args, "change")
+				if err != nil {
+					return nil, err
+				}
+				return specsvc.ExecuteSpecHistory(ctx, db, name, change)
 			},
 		},
 	}

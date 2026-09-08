@@ -114,6 +114,27 @@ func TestConvertToUTF8(t *testing.T) {
 	}
 }
 
+func TestNormalizeMojibake(t *testing.T) {
+	if got := NormalizeMojibake("Договор эквайринга"); got != "Договор эквайринга" {
+		t.Fatalf("normal UTF-8 text changed: %q", got)
+	}
+
+	cp866Mojibake := "╨Ф╨╛╨│╨╛╨▓╨╛╤А"
+	if got := NormalizeMojibake(cp866Mojibake); got != "Договор" {
+		t.Fatalf("CP866 mojibake = %q, want %q", got, "Договор")
+	}
+
+	utf8Bytes := []byte("Договор")
+	cp1251MojibakeBytes, err := charmap.Windows1251.NewDecoder().Bytes(utf8Bytes)
+	if err != nil {
+		t.Fatalf("decode UTF-8 bytes as CP1251: %v", err)
+	}
+	cp1251Mojibake := string(cp1251MojibakeBytes)
+	if got := NormalizeMojibake(cp1251Mojibake); got != "Договор" {
+		t.Fatalf("CP1251 mojibake = %q, want %q", got, "Договор")
+	}
+}
+
 func TestHasCyrillic(t *testing.T) {
 	if !hasCyrillic([]byte("Привет")) {
 		t.Fatalf("hasCyrillic(Привет) = false, want true")
@@ -261,10 +282,10 @@ func TestDetectFromBytes_MostlyUTF8WithFewInvalidBytes(t *testing.T) {
 	// RTI-лог: преимущественно ASCII + UTF-8 кириллица в RetValContext,
 	// но с единичными невалидными байтами (0x98 — CP866 Ш, 0xC2 0xE8 — некорректная
 	// UTF-8 пара для "ё"). utf8.Valid вернёт false, но isLikelyUTF8 должна вернуть true.
-	utf8Text := []byte("Отбор объектов старт")                   // валидный UTF-8
-	invalidByte := []byte{0x98}                                   // CP866 Ш, невалидный UTF-8
-	invalidPair := []byte{0xC2, 0xE8}                             // C2+non-continuation, невалидный UTF-8
-	ascii := []byte("RetVal = 0#Enter proc @@NestLevel = 1\n")    // ASCII структура RTI
+	utf8Text := []byte("Отбор объектов старт")                 // валидный UTF-8
+	invalidByte := []byte{0x98}                                // CP866 Ш, невалидный UTF-8
+	invalidPair := []byte{0xC2, 0xE8}                          // C2+non-continuation, невалидный UTF-8
+	ascii := []byte("RetVal = 0#Enter proc @@NestLevel = 1\n") // ASCII структура RTI
 
 	// Строим данные как в реальном RTI-файле: много ASCII, немного UTF-8, единичные артефакты
 	var data []byte
@@ -292,5 +313,28 @@ func TestDetectFromBytes_PureCP866NotMistakenForUTF8(t *testing.T) {
 	}
 	if got := DetectFromBytes(cp866Data); got == UTF8 {
 		t.Fatalf("DetectFromBytes(pure CP866) = UTF8, must not return UTF8")
+	}
+}
+
+func TestDetectMarkdownEncoding(t *testing.T) {
+	// UTF-8 без BOM — типичный openspec-артефакт
+	if got := DetectMarkdownEncoding([]byte("# Лимиты по операциям\n")); got != UTF8 {
+		t.Fatalf("DetectMarkdownEncoding(UTF-8 no BOM) = %q, want UTF8", got)
+	}
+	// UTF-8 с BOM — BOM является валидной UTF-8 последовательностью ("# ка" в UTF-8)
+	if got := DetectMarkdownEncoding([]byte{0xEF, 0xBB, 0xBF, '#', ' ', 0xD0, 0xBA, 0xD0, 0xB0}); got != UTF8 {
+		t.Fatalf("DetectMarkdownEncoding(UTF-8 with BOM) = %q, want UTF8", got)
+	}
+	// CP1251 legacy-файл
+	cp1251Data, err := charmap.Windows1251.NewEncoder().Bytes([]byte("# Привет из legacy README"))
+	if err != nil {
+		t.Fatalf("encode CP1251: %v", err)
+	}
+	if got := DetectMarkdownEncoding(cp1251Data); got != WIN1251 {
+		t.Fatalf("DetectMarkdownEncoding(CP1251) = %q, want WIN1251", got)
+	}
+	// Чистый ASCII — валидный UTF-8
+	if got := DetectMarkdownEncoding([]byte("# plain markdown")); got != UTF8 {
+		t.Fatalf("DetectMarkdownEncoding(ASCII) = %q, want UTF8", got)
 	}
 }

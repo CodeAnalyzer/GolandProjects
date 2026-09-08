@@ -7,7 +7,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.6.0
 	github.com/pelletier/go-toml/v2 v2.1.0
 	github.com/spf13/cobra v1.8.0
-	golang.org/x/text v0.14.0
+	golang.org/x/text v0.23.0
 )
 
 require (
@@ -19,4 +19,5 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
+	gonum.org/v1/gonum v0.17.0 // indirect
 )

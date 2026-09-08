@@ -24,6 +24,8 @@ type statsFilesSummary struct {
 	DFM   int `json:"dfm"`
 	TPR   int `json:"tpr"`
 	RPT   int `json:"rpt"`
+	MD    int `json:"md"`
+	YAML  int `json:"yaml"`
 }
 
 type statsEntitiesSummary struct {
@@ -53,6 +55,16 @@ type statsEntitiesSummary struct {
 	Relations          int `json:"relations"`
 	SQLTableIndexes    int `json:"sql_table_indexes"`
 	APITableIndexes    int `json:"api_table_indexes"`
+	SpecConfigs        int `json:"spec_configs"`
+	SpecCapabilities   int `json:"spec_capabilities"`
+	SpecRequirements   int `json:"spec_requirements"`
+	SpecScenarios      int `json:"spec_scenarios"`
+	SpecUsecases       int `json:"spec_usecases"`
+	SpecChanges        int `json:"spec_changes"`
+	SpecChangeDeltas   int `json:"spec_change_deltas"`
+	SpecCodeMentions   int `json:"spec_code_mentions"`
+	SpecVocabTerms     int `json:"spec_vocab_terms"`
+	SpecEmbeddings     int `json:"spec_embeddings"`
 }
 
 type statsLastScanSummary struct {
@@ -109,6 +121,8 @@ var statsCmd = &cobra.Command{
 		fmt.Printf("  DFM files:       %d\n", stats.DFMFiles)
 		fmt.Printf("  TPR files:       %d\n", stats.TPRFiles)
 		fmt.Printf("  RPT files:       %d\n", stats.RPTFiles)
+		fmt.Printf("  MD files:        %d\n", stats.MDFiles)
+		fmt.Printf("  YAML files:      %d\n", stats.YAMLFiles)
 		fmt.Printf("\n")
 		fmt.Printf("SQL Entities:\n")
 		fmt.Printf("  Procedures:      %d\n", stats.Procedures)
@@ -156,6 +170,18 @@ var statsCmd = &cobra.Command{
 		fmt.Printf("Relations:\n")
 		fmt.Printf("  Total relations: %d\n", stats.Relations)
 		fmt.Printf("\n")
+		fmt.Printf("OpenSpec Entities:\n")
+		fmt.Printf("  Configs:         %d\n", stats.SpecConfigs)
+		fmt.Printf("  Capabilities:    %d\n", stats.SpecCapabilities)
+		fmt.Printf("  Requirements:    %d\n", stats.SpecRequirements)
+		fmt.Printf("  Scenarios:       %d\n", stats.SpecScenarios)
+		fmt.Printf("  Usecases:        %d\n", stats.SpecUsecases)
+		fmt.Printf("  Changes:         %d\n", stats.SpecChanges)
+		fmt.Printf("  Change deltas:   %d\n", stats.SpecChangeDeltas)
+		fmt.Printf("  Code mentions:   %d\n", stats.SpecCodeMentions)
+		fmt.Printf("  Vocab terms:     %d\n", stats.SpecVocabTerms)
+		fmt.Printf("  Embeddings:      %d\n", stats.SpecEmbeddings)
+		fmt.Printf("\n")
 		fmt.Printf("Errors:\n")
 		fmt.Printf("  Parse errors:    %d\n", stats.Errors)
 		fmt.Printf("\n")
@@ -202,6 +228,8 @@ func buildStatsResponse(stats *store.Stats) statsResponse {
 			DFM:   stats.DFMFiles,
 			TPR:   stats.TPRFiles,
 			RPT:   stats.RPTFiles,
+			MD:    stats.MDFiles,
+			YAML:  stats.YAMLFiles,
 		},
 		Entities: statsEntitiesSummary{
 			Procedures:         stats.Procedures,
@@ -230,6 +258,16 @@ func buildStatsResponse(stats *store.Stats) statsResponse {
 			Relations:          stats.Relations,
 			SQLTableIndexes:    stats.SQLTableIndexes,
 			APITableIndexes:    stats.APITableIndexes,
+			SpecConfigs:        stats.SpecConfigs,
+			SpecCapabilities:   stats.SpecCapabilities,
+			SpecRequirements:   stats.SpecRequirements,
+			SpecScenarios:      stats.SpecScenarios,
+			SpecUsecases:       stats.SpecUsecases,
+			SpecChanges:        stats.SpecChanges,
+			SpecChangeDeltas:   stats.SpecChangeDeltas,
+			SpecCodeMentions:   stats.SpecCodeMentions,
+			SpecVocabTerms:     stats.SpecVocabTerms,
+			SpecEmbeddings:     stats.SpecEmbeddings,
 		},
 		LastScan: statsLastScanSummary{
 			RunID:  stats.LastScanID,

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	encpkg "github.com/codebase/internal/encoding"
 )
 
 // FileInfo информация о файле
@@ -257,6 +259,10 @@ func (w *Walker) WalkParallelCtx(ctx context.Context, workers int) (<-chan FileI
 					}
 					hash := computeHashBytes(content)
 					encoding, language := getEncodingAndLanguage(task.ext)
+					if task.ext == "md" {
+						// Markdown: кодировка определяется по содержимому (UTF-8 приоритет, CP1251 fallback)
+						encoding = string(encpkg.DetectMarkdownEncoding(content))
+					}
 					select {
 					case filesChan <- FileInfo{
 						Path:       filepath.ToSlash(task.path),
@@ -363,6 +369,12 @@ func getEncodingAndLanguage(ext string) (string, string) {
 		return "UTF8", "XML"
 	case "t01":
 		return "CP866", "T01"
+	case "md":
+		// Кодировка определяется по содержимому в воркере после чтения файла
+		// (encoding.DetectMarkdownEncoding); для pre-filter ветки — маркер AUTO.
+		return "AUTO", "MD"
+	case "yaml":
+		return "UTF8", "YAML"
 	default:
 		return "UTF8", "UNKNOWN"
 	}
@@ -370,5 +382,5 @@ func getEncodingAndLanguage(ext string) (string, string) {
 
 // GetSupportedExtensions возвращает список поддерживаемых расширений
 func GetSupportedExtensions() []string {
-	return []string{".sql", ".h", ".pas", ".inc", ".js", ".smf", ".dfm", ".tpr", ".rpt", ".xml", ".t01"}
+	return []string{".sql", ".h", ".pas", ".inc", ".js", ".smf", ".dfm", ".tpr", ".rpt", ".xml", ".t01", ".md", ".yaml"}
 }

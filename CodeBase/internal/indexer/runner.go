@@ -244,7 +244,12 @@ errorLoopUpdate:
 	feederWG.Wait()
 	walkSaveDone := time.Now()
 
+	workersWG.Wait()
+	processDone := time.Now()
+
 	// Batch delete old rows for modified files, keeping the new file IDs.
+	// Должно выполняться ПОСЛЕ workersWG.Wait(), иначе cascade-удаление старых
+	// file rows удаляет spec_configs, на которые ссылаются создаваемые changes.
 	if len(modifiedPaths) > 0 && ctx.Err() == nil {
 		if err := idx.db.DeleteFilesByPathsExcept(ctx, modifiedPaths, newFileIDs); err != nil {
 			idx.logError("<cleanup>", "Error batch deleting outdated file rows: %v", err)
@@ -252,8 +257,6 @@ errorLoopUpdate:
 		}
 	}
 
-	workersWG.Wait()
-	processDone := time.Now()
 	if ctx.Err() == nil {
 		idx.runPostProcessingParallel(ctx, collector, parallel)
 	}
@@ -317,7 +320,7 @@ func (idx *Indexer) runPostProcessingParallel(ctx context.Context, collector *st
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(7)
 	go func() {
 		defer wg.Done()
 		idx.postProcessPASPending(ctx, collector)
@@ -338,5 +341,21 @@ func (idx *Indexer) runPostProcessingParallel(ctx context.Context, collector *st
 		defer wg.Done()
 		idx.postProcessAllFragmentRelations(ctx, collector)
 	}()
+	go func() {
+		defer wg.Done()
+		idx.postProcessSpecCodeMentions(ctx, collector)
+	}()
+	go func() {
+		defer wg.Done()
+		idx.postProcessSpecDependencies(ctx, collector)
+	}()
 	wg.Wait()
+
+	// Профиль продукта запускается после всех spec-постпроцессоров,
+	// т.к. CrossRefStyle зависит от depends_on_capability relations.
+	idx.postProcessSpecProductProfiles(ctx, collector)
+
+	// LSA-обучение запускается после всех spec-постпроцессоров,
+	// т.к. зависит от финального состояния spec_capabilities.
+	idx.postProcessSpecLSA(ctx, collector)
 }
