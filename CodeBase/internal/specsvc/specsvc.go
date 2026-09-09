@@ -140,6 +140,11 @@ type SpecHistoryEntry struct {
 	ReqName    string `json:"requirement_name"`
 	BodyText   string `json:"body_text,omitempty"`
 	Source     string `json:"source,omitempty"`
+	// Поля режима по change: имя capability, к которому относится delta-секция,
+	// и пометка skip_specs (связь извлечена из proposal, delta-требований нет).
+	CapabilityName string `json:"capability_name"`
+	SkipSpecs      bool   `json:"skip_specs,omitempty"`
+	DeltaSource    string `json:"delta_source,omitempty"` // delta | proposal
 }
 
 type SpecHistoryCapability struct {
@@ -716,7 +721,9 @@ func executeSpecHistoryByChange(ctx context.Context, db *store.DB, changeName, p
 		ChangeName:   changeName,
 		Product:      product,
 		Capabilities: make([]SpecHistoryCapability, 0),
+		Changes:      make([]SpecHistoryEntry, 0),
 	}
+	// 1. Summary-список затронутых capability (без delta-join).
 	rows, err := db.QueryContext(ctx, `
 		SELECT DISTINCT sc.change_name, sc.status, c.id, c.capability_name, c.title, COALESCE(dp.product_name, '')
 		FROM relations r
@@ -730,17 +737,60 @@ func executeSpecHistoryByChange(ctx context.Context, db *store.DB, changeName, p
 	if err != nil {
 		return nil, fmt.Errorf("spec history by change query: %w", err)
 	}
-	defer rows.Close()
-
 	for rows.Next() {
 		var capability SpecHistoryCapability
 		if err := rows.Scan(&result.ChangeName, &result.Status, &capability.CapabilityID,
 			&capability.CapabilityName, &capability.Title, &capability.Product); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("spec history by change scan: %w", err)
 		}
 		result.Capabilities = append(result.Capabilities, capability)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("spec history by change rows: %w", err)
+	}
+	rows.Close()
+
+	// 2. Delta-секции (ADDED/MODIFIED/REMOVED) по каждой capability.
+	// LEFT JOIN spec_change_delta: для change со skip_specs (нет delta-файла)
+	// возвращается одна строка с NULL delta-полями и confidence = 'proposal'.
+	deltaRows, err := db.QueryContext(ctx, `
+		SELECT sc.change_name, sc.status, c.capability_name,
+		       COALESCE(d.section, ''), COALESCE(d.requirement_name, ''), COALESCE(d.body_text, ''),
+		       COALESCE(r.confidence, '')
+		FROM relations r
+		JOIN spec_changes sc ON r.source_type = 'spec_change' AND sc.id = r.source_id
+		JOIN spec_capabilities c ON r.target_type = 'spec_capability' AND c.id = r.target_id
+		LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+		LEFT JOIN spec_change_delta d ON d.change_id = sc.id AND LOWER(d.capability_slug) = LOWER(c.capability_name)
+		WHERE r.relation_type = 'change_modifies'
+		  AND LOWER(sc.change_name) = LOWER($1)
+		  AND ($2 = '' OR dp.product_name = $2)
+		ORDER BY c.capability_name, c.id, COALESCE(d.section, ''), COALESCE(d.line_start, 0)`, changeName, product)
+	if err != nil {
+		return nil, fmt.Errorf("spec history by change delta query: %w", err)
+	}
+	defer deltaRows.Close()
+
+	for deltaRows.Next() {
+		var entry SpecHistoryEntry
+		var confidence string
+		if err := deltaRows.Scan(&entry.ChangeName, &entry.Status, &entry.CapabilityName,
+			&entry.Section, &entry.ReqName, &entry.BodyText, &confidence); err != nil {
+			return nil, fmt.Errorf("spec history by change delta scan: %w", err)
+		}
+		// confidence хранит источник связи: 'delta' (из delta-файла) или
+		// 'proposal' (из proposal references, change со skip_specs). Для старых
+		// данных без confidence и с непустой delta-секцией — default 'delta'.
+		entry.DeltaSource = confidence
+		if entry.DeltaSource == "" && entry.Section != "" {
+			entry.DeltaSource = "delta"
+		}
+		entry.SkipSpecs = entry.DeltaSource == "proposal"
+		result.Changes = append(result.Changes, entry)
+	}
+	return result, deltaRows.Err()
 }
 
 func normalizeHistorySelectors(capabilityName, changeName string) (string, string, error) {
