@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -11,6 +12,149 @@ type SpecConfigProfileRow struct {
 	ID      int64
 	FileID  int64
 	RootDir string
+}
+
+// SpecConfigFullProfileRow — полный профиль spec_config для MCP-инструмента spec_config.
+type SpecConfigFullProfileRow struct {
+	ID             int64
+	ProductName    string
+	SchemaName     string
+	RootDir        string
+	UsecaseLayout  string
+	IDStyle        string
+	CrossRefStyle  string
+	NormativeLang  string
+	Traceability   string
+	HasChanges     bool
+	HasAudit       bool
+	HasADR          bool
+	CoverageMetrics bool
+	ContextText    string
+}
+
+// LoadSpecConfigProfileByProduct загружает полный профиль spec_config по имени продукта.
+// Возвращает sql.ErrNoRows, если продукт не найден.
+func (db *DB) LoadSpecConfigProfileByProduct(ctx context.Context, product string) (*SpecConfigFullProfileRow, error) {
+	var r SpecConfigFullProfileRow
+	var rootDir, schemaName, contextText sql.NullString
+	err := db.QueryRowContext(ctx, `
+		SELECT sc.id,
+		       COALESCE(sc.product_name, ''),
+		       sc.schema_name,
+		       sc.root_dir,
+		       sc.usecase_layout,
+		       sc.id_style,
+		       sc.cross_ref_style,
+		       sc.normative_lang,
+		       sc.traceability,
+		       sc.has_changes,
+		       sc.has_audit,
+		       sc.has_adr,
+		       sc.coverage_metrics,
+		       sc.context_text
+		FROM spec_configs sc
+		JOIN ds_products dp ON dp.id = sc.ds_product_id
+		WHERE dp.product_name = $1
+		ORDER BY sc.id DESC
+		LIMIT 1`, product).Scan(
+		&r.ID, &r.ProductName, &schemaName, &rootDir,
+		&r.UsecaseLayout, &r.IDStyle, &r.CrossRefStyle, &r.NormativeLang,
+		&r.Traceability, &r.HasChanges, &r.HasAudit, &r.HasADR,
+		&r.CoverageMetrics, &contextText)
+	if err != nil {
+		return nil, err
+	}
+	r.SchemaName = schemaName.String
+	r.RootDir = strings.ReplaceAll(rootDir.String, `\`, "/")
+	r.ContextText = contextText.String
+	return &r, nil
+}
+
+// SpecConfigStatsRow — счётчики сущностей продукта.
+type SpecConfigStatsRow struct {
+	Capabilities int
+	Requirements  int
+	Scenarios    int
+	Usecases     int
+	Changes      int
+}
+
+// LoadSpecConfigStats возвращает счётчики сущностей по spec_config_id одним запросом.
+func (db *DB) LoadSpecConfigStats(ctx context.Context, configID int64) (*SpecConfigStatsRow, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT 'capabilities' AS kind, COUNT(*)::bigint AS cnt FROM spec_capabilities WHERE spec_config_id = $1
+		UNION ALL
+		SELECT 'requirements', COUNT(*)::bigint FROM spec_requirements r
+			JOIN spec_capabilities c ON c.id = r.capability_id WHERE c.spec_config_id = $1
+		UNION ALL
+		SELECT 'scenarios', COUNT(*)::bigint FROM spec_scenarios s
+			JOIN spec_requirements r ON r.id = s.requirement_id
+			JOIN spec_capabilities c ON c.id = r.capability_id WHERE c.spec_config_id = $1
+		UNION ALL
+		SELECT 'usecases', COUNT(*)::bigint FROM spec_usecases WHERE spec_config_id = $1
+		UNION ALL
+		SELECT 'changes', COUNT(*)::bigint FROM spec_changes WHERE spec_config_id = $1
+	`, configID)
+	if err != nil {
+		return nil, fmt.Errorf("load spec_config stats: %w", err)
+	}
+	defer rows.Close()
+
+	var stats SpecConfigStatsRow
+	for rows.Next() {
+		var kind string
+		var cnt int64
+		if err := rows.Scan(&kind, &cnt); err != nil {
+			return nil, err
+		}
+		switch kind {
+		case "capabilities":
+			stats.Capabilities = int(cnt)
+		case "requirements":
+			stats.Requirements = int(cnt)
+		case "scenarios":
+			stats.Scenarios = int(cnt)
+		case "usecases":
+			stats.Usecases = int(cnt)
+		case "changes":
+			stats.Changes = int(cnt)
+		}
+	}
+	return &stats, rows.Err()
+}
+
+// SpecConfigHierarchyRow — узел дерева capabilities.
+type SpecConfigHierarchyRow struct {
+	ID             int64
+	ParentID       sql.NullInt64
+	CapabilityName string
+	Title          string
+	Purpose        sql.NullString
+	Notes          sql.NullString
+}
+
+// LoadSpecConfigHierarchy загружает все capabilities продукта для построения дерева.
+func (db *DB) LoadSpecConfigHierarchy(ctx context.Context, configID int64) ([]SpecConfigHierarchyRow, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, parent_id, capability_name, title, purpose, notes
+		FROM spec_capabilities
+		WHERE spec_config_id = $1
+		ORDER BY capability_name
+	`, configID)
+	if err != nil {
+		return nil, fmt.Errorf("load spec_config hierarchy: %w", err)
+	}
+	defer rows.Close()
+
+	var result []SpecConfigHierarchyRow
+	for rows.Next() {
+		var r SpecConfigHierarchyRow
+		if err := rows.Scan(&r.ID, &r.ParentID, &r.CapabilityName, &r.Title, &r.Purpose, &r.Notes); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
 }
 
 // LoadAllSpecConfigsForProfile загружает все spec_configs для детекции профиля.

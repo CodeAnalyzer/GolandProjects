@@ -162,6 +162,7 @@ var specTools = map[string]bool{
 	"codebase_query_spec_usecase":  true,
 	"codebase_query_spec_coverage": true,
 	"codebase_query_spec_history":  true,
+	"codebase_query_spec_config":   true,
 }
 
 // profileToolSets — маппинг профиль → whitelist имён инструментов.
@@ -1060,13 +1061,31 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_query_spec_usecase": {
-			Definition: toolDefinition{Name: "codebase_query_spec_usecase", Description: "Return a usecase with its steps and involved entities (capabilities, requirements, code mentions). Returns an honest empty result if the usecase is not found or has no steps in the product profile. Use when you need to understand a user scenario workflow.", InputSchema: querySchema("name", stringProp("Usecase name"), map[string]interface{}{})},
+			Definition: toolDefinition{Name: "codebase_query_spec_usecase", Description: "Return a usecase with its steps and involved entities (capabilities, requirements, code mentions). Returns ErrSpecNotFound if the usecase is not found. Use when you need to understand a user scenario workflow.", InputSchema: querySchema("name", stringProp("Usecase name"), map[string]interface{}{})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				name, err := requiredString(args, "name")
 				if err != nil {
 					return nil, err
 				}
 				return specsvc.ExecuteSpecUsecase(ctx, db, name)
+			},
+		},
+		"codebase_query_spec_config": {
+			Definition: toolDefinition{Name: "codebase_query_spec_config", Description: "Return the OpenSpec product profile (layout, language, cross-ref style, traceability, changes/audit/ADR flags, context), entity statistics, and optional capability hierarchy tree (parent_id). Use to understand a product's spec setup and capability structure before drilling into specific capabilities.", InputSchema: querySchema("product", stringProp("DS product name"), map[string]interface{}{"include_hierarchy": boolProp("Include capability hierarchy tree (default: true)"), "depth": intProp("Max hierarchy depth (default: 2)")})},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				product, err := requiredString(args, "product")
+				if err != nil {
+					return nil, err
+				}
+				includeHierarchy := true
+				if v, ok := args["include_hierarchy"]; ok && v != nil {
+					includeHierarchy, err = optionalBool(args, "include_hierarchy")
+					if err != nil {
+						return nil, err
+					}
+				}
+				depth, _ := optionalInt(args, "depth")
+				return specsvc.ExecuteSpecConfig(ctx, db, product, includeHierarchy, depth)
 			},
 		},
 		"codebase_query_spec_coverage": {

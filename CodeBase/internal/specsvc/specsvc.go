@@ -163,6 +163,149 @@ type SpecHistoryCapability struct {
 	Product        string `json:"product,omitempty"`
 }
 
+// SpecConfigResult — профиль продукта, статистика и опциональная иерархия capabilities.
+type SpecConfigResult struct {
+	Profile   SpecConfigProfile `json:"profile"`
+	Stats     SpecConfigStats   `json:"stats"`
+	Hierarchy []SpecConfigNode  `json:"hierarchy,omitempty"`
+}
+
+type SpecConfigProfile struct {
+	ProductName     string `json:"product_name"`
+	SchemaName      string `json:"schema_name"`
+	RootDir         string `json:"root_dir"`
+	UsecaseLayout   string `json:"usecase_layout"`
+	IDStyle         string `json:"id_style"`
+	CrossRefStyle   string `json:"cross_ref_style"`
+	NormativeLang   string `json:"normative_lang"`
+	Traceability    string `json:"traceability"`
+	HasChanges      bool   `json:"has_changes"`
+	HasAudit        bool   `json:"has_audit"`
+	HasADR          bool   `json:"has_adr"`
+	CoverageMetrics bool   `json:"coverage_metrics"`
+	ContextText     string `json:"context_text"`
+}
+
+type SpecConfigStats struct {
+	Capabilities int `json:"capabilities"`
+	Requirements int `json:"requirements"`
+	Scenarios    int `json:"scenarios"`
+	Usecases     int `json:"usecases"`
+	Changes      int `json:"changes"`
+}
+
+type SpecConfigNode struct {
+	CapabilityName string           `json:"capability_name"`
+	Title          string           `json:"title"`
+	IsContainer    bool             `json:"is_container"`
+	ChildrenCount  int              `json:"children_count"`
+	Children       []SpecConfigNode `json:"children,omitempty"`
+}
+
+// ExecuteSpecConfig возвращает профиль продукта, статистику и опциональную иерархию capabilities.
+func ExecuteSpecConfig(ctx context.Context, db *store.DB, product string, includeHierarchy bool, depth int) (*SpecConfigResult, error) {
+	product = strings.TrimSpace(product)
+	if product == "" {
+		return nil, errs.ErrSpecSearchEmpty
+	}
+	if depth <= 0 {
+		depth = 2
+	}
+
+	profileRow, err := db.LoadSpecConfigProfileByProduct(ctx, product)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, errs.ErrSpecNotFound
+		}
+		return nil, fmt.Errorf("spec config profile: %w", err)
+	}
+
+	statsRow, err := db.LoadSpecConfigStats(ctx, profileRow.ID)
+	if err != nil {
+		return nil, fmt.Errorf("spec config stats: %w", err)
+	}
+
+	result := &SpecConfigResult{
+		Profile: SpecConfigProfile{
+			ProductName:     profileRow.ProductName,
+			SchemaName:      profileRow.SchemaName,
+			RootDir:         profileRow.RootDir,
+			UsecaseLayout:   profileRow.UsecaseLayout,
+			IDStyle:         profileRow.IDStyle,
+			CrossRefStyle:   profileRow.CrossRefStyle,
+			NormativeLang:   profileRow.NormativeLang,
+			Traceability:    profileRow.Traceability,
+			HasChanges:      profileRow.HasChanges,
+			HasAudit:        profileRow.HasAudit,
+			HasADR:          profileRow.HasADR,
+			CoverageMetrics: profileRow.CoverageMetrics,
+			ContextText:     profileRow.ContextText,
+		},
+		Stats: SpecConfigStats{
+			Capabilities: statsRow.Capabilities,
+			Requirements: statsRow.Requirements,
+			Scenarios:    statsRow.Scenarios,
+			Usecases:     statsRow.Usecases,
+			Changes:      statsRow.Changes,
+		},
+	}
+
+	if !includeHierarchy {
+		return result, nil
+	}
+
+	hierarchyRows, err := db.LoadSpecConfigHierarchy(ctx, profileRow.ID)
+	if err != nil {
+		return nil, fmt.Errorf("spec config hierarchy: %w", err)
+	}
+
+	result.Hierarchy = buildSpecConfigHierarchy(hierarchyRows, depth)
+	return result, nil
+}
+
+// buildSpecConfigHierarchy строит дерево из плоской выборки с ограничением depth.
+// is_container = true если title пустой AND purpose IS NULL AND notes IS NULL.
+// children_count — общее количество прямых детей (без учёта depth).
+func buildSpecConfigHierarchy(rows []store.SpecConfigHierarchyRow, depth int) []SpecConfigNode {
+	byID := make(map[int64]*store.SpecConfigHierarchyRow, len(rows))
+	childrenByParent := make(map[int64][]int64)
+	var rootIDs []int64
+	for i := range rows {
+		r := &rows[i]
+		byID[r.ID] = r
+		if r.ParentID.Valid {
+			childrenByParent[r.ParentID.Int64] = append(childrenByParent[r.ParentID.Int64], r.ID)
+		} else {
+			rootIDs = append(rootIDs, r.ID)
+		}
+	}
+
+	var build func(id int64, currentDepth int) SpecConfigNode
+	build = func(id int64, currentDepth int) SpecConfigNode {
+		r := byID[id]
+		node := SpecConfigNode{
+			CapabilityName: r.CapabilityName,
+			Title:          r.Title,
+			IsContainer:    r.Title == "" && !r.Purpose.Valid && !r.Notes.Valid,
+			ChildrenCount:  len(childrenByParent[id]),
+		}
+		if currentDepth < depth {
+			childIDs := childrenByParent[id]
+			node.Children = make([]SpecConfigNode, 0, len(childIDs))
+			for _, childID := range childIDs {
+				node.Children = append(node.Children, build(childID, currentDepth+1))
+			}
+		}
+		return node
+	}
+
+	result := make([]SpecConfigNode, 0, len(rootIDs))
+	for _, id := range rootIDs {
+		result = append(result, build(id, 1))
+	}
+	return result
+}
+
 // ExecuteSpecSearch выполняет двухслойный поиск: exact (tsvector+trgm) + semantic (LSA).
 func ExecuteSpecSearch(ctx context.Context, db *store.DB, query string, product string, level string, layer string, limit int) (*SpecSearchResult, error) {
 	query = strings.TrimSpace(query)

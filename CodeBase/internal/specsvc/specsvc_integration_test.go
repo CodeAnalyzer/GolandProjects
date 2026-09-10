@@ -4,8 +4,10 @@ package specsvc_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/codebase/internal/errs"
 	"github.com/codebase/internal/specsvc"
 	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/store/testutil"
@@ -187,5 +189,269 @@ func TestExecuteSpecHistoryByChange_EmptyChanges(t *testing.T) {
 	}
 	if len(res.Capabilities) == 0 {
 		t.Fatalf("expected non-empty Capabilities, got empty")
+	}
+}
+
+// insertDSProductDirect вставляет ds_product, возвращает id.
+func insertDSProductDirect(t *testing.T, db *store.DB, name string) int64 {
+	t.Helper()
+	var id int64
+	if err := db.QueryRow(
+		`INSERT INTO ds_products (product_name) VALUES ($1) RETURNING id`, name,
+	).Scan(&id); err != nil {
+		t.Fatalf("insert ds_product %s: %v", name, err)
+	}
+	return id
+}
+
+// insertSpecConfigWithProductDirect вставляет spec_config, привязанный к ds_product.
+func insertSpecConfigWithProductDirect(t *testing.T, db *store.DB, fileID, productID int64, productName string) int64 {
+	t.Helper()
+	var cfgID int64
+	if err := db.QueryRow(
+		`INSERT INTO spec_configs (file_id, ds_product_id, product_name, root_dir, schema_name,
+		                          usecase_layout, id_style, cross_ref_style, normative_lang,
+		                          traceability, has_changes, has_audit, has_adr,
+		                          coverage_metrics, context_text)
+		 VALUES ($1, $2, $3, 'openspec/root', 'schema',
+		         'none', 'dir', 'mixed', 'ru',
+		         'none', true, false, false,
+		         false, 'Product context for tests') RETURNING id`,
+		fileID, productID, productName,
+	).Scan(&cfgID); err != nil {
+		t.Fatalf("insert spec_config with product: %v", err)
+	}
+	return cfgID
+}
+
+// insertCapabilityWithParentDirect вставляет spec_capability с опциональным parent_id и title.
+func insertCapabilityWithParentDirect(t *testing.T, db *store.DB, fileID, cfgID int64, capName, title string, parentID int64) int64 {
+	t.Helper()
+	var id int64
+	if parentID > 0 {
+		if err := db.QueryRow(
+			`INSERT INTO spec_capabilities (file_id, spec_config_id, capability_name, title, parent_id)
+			 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+			fileID, cfgID, capName, title, parentID,
+		).Scan(&id); err != nil {
+			t.Fatalf("insert spec_capability %s: %v", capName, err)
+		}
+	} else {
+		if err := db.QueryRow(
+			`INSERT INTO spec_capabilities (file_id, spec_config_id, capability_name, title)
+			 VALUES ($1, $2, $3, $4) RETURNING id`,
+			fileID, cfgID, capName, title,
+		).Scan(&id); err != nil {
+			t.Fatalf("insert spec_capability %s: %v", capName, err)
+		}
+	}
+	return id
+}
+
+func TestExecuteSpecConfig_FlatHierarchy(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	productID := insertDSProductDirect(t, db, "fa-test-flat")
+	fileID := insertFileDirect(t, db, "openspec/config.yaml")
+	cfgID := insertSpecConfigWithProductDirect(t, db, fileID, productID, "fa-test-flat")
+
+	// 3 плоские capabilities (без parent_id)
+	capFile := insertFileDirect(t, db, "specs/cap-a/spec.md")
+	insertCapabilityWithParentDirect(t, db, capFile, cfgID, "cap-a", "Cap A", 0)
+	capFile2 := insertFileDirect(t, db, "specs/cap-b/spec.md")
+	insertCapabilityWithParentDirect(t, db, capFile2, cfgID, "cap-b", "Cap B", 0)
+	capFile3 := insertFileDirect(t, db, "specs/cap-c/spec.md")
+	insertCapabilityWithParentDirect(t, db, capFile3, cfgID, "cap-c", "Cap C", 0)
+
+	res, err := specsvc.ExecuteSpecConfig(ctx, db, "fa-test-flat", true, 2)
+	if err != nil {
+		t.Fatalf("ExecuteSpecConfig: %v", err)
+	}
+	if res.Profile.ProductName != "fa-test-flat" {
+		t.Fatalf("product_name = %q, want fa-test-flat", res.Profile.ProductName)
+	}
+	if res.Profile.UsecaseLayout != "none" {
+		t.Fatalf("usecase_layout = %q, want none", res.Profile.UsecaseLayout)
+	}
+	if res.Profile.NormativeLang != "ru" {
+		t.Fatalf("normative_lang = %q, want ru", res.Profile.NormativeLang)
+	}
+	if res.Profile.RootDir != "openspec/root" {
+		t.Fatalf("root_dir = %q, want openspec/root", res.Profile.RootDir)
+	}
+	if res.Profile.HasChanges != true {
+		t.Fatalf("has_changes = %v, want true", res.Profile.HasChanges)
+	}
+	if res.Profile.ContextText != "Product context for tests" {
+		t.Fatalf("context_text = %q", res.Profile.ContextText)
+	}
+	if res.Stats.Capabilities != 3 {
+		t.Fatalf("stats.capabilities = %d, want 3", res.Stats.Capabilities)
+	}
+	if len(res.Hierarchy) != 3 {
+		t.Fatalf("hierarchy len = %d, want 3", len(res.Hierarchy))
+	}
+	for _, node := range res.Hierarchy {
+		if node.ChildrenCount != 0 {
+			t.Fatalf("children_count = %d, want 0 for flat", node.ChildrenCount)
+		}
+		if node.IsContainer {
+			t.Fatalf("is_container = true, want false for %s", node.CapabilityName)
+		}
+	}
+}
+
+func TestExecuteSpecConfig_DeepHierarchy(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	productID := insertDSProductDirect(t, db, "fa-test-deep")
+	fileID := insertFileDirect(t, db, "openspec/config.yaml")
+	cfgID := insertSpecConfigWithProductDirect(t, db, fileID, productID, "fa-test-deep")
+
+	// Дерево: root → child → grandchild
+	rootFile := insertFileDirect(t, db, "specs/root/spec.md")
+	rootID := insertCapabilityWithParentDirect(t, db, rootFile, cfgID, "root", "Root", 0)
+	childFile := insertFileDirect(t, db, "specs/root/child/spec.md")
+	childID := insertCapabilityWithParentDirect(t, db, childFile, cfgID, "root/child", "Child", rootID)
+	grandFile := insertFileDirect(t, db, "specs/root/child/grand/spec.md")
+	insertCapabilityWithParentDirect(t, db, grandFile, cfgID, "root/child/grand", "Grand", childID)
+
+	// depth=2: root → child (раскрыт), grandchild — нет
+	res, err := specsvc.ExecuteSpecConfig(ctx, db, "fa-test-deep", true, 2)
+	if err != nil {
+		t.Fatalf("ExecuteSpecConfig depth=2: %v", err)
+	}
+	if len(res.Hierarchy) != 1 {
+		t.Fatalf("hierarchy len = %d, want 1 root", len(res.Hierarchy))
+	}
+	root := res.Hierarchy[0]
+	if root.CapabilityName != "root" {
+		t.Fatalf("root name = %q, want root", root.CapabilityName)
+	}
+	if root.ChildrenCount != 1 {
+		t.Fatalf("root children_count = %d, want 1", root.ChildrenCount)
+	}
+	if len(root.Children) != 1 {
+		t.Fatalf("root children len = %d, want 1", len(root.Children))
+	}
+	child := root.Children[0]
+	if child.CapabilityName != "root/child" {
+		t.Fatalf("child name = %q, want root/child", child.CapabilityName)
+	}
+	if child.ChildrenCount != 1 {
+		t.Fatalf("child children_count = %d, want 1", child.ChildrenCount)
+	}
+	if len(child.Children) != 0 {
+		t.Fatalf("child children len = %d, want 0 (depth=2 reached)", len(child.Children))
+	}
+
+	// depth=3: root → child → grandchild (все раскрыты)
+	res3, err := specsvc.ExecuteSpecConfig(ctx, db, "fa-test-deep", true, 3)
+	if err != nil {
+		t.Fatalf("ExecuteSpecConfig depth=3: %v", err)
+	}
+	if len(res3.Hierarchy) != 1 {
+		t.Fatalf("depth=3 hierarchy len = %d, want 1", len(res3.Hierarchy))
+	}
+	grand := res3.Hierarchy[0].Children[0].Children[0]
+	if grand.CapabilityName != "root/child/grand" {
+		t.Fatalf("grand name = %q, want root/child/grand", grand.CapabilityName)
+	}
+	if grand.ChildrenCount != 0 {
+		t.Fatalf("grand children_count = %d, want 0", grand.ChildrenCount)
+	}
+}
+
+func TestExecuteSpecConfig_ProductNotFound(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	_, err := specsvc.ExecuteSpecConfig(ctx, db, "nonexistent-product", true, 2)
+	if !errors.Is(err, errs.ErrSpecNotFound) {
+		t.Fatalf("error = %v, want ErrSpecNotFound", err)
+	}
+}
+
+func TestExecuteSpecConfig_NoHierarchy(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	productID := insertDSProductDirect(t, db, "fa-test-no-hier")
+	fileID := insertFileDirect(t, db, "openspec/config.yaml")
+	cfgID := insertSpecConfigWithProductDirect(t, db, fileID, productID, "fa-test-no-hier")
+	capFile := insertFileDirect(t, db, "specs/cap/spec.md")
+	insertCapabilityWithParentDirect(t, db, capFile, cfgID, "cap", "Cap", 0)
+
+	res, err := specsvc.ExecuteSpecConfig(ctx, db, "fa-test-no-hier", false, 2)
+	if err != nil {
+		t.Fatalf("ExecuteSpecConfig: %v", err)
+	}
+	if res.Hierarchy != nil {
+		t.Fatalf("hierarchy = %v, want nil", res.Hierarchy)
+	}
+	if res.Stats.Capabilities != 1 {
+		t.Fatalf("stats.capabilities = %d, want 1", res.Stats.Capabilities)
+	}
+}
+
+func TestExecuteSpecConfig_ContainerNode(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	productID := insertDSProductDirect(t, db, "fa-test-container")
+	fileID := insertFileDirect(t, db, "openspec/config.yaml")
+	cfgID := insertSpecConfigWithProductDirect(t, db, fileID, productID, "fa-test-container")
+
+	// Контейнер: title пустой, purpose/notes NULL
+	containerFile := insertFileDirect(t, db, "specs/billing/")
+	containerID := insertCapabilityWithParentDirect(t, db, containerFile, cfgID, "billing", "", 0)
+	// Реальная capability: title непустой
+	realFile := insertFileDirect(t, db, "specs/billing/invoicing/spec.md")
+	insertCapabilityWithParentDirect(t, db, realFile, cfgID, "billing/invoicing", "Invoicing", containerID)
+
+	res, err := specsvc.ExecuteSpecConfig(ctx, db, "fa-test-container", true, 2)
+	if err != nil {
+		t.Fatalf("ExecuteSpecConfig: %v", err)
+	}
+	if len(res.Hierarchy) != 1 {
+		t.Fatalf("hierarchy len = %d, want 1", len(res.Hierarchy))
+	}
+	container := res.Hierarchy[0]
+	if container.CapabilityName != "billing" {
+		t.Fatalf("container name = %q, want billing", container.CapabilityName)
+	}
+	if !container.IsContainer {
+		t.Fatalf("is_container = false, want true for billing")
+	}
+	if container.Title != "" {
+		t.Fatalf("title = %q, want empty for container", container.Title)
+	}
+	if container.ChildrenCount != 1 {
+		t.Fatalf("children_count = %d, want 1", container.ChildrenCount)
+	}
+	if len(container.Children) != 1 {
+		t.Fatalf("children len = %d, want 1", len(container.Children))
+	}
+	real := container.Children[0]
+	if real.CapabilityName != "billing/invoicing" {
+		t.Fatalf("real name = %q, want billing/invoicing", real.CapabilityName)
+	}
+	if real.IsContainer {
+		t.Fatalf("is_container = true, want false for invoicing")
+	}
+	if real.Title != "Invoicing" {
+		t.Fatalf("title = %q, want Invoicing", real.Title)
+	}
+}
+
+func TestExecuteSpecUsecase_NotFound(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	_, err := specsvc.ExecuteSpecUsecase(ctx, db, "nonexistent-usecase")
+	if !errors.Is(err, errs.ErrSpecNotFound) {
+		t.Fatalf("error = %v, want ErrSpecNotFound", err)
 	}
 }

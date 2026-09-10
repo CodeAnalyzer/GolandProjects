@@ -25,6 +25,9 @@ var (
 	specHistoryName     string
 	specHistoryChange   string
 	specHistoryProduct  string
+	specConfigProduct   string
+	specConfigHierarchy bool
+	specConfigDepth     int
 )
 
 var querySpecCmd = &cobra.Command{
@@ -121,6 +124,21 @@ var querySpecHistoryCmd = &cobra.Command{
 	},
 }
 
+var querySpecConfigCmd = &cobra.Command{
+	Use:   "config --product <product> [--include-hierarchy <bool>] [--depth <N>]",
+	Short: "Product profile, stats, and capability hierarchy",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
+		return runSpecCommand("query spec config", map[string]string{
+			"product":           specConfigProduct,
+			"include_hierarchy": fmt.Sprintf("%t", specConfigHierarchy),
+			"depth":             fmt.Sprintf("%d", specConfigDepth),
+		}, func(db *store.DB) (interface{}, error) {
+			return specsvc.ExecuteSpecConfig(ctx, db, specConfigProduct, specConfigHierarchy, specConfigDepth)
+		})
+	},
+}
+
 func init() {
 	querySpecSearchCmd.Flags().StringVar(&specSearchQuery, "query", "", "search text")
 	querySpecSearchCmd.Flags().StringVar(&specSearchProduct, "product", "", "filter by product name")
@@ -151,12 +169,18 @@ func init() {
 	querySpecHistoryCmd.MarkFlagsOneRequired("name", "change")
 	querySpecHistoryCmd.MarkFlagsMutuallyExclusive("name", "change")
 
+	querySpecConfigCmd.Flags().StringVar(&specConfigProduct, "product", "", "DS product name")
+	querySpecConfigCmd.Flags().BoolVar(&specConfigHierarchy, "include-hierarchy", true, "include capability hierarchy tree")
+	querySpecConfigCmd.Flags().IntVar(&specConfigDepth, "depth", 2, "max hierarchy depth")
+	cobra.CheckErr(querySpecConfigCmd.MarkFlagRequired("product"))
+
 	querySpecCmd.AddCommand(querySpecSearchCmd)
 	querySpecCmd.AddCommand(querySpecByCodeCmd)
 	querySpecCmd.AddCommand(querySpecDepsCmd)
 	querySpecCmd.AddCommand(querySpecUsecaseCmd)
 	querySpecCmd.AddCommand(querySpecCoverageCmd)
 	querySpecCmd.AddCommand(querySpecHistoryCmd)
+	querySpecCmd.AddCommand(querySpecConfigCmd)
 
 	queryCmd.AddCommand(querySpecCmd)
 }
