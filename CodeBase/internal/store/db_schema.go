@@ -747,6 +747,7 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_symbols_symbol_name_type_lower ON symbols(LOWER(symbol_name), symbol_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_symbols_symbol_name_trgm ON symbols USING GIN (symbol_name gin_trgm_ops)`,
 		`CREATE INDEX IF NOT EXISTS idx_symbols_signature_trgm ON symbols USING GIN (signature gin_trgm_ops)`,
+	`CREATE INDEX IF NOT EXISTS idx_symbols_entity_type_entity_id ON symbols(entity_type, entity_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_procedures_file_id ON sql_procedures(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_procedures_proc_name_lower ON sql_procedures(LOWER(proc_name))`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_procedures_proc_name_trgm ON sql_procedures USING GIN (proc_name gin_trgm_ops)`,

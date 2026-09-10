@@ -207,3 +207,102 @@ func TestSMFHelpers(t *testing.T) {
 		t.Fatalf("findHelperFunctionBody should return empty for non-existent helper")
 	}
 }
+
+func TestParseContent_SingleQuoteInstrumentName(t *testing.T) {
+	// SMF-файлы могут использовать одинарные кавычки внутри with(Instrument)
+	content := `<job>
+<script><![CDATA[
+function CreateInstrument() {
+  with(Instrument)
+  {
+    Name              = 'Входящие карточные транзакции';
+    Brief             = 'ВхКТран';
+    InterfaceObjectID = 126;
+    StartState        = 'CTI_NEW';
+  }
+}
+]]></script>
+</job>`
+
+	parser := NewParser()
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("ParseContent returned error: %v", err)
+	}
+	if result.Instrument == nil {
+		t.Fatalf("expected instrument")
+	}
+	if result.Instrument.InstrumentName != "Входящие карточные транзакции" {
+		t.Fatalf("InstrumentName = %q, want 'Входящие карточные транзакции'", result.Instrument.InstrumentName)
+	}
+	if result.Instrument.Brief != "ВхКТран" {
+		t.Fatalf("Brief = %q, want 'ВхКТран'", result.Instrument.Brief)
+	}
+	if result.Instrument.StartState != "CTI_NEW" {
+		t.Fatalf("StartState = %q, want 'CTI_NEW'", result.Instrument.StartState)
+	}
+}
+
+func TestParseBytes_UTF8EncodedSMF(t *testing.T) {
+	// SMF-файл реально в UTF-8, но с XML-decl encoding="windows-1251"
+	utf8Content := `<?xml version="1.0" encoding="windows-1251"?>
+<job>
+<script><![CDATA[
+function CreateMassAccrualInstrument() {
+  MassAccrualInstrument.Name = "Откат загруженного реестра ПСЖ";
+  MassAccrualInstrument.Brief = "ОткЗагСЖ";
+  MassAccrualInstrument.DealObjectID = 224;
+}
+]]></script>
+</job>`
+
+	parser := NewParser()
+	result, err := parser.ParseBytes([]byte(utf8Content), "test.smf")
+	if err != nil {
+		t.Fatalf("ParseBytes returned error: %v", err)
+	}
+	if result.Instrument == nil {
+		t.Fatalf("expected instrument")
+	}
+	if result.Instrument.InstrumentName != "Откат загруженного реестра ПСЖ" {
+		t.Fatalf("InstrumentName = %q, want 'Откат загруженного реестра ПСЖ' (no mojibake)", result.Instrument.InstrumentName)
+	}
+	if result.Instrument.Brief != "ОткЗагСЖ" {
+		t.Fatalf("Brief = %q, want 'ОткЗагСЖ'", result.Instrument.Brief)
+	}
+}
+
+func TestParseContent_NameViaVariable(t *testing.T) {
+	// SMF-файл использует переменные для Name и Brief:
+	//   var InstrumentName = 'Долгосрочное распоряжение...';
+	//   Instrument.Name = InstrumentName;
+	content := `<job>
+<script><![CDATA[
+var
+  InstrumentBrief = 'Д_ПерВнВал';
+  InstrumentName  = 'Долгосрочное распоряжение на перевод в валюте в другой банк';
+
+function CreateInstrument(){
+  Instrument.Name              = InstrumentName;
+  Instrument.Brief             = InstrumentBrief;
+  Instrument.InterfaceObjectID = 101;
+  Instrument.DsModuleID        = 202;
+}
+]]></script>
+</job>`
+
+	parser := NewParser()
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("ParseContent returned error: %v", err)
+	}
+	if result.Instrument == nil {
+		t.Fatalf("expected instrument")
+	}
+	if result.Instrument.InstrumentName != "Долгосрочное распоряжение на перевод в валюте в другой банк" {
+		t.Fatalf("InstrumentName = %q, want resolved variable value", result.Instrument.InstrumentName)
+	}
+	if result.Instrument.Brief != "Д_ПерВнВал" {
+		t.Fatalf("Brief = %q, want 'Д_ПерВнВал'", result.Instrument.Brief)
+	}
+}

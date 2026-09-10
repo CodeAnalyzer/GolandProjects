@@ -1070,15 +1070,15 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_query_spec_coverage": {
-			Definition: toolDefinition{Name: "codebase_query_spec_coverage", Description: "Return coverage metrics for an OpenSpec capability. Mode 'saved' returns stored API/code coverage counts. Mode 'gaps' computes unresolved code mentions (entities referenced in specs but not found in the index). Use to assess specification completeness.", InputSchema: querySchema("name", stringProp("Capability name (slug)"), map[string]interface{}{"product": stringProp("Filter by DS product name"), "mode": stringProp("saved (stored metrics) or gaps (unresolved mentions), default: saved")})},
+			Definition: toolDefinition{Name: "codebase_query_spec_coverage", Description: "Return covered code entities grouped by capability for a DS product. If name is given, returns a single capability node; otherwise returns all capabilities of the product. Optional kind filters by entity type (api_contract, sql_procedure, sql_table, dfm_form, smf_instrument, pas_method, js_function, report_form).", InputSchema: querySchema("product", stringProp("DS product name"), map[string]interface{}{"name": stringProp("Capability name (slug)"), "kind": stringProp("Filter by entity type: api_contract, sql_procedure, sql_table, dfm_form, smf_instrument, pas_method, js_function, report_form")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				name, err := requiredString(args, "name")
+				product, err := requiredString(args, "product")
 				if err != nil {
 					return nil, err
 				}
-				product, _ := optionalString(args, "product")
-				mode, _ := optionalString(args, "mode")
-				return specsvc.ExecuteSpecCoverage(ctx, db, name, mode, product)
+				name, _ := optionalString(args, "name")
+				kind, _ := optionalString(args, "kind")
+				return specsvc.ExecuteSpecCoverage(ctx, db, product, name, kind)
 			},
 		},
 		"codebase_query_spec_history": {

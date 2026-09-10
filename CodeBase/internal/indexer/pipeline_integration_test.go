@@ -27,7 +27,7 @@ func newTestIndexer(t *testing.T) (*Indexer, string) {
 		config: &config.Config{Indexer: config.IndexerConfig{
 			Parallel:        1,
 			BatchSize:       100,
-			IncludePatterns: []string{"*.sql", "*.js", "*.xml", "*.h"},
+			IncludePatterns: []string{"*.sql", "*.js", "*.xml", "*.h", "*.smf"},
 		}},
 		errorLogger: log.New(io.Discard, "", 0),
 		shared:      newIndexerSharedState(),
@@ -194,5 +194,61 @@ func TestInitMiniTree_ParallelMatchesSerial(t *testing.T) {
 		if got != want {
 			t.Fatalf("%s/%s serial=%d parallel=%d", rel.kind, rel.src, want, got)
 		}
+	}
+}
+
+func TestInitMiniTree_SMFInstrumentInSymbols(t *testing.T) {
+	idx, root := newTestIndexer(t)
+	if _, err := idx.Init(root, 1); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// Task 2.1: SMF instrument appears in symbols with correct type fields.
+	var symbolName, symbolType, entityType, signature string
+	var entityID int64
+	err := idx.db.QueryRow(`
+		SELECT symbol_name, symbol_type, entity_type, entity_id, signature
+		FROM symbols
+		WHERE symbol_type = 'smf_instrument'
+		LIMIT 1
+	`).Scan(&symbolName, &symbolType, &entityType, &entityID, &signature)
+	if err != nil {
+		t.Fatalf("SMF instrument not found in symbols: %v", err)
+	}
+	if symbolName != "CreditMassOperation" {
+		t.Fatalf("symbol_name = %q, want CreditMassOperation", symbolName)
+	}
+	if symbolType != "smf_instrument" || entityType != "smf" {
+		t.Fatalf("types = %q/%q, want smf_instrument/smf", symbolType, entityType)
+	}
+	if signature != "instrument_model" {
+		t.Fatalf("signature = %q, want instrument_model", signature)
+	}
+	if entityID == 0 {
+		t.Fatal("entity_id must be non-zero (resolved from smf_instruments)")
+	}
+
+	// Task 2.2: SearchSymbol without type filter returns both SMF instrument and
+	// a same-named SQL procedure (if one exists) with different symbol_type.
+	// Verify the SMF instrument is findable by name alongside other symbol types.
+	var smfCount int
+	if err := idx.db.QueryRow(`
+		SELECT count(*) FROM symbols WHERE symbol_name = 'CreditMassOperation'
+	`).Scan(&smfCount); err != nil {
+		t.Fatalf("count symbols by name: %v", err)
+	}
+	if smfCount < 1 {
+		t.Fatalf("expected at least 1 symbol named CreditMassOperation, got %d", smfCount)
+	}
+
+	// Verify filtering by symbol_type works: only smf_instrument rows match.
+	var filteredCount int
+	if err := idx.db.QueryRow(`
+		SELECT count(*) FROM symbols WHERE symbol_name = 'CreditMassOperation' AND symbol_type = 'smf_instrument'
+	`).Scan(&filteredCount); err != nil {
+		t.Fatalf("count filtered symbols: %v", err)
+	}
+	if filteredCount != 1 {
+		t.Fatalf("filtered count = %d, want 1", filteredCount)
 	}
 }

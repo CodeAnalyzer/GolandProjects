@@ -10,7 +10,7 @@
   - H-файлы: константы, макросы, определения
   - PAS: юниты, классы, методы, поля, SQL-фрагменты, прямые ссылки на DFM forms/components
   - JS: функции, константы, вызовы процедур, SQL-запросы
-  - SMF: модели Ф.О. (состояния, действия, счета), встроенный JavaScript
+  - SMF: модели Ф.О. (состояния, действия, счета), встроенный JavaScript; инструменты Ф.О. индексируются в unified `symbols` с `symbol_type = "smf_instrument"`
   - DFM: формы, компоненты, `Caption`, встроенные запросы
   - TPR: report forms (отчётные формы), report fields (поля отчёта), report params (параметры отчёта), SQL blocks (SQL-блоки), include directives (директивы include)
   - RPT: report forms (отчётные формы), report params (параметры формы), VB functions (VBScript-функции), embedded SQL (встроенный SQL)
@@ -50,7 +50,7 @@
   - Поиск report params (параметров отчёта)
   - Поиск VBScript functions (VBScript-функций)
   - Поиск API contracts (контрактов API), API tables (таблиц API), API table indexes (индексов API-таблиц), API params (параметров API), implementations (реализаций), publishers (публикаторов событий), consumers (потребителей контрактов)
-  - Unified `query symbol` для SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects, XML/API symbols и spec-сущностей (capabilities, requirements, scenarios, usecases, changes)
+  - Unified `query symbol` для SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects, SMF instruments, XML/API symbols и spec-сущностей (capabilities, requirements, scenarios, usecases, changes)
   - **Спеки**: полнотекстовый поиск по спецификациям (лексический tsvector+trgm и семантический LSA), спецификации по имени код-сущности, граф зависимостей capability, usecase-слой с involved capabilities, покрытие кода спеками, история изменения capability по changes
 - **Review (проверка SQL перед деплоем)**: статический анализ SQL-файлов с детекцией deploy stoppers (использование внешних таблиц/процедур, небезопасные конструкции IF/EXISTS, отсутствие required hints, и т.д.)
 - **RTI-анализатор** (`codebase rti`): парсинг и анализ RTI-трейс логов Diasoft 5NT; извлечение вызовов процедур, параметров, контрольных точек, кодов ошибок, бизнес-лог блоков (`M_BUSINESSLOG_BLOCK_BEGIN/END`), checkpoint-временных меток, дампов таблиц (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`), клиентских событий (thick client d5nt: SQL blocks, recordset open, connection, BPL load, errors, memory); enrichment из индекса (PAS-файлы, DFM-формы, SQL-фрагменты); сохранение в БД для повторного анализа
@@ -203,7 +203,7 @@ codebase query symbol --name API --ndjson
 
 Для поиска по подстроке используйте флаг `--like`.
 
-В `symbols` индексируются основные name-based сущности: SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects и XML/API symbols. Сущности начинают появляться в `query symbol` после переиндексации соответствующих файлов.
+В `symbols` индексируются основные name-based сущности: SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects, SMF instruments и XML/API symbols. Сущности начинают появляться в `query symbol` после переиндексации соответствующих файлов.
 
 #### Поиск информации о таблице
 
@@ -394,6 +394,13 @@ codebase query smf-instrument --name TS_CardCreditMassAcrual --json
 - `brief` (краткое название)
 - имени файла SMF-сценария
 
+SMF-инструменты также доступны через unified `query symbol` с `symbol_type = "smf_instrument"`:
+
+```bash
+codebase query symbol --name CreditMassOperation --type smf_instrument
+codebase query symbol --name CreditMassOperation --json
+```
+
 #### Поиск SMF по типу сценария
 
 ```bash
@@ -453,9 +460,10 @@ codebase query spec deps --slug card-limits --direction depends_on --depth 2
 # Usecase-слой с involved capabilities
 codebase query spec usecase --name scenario-sms-disable
 
-# Покрытие кода спеками (метрики и пробелы)
+# Покрытие кода спеками (перечень покрытых сущностей по capability)
 codebase query spec coverage --product fa-cards
-codebase query spec coverage --product fa-cards --mode gaps
+codebase query spec coverage --product fa-cards --name card-limits
+codebase query spec coverage --product fa-cards --kind api_contract
 
 # История изменения capability по changes
 codebase query spec history --slug card-limits
@@ -849,7 +857,7 @@ IDE может подключить несколько MCP-серверов на
 | `codebase_query_spec_by_code` | Спеки, ссылающиеся на код-сущность | `name` |
 | `codebase_query_spec_deps` | Граф зависимостей capability | `name`, опц. `direction`/`max_depth`/`product` |
 | `codebase_query_spec_usecase` | Usecase-слой с involved capabilities | `name` |
-| `codebase_query_spec_coverage` | Покрытие кода спеками (метрики или пробелы) | `name`, опц. `mode`/`product` |
+| `codebase_query_spec_coverage` | Перечень покрытых код-сущностей по capability | `product`, опц. `name`/`kind` |
 | `codebase_query_spec_history` | История изменения capability по changes | `name`, опц. `change`/`product` |
 
 **RTI tools:**

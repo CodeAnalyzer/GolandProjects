@@ -54,10 +54,10 @@ type indexerSharedState struct {
 	pendingFields   []*PendingField
 	pendingSQLCalls []*PendingSQLCallFile
 	// Фаза 4: накопленные refs для глобального резолва в пост-обработке
-	pendingFragmentRefs    []*PendingFragmentRef
-	pendingJSCallRefs      []*PendingJSCallRef
+	pendingFragmentRefs      []*PendingFragmentRef
+	pendingJSCallRefs        []*PendingJSCallRef
 	pendingT01SubscriberRefs []*PendingT01SubscriberRef
-	pendingAPIMacroRefs    []*PendingAPIMacroRef
+	pendingAPIMacroRefs      []*PendingAPIMacroRef
 	// Кэш ds_products: продуктов десятки, файлов — десятки тысяч,
 	// поэтому upsert в БД делаем только на промахе кэша.
 	dsProductMu    sync.Mutex
@@ -66,15 +66,15 @@ type indexerSharedState struct {
 
 func newIndexerSharedState() *indexerSharedState {
 	return &indexerSharedState{
-		pendingClasses:          make([]*PendingClass, 0),
-		pendingMethods:          make([]*PendingMethod, 0),
-		pendingFields:           make([]*PendingField, 0),
-		pendingSQLCalls:         make([]*PendingSQLCallFile, 0),
-		pendingFragmentRefs:     make([]*PendingFragmentRef, 0),
-		pendingJSCallRefs:       make([]*PendingJSCallRef, 0),
+		pendingClasses:           make([]*PendingClass, 0),
+		pendingMethods:           make([]*PendingMethod, 0),
+		pendingFields:            make([]*PendingField, 0),
+		pendingSQLCalls:          make([]*PendingSQLCallFile, 0),
+		pendingFragmentRefs:      make([]*PendingFragmentRef, 0),
+		pendingJSCallRefs:        make([]*PendingJSCallRef, 0),
 		pendingT01SubscriberRefs: make([]*PendingT01SubscriberRef, 0),
-		pendingAPIMacroRefs:     make([]*PendingAPIMacroRef, 0),
-		dsProductCache:          make(map[string]int64),
+		pendingAPIMacroRefs:      make([]*PendingAPIMacroRef, 0),
+		dsProductCache:           make(map[string]int64),
 	}
 }
 
@@ -1099,25 +1099,37 @@ func (idx *Indexer) parseSMFFile(ctx context.Context, file fswalk.FileInfo, file
 		return fmt.Errorf("failed to parse SMF file: %w", err)
 	}
 
+	// Резолвим ID инструмента один раз — используется и для symbol, и для prequery.
+	var instrumentID int64
 	if result.Instrument != nil {
 		result.Instrument.FileID = fileID
 		if err := idx.db.BatchInsertSMFInstruments(ctx, []*model.SMFInstrument{result.Instrument}, idx.config.Indexer.BatchSize); err != nil {
 			return err
 		}
 		stats.SMFInstruments++
+
+		instrumentID, err = idx.db.FindLatestSMFInstrumentIDByFile(ctx, fileID)
+		if err != nil {
+			if err != dbsql.ErrNoRows {
+				return fmt.Errorf("failed to resolve SMF instrument id for symbol: %w", err)
+			}
+			instrumentID = 0
+		}
+		symbol := &model.Symbol{
+			FileID:     fileID,
+			SymbolName: result.Instrument.InstrumentName,
+			SymbolType: "smf_instrument",
+			EntityType: "smf",
+			EntityID:   instrumentID,
+			LineNumber: 0,
+			Signature:  result.Instrument.ScenarioType,
+		}
+		if err := idx.db.BatchInsertSymbols(ctx, []*model.Symbol{symbol}, idx.config.Indexer.BatchSize); err != nil {
+			return fmt.Errorf("failed to save SMF instrument symbol: %w", err)
+		}
 	}
 
 	if strings.TrimSpace(result.PrequerySQL) != "" {
-		instrumentID := int64(0)
-		if result.Instrument != nil {
-			instrumentID, err = idx.db.FindLatestSMFInstrumentIDByFile(ctx, fileID)
-			if err != nil {
-				if err != dbsql.ErrNoRows {
-					return fmt.Errorf("failed to resolve SMF instrument for query fragment: %w", err)
-				}
-				instrumentID = 0
-			}
-		}
 		fragment := &model.QueryFragment{
 			FileID:        fileID,
 			ParentType:    "smf_instrument",

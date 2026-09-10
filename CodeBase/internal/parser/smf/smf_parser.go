@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/codebase/internal/encoding"
+	codeencoding "github.com/codebase/internal/encoding"
 	"github.com/codebase/internal/model"
 	"github.com/codebase/internal/parser/js"
 	"github.com/codebase/internal/util"
@@ -17,17 +17,22 @@ import (
 var (
 	xmlDeclRe = regexp.MustCompile(`(?i)<\?xml.*\?>`)
 
-	instrumentNameRe   = regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.Name\s*=\s*"([^"]+)"`)
-	instrumentBriefRe  = regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.Brief\s*=\s*"([^"]+)"`)
-	instrumentObjIDRe  = regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.(?:InterfaceObjectID|DealObjectID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`)
-	instrumentModuleRe = regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.(?:DsModuleID|ModuleID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`)
-	instrumentStartRe  = regexp.MustCompile(`Instrument\.StartState\s*=\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))`)
-	withInstrumentRe   = regexp.MustCompile(`with\s*\(\s*Instrument\s*\)\s*\{`)
-	legacyNameRe       = regexp.MustCompile(`\bName\s*=\s*"([^"]+)"`)
-	legacyBriefRe      = regexp.MustCompile(`\bBrief\s*=\s*"([^"]+)"`)
-	legacyObjIDRe      = regexp.MustCompile(`\b(?:InterfaceObjectID|DealObjectID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`)
-	legacyModuleRe     = regexp.MustCompile(`\b(?:DsModuleID|ModuleID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`)
-	legacyStartRe      = regexp.MustCompile(`\bStartState\s*=\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))`)
+	instrumentNameRe     = regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.Name\s*=\s*["']([^"']+)["']`)
+	instrumentNameVarRe  = regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.Name\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*;?`)
+	instrumentBriefRe    = regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.Brief\s*=\s*["']([^"']+)["']`)
+	instrumentBriefVarRe = regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.Brief\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*;?`)
+	instrumentObjIDRe    = regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.(?:InterfaceObjectID|DealObjectID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`)
+	instrumentModuleRe   = regexp.MustCompile(`(?:Instrument|MassAccrualInstrument)\.(?:DsModuleID|ModuleID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`)
+	instrumentStartRe    = regexp.MustCompile(`Instrument\.StartState\s*=\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z_][A-Za-z0-9_]*))`)
+	withInstrumentRe     = regexp.MustCompile(`with\s*\(\s*Instrument\s*\)\s*\{`)
+	legacyNameRe         = regexp.MustCompile(`\bName\s*=\s*["']([^"']+)["']`)
+	legacyBriefRe        = regexp.MustCompile(`\bBrief\s*=\s*["']([^"']+)["']`)
+
+	// stringVarRe извлекает строковые переменные: var NAME = '...' или "..." или NAME = '...'
+	stringVarRe    = regexp.MustCompile(`(?m)^\s*(?:var\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([^"']+)["']\s*;?\s*$`)
+	legacyObjIDRe  = regexp.MustCompile(`\b(?:InterfaceObjectID|DealObjectID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`)
+	legacyModuleRe = regexp.MustCompile(`\b(?:DsModuleID|ModuleID)\s*=\s*(\d+|[A-Za-z_][A-Za-z0-9_]*)\s*;?`)
+	legacyStartRe  = regexp.MustCompile(`\bStartState\s*=\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z_][A-Za-z0-9_]*))`)
 
 	smfVarDeclRe      = regexp.MustCompile(`(?im)^\s*(?:var|const)?\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)`)
 	smfConstDeclRe    = regexp.MustCompile(`(?im)^\s*const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)`)
@@ -63,7 +68,11 @@ var (
 
 	// encodingCheckRegexes используются при проверке корректности кодировки.
 	russianLetterRe = regexp.MustCompile(`[а-яА-Я]`)
-	garbageCharRe   = regexp.MustCompile(`[ЎўЈ¤ҐЁЄЇІѕљњћќўџ]`)
+	// garbageCharRe ловит символы, которые появляются при ошибочном декодировании
+	// UTF-8 как CP1251/CP866. Оригинальный набор (ЎўЈ¤ҐЁЄЇІѕљњћќўџ) ловит CP1251
+	// mojibake из continuation bytes 0x80-0x9F. Box-drawing символы (╨╤░│─├┬...)
+	// появляются при CP866 декодировании UTF-8 leading bytes 0xC0-0xDF.
+	garbageCharRe = regexp.MustCompile(`[ЎўЈ¤ҐЁЄЇІѕљњћќўџ\x{2500}-\x{257F}\x{2580}-\x{259F}]`)
 
 	// stateActionRegexes используются при парсинге состояний и действий.
 	stateTypeInlineRe = regexp.MustCompile(`(?:State\.)?StateType\s*=\s*(PROP_STATETYPE_\w+)`)
@@ -78,17 +87,22 @@ type Parser struct {
 	xmlDeclRe *regexp.Regexp
 
 	// Модель Ф.О.
-	instrumentNameRe   *regexp.Regexp
-	instrumentBriefRe  *regexp.Regexp
-	instrumentObjIDRe  *regexp.Regexp
-	instrumentModuleRe *regexp.Regexp
-	instrumentStartRe  *regexp.Regexp
-	withInstrumentRe   *regexp.Regexp
-	legacyNameRe       *regexp.Regexp
-	legacyBriefRe      *regexp.Regexp
-	legacyObjIDRe      *regexp.Regexp
-	legacyModuleRe     *regexp.Regexp
-	legacyStartRe      *regexp.Regexp
+	instrumentNameRe     *regexp.Regexp
+	instrumentNameVarRe  *regexp.Regexp
+	instrumentBriefRe    *regexp.Regexp
+	instrumentBriefVarRe *regexp.Regexp
+	instrumentObjIDRe    *regexp.Regexp
+	instrumentModuleRe   *regexp.Regexp
+	instrumentStartRe    *regexp.Regexp
+	withInstrumentRe     *regexp.Regexp
+	legacyNameRe         *regexp.Regexp
+	legacyBriefRe        *regexp.Regexp
+	legacyObjIDRe        *regexp.Regexp
+	legacyModuleRe       *regexp.Regexp
+	legacyStartRe        *regexp.Regexp
+
+	// Строковые переменные: var NAME = '...' или NAME = "..."
+	stringVarRe *regexp.Regexp
 
 	// Переменные: var NAME = value; или const NAME = value; или просто NAME = value;
 	smfVarDeclRe *regexp.Regexp
@@ -192,7 +206,9 @@ func NewParser() *Parser {
 	return &Parser{
 		xmlDeclRe:                  xmlDeclRe,
 		instrumentNameRe:           instrumentNameRe,
+		instrumentNameVarRe:        instrumentNameVarRe,
 		instrumentBriefRe:          instrumentBriefRe,
+		instrumentBriefVarRe:       instrumentBriefVarRe,
 		instrumentObjIDRe:          instrumentObjIDRe,
 		instrumentModuleRe:         instrumentModuleRe,
 		instrumentStartRe:          instrumentStartRe,
@@ -202,6 +218,7 @@ func NewParser() *Parser {
 		legacyObjIDRe:              legacyObjIDRe,
 		legacyModuleRe:             legacyModuleRe,
 		legacyStartRe:              legacyStartRe,
+		stringVarRe:                stringVarRe,
 		smfVarDeclRe:               smfVarDeclRe,
 		smfConstDeclRe:             smfConstDeclRe,
 		smfNumericConstRe:          smfNumericConstRe,
@@ -238,20 +255,31 @@ func (p *Parser) ParseFile(path string) (*ParseResult, error) {
 
 // ParseBytes парсит SMF-файл из уже прочитанных байт (без повторного чтения с диска)
 func (p *Parser) ParseBytes(data []byte, path string) (*ParseResult, error) {
-	// Пробуем разные кодировки в порядке приоритета
-	encodings := []encoding.Encoding{encoding.WIN1251, encoding.CP866, encoding.UTF8}
+	// Приоритет кодировок для SMF: CP1251 (историческая), CP866, UTF-8 (редкое исключение).
+	// garbageCharRe ловит box-drawing и CP866-специфичные символы, поэтому
+	// UTF-8 файл, ошибочно декодированный как CP1251/CP866, не пройдёт валидацию,
+	// и цикл перейдёт к UTF-8.
+	encodings := []codeencoding.Encoding{codeencoding.WIN1251, codeencoding.CP866, codeencoding.UTF8}
 
 	var content string
 	var err error
+	decoded := false
 
 	for _, enc := range encodings {
-		content, err = encoding.DecodeBytes(data, enc)
+		content, err = codeencoding.DecodeBytes(data, enc)
 		if err == nil && p.isValidEncoding(content) {
-			break // Файл успешно декодирован с корректной кодировкой
+			decoded = true
+			break
 		}
 	}
 
-	if err != nil {
+	if !decoded {
+		// Ни одна кодировка не прошла валидацию — берём последнюю попытку
+		// и пробуем восстановить mojibake (UTF-8, ошибочно прочитанный как CP866/CP1251).
+		content = codeencoding.NormalizeMojibake(content)
+	}
+
+	if err != nil && !decoded {
 		return nil, fmt.Errorf("failed to decode file with any encoding: %w", err)
 	}
 
@@ -385,10 +413,16 @@ func (p *Parser) extractInstrumentWithBasePath(script string, includeFiles []str
 
 	// Извлекаем переменные из скрипта и include-файлов для разрешения имён
 	smfVars := p.extractSMFVarsFromIncludesWithBasePath(script, includeFiles, basePath)
+	// Строковые переменные для резолва Instrument.Name/Brief через идентификатор
+	stringVars := p.extractStringVars(script)
 
 	// Имя
 	if matches := p.instrumentNameRe.FindStringSubmatch(script); matches != nil {
 		instr.InstrumentName = matches[1]
+	} else if matches := p.instrumentNameVarRe.FindStringSubmatch(script); matches != nil {
+		if v, ok := stringVars[matches[1]]; ok {
+			instr.InstrumentName = v
+		}
 	} else if matches := p.legacyNameRe.FindStringSubmatch(legacyInstrumentBlock); matches != nil {
 		instr.InstrumentName = matches[1]
 	}
@@ -396,6 +430,10 @@ func (p *Parser) extractInstrumentWithBasePath(script string, includeFiles []str
 	// Brief
 	if matches := p.instrumentBriefRe.FindStringSubmatch(script); matches != nil {
 		instr.Brief = matches[1]
+	} else if matches := p.instrumentBriefVarRe.FindStringSubmatch(script); matches != nil {
+		if v, ok := stringVars[matches[1]]; ok {
+			instr.Brief = v
+		}
 	} else if matches := p.legacyBriefRe.FindStringSubmatch(legacyInstrumentBlock); matches != nil {
 		instr.Brief = matches[1]
 	}
@@ -567,13 +605,13 @@ func (p *Parser) extractSMFVarsFromIncludeFile(includeFile string) map[string]in
 // readIncludeFile читает include-файл, пробуя разные кодировки
 func (p *Parser) readIncludeFile(includeFile string) (string, error) {
 	// Пробуем прочитать файл с кодировкой WIN1251
-	content, err := encoding.ReadFile(includeFile, encoding.WIN1251)
+	content, err := codeencoding.ReadFile(includeFile, codeencoding.WIN1251)
 	if err == nil {
 		return content, nil
 	}
 
 	// Пробуем прочитать файл с кодировкой UTF8
-	content, err = encoding.ReadFile(includeFile, encoding.UTF8)
+	content, err = codeencoding.ReadFile(includeFile, codeencoding.UTF8)
 	if err == nil {
 		return content, nil
 	}
@@ -661,6 +699,18 @@ func (p *Parser) resolveSMFValue(value string, vars map[string]int64) int64 {
 		return val
 	}
 	return 0
+}
+
+// extractStringVars извлекает строковые переменные из скрипта:
+// var NAME = '...' или NAME = "..." (на отдельной строке).
+// Используется для резолва Instrument.Name = InstrumentName через идентификатор.
+func (p *Parser) extractStringVars(script string) map[string]string {
+	vars := make(map[string]string)
+	matches := p.stringVarRe.FindAllStringSubmatch(script, -1)
+	for _, m := range matches {
+		vars[strings.TrimSpace(m[1])] = m[2]
+	}
+	return vars
 }
 
 func (p *Parser) extractWithBlock(script string, re *regexp.Regexp) string {

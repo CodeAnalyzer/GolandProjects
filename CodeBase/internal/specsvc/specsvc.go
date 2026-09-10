@@ -5,7 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/codebase/internal/config"
 	"github.com/codebase/internal/errs"
@@ -103,17 +106,23 @@ type SpecUsecaseStep struct {
 	StepText  string `json:"step_text"`
 }
 
-// SpecCoverageResult — покрытие capability.
+// SpecCoverageResult — перечень покрытых код-сущностей, сгруппированных по capability.
 type SpecCoverageResult struct {
-	CapabilityID   int64             `json:"capability_id"`
-	CapabilityName string            `json:"capability_name"`
-	Title          string            `json:"title"`
-	Product        string            `json:"product,omitempty"`
-	ApiTotal       int               `json:"api_total"`
-	ApiCovered     int               `json:"api_covered"`
-	CodeTotal      int               `json:"code_total"`
-	CodeListed     int               `json:"code_listed"`
-	Gaps           []SpecCoverageGap `json:"gaps,omitempty"`
+	Product      string                   `json:"product"`
+	Capabilities []SpecCoverageCapability `json:"capabilities"`
+}
+
+// SpecCoverageCapability — capability с перечнем покрытых сущностей.
+type SpecCoverageCapability struct {
+	CapabilityName string               `json:"capability_name"`
+	Title          string               `json:"title"`
+	Covered        []SpecCoverageEntity `json:"covered"`
+}
+
+// SpecCoverageEntity — покрытая код-сущность.
+type SpecCoverageEntity struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
 }
 
 type SpecCoverageGap struct {
@@ -467,196 +476,209 @@ func ExecuteSpecUsecase(ctx context.Context, db *store.DB, usecaseName string) (
 	return &uc, capRows.Err()
 }
 
-// ExecuteSpecCoverage возвращает покрытие capability (сохранённые метрики или gaps).
-func ExecuteSpecCoverage(ctx context.Context, db *store.DB, capabilityName string, mode string, product ...string) (*SpecCoverageResult, error) {
-	capabilityName = strings.TrimSpace(capabilityName)
-	if capabilityName == "" {
+// ExecuteSpecCoverage возвращает перечень покрытых код-сущностей, сгруппированных по capability.
+// product — обязательный фильтр продукта; name — опциональный фильтр capability; kind — опциональный фильтр типа сущности.
+func ExecuteSpecCoverage(ctx context.Context, db *store.DB, product string, name string, kind string) (*SpecCoverageResult, error) {
+	product = strings.TrimSpace(product)
+	if product == "" {
 		return nil, errs.ErrSpecSearchEmpty
 	}
-	mode, err := normalizeCoverageMode(mode)
-	if err != nil {
-		return nil, err
-	}
-	productFilter := ""
-	if len(product) > 0 {
-		productFilter = strings.TrimSpace(product[0])
-	}
+	name = strings.TrimSpace(name)
+	kind = strings.TrimSpace(kind)
 
-	var cov SpecCoverageResult
-	var dsProductID sql.NullInt64
-	var apiTotal, apiCovered, codeTotal, codeListed sql.NullInt64
-	err = db.QueryRowContext(ctx, `
-		SELECT c.id, c.capability_name, c.title, c.ds_product_id, COALESCE(dp.product_name, ''),
-		       c.api_total, c.api_covered, c.code_total, c.code_listed
+	// Шаг 1: получить список capability продукта (один лёгкий запрос).
+	capQuery := `SELECT c.id, c.capability_name, c.title
 		FROM spec_capabilities c
-		LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
-		WHERE LOWER(c.capability_name) = LOWER($1)
-		  AND ($2 = '' OR dp.product_name = $2)
-		LIMIT 1`, capabilityName, productFilter).Scan(
-		&cov.CapabilityID, &cov.CapabilityName, &cov.Title, &dsProductID, &cov.Product,
-		&apiTotal, &apiCovered, &codeTotal, &codeListed)
+		JOIN ds_products dp ON dp.id = c.ds_product_id
+		WHERE dp.product_name = $1`
+	capArgs := []interface{}{product}
+	if name != "" {
+		capQuery += " AND LOWER(c.capability_name) = LOWER($2)"
+		capArgs = append(capArgs, name)
+	}
+	capQuery += " ORDER BY c.capability_name"
+
+	capRows, err := db.QueryContext(ctx, capQuery, capArgs...)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, errs.ErrSpecNotFound
+		return nil, fmt.Errorf("spec coverage capabilities: %w", err)
+	}
+	type capInfo struct {
+		id    int64
+		name  string
+		title string
+	}
+	var capabilities []capInfo
+	for capRows.Next() {
+		var ci capInfo
+		if err := capRows.Scan(&ci.id, &ci.name, &ci.title); err != nil {
+			capRows.Close()
+			return nil, fmt.Errorf("spec coverage capability scan: %w", err)
 		}
-		return nil, fmt.Errorf("spec coverage lookup: %w", err)
+		capabilities = append(capabilities, ci)
+	}
+	capRows.Close()
+	if err := capRows.Err(); err != nil {
+		return nil, fmt.Errorf("spec coverage capabilities: %w", err)
 	}
 
-	var computed SpecCoverageResult
-	if !apiTotal.Valid || !apiCovered.Valid || !codeTotal.Valid || !codeListed.Valid {
-		computed, err = computeSpecCoverage(ctx, db, cov.CapabilityID, dsProductID)
-		if err != nil {
-			return nil, err
-		}
+	if len(capabilities) == 0 {
+		return &SpecCoverageResult{Product: product, Capabilities: []SpecCoverageCapability{}}, nil
 	}
-	cov.ApiTotal = coverageMetric(apiTotal, computed.ApiTotal)
-	cov.ApiCovered = coverageMetric(apiCovered, computed.ApiCovered)
-	cov.CodeTotal = coverageMetric(codeTotal, computed.CodeTotal)
-	cov.CodeListed = coverageMetric(codeListed, computed.CodeListed)
 
-	if mode == "gaps" {
-		rows, err := db.QueryContext(ctx, `
-			WITH capability_sources AS (
-				SELECT 'spec_capability'::text AS source_type, $1::bigint AS source_id
-				UNION ALL
-				SELECT 'spec_requirement', req.id
-				FROM spec_requirements req
-				WHERE req.capability_id = $1
-				UNION ALL
-				SELECT 'spec_scenario', s.id
-				FROM spec_scenarios s
-				JOIN spec_requirements req ON req.id = s.requirement_id
-				WHERE req.capability_id = $1
-			), resolved_mentions AS (
-				SELECT r.source_type, r.source_id, 'procedure'::text AS mention_kind, LOWER(p.proc_name) AS mention_name
-				FROM relations r JOIN sql_procedures p ON r.target_type = 'sql_procedure' AND p.id = r.target_id
-				WHERE r.relation_type = 'references_code'
-				UNION ALL
-				SELECT r.source_type, r.source_id, 'table', LOWER(t.table_name)
-				FROM relations r JOIN sql_tables t ON r.target_type = 'sql_table' AND t.id = r.target_id
-				WHERE r.relation_type = 'references_code'
-				UNION ALL
-				SELECT r.source_type, r.source_id, 'form', LOWER(f.form_name)
-				FROM relations r JOIN dfm_forms f ON r.target_type = 'dfm_form' AND f.id = r.target_id
-				WHERE r.relation_type = 'references_code'
-				UNION ALL
-				SELECT r.source_type, r.source_id, 'smf', LOWER(s.instrument_name)
-				FROM relations r JOIN smf_instruments s ON r.target_type = 'smf_instrument' AND s.id = r.target_id
-				WHERE r.relation_type = 'references_code'
-				UNION ALL
-				SELECT r.source_type, r.source_id, 'method', LOWER(m.method_name)
-				FROM relations r JOIN pas_methods m ON r.target_type = 'pas_method' AND m.id = r.target_id
-				WHERE r.relation_type = 'references_code'
-				UNION ALL
-				SELECT r.source_type, r.source_id, 'api', LOWER(a.contract_name)
-				FROM relations r JOIN api_contracts a ON r.target_type = 'api_contract' AND a.id = r.target_id
-				WHERE r.relation_type = 'references_code'
-				UNION ALL
-				SELECT r.source_type, r.source_id, 'js_function', LOWER(j.function_name)
-				FROM relations r JOIN js_functions j ON r.target_type = 'js_function' AND j.id = r.target_id
-				WHERE r.relation_type = 'references_code'
-				UNION ALL
-				SELECT r.source_type, r.source_id, 'report_form', LOWER(rf.report_name)
-				FROM relations r JOIN report_forms rf ON r.target_type = 'report_form' AND rf.id = r.target_id
-				WHERE r.relation_type = 'references_code'
-			)
-			SELECT DISTINCT m.mention_name, m.mention_kind, m.source_type, m.line_number
-			FROM spec_code_mentions m
-			JOIN capability_sources src ON src.source_type = m.source_type AND src.source_id = m.source_id
-			WHERE NOT EXISTS (
-				SELECT 1
-				FROM resolved_mentions resolved
-				WHERE resolved.source_type = m.source_type
-				  AND resolved.source_id = m.source_id
-				  AND resolved.mention_kind = m.mention_kind
-				  AND resolved.mention_name = LOWER(m.mention_name)
-			)
-			ORDER BY m.line_number, m.source_type, m.mention_name`, cov.CapabilityID)
-		if err != nil {
-			return nil, fmt.Errorf("spec coverage gaps: %w", err)
-		}
-		defer rows.Close()
+	// Шаг 2: для каждой capability — параллельный запрос покрытых сущностей.
+	// Каждый запрос строит capability_sources только для одной capability (маленький CTE),
+	// затем JOIN relations → symbols/smf_instruments.
 
-		for rows.Next() {
-			var gap SpecCoverageGap
-			if err := rows.Scan(&gap.MentionName, &gap.MentionKind, &gap.SourceType, &gap.LineNumber); err != nil {
-				return nil, fmt.Errorf("spec coverage gap scan: %w", err)
+	// Динамический kind-фильтр: если kind задан, добавляем AND r.target_type = $2.
+	kindCond := ""
+	if kind != "" {
+		kindCond = " AND r.target_type = $2"
+	}
+
+	// Финальный SELECT: UNION ALL по конкретным таблицам (PK-индексы работают быстро).
+	// symbols не используется — нет индекса на entity_id, JOIN был медленным.
+	type entityBranch struct {
+		kind       string
+		table      string
+		nameColumn string
+	}
+	branches := []entityBranch{
+		{"api_contract", "api_contracts", "contract_name"},
+		{"sql_procedure", "sql_procedures", "proc_name"},
+		{"sql_table", "sql_tables", "table_name"},
+		{"dfm_form", "dfm_forms", "form_name"},
+		{"smf_instrument", "smf_instruments", "instrument_name"},
+		{"pas_method", "pas_methods", "method_name"},
+		{"js_function", "js_functions", "function_name"},
+		{"report_form", "report_forms", "report_name"},
+	}
+
+	// Фильтруем ветки по kind, если задан.
+	selected := branches
+	if kind != "" {
+		selected = nil
+		for _, b := range branches {
+			if b.kind == kind {
+				selected = []entityBranch{b}
+				break
 			}
-			cov.Gaps = append(cov.Gaps, gap)
 		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("spec coverage gaps: %w", err)
+		if len(selected) == 0 {
+			return &SpecCoverageResult{Product: product, Capabilities: []SpecCoverageCapability{}}, nil
 		}
 	}
 
-	return &cov, nil
-}
-
-func computeSpecCoverage(ctx context.Context, db *store.DB, capabilityID int64, dsProductID sql.NullInt64) (SpecCoverageResult, error) {
-	var computed SpecCoverageResult
-	if !dsProductID.Valid {
-		return computed, nil
+	var selectParts []string
+	for _, b := range selected {
+		selectParts = append(selectParts, fmt.Sprintf(
+			"SELECT e.%s AS entity_name, '%s'::text AS entity_kind\n"+
+				"FROM covered c\n"+
+				"JOIN %s e ON e.id = c.target_id\n"+
+				"WHERE c.target_type = '%s'",
+			b.nameColumn, b.kind, b.table, b.kind))
 	}
-	err := db.QueryRowContext(ctx, `
-		WITH product_entities AS (
-			SELECT 'sql_procedure'::text AS target_type, p.id AS target_id, false AS is_api
-			FROM sql_procedures p JOIN files f ON f.id = p.file_id WHERE f.ds_product_id = $2
-			UNION ALL
-			SELECT 'sql_table', t.id, false FROM sql_tables t JOIN files f ON f.id = t.file_id WHERE f.ds_product_id = $2
-			UNION ALL
-			SELECT 'dfm_form', d.id, false FROM dfm_forms d JOIN files f ON f.id = d.file_id WHERE f.ds_product_id = $2
-			UNION ALL
-			SELECT 'smf_instrument', s.id, false FROM smf_instruments s JOIN files f ON f.id = s.file_id WHERE f.ds_product_id = $2
-			UNION ALL
-			SELECT 'pas_method', m.id, false FROM pas_methods m JOIN pas_units u ON u.id = m.unit_id JOIN files f ON f.id = u.file_id WHERE f.ds_product_id = $2
-			UNION ALL
-			SELECT 'js_function', j.id, false FROM js_functions j JOIN files f ON f.id = j.file_id WHERE f.ds_product_id = $2
-			UNION ALL
-			SELECT 'report_form', rf.id, false FROM report_forms rf JOIN files f ON f.id = rf.file_id WHERE f.ds_product_id = $2
-			UNION ALL
-			SELECT 'api_contract', a.id, true FROM api_contracts a JOIN files f ON f.id = a.file_id WHERE f.ds_product_id = $2
-		), capability_sources AS (
+	finalSelect := strings.Join(selectParts, "\nUNION ALL\n")
+
+	perCapQuery := fmt.Sprintf(`
+		WITH capability_sources AS (
 			SELECT 'spec_capability'::text AS source_type, $1::bigint AS source_id
-			UNION ALL SELECT 'spec_requirement', req.id FROM spec_requirements req WHERE req.capability_id = $1
+			UNION ALL
+			SELECT 'spec_requirement', req.id FROM spec_requirements req WHERE req.capability_id = $1
 			UNION ALL
 			SELECT 'spec_scenario', s.id FROM spec_scenarios s
 			JOIN spec_requirements req ON req.id = s.requirement_id WHERE req.capability_id = $1
-		), covered_entities AS (
-			SELECT DISTINCT pe.target_type, pe.target_id, pe.is_api
-			FROM capability_sources src
-			JOIN relations r ON r.source_type = src.source_type AND r.source_id = src.source_id
-			JOIN product_entities pe ON pe.target_type = r.target_type AND pe.target_id = r.target_id
-			WHERE r.relation_type = 'references_code'
+		), covered AS (
+			SELECT DISTINCT r.target_type, r.target_id
+			FROM capability_sources cs
+			JOIN relations r ON r.source_type = cs.source_type AND r.source_id = cs.source_id
+			WHERE r.relation_type = 'references_code'%s
 		)
-		SELECT
-			COUNT(*) FILTER (WHERE is_api),
-			(SELECT COUNT(*) FROM covered_entities WHERE is_api),
-			COUNT(*) FILTER (WHERE NOT is_api),
-			(SELECT COUNT(*) FROM covered_entities WHERE NOT is_api)
-		FROM product_entities`, capabilityID, dsProductID.Int64).Scan(
-		&computed.ApiTotal, &computed.ApiCovered, &computed.CodeTotal, &computed.CodeListed)
-	if err != nil {
-		return computed, fmt.Errorf("spec coverage compute: %w", err)
-	}
-	return computed, nil
-}
+		%s
+		ORDER BY entity_kind, entity_name`, kindCond, finalSelect)
 
-func coverageMetric(saved sql.NullInt64, computed int) int {
-	if saved.Valid {
-		return int(saved.Int64)
+	type capResult struct {
+		ci      capInfo
+		covered []SpecCoverageEntity
+		err     error
 	}
-	return computed
-}
+	results := make([]capResult, len(capabilities))
 
-func normalizeCoverageMode(mode string) (string, error) {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
-		return "saved", nil
+	// Semaphore = размеру пула соединений БД, чтобы не плодить горутины,
+	// которые всё равно ждут в очереди пула.
+	concurrency := db.Stats().MaxOpenConnections
+	if concurrency <= 0 {
+		concurrency = runtime.NumCPU()
 	}
-	if mode != "saved" && mode != "gaps" {
-		return "", fmt.Errorf("unsupported spec coverage mode %q", mode)
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, concurrency)
+	for i, ci := range capabilities {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, c capInfo) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			args := []interface{}{c.id}
+			if kind != "" {
+				args = append(args, kind)
+			}
+			rows, err := db.QueryContext(ctx, perCapQuery, args...)
+			if err != nil {
+				results[idx] = capResult{ci: c, err: fmt.Errorf("spec coverage query for %s: %w", c.name, err)}
+				return
+			}
+			defer rows.Close()
+
+			seen := map[string]bool{}
+			var covered []SpecCoverageEntity
+			for rows.Next() {
+				var entityName, entityKind string
+				if err := rows.Scan(&entityName, &entityKind); err != nil {
+					results[idx] = capResult{ci: c, err: fmt.Errorf("spec coverage scan for %s: %w", c.name, err)}
+					return
+				}
+				dedupKey := entityKind + "|" + entityName
+				if seen[dedupKey] {
+					continue
+				}
+				seen[dedupKey] = true
+				covered = append(covered, SpecCoverageEntity{Name: entityName, Kind: entityKind})
+			}
+			if err := rows.Err(); err != nil {
+				results[idx] = capResult{ci: c, err: fmt.Errorf("spec coverage rows for %s: %w", c.name, err)}
+				return
+			}
+			if covered == nil {
+				covered = []SpecCoverageEntity{}
+			}
+			results[idx] = capResult{ci: c, covered: covered}
+		}(i, ci)
 	}
-	return mode, nil
+	wg.Wait()
+
+	// Шаг 3: агрегация.
+	result := &SpecCoverageResult{
+		Product:      product,
+		Capabilities: make([]SpecCoverageCapability, 0, len(results)),
+	}
+	for _, r := range results {
+		if r.err != nil {
+			return nil, r.err
+		}
+		sort.Slice(r.covered, func(i, j int) bool {
+			if r.covered[i].Kind != r.covered[j].Kind {
+				return r.covered[i].Kind < r.covered[j].Kind
+			}
+			return r.covered[i].Name < r.covered[j].Name
+		})
+		result.Capabilities = append(result.Capabilities, SpecCoverageCapability{
+			CapabilityName: r.ci.name,
+			Title:          r.ci.title,
+			Covered:        r.covered,
+		})
+	}
+
+	return result, nil
 }
 
 // ExecuteSpecHistory возвращает историю изменений capability через changes.

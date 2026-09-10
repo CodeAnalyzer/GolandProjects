@@ -1,0 +1,23 @@
+<job>
+<description>Test SMF instrument</description>
+<prequery>select 1</prequery>
+<script><![CDATA[
+const DEAL_OBJECT_ID = 101;
+var MODULE_ID = 202;
+
+function CreateInstrument() {
+    Instrument.Name = "CreditMassOperation";
+    Instrument.Brief = "Credit Mass Operation";
+    Instrument.InterfaceObjectID = DEAL_OBJECT_ID;
+    Instrument.DsModuleID = MODULE_ID;
+    Instrument.StartState = "START";
+    State = Instrument.CreateStateWithSysName("Start", "START");
+    State.StateType = PROP_STATETYPE_BEGIN;
+    State.CreateConsumerTransitionWithSysName("Approve", "APPROVE", "from", "to");
+    Tran.PropVal = CONSUMER_ACTION_APPROVE;
+    Tran.Priority = 10;
+    TypeAccLinkCreate(RESDEP_MAIN, __ACCMASKN__);
+    Obj.ExecProc("DoWork");
+}
+]]></script>
+</job>

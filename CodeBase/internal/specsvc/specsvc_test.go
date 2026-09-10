@@ -2,7 +2,6 @@ package specsvc
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"math"
 	"testing"
@@ -44,27 +43,6 @@ func TestParsePGFloatArrayAndCosine(t *testing.T) {
 	}
 }
 
-func TestCoverageMetric(t *testing.T) {
-	if got := coverageMetric(sql.NullInt64{Int64: 0, Valid: true}, 17); got != 0 {
-		t.Fatalf("stored zero metric = %d", got)
-	}
-	if got := coverageMetric(sql.NullInt64{}, 17); got != 17 {
-		t.Fatalf("computed metric = %d", got)
-	}
-}
-
-func TestNormalizeCoverageMode(t *testing.T) {
-	if got, err := normalizeCoverageMode(" "); err != nil || got != "saved" {
-		t.Fatalf("default mode = %q, %v", got, err)
-	}
-	if got, err := normalizeCoverageMode(" GAPS "); err != nil || got != "gaps" {
-		t.Fatalf("gaps mode = %q, %v", got, err)
-	}
-	if _, err := normalizeCoverageMode("unknown"); err == nil {
-		t.Fatal("invalid coverage mode must return an error")
-	}
-}
-
 func TestNormalizeHistorySelectors(t *testing.T) {
 	name, change, err := normalizeHistorySelectors(" capability ", "")
 	if err != nil || name != "capability" || change != "" {
@@ -84,8 +62,8 @@ func TestNormalizeHistorySelectors(t *testing.T) {
 
 func TestSpecCoverageAndHistoryValidateBeforeDBAccess(t *testing.T) {
 	ctx := context.Background()
-	if _, err := ExecuteSpecCoverage(ctx, nil, "capability", "invalid"); err == nil {
-		t.Fatal("invalid coverage mode must return an error")
+	if _, err := ExecuteSpecCoverage(ctx, nil, "", "", ""); !errors.Is(err, errs.ErrSpecSearchEmpty) {
+		t.Fatalf("empty product error = %v", err)
 	}
 	if _, err := ExecuteSpecHistory(ctx, nil, ""); !errors.Is(err, errs.ErrSpecSearchEmpty) {
 		t.Fatalf("legacy empty history selector error = %v", err)

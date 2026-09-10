@@ -46,6 +46,7 @@ exclude_patterns = [
     "*~",          # Backup файлы
     "*.bak",
     "*.old",
+    "exe/*",
     "*/backup/*"
 ]
 

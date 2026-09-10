@@ -21,7 +21,7 @@ var (
 	specUsecaseName     string
 	specCoverageName    string
 	specCoverageProduct string
-	specCoverageMode    string
+	specCoverageKind    string
 	specHistoryName     string
 	specHistoryChange   string
 	specHistoryProduct  string
@@ -92,16 +92,16 @@ var querySpecUsecaseCmd = &cobra.Command{
 }
 
 var querySpecCoverageCmd = &cobra.Command{
-	Use:   "coverage --name <capability> [--mode saved|gaps]",
-	Short: "Capability coverage metrics or coverage gaps",
+	Use:   "coverage --product <product> [--name <capability>] [--kind <type>]",
+	Short: "Covered code entities grouped by capability",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 		return runSpecCommand("query spec coverage", map[string]string{
-			"name":    specCoverageName,
 			"product": specCoverageProduct,
-			"mode":    specCoverageMode,
+			"name":    specCoverageName,
+			"kind":    specCoverageKind,
 		}, func(db *store.DB) (interface{}, error) {
-			return specsvc.ExecuteSpecCoverage(ctx, db, specCoverageName, specCoverageMode, specCoverageProduct)
+			return specsvc.ExecuteSpecCoverage(ctx, db, specCoverageProduct, specCoverageName, specCoverageKind)
 		})
 	},
 }
@@ -142,8 +142,8 @@ func init() {
 
 	querySpecCoverageCmd.Flags().StringVar(&specCoverageName, "name", "", "capability name (slug)")
 	querySpecCoverageCmd.Flags().StringVar(&specCoverageProduct, "product", "", "filter by product name")
-	querySpecCoverageCmd.Flags().StringVar(&specCoverageMode, "mode", "saved", "saved (stored metrics) or gaps (unresolved mentions)")
-	cobra.CheckErr(querySpecCoverageCmd.MarkFlagRequired("name"))
+	querySpecCoverageCmd.Flags().StringVar(&specCoverageKind, "kind", "", "filter by entity type (api_contract, sql_procedure, sql_table, dfm_form, smf_instrument, pas_method, js_function, report_form)")
+	cobra.CheckErr(querySpecCoverageCmd.MarkFlagRequired("product"))
 
 	querySpecHistoryCmd.Flags().StringVar(&specHistoryName, "name", "", "capability name (slug)")
 	querySpecHistoryCmd.Flags().StringVar(&specHistoryChange, "change", "", "change name")
