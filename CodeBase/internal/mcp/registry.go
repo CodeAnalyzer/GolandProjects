@@ -1115,7 +1115,11 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if err != nil {
 					return nil, err
 				}
-				return specsvc.ExecuteSpecHistory(ctx, db, name, change)
+				product, err := optionalString(args, "product")
+				if err != nil {
+					return nil, err
+				}
+				return specsvc.ExecuteSpecHistory(ctx, db, name, change, product)
 			},
 		},
 	}

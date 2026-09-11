@@ -858,7 +858,7 @@ IDE может подключить несколько MCP-серверов на
 | `codebase_query_spec_deps` | Граф зависимостей capability | `name`, опц. `direction`/`max_depth`/`product` |
 | `codebase_query_spec_usecase` | Usecase-слой с involved capabilities | `name` |
 | `codebase_query_spec_coverage` | Перечень покрытых код-сущностей по capability | `product`, опц. `name`/`kind` |
-| `codebase_query_spec_history` | История изменения capability по changes | `name`, опц. `change`/`product` |
+| `codebase_query_spec_history` | История изменения capability по changes | `name` или `change` (один), опц. `product` |
 
 **RTI tools:**
 

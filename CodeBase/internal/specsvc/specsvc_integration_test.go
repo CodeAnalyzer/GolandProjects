@@ -455,3 +455,146 @@ func TestExecuteSpecUsecase_NotFound(t *testing.T) {
 		t.Fatalf("error = %v, want ErrSpecNotFound", err)
 	}
 }
+
+// insertSpecChangeWithConfigDirect вставляет spec_change, привязанный к указанному spec_config_id.
+func insertSpecChangeWithConfigDirect(t *testing.T, db *store.DB, fileID, cfgID int64, changeName, status string) int64 {
+	t.Helper()
+	var changeID int64
+	if err := db.QueryRow(
+		`INSERT INTO spec_changes (file_id, spec_config_id, change_name, status, dir_path)
+		 VALUES ($1, $2, $3, $4, 'changes') RETURNING id`,
+		fileID, cfgID, changeName, status,
+	).Scan(&changeID); err != nil {
+		t.Fatalf("insert spec_change %s: %v", changeName, err)
+	}
+	return changeID
+}
+
+// insertCapabilityWithProductDirect вставляет spec_capability с ds_product_id.
+func insertCapabilityWithProductDirect(t *testing.T, db *store.DB, fileID, cfgID, productID int64, capName, title string) int64 {
+	t.Helper()
+	var id int64
+	if err := db.QueryRow(
+		`INSERT INTO spec_capabilities (file_id, spec_config_id, ds_product_id, capability_name, title)
+		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		fileID, cfgID, productID, capName, title,
+	).Scan(&id); err != nil {
+		t.Fatalf("insert spec_capability %s: %v", capName, err)
+	}
+	return id
+}
+
+func TestExecuteSpecHistoryByCapability_WithProductFilter(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	// Два продукта с одинаковым slug capability "card-limits".
+	productCardsID := insertDSProductDirect(t, db, "fa-cards")
+	productPaymentsID := insertDSProductDirect(t, db, "fa-payments")
+
+	cardsFile := insertFileDirect(t, db, "specs/card-limits-cards/spec.md")
+	cardsCfgID := insertSpecConfigWithProductDirect(t, db, cardsFile, productCardsID, "fa-cards")
+	cardsCapID := insertCapabilityWithProductDirect(t, db, cardsFile, cardsCfgID, productCardsID, "card-limits", "Card Limits")
+
+	paymentsFile := insertFileDirect(t, db, "specs/card-limits-payments/spec.md")
+	paymentsCfgID := insertSpecConfigWithProductDirect(t, db, paymentsFile, productPaymentsID, "fa-payments")
+	paymentsCapID := insertCapabilityWithProductDirect(t, db, paymentsFile, paymentsCfgID, productPaymentsID, "card-limits", "Card Limits")
+
+	// Change в fa-cards.
+	changeFile1 := insertFileDirect(t, db, "changes/change-cards/proposal.md")
+	changeID1 := insertSpecChangeWithConfigDirect(t, db, changeFile1, cardsCfgID, "change-cards", "archived")
+	insertRelationDirect(t, db, "spec_change", changeID1, "spec_capability", cardsCapID, "change_modifies", "delta")
+
+	// Change в fa-payments.
+	changeFile2 := insertFileDirect(t, db, "changes/change-payments/proposal.md")
+	changeID2 := insertSpecChangeWithConfigDirect(t, db, changeFile2, paymentsCfgID, "change-payments", "archived")
+	insertRelationDirect(t, db, "spec_change", changeID2, "spec_capability", paymentsCapID, "change_modifies", "delta")
+
+	// Фильтр по продукту fa-cards — только change-cards.
+	res, err := specsvc.ExecuteSpecHistory(ctx, db, "card-limits", "", "fa-cards")
+	if err != nil {
+		t.Fatalf("ExecuteSpecHistory with product: %v", err)
+	}
+	if len(res.Changes) != 1 {
+		t.Fatalf("expected 1 change for fa-cards, got %d: %+v", len(res.Changes), res.Changes)
+	}
+	if res.Changes[0].ChangeName != "change-cards" {
+		t.Fatalf("change_name = %q, want change-cards", res.Changes[0].ChangeName)
+	}
+	if res.Product != "fa-cards" {
+		t.Fatalf("product = %q, want fa-cards", res.Product)
+	}
+}
+
+func TestExecuteSpecHistoryByChange_WithProductFilter(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	// Два продукта.
+	productCardsID := insertDSProductDirect(t, db, "fa-cards")
+	productPaymentsID := insertDSProductDirect(t, db, "fa-payments")
+
+	cardsFile := insertFileDirect(t, db, "specs/cap-cards/spec.md")
+	cardsCfgID := insertSpecConfigWithProductDirect(t, db, cardsFile, productCardsID, "fa-cards")
+	cardsCapID := insertCapabilityWithProductDirect(t, db, cardsFile, cardsCfgID, productCardsID, "cap-cards", "Cap Cards")
+
+	paymentsFile := insertFileDirect(t, db, "specs/cap-payments/spec.md")
+	paymentsCfgID := insertSpecConfigWithProductDirect(t, db, paymentsFile, productPaymentsID, "fa-payments")
+	paymentsCapID := insertCapabilityWithProductDirect(t, db, paymentsFile, paymentsCfgID, productPaymentsID, "cap-payments", "Cap Payments")
+
+	// Один change, затрагивающий capabilities в обоих продуктах.
+	changeFile := insertFileDirect(t, db, "changes/multi-change/proposal.md")
+	changeID := insertSpecChangeWithConfigDirect(t, db, changeFile, cardsCfgID, "multi-change", "archived")
+	insertRelationDirect(t, db, "spec_change", changeID, "spec_capability", cardsCapID, "change_modifies", "delta")
+	insertRelationDirect(t, db, "spec_change", changeID, "spec_capability", paymentsCapID, "change_modifies", "delta")
+
+	// Фильтр по продукту fa-cards — только cap-cards.
+	res, err := specsvc.ExecuteSpecHistory(ctx, db, "", "multi-change", "fa-cards")
+	if err != nil {
+		t.Fatalf("ExecuteSpecHistory by change with product: %v", err)
+	}
+	if len(res.Capabilities) != 1 {
+		t.Fatalf("expected 1 capability for fa-cards, got %d: %+v", len(res.Capabilities), res.Capabilities)
+	}
+	if res.Capabilities[0].CapabilityName != "cap-cards" {
+		t.Fatalf("capability = %q, want cap-cards", res.Capabilities[0].CapabilityName)
+	}
+	if res.Capabilities[0].Product != "fa-cards" {
+		t.Fatalf("product = %q, want fa-cards", res.Capabilities[0].Product)
+	}
+}
+
+func TestExecuteSpecHistoryByCapability_NoProductFilter(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	// Два продукта с одинаковым slug capability "card-limits".
+	productCardsID := insertDSProductDirect(t, db, "fa-cards")
+	productPaymentsID := insertDSProductDirect(t, db, "fa-payments")
+
+	cardsFile := insertFileDirect(t, db, "specs/card-limits-cards2/spec.md")
+	cardsCfgID := insertSpecConfigWithProductDirect(t, db, cardsFile, productCardsID, "fa-cards")
+	cardsCapID := insertCapabilityWithProductDirect(t, db, cardsFile, cardsCfgID, productCardsID, "card-limits", "Card Limits")
+
+	paymentsFile := insertFileDirect(t, db, "specs/card-limits-payments2/spec.md")
+	paymentsCfgID := insertSpecConfigWithProductDirect(t, db, paymentsFile, productPaymentsID, "fa-payments")
+	paymentsCapID := insertCapabilityWithProductDirect(t, db, paymentsFile, paymentsCfgID, productPaymentsID, "card-limits", "Card Limits")
+
+	// Change в каждом продукте.
+	changeFile1 := insertFileDirect(t, db, "changes/change-cards2/proposal.md")
+	changeID1 := insertSpecChangeWithConfigDirect(t, db, changeFile1, cardsCfgID, "change-cards2", "archived")
+	insertRelationDirect(t, db, "spec_change", changeID1, "spec_capability", cardsCapID, "change_modifies", "delta")
+
+	changeFile2 := insertFileDirect(t, db, "changes/change-payments2/proposal.md")
+	changeID2 := insertSpecChangeWithConfigDirect(t, db, changeFile2, paymentsCfgID, "change-payments2", "archived")
+	insertRelationDirect(t, db, "spec_change", changeID2, "spec_capability", paymentsCapID, "change_modifies", "delta")
+
+	// Без фильтра — оба change.
+	res, err := specsvc.ExecuteSpecHistory(ctx, db, "card-limits", "")
+	if err != nil {
+		t.Fatalf("ExecuteSpecHistory without product: %v", err)
+	}
+	if len(res.Changes) != 2 {
+		t.Fatalf("expected 2 changes without product filter, got %d: %+v", len(res.Changes), res.Changes)
+	}
+}
