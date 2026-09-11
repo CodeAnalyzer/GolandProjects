@@ -18,7 +18,7 @@
   - DSArchitect XML: `service` (сервисные контракты), `event` (событийные контракты), `used_service` (используемые сервисы), `callback_event` (callback-события), `api_table` (табличные структуры), `api_table_index` (индексы standalone API-таблиц), `api_param` (параметры BObject)
   - API macros (макросы API) из SQL: `API_CREATE_PROC`, `API_INIT_EVENT`, `API_EXEC`
   - `.t01`: препроцессированный SQL (процедуры, таблицы, поля, SQL statements/query fragments, вызовы процедур) и generated subscriber calls/dispatch-вызовы из раскрытых `API_INIT_EVENT`
-  - OpenSpec-артефакты (markdown/yaml из `openspec/` директорий финпродуктов): capabilities, requirements, scenarios, usecases (+steps), changes (+delta), code mentions, профиль продукта
+  - OpenSpec-артефакты (markdown/yaml из `openspec/` директорий финпродуктов): capabilities, requirements, scenarios, usecases (+steps), changes (+delta), code mentions, профиль продукта. Usecase-слой поддерживает четыре формата: `scenarios/`, `usecases/`, `business-processes/` и `specs/usecases/` (внутри `specs/`); парсер извлекает inline-метаданные `**Ключ**: Значение`, шаги `**Шаг N**. текст`, табличные шаги, ветвления WHEN/ELSE (alternative flow), Confluence pageId (из строки и URL) и ссылки на capabilities из секции «Спеки-компоненты (запчасти)»
 - **Граф связей**:
   - SQL procedure -> SQL procedure / SQL table
   - parent entity -> query fragment
@@ -459,6 +459,8 @@ codebase query spec deps --slug card-limits --direction depends_on --depth 2
 
 # Usecase-слой с involved capabilities
 codebase query spec usecase --name scenario-sms-disable
+codebase query spec usecase --product fa-financialasset
+codebase query spec usecase --name 467512912
 
 # Покрытие кода спеками (перечень покрытых сущностей по capability)
 codebase query spec coverage --product fa-cards
@@ -469,7 +471,7 @@ codebase query spec coverage --product fa-cards --kind api_contract
 codebase query spec history --slug card-limits
 ```
 
-Спеки индексируются из `openspec/` директорий финпродуктов: capabilities, requirements, scenarios, usecases, changes. Поиск поддерживает два слоя: лексический (tsvector 'russian' + pg_trgm) и семантический (TF-IDF + LSA). Фильтры: `--product`, `--level` (capability|requirement|scenario|usecase), `--layer` (exact|semantic|both).
+Спеки индексируются из `openspec/` директорий финпродуктов: capabilities, requirements, scenarios, usecases, changes. Usecase-слой поддерживает четыре формата (`scenarios/`, `usecases/`, `business-processes/`, `specs/usecases/`) с извлечением inline-метаданных, шагов (`**Шаг N**.`, табличных, нумерованных), ветвлений WHEN/ELSE, Confluence pageId и ссылок на capabilities. Поиск поддерживает два слоя: лексический (tsvector 'russian' + pg_trgm) и семантический (TF-IDF + LSA). Фильтры: `--product`, `--level` (capability|requirement|scenario|usecase), `--layer` (exact|semantic|both).
 
 Опции для всех запросов:
 - `--json` - вывод в формате JSON
@@ -856,7 +858,7 @@ IDE может подключить несколько MCP-серверов на
 | `codebase_query_spec_search` | Полнотекстовый поиск по спецификациям (лексический + семантический LSA) | `query`, опц. `product`/`level`/`layer`/`limit` |
 | `codebase_query_spec_by_code` | Спеки, ссылающиеся на код-сущность | `name` |
 | `codebase_query_spec_deps` | Граф зависимостей capability | `name`, опц. `direction`/`max_depth`/`product` |
-| `codebase_query_spec_usecase` | Usecase-слой с involved capabilities | `name` |
+| `codebase_query_spec_usecase` | Usecase-слой с involved capabilities; список по продукту; поиск по pageId | опц. `name` или `product` (один) |
 | `codebase_query_spec_coverage` | Перечень покрытых код-сущностей по capability | `product`, опц. `name`/`kind` |
 | `codebase_query_spec_history` | История изменения capability по changes | `name` или `change` (один), опц. `product` |
 

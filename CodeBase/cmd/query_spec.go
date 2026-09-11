@@ -19,6 +19,7 @@ var (
 	specDepsDirection   string
 	specDepsMaxDepth    int
 	specUsecaseName     string
+	specUsecaseProduct  string
 	specCoverageName    string
 	specCoverageProduct string
 	specCoverageKind    string
@@ -82,14 +83,15 @@ var querySpecDepsCmd = &cobra.Command{
 }
 
 var querySpecUsecaseCmd = &cobra.Command{
-	Use:   "usecase --name <usecase-name>",
-	Short: "Usecase with steps and involved entities",
+	Use:   "usecase [--name <usecase-name>] [--product <product-name>]",
+	Short: "Usecase with steps and involved entities, or list usecases by product",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 		return runSpecCommand("query spec usecase", map[string]string{
-			"name": specUsecaseName,
+			"name":    specUsecaseName,
+			"product": specUsecaseProduct,
 		}, func(db *store.DB) (interface{}, error) {
-			return specsvc.ExecuteSpecUsecase(ctx, db, specUsecaseName)
+			return specsvc.ExecuteSpecUsecase(ctx, db, specUsecaseName, specUsecaseProduct)
 		})
 	},
 }
@@ -155,8 +157,8 @@ func init() {
 	querySpecDepsCmd.Flags().IntVar(&specDepsMaxDepth, "max-depth", 2, "max traversal depth")
 	cobra.CheckErr(querySpecDepsCmd.MarkFlagRequired("name"))
 
-	querySpecUsecaseCmd.Flags().StringVar(&specUsecaseName, "name", "", "usecase name")
-	cobra.CheckErr(querySpecUsecaseCmd.MarkFlagRequired("name"))
+	querySpecUsecaseCmd.Flags().StringVar(&specUsecaseName, "name", "", "usecase name (filename without .md, REQ-NNN-SC-NNN, or pageId)")
+	querySpecUsecaseCmd.Flags().StringVar(&specUsecaseProduct, "product", "", "filter by product name (without --name, returns list)")
 
 	querySpecCoverageCmd.Flags().StringVar(&specCoverageName, "name", "", "capability name (slug)")
 	querySpecCoverageCmd.Flags().StringVar(&specCoverageProduct, "product", "", "filter by product name")

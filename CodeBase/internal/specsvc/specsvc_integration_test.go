@@ -450,9 +450,146 @@ func TestExecuteSpecUsecase_NotFound(t *testing.T) {
 	db := testutil.Open(t)
 	ctx := context.Background()
 
-	_, err := specsvc.ExecuteSpecUsecase(ctx, db, "nonexistent-usecase")
+	_, err := specsvc.ExecuteSpecUsecase(ctx, db, "nonexistent-usecase", "")
 	if !errors.Is(err, errs.ErrSpecNotFound) {
 		t.Fatalf("error = %v, want ErrSpecNotFound", err)
+	}
+}
+
+// insertSpecUsecaseFullDirect вставляет spec_usecase со всеми полями, возвращает id.
+func insertSpecUsecaseFullDirect(t *testing.T, db *store.DB, fileID, cfgID int64, name, title, desc, actors, pre, post, bv, sourceDir, kind string, pageID int64) int64 {
+	t.Helper()
+	var id int64
+	if err := db.QueryRow(
+		`INSERT INTO spec_usecases (file_id, spec_config_id, usecase_name, title, description, actors,
+		                            preconditions, postconditions, business_value, source_dir, usecase_kind, page_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
+		fileID, cfgID, name, title, desc, actors, pre, post, bv, sourceDir, kind, pageID,
+	).Scan(&id); err != nil {
+		t.Fatalf("insert spec_usecase %s: %v", name, err)
+	}
+	return id
+}
+
+func TestExecuteSpecUsecase_ByNameWithFullFields(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	productID := insertDSProductDirect(t, db, "fa-test-uc-full")
+	fileID := insertFileDirect(t, db, "openspec/config.yaml")
+	cfgID := insertSpecConfigWithProductDirect(t, db, fileID, productID, "fa-test-uc-full")
+
+	ucFile := insertFileDirect(t, db, "usecases/fot/REQ-001-SC-001.md")
+	insertSpecUsecaseFullDirect(t, db, ucFile, cfgID,
+		"REQ-001-SC-001 — Расчет ставки",
+		"Сценарий REQ-001/SC-001 — Расчет ставки",
+		"Ставка налога по клиенту",
+		"Система (автоматически)",
+		"Дата выплаты >= 01.01.2026",
+		"Применена льготная ставка 20%",
+		"Автоматически применяет ставку",
+		"usecases", "usecase", 467512912)
+
+	// Вставляем шаги
+	for i, step := range []struct{ flow, text string }{
+		{"main", "Загрузка документа выплаты"},
+		{"main", "Формирование НОВД"},
+	} {
+		if _, err := db.Exec(
+			`INSERT INTO spec_usecase_steps (file_id, usecase_id, flow_kind, step_order, step_text, line_number)
+			 VALUES ($1, (SELECT id FROM spec_usecases WHERE usecase_name = $2), $3, $4, $5, $6)`,
+			ucFile, "REQ-001-SC-001 — Расчет ставки", step.flow, i+1, step.text, 0,
+		); err != nil {
+			t.Fatalf("insert step %d: %v", i, err)
+		}
+	}
+
+	res, err := specsvc.ExecuteSpecUsecase(ctx, db, "REQ-001-SC-001 — Расчет ставки", "")
+	if err != nil {
+		t.Fatalf("ExecuteSpecUsecase: %v", err)
+	}
+	uc, ok := res.(*specsvc.SpecUsecaseResult)
+	if !ok {
+		t.Fatalf("expected *SpecUsecaseResult, got %T", res)
+	}
+	if uc.Description == "" || uc.Actors == "" || uc.BusinessValue == "" {
+		t.Fatalf("fields empty: desc=%q actors=%q bv=%q", uc.Description, uc.Actors, uc.BusinessValue)
+	}
+	if uc.PageID != 467512912 {
+		t.Fatalf("PageID = %d, want 467512912", uc.PageID)
+	}
+	if len(uc.Steps) != 2 {
+		t.Fatalf("steps = %d, want 2", len(uc.Steps))
+	}
+}
+
+func TestExecuteSpecUsecase_ByPageId(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	productID := insertDSProductDirect(t, db, "fa-test-uc-pageid")
+	fileID := insertFileDirect(t, db, "openspec/config.yaml")
+	cfgID := insertSpecConfigWithProductDirect(t, db, fileID, productID, "fa-test-uc-pageid")
+
+	ucFile := insertFileDirect(t, db, "usecases/fot/REQ-002.md")
+	insertSpecUsecaseFullDirect(t, db, ucFile, cfgID,
+		"REQ-002-SC-001", "Сценарий REQ-002", "", "", "", "", "",
+		"usecases", "usecase", 999888777)
+
+	res, err := specsvc.ExecuteSpecUsecase(ctx, db, "999888777", "")
+	if err != nil {
+		t.Fatalf("ExecuteSpecUsecase by pageId: %v", err)
+	}
+	uc, ok := res.(*specsvc.SpecUsecaseResult)
+	if !ok {
+		t.Fatalf("expected *SpecUsecaseResult, got %T", res)
+	}
+	if uc.UsecaseName != "REQ-002-SC-001" {
+		t.Fatalf("usecase_name = %q, want REQ-002-SC-001", uc.UsecaseName)
+	}
+}
+
+func TestExecuteSpecUsecase_ListByProduct(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	productID := insertDSProductDirect(t, db, "fa-test-uc-list")
+	fileID := insertFileDirect(t, db, "openspec/config.yaml")
+	cfgID := insertSpecConfigWithProductDirect(t, db, fileID, productID, "fa-test-uc-list")
+
+	ucFile1 := insertFileDirect(t, db, "usecases/fot/REQ-001.md")
+	insertSpecUsecaseFullDirect(t, db, ucFile1, cfgID,
+		"REQ-001-SC-001", "Сценарий 1", "", "", "", "", "",
+		"usecases", "usecase", 0)
+
+	ucFile2 := insertFileDirect(t, db, "usecases/fot/REQ-002.md")
+	insertSpecUsecaseFullDirect(t, db, ucFile2, cfgID,
+		"REQ-002-SC-001", "Сценарий 2", "", "", "", "", "",
+		"usecases", "usecase", 0)
+
+	ucFile3 := insertFileDirect(t, db, "usecases/msfo/REQ-003.md")
+	insertSpecUsecaseFullDirect(t, db, ucFile3, cfgID,
+		"REQ-003-SC-001", "Сценарий 3", "", "", "", "", "",
+		"usecases", "usecase", 0)
+
+	res, err := specsvc.ExecuteSpecUsecase(ctx, db, "", "fa-test-uc-list")
+	if err != nil {
+		t.Fatalf("ExecuteSpecUsecase list: %v", err)
+	}
+	list, ok := res.(*specsvc.SpecUsecaseListResult)
+	if !ok {
+		t.Fatalf("expected *SpecUsecaseListResult, got %T", res)
+	}
+	if len(list.Usecases) != 3 {
+		t.Fatalf("usecases count = %d, want 3", len(list.Usecases))
+	}
+	for _, item := range list.Usecases {
+		if item.SourceDir != "usecases" {
+			t.Fatalf("source_dir = %q, want usecases", item.SourceDir)
+		}
+		if item.UsecaseKind != "usecase" {
+			t.Fatalf("usecase_kind = %q, want usecase", item.UsecaseKind)
+		}
 	}
 }
 

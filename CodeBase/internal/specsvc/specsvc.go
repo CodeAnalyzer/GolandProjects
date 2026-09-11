@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -88,8 +89,10 @@ type SpecUsecaseResult struct {
 	Actors         string                  `json:"actors,omitempty"`
 	Preconditions  string                  `json:"preconditions,omitempty"`
 	Postconditions string                  `json:"postconditions,omitempty"`
+	BusinessValue  string                  `json:"business_value,omitempty"`
 	SourceDir      string                  `json:"source_dir"`
 	UsecaseKind    string                  `json:"usecase_kind"`
+	PageID         int64                   `json:"page_id,omitempty"`
 	Steps          []SpecUsecaseStep       `json:"steps,omitempty"`
 	Capabilities   []SpecUsecaseCapability `json:"capabilities,omitempty"`
 }
@@ -105,6 +108,22 @@ type SpecUsecaseStep struct {
 	FlowKind  string `json:"flow_kind"`
 	StepOrder int    `json:"step_order"`
 	StepText  string `json:"step_text"`
+}
+
+// SpecUsecaseListResult — список usecase'ов продукта.
+type SpecUsecaseListResult struct {
+	Product  string                `json:"product"`
+	Usecases []SpecUsecaseListItem `json:"usecases"`
+}
+
+// SpecUsecaseListItem — элемент списка usecase'ов.
+type SpecUsecaseListItem struct {
+	ID          int64  `json:"id"`
+	UsecaseName string `json:"usecase_name"`
+	Title       string `json:"title,omitempty"`
+	SourceDir   string `json:"source_dir"`
+	UsecaseKind string `json:"usecase_kind"`
+	PageID      int64  `json:"page_id,omitempty"`
 }
 
 // SpecCoverageResult — перечень покрытых код-сущностей, сгруппированных по capability.
@@ -548,23 +567,60 @@ func buildDepTree(ctx context.Context, db *store.DB, capID int64, direction, pro
 	return nodes, rows.Err()
 }
 
-// ExecuteSpecUsecase возвращает usecase со шагами по имени.
-func ExecuteSpecUsecase(ctx context.Context, db *store.DB, usecaseName string) (*SpecUsecaseResult, error) {
-	usecaseName = strings.TrimSpace(usecaseName)
-	if usecaseName == "" {
+// ExecuteSpecUsecase возвращает usecase со шагами по имени или список usecase'ов по продукту.
+// Если name задан — возвращает *SpecUsecaseResult (один usecase).
+// Если name пуст, а product задан — возвращает *SpecUsecaseListResult (список usecase'ов продукта).
+// Если name — число, сначала ищет по page_id, затем fallback на usecase_name.
+func ExecuteSpecUsecase(ctx context.Context, db *store.DB, name string, product string) (interface{}, error) {
+	name = strings.TrimSpace(name)
+	product = strings.TrimSpace(product)
+
+	// Режим списка: product без name
+	if name == "" && product != "" {
+		return executeSpecUsecaseList(ctx, db, product)
+	}
+
+	if name == "" {
 		return nil, errs.ErrSpecSearchEmpty
 	}
 
+	// Поиск по pageId если name — число
 	var uc SpecUsecaseResult
-	err := db.QueryRowContext(ctx, `
-		SELECT id, usecase_name, title, COALESCE(description, ''), COALESCE(actors, ''),
-		       COALESCE(preconditions, ''), COALESCE(postconditions, ''),
-		       source_dir, usecase_kind
-		FROM spec_usecases
-		WHERE usecase_name = $1 OR LOWER(usecase_name) = LOWER($1)
-		LIMIT 1`, usecaseName).Scan(
+	if _, err := strconv.ParseInt(name, 10, 64); err == nil {
+		err := db.QueryRowContext(ctx, `
+			SELECT id, usecase_name, title, COALESCE(description, ''), COALESCE(actors, ''),
+			       COALESCE(preconditions, ''), COALESCE(postconditions, ''),
+			       COALESCE(business_value, ''), source_dir, usecase_kind, COALESCE(page_id, 0)
+			FROM spec_usecases
+			WHERE page_id = $1::bigint
+			LIMIT 1`, name).Scan(
+			&uc.ID, &uc.UsecaseName, &uc.Title, &uc.Description, &uc.Actors,
+			&uc.Preconditions, &uc.Postconditions, &uc.BusinessValue,
+			&uc.SourceDir, &uc.UsecaseKind, &uc.PageID)
+		if err == nil {
+			return finishSpecUsecase(ctx, db, &uc)
+		}
+		// fallback на usecase_name ниже
+	}
+
+	// Поиск по имени (с опциональным фильтром продукта)
+	query := `
+		SELECT su.id, su.usecase_name, su.title, COALESCE(su.description, ''), COALESCE(su.actors, ''),
+		       COALESCE(su.preconditions, ''), COALESCE(su.postconditions, ''),
+		       COALESCE(su.business_value, ''), su.source_dir, su.usecase_kind, COALESCE(su.page_id, 0)
+		FROM spec_usecases su
+		WHERE (su.usecase_name = $1 OR LOWER(su.usecase_name) = LOWER($1))`
+	args := []interface{}{name}
+	if product != "" {
+		query += ` AND EXISTS (SELECT 1 FROM spec_configs sc WHERE sc.id = su.spec_config_id AND LOWER(sc.product_name) = LOWER($2))`
+		args = append(args, product)
+	}
+	query += ` LIMIT 1`
+
+	err := db.QueryRowContext(ctx, query, args...).Scan(
 		&uc.ID, &uc.UsecaseName, &uc.Title, &uc.Description, &uc.Actors,
-		&uc.Preconditions, &uc.Postconditions, &uc.SourceDir, &uc.UsecaseKind)
+		&uc.Preconditions, &uc.Postconditions, &uc.BusinessValue,
+		&uc.SourceDir, &uc.UsecaseKind, &uc.PageID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, errs.ErrSpecNotFound
@@ -572,6 +628,11 @@ func ExecuteSpecUsecase(ctx context.Context, db *store.DB, usecaseName string) (
 		return nil, fmt.Errorf("spec usecase lookup: %w", err)
 	}
 
+	return finishSpecUsecase(ctx, db, &uc)
+}
+
+// finishSpecUsecase загружает шаги и capabilities для найденного usecase.
+func finishSpecUsecase(ctx context.Context, db *store.DB, uc *SpecUsecaseResult) (*SpecUsecaseResult, error) {
 	// Шаги
 	rows, err := db.QueryContext(ctx, `
 		SELECT flow_kind, step_order, step_text
@@ -619,7 +680,31 @@ func ExecuteSpecUsecase(ctx context.Context, db *store.DB, usecaseName string) (
 		uc.Capabilities = append(uc.Capabilities, capability)
 	}
 
-	return &uc, capRows.Err()
+	return uc, capRows.Err()
+}
+
+// executeSpecUsecaseList возвращает список usecase'ов продукта.
+func executeSpecUsecaseList(ctx context.Context, db *store.DB, product string) (*SpecUsecaseListResult, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT su.id, su.usecase_name, COALESCE(su.title, ''), su.source_dir, su.usecase_kind, COALESCE(su.page_id, 0)
+		FROM spec_usecases su
+		JOIN spec_configs sc ON sc.id = su.spec_config_id
+		WHERE LOWER(sc.product_name) = LOWER($1)
+		ORDER BY su.usecase_name`, product)
+	if err != nil {
+		return nil, fmt.Errorf("spec usecase list: %w", err)
+	}
+	defer rows.Close()
+
+	result := &SpecUsecaseListResult{Product: product}
+	for rows.Next() {
+		var item SpecUsecaseListItem
+		if err := rows.Scan(&item.ID, &item.UsecaseName, &item.Title, &item.SourceDir, &item.UsecaseKind, &item.PageID); err != nil {
+			return nil, fmt.Errorf("spec usecase list scan: %w", err)
+		}
+		result.Usecases = append(result.Usecases, item)
+	}
+	return result, rows.Err()
 }
 
 // ExecuteSpecCoverage возвращает перечень покрытых код-сущностей, сгруппированных по capability.

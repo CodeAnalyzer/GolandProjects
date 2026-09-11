@@ -27,6 +27,8 @@ func TestClassifyPath(t *testing.T) {
 		{path: "D:/repo/fa-financialasset/openspec/usecases/fot/REQ-001-SC-001 — Расчет.md", kind: KindUsecase, source: "usecases"},
 		{path: "D:/repo/fa-custody/openspec/business-processes/INDEX.md", kind: KindUsecaseIndex, source: "business-processes"},
 		{path: "D:/repo/fa-custody/openspec/business-processes/Депозитарий/1._БП.md", kind: KindUsecase, source: "business-processes"},
+		{path: "D:/repo/fa-custody/openspec/specs/usecases/scheta-i-zhurnaly/BP-01.md", kind: KindUsecase, source: "usecases"},
+		{path: "D:/repo/fa-custody/openspec/specs/usecases/CAPABILITY-INDEX.md", kind: KindUsecaseIndex, source: "usecases"},
 		{path: "D:/repo/fa-cards/openspec/changes/add-card-limits/proposal.md", kind: KindChangeProposal, change: "add-card-limits"},
 		{path: "D:/repo/fa-cards/openspec/changes/add-card-limits/specs/card-limits/spec.md", kind: KindChangeDelta, change: "add-card-limits", slug: "card-limits"},
 		{path: "D:/repo/fa-cards/openspec/changes/add-card-limits/tasks.md", kind: KindChangeMeta, change: "add-card-limits"},
@@ -334,6 +336,163 @@ func TestParseUsecaseFile_BusinessProcess(t *testing.T) {
 	}
 	if !strings.Contains(uc.Steps[1].StepText, "Создание счетов") {
 		t.Fatalf("step[1] = %q", uc.Steps[1].StepText)
+	}
+}
+
+func TestParseUsecaseFile_UsecasesFormat(t *testing.T) {
+	content := `# Сценарий REQ-001/SC-001 — Расчет ставки налога
+
+Продукт: FA# «Налоговый агент» (FOT/TaxAgent)
+
+## Требование REQ-001
+
+**Описание**: Ставка налога по клиенту без признака иностранного агента.
+
+### Сценарий REQ-001/SC-001 - Расчет ставки налога
+
+**Пользователи и системы**: Система (автоматически); наблюдает Налоговый специалист.
+**Тип сценария**: основной
+**Бизнес-ценность**: Автоматически применяет корректную льготную ставку.
+
+#### Предусловия
+
+- Дата выплаты дохода >= 01.01.2026.
+- Сделка по ЦБ с валютой номинала RUB.
+
+#### Шаги
+
+**Шаг 1**. Загрузка документа выплаты
+**Пользователь/система**: Налоговый специалист / система-источник
+**Действие**: Загрузить в систему документ выплаты дохода
+**Ожидаемый результат**: Документ выплаты дохода загружен в систему.
+
+**Шаг 2**. Формирование НОВД и расчёт налоговых показателей
+**Действие**: Сформировать НОВД по документу выплаты
+**Ожидаемый результат**: НОВД сформирована, ставка налога определена.
+
+#### Постусловия
+
+- По НОВД применена льготная ставка 20%.
+- Ставка налога зафиксирована в карточке расчёта.
+
+**Источник**: RMS-3803951, https://conf.diasoft.ru/pages/viewpage.action?pageId=467512912.
+`
+	cl := Classified{Kind: KindUsecase, SourceDir: "usecases"}
+	uc := ParseUsecaseFile(cl, "REQ-001-SC-001 — Расчет ставки налога.md", content)
+
+	if uc.Kind != "usecase" || uc.SourceDir != "usecases" {
+		t.Fatalf("uc kind/source = %q/%q", uc.Kind, uc.SourceDir)
+	}
+	if uc.Title != "Сценарий REQ-001/SC-001 — Расчет ставки налога" {
+		t.Fatalf("Title = %q", uc.Title)
+	}
+	if !strings.Contains(uc.Description, "Ставка налога") {
+		t.Fatalf("Description = %q", uc.Description)
+	}
+	if !strings.Contains(uc.Actors, "Система") {
+		t.Fatalf("Actors = %q", uc.Actors)
+	}
+	if !strings.Contains(uc.BusinessValue, "льготную ставку") {
+		t.Fatalf("BusinessValue = %q", uc.BusinessValue)
+	}
+	if !strings.Contains(uc.Preconditions, "Дата выплаты") {
+		t.Fatalf("Preconditions = %q", uc.Preconditions)
+	}
+	if !strings.Contains(uc.Postconditions, "льготная ставка 20%") {
+		t.Fatalf("Postconditions = %q", uc.Postconditions)
+	}
+	if uc.PageID != 467512912 {
+		t.Fatalf("PageID = %d, want 467512912", uc.PageID)
+	}
+	if len(uc.Steps) != 2 {
+		t.Fatalf("steps = %d, want 2: %+v", len(uc.Steps), uc.Steps)
+	}
+	if uc.Steps[0].FlowKind != "main" || uc.Steps[0].StepOrder != 1 {
+		t.Fatalf("step[0] = %+v", uc.Steps[0])
+	}
+	if !strings.Contains(uc.Steps[0].StepText, "Загрузка документа выплаты") {
+		t.Fatalf("step[0].Text = %q", uc.Steps[0].StepText)
+	}
+	if uc.Steps[1].StepOrder != 2 {
+		t.Fatalf("step[1].Order = %d", uc.Steps[1].StepOrder)
+	}
+}
+
+func TestParseUsecaseFile_SpecsUsecasesFormat(t *testing.T) {
+	content := `# Приём клиента на обслуживание
+
+**Источник**: бизнес-процесс «Приём клиента», Confluence pageId 403104219 (раздел «Счета и журналы»).
+**Роли и системы**: Оператор; Система (Custody).
+**Бизнес-ценность**: клиент принимается на обслуживание с автоматическим оформлением.
+**Точка старта**: получено поручение на приём на обслуживание.
+
+## Схема процесса
+
+BPMN-схема: [` + "`_bpmn/BP-01.bpmn`" + `](` + "`_bpmn/BP-01.bpmn`" + `).
+
+## Шаги
+
+| Шаг | Пользователь/система | Действие | Ожидаемый результат |
+|---|---|---|---|
+| 0 | Оператор | При отсутствии модуля БО вручную создать поручение | Поручение создано вручную |
+| 1 | Оператор (авто) | От объекта «заявка» создать поручение | Поручение создано автоматически |
+| 2 | Оператор (авто) | Сформировать входящий документ | Входящий документ создан |
+
+## Ветвления
+
+- **WHEN** «Есть модуль БО?» = Да → создание поручения (шаг 1)
+  **ELSE** → ручное создание поручения (шаг 0)
+
+## Постусловия
+
+- Оформлен депозитарный договор; открыты счета и разделы.
+
+## Спеки-компоненты (запчасти)
+
+- ` + "`specs/depo-contract/spec.md`" + ` — шаг 3 (создание договора). Требования: «Ведение договора»
+- ` + "`specs/depo-account/spec.md`" + ` — шаги 4, 8 (открытие счетов). Требования: «Открытие счёта»
+`
+	cl := Classified{Kind: KindUsecase, SourceDir: "usecases"}
+	uc := ParseUsecaseFile(cl, "BP-01 Приём клиента на обслуживание.md", content)
+
+	if uc.Kind != "usecase" {
+		t.Fatalf("Kind = %q", uc.Kind)
+	}
+	if uc.PageID != 403104219 {
+		t.Fatalf("PageID = %d, want 403104219", uc.PageID)
+	}
+	if !strings.Contains(uc.Actors, "Оператор") {
+		t.Fatalf("Actors = %q", uc.Actors)
+	}
+	if !strings.Contains(uc.BusinessValue, "автоматическим оформлением") {
+		t.Fatalf("BusinessValue = %q", uc.BusinessValue)
+	}
+	if !strings.Contains(uc.Architecture, "поручение на приём") {
+		t.Fatalf("Architecture (точка старта) = %q", uc.Architecture)
+	}
+	if !strings.Contains(uc.Postconditions, "депозитарный договор") {
+		t.Fatalf("Postconditions = %q", uc.Postconditions)
+	}
+	// 3 table steps (main) + 1 branching bullet (alternative, **ELSE** is continuation)
+	if len(uc.Steps) != 4 {
+		t.Fatalf("steps = %d, want 4: %+v", len(uc.Steps), uc.Steps)
+	}
+	// Table steps should be main
+	if uc.Steps[0].FlowKind != "main" {
+		t.Fatalf("step[0].FlowKind = %q, want main", uc.Steps[0].FlowKind)
+	}
+	if !strings.Contains(uc.Steps[0].StepText, "создать поручение") {
+		t.Fatalf("step[0].Text = %q", uc.Steps[0].StepText)
+	}
+	// Branching steps should be alternative
+	altSteps := 0
+	for _, s := range uc.Steps {
+		if s.FlowKind == "alternative" {
+			altSteps++
+		}
+	}
+	if altSteps != 1 {
+		t.Fatalf("alternative steps = %d, want 1", altSteps)
 	}
 }
 

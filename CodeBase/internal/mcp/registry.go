@@ -1061,13 +1061,17 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_query_spec_usecase": {
-			Definition: toolDefinition{Name: "codebase_query_spec_usecase", Description: "Return a usecase with its steps and involved entities (capabilities, requirements, code mentions). Returns ErrSpecNotFound if the usecase is not found. Use when you need to understand a user scenario workflow.", InputSchema: querySchema("name", stringProp("Usecase name"), map[string]interface{}{})},
+			Definition: toolDefinition{Name: "codebase_query_spec_usecase", Description: "Return a usecase with its steps and involved entities (capabilities, requirements, code mentions). If 'name' is provided, returns a single usecase (ErrSpecNotFound if not found). If only 'product' is provided, returns a list of usecases for that product. Use when you need to understand a user scenario workflow.", InputSchema: objectSchema(map[string]interface{}{
+				"name":    stringProp("Usecase name (filename without .md, REQ-NNN-SC-NNN, or pageId as number)"),
+				"product": stringProp("DS product name — when provided without 'name', returns list of usecases"),
+			})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				name, err := requiredString(args, "name")
-				if err != nil {
-					return nil, err
+				name, _ := optionalString(args, "name")
+				product, _ := optionalString(args, "product")
+				if name == "" && product == "" {
+					return nil, fmt.Errorf("at least one of 'name' or 'product' must be provided")
 				}
-				return specsvc.ExecuteSpecUsecase(ctx, db, name)
+				return specsvc.ExecuteSpecUsecase(ctx, db, name, product)
 			},
 		},
 		"codebase_query_spec_config": {

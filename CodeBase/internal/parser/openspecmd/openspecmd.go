@@ -89,6 +89,13 @@ func ClassifyPath(path string) Classified {
 		}
 		return Classified{Kind: KindUsecase, RootDir: root, SourceDir: rest[0]}
 
+	// specs/usecases/**/*.md — usecase-слой внутри specs/ (fa-custody convention)
+	case len(rest) >= 2 && strings.EqualFold(rest[0], "specs") && isUsecaseDir(rest[1]) && strings.HasSuffix(baseLower, ".md"):
+		if baseLower == "index.md" || baseLower == "capability-index.md" {
+			return Classified{Kind: KindUsecaseIndex, RootDir: root, SourceDir: rest[1]}
+		}
+		return Classified{Kind: KindUsecase, RootDir: root, SourceDir: rest[1]}
+
 	case strings.EqualFold(rest[0], "changes") && len(rest) >= 2:
 		return classifyChangePath(root, rest)
 
