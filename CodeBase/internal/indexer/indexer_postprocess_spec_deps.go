@@ -143,12 +143,19 @@ func (idx *Indexer) ensureSpecCapabilityHierarchy(ctx context.Context, caps []*m
 }
 
 // extractCapabilityDeps извлекает depends_on_capability из текстов capability.
-// 5 маркеров:
+// Маркеры:
 // 1. markdown-ссылки на другие spec.md → slug
 // 2. "Связан с доменами: `slug1`, `slug2`"
-// 3. inline "(см. `calc-flow`)" — slug по префиксу
-// 4. cci:-хвост в имени capability (cci:dependency-slug)
-// 5. notes/purpose содержат `../specs/<slug>/spec.md`
+// 3. inline "см. `slug`" (со скобками или без, "См. spec `slug`")
+// 4. "поддомену/поддоменам: `slug1`, `slug2`"
+// 5. cci:-хвост в имени capability (cci:dependency-slug)
+// 6. notes/purpose содержат `../specs/<slug>/spec.md` (ExtractSpecReferences)
+// 7. "Связи с доменами: slug (desc), slug (desc)"
+// 8. "Связи с другими доменами: desc (slug, slug), desc (slug)"
+// 9. "Связи с другими spec: slug (desc), slug (desc)"
+// 10. "Связан с `slug`" (без слова "доменами")
+// 11. "Связь с доменом «Name» (slug)"
+// 12. "Связь с spec `slug`"
 func extractCapabilityDeps(cap *model.SpecCapability, slugToID map[string]int64) []*model.Relation {
 	var relations []*model.Relation
 	combinedText := cap.Purpose + "\n" + cap.Notes + "\n" + cap.RelatedCode
@@ -187,7 +194,7 @@ func extractCapabilityDeps(cap *model.SpecCapability, slugToID map[string]int64)
 		}
 	}
 
-	// 3. inline "(см. `calc-flow`)" — slug по префиксу
+	// 3. inline "см. `slug`" (со скобками или без, "См. spec `slug`") — slug по префиксу
 	for _, m := range reSeeAlso.FindAllStringSubmatch(combinedText, -1) {
 		slug := m[1]
 		targetID := resolveSlug(slug, cap.CapabilityName, cap.SpecConfigID, slugToID)
@@ -269,6 +276,112 @@ func extractCapabilityDeps(cap *model.SpecCapability, slugToID map[string]int64)
 				})
 			}
 			_ = dedupKey
+		}
+	}
+
+	// 7. "Связи с доменами: slug (desc), slug (desc)" — plain text slugs перед скобками
+	for _, m := range reDomainsPlural.FindAllStringSubmatch(combinedText, -1) {
+		for _, pm := range rePlainTextSlug.FindAllStringSubmatch(m[1], -1) {
+			slug := pm[1]
+			targetID := resolveSlug(slug, cap.CapabilityName, cap.SpecConfigID, slugToID)
+			if targetID > 0 {
+				relations = append(relations, &model.Relation{
+					SourceType:   "spec_capability",
+					SourceID:     cap.ID,
+					TargetType:   "spec_capability",
+					TargetID:     targetID,
+					RelationType: "depends_on_capability",
+					Confidence:   "notes",
+				})
+			}
+		}
+	}
+
+	// 8. "Связи с другими доменами: desc (slug, slug), desc (slug)" — slugs внутри скобок
+	for _, m := range reOtherDomains.FindAllStringSubmatch(combinedText, -1) {
+		for _, pm := range reParenSlugs.FindAllStringSubmatch(m[1], -1) {
+			for _, slug := range strings.Split(pm[1], ",") {
+				slug = strings.TrimSpace(slug)
+				targetID := resolveSlug(slug, cap.CapabilityName, cap.SpecConfigID, slugToID)
+				if targetID > 0 {
+					relations = append(relations, &model.Relation{
+						SourceType:   "spec_capability",
+						SourceID:     cap.ID,
+						TargetType:   "spec_capability",
+						TargetID:     targetID,
+						RelationType: "depends_on_capability",
+						Confidence:   "notes",
+					})
+				}
+			}
+		}
+	}
+
+	// 9. "Связи с другими spec: slug (desc), slug (desc)" — plain text slugs перед скобками
+	for _, m := range reOtherSpecs.FindAllStringSubmatch(combinedText, -1) {
+		for _, pm := range rePlainTextSlug.FindAllStringSubmatch(m[1], -1) {
+			slug := pm[1]
+			targetID := resolveSlug(slug, cap.CapabilityName, cap.SpecConfigID, slugToID)
+			if targetID > 0 {
+				relations = append(relations, &model.Relation{
+					SourceType:   "spec_capability",
+					SourceID:     cap.ID,
+					TargetType:   "spec_capability",
+					TargetID:     targetID,
+					RelationType: "depends_on_capability",
+					Confidence:   "notes",
+				})
+			}
+		}
+	}
+
+	// 10. "Связан с `slug`" (без слова "доменами") — backtick-wrapped slugs
+	for _, m := range reLinkedNoDomains.FindAllStringSubmatch(combinedText, -1) {
+		for _, slugRaw := range reBacktickSlugs.FindAllString(m[1], -1) {
+			slug := strings.Trim(slugRaw, "`")
+			targetID := resolveSlug(slug, cap.CapabilityName, cap.SpecConfigID, slugToID)
+			if targetID > 0 {
+				relations = append(relations, &model.Relation{
+					SourceType:   "spec_capability",
+					SourceID:     cap.ID,
+					TargetType:   "spec_capability",
+					TargetID:     targetID,
+					RelationType: "depends_on_capability",
+					Confidence:   "notes",
+				})
+			}
+		}
+	}
+
+	// 11. "Связь с доменом «Name» (slug)" — slug в скобках после названия в кавычках
+	for _, m := range reDomainAngle.FindAllStringSubmatch(combinedText, -1) {
+		slug := m[1]
+		targetID := resolveSlug(slug, cap.CapabilityName, cap.SpecConfigID, slugToID)
+		if targetID > 0 {
+			relations = append(relations, &model.Relation{
+				SourceType:   "spec_capability",
+				SourceID:     cap.ID,
+				TargetType:   "spec_capability",
+				TargetID:     targetID,
+				RelationType: "depends_on_capability",
+				Confidence:   "notes",
+			})
+		}
+	}
+
+	// 12. "Связь с spec `slug`" — backtick-wrapped slug
+	for _, m := range reLinkSpec.FindAllStringSubmatch(combinedText, -1) {
+		slug := m[1]
+		targetID := resolveSlug(slug, cap.CapabilityName, cap.SpecConfigID, slugToID)
+		if targetID > 0 {
+			relations = append(relations, &model.Relation{
+				SourceType:   "spec_capability",
+				SourceID:     cap.ID,
+				TargetType:   "spec_capability",
+				TargetID:     targetID,
+				RelationType: "depends_on_capability",
+				Confidence:   "notes",
+			})
 		}
 	}
 
@@ -475,7 +588,16 @@ var (
 	reLinkedDomains  = regexp.MustCompile(`(?i)связан\s+с\s+доменами?\s*:?\s*(.+)`)
 	reSubdomains     = regexp.MustCompile(`(?i)поддомен(?:у|ам|а|ов)?\s*:?\s*(.+)`)
 	reBacktickSlugs  = regexp.MustCompile("`[^`]+`")
-	reSeeAlso        = regexp.MustCompile(`(?i)\(см\.\s*\x60([A-Za-z0-9_\-/]+)\x60\)`)
+	reSeeAlso        = regexp.MustCompile(`(?i)(?:\(?\s*)?см\.\s*(?:spec\s+)?\x60([A-Za-z0-9_\-/]+)\x60(?:\s*\)?)?`)
+	// Новые паттерны для извлечения depends_on_capability из реальных spec-файлов FA
+	reDomainsPlural   = regexp.MustCompile(`(?i)связи\s+с\s+доменами\s*:?\s*(.+)`)
+	reOtherDomains    = regexp.MustCompile(`(?i)связи\s+с\s+другими\s+доменами\s*:?\s*(.+)`)
+	reOtherSpecs      = regexp.MustCompile(`(?i)связи\s+с\s+другими\s+spec\s*:?\s*(.+)`)
+	reLinkedNoDomains = regexp.MustCompile(`(?i)связан\s+с\s+(\x60[^\x60]+\x60(?:\s*,\s*\x60[^\x60]+\x60)*)`)
+	reDomainAngle     = regexp.MustCompile(`(?i)связь\s+с\s+доменом\s+«[^»]+»\s*\(([A-Za-z0-9_\-/]+)\)`)
+	reLinkSpec        = regexp.MustCompile(`(?i)связь\s+с\s+spec\s+\x60([A-Za-z0-9_\-/]+)\x60`)
+	reParenSlugs      = regexp.MustCompile(`\(((?:[a-z0-9_\-/]+(?:\s*,\s*[a-z0-9_\-/]+)*))\)`)
+	rePlainTextSlug   = regexp.MustCompile(`([a-z0-9_\-/]+)\s*\(`)
 )
 
 func normalizeSlugDep(raw string) string {
