@@ -52,6 +52,7 @@ type SpecByCodeHit struct {
 	SourceType     string `json:"source_type"`
 	SourceID       int64  `json:"source_id"`
 	Product        string `json:"product,omitempty"`
+	File           string `json:"file"`
 	LineNumber     int    `json:"line_number"`
 	LineStart      int    `json:"line_start,omitempty"`
 	LineEnd        int    `json:"line_end,omitempty"`
@@ -373,6 +374,7 @@ func ExecuteSpecByCode(ctx context.Context, db *store.DB, name string, limit int
 	rows, err := db.QueryContext(ctx, `
 		SELECT m.source_type, m.source_id, m.mention_kind, m.line_number,
 		       cap.id, cap.capability_name, cap.title, COALESCE(dp.product_name, ''),
+		       COALESCE(f.rel_path, ''),
 		       COALESCE(c.line_start, req.line_start, s.line_start, uc.line_start, 0),
 		       COALESCE(c.line_end, req.line_end, s.line_end, uc.line_end, 0),
 		       COALESCE(
@@ -382,6 +384,7 @@ func ExecuteSpecByCode(ctx context.Context, db *store.DB, name string, limit int
 		           CONCAT_WS(' ', uc.description, uc.actors, uc.preconditions, uc.postconditions)
 		       )
 		FROM spec_code_mentions m
+		JOIN files f ON f.id = m.file_id
 		LEFT JOIN spec_capabilities c ON m.source_type = 'spec_capability' AND c.id = m.source_id
 		LEFT JOIN spec_requirements req ON m.source_type = 'spec_requirement' AND req.id = m.source_id
 		LEFT JOIN spec_scenarios s ON m.source_type = 'spec_scenario' AND s.id = m.source_id
@@ -408,7 +411,7 @@ func ExecuteSpecByCode(ctx context.Context, db *store.DB, name string, limit int
 		var mentionKind string
 		if err := rows.Scan(&hit.SourceType, &hit.SourceID, &mentionKind, &hit.LineNumber,
 			&hit.CapabilityID, &hit.CapabilityName, &hit.Title, &hit.Product,
-			&hit.LineStart, &hit.LineEnd, &hit.Snippet); err != nil {
+			&hit.File, &hit.LineStart, &hit.LineEnd, &hit.Snippet); err != nil {
 			return nil, fmt.Errorf("spec by-code scan: %w", err)
 		}
 		key := fmt.Sprintf("%s|%d|%d", hit.SourceType, hit.SourceID, hit.LineNumber)

@@ -598,3 +598,131 @@ func TestExecuteSpecHistoryByCapability_NoProductFilter(t *testing.T) {
 		t.Fatalf("expected 2 changes without product filter, got %d: %+v", len(res.Changes), res.Changes)
 	}
 }
+
+// insertSpecCodeMentionDirect вставляет spec_code_mention, возвращает id.
+func insertSpecCodeMentionDirect(t *testing.T, db *store.DB, fileID int64, sourceType string, sourceID int64, mentionName, mentionKind string, lineNumber int) int64 {
+	t.Helper()
+	var id int64
+	if err := db.QueryRow(
+		`INSERT INTO spec_code_mentions (file_id, source_type, source_id, mention_name, mention_kind, line_number)
+		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		fileID, sourceType, sourceID, mentionName, mentionKind, lineNumber,
+	).Scan(&id); err != nil {
+		t.Fatalf("insert spec_code_mention %s: %v", mentionName, err)
+	}
+	return id
+}
+
+// insertSpecUsecaseDirect вставляет spec_usecase, возвращает id.
+func insertSpecUsecaseDirect(t *testing.T, db *store.DB, fileID, cfgID int64, usecaseName string) int64 {
+	t.Helper()
+	var id int64
+	if err := db.QueryRow(
+		`INSERT INTO spec_usecases (file_id, spec_config_id, usecase_name, title, source_dir, usecase_kind)
+		 VALUES ($1, $2, $3, 'Test Usecase', 'scenarios', 'scenario') RETURNING id`,
+		fileID, cfgID, usecaseName,
+	).Scan(&id); err != nil {
+		t.Fatalf("insert spec_usecase %s: %v", usecaseName, err)
+	}
+	return id
+}
+
+func TestExecuteSpecByCode_WithFilePath(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	specPath := "specs/billing/invoicing/spec.md"
+	specFile := insertFileDirect(t, db, specPath)
+	capID := insertSpecConfigAndCapabilityDirect(t, db, specFile, "billing/invoicing")
+	insertSpecCodeMentionDirect(t, db, specFile, "spec_capability", capID, "PROC_TEST_INVOICE", "procedure", 10)
+
+	res, err := specsvc.ExecuteSpecByCode(ctx, db, "PROC_TEST_INVOICE", 50)
+	if err != nil {
+		t.Fatalf("ExecuteSpecByCode: %v", err)
+	}
+	if !res.Resolved {
+		t.Fatalf("expected Resolved=true, got false")
+	}
+	if len(res.Hits) == 0 {
+		t.Fatalf("expected non-empty Hits, got 0")
+	}
+	var hit *specsvc.SpecByCodeHit
+	for i := range res.Hits {
+		if res.Hits[i].CapabilityName == "billing/invoicing" {
+			hit = &res.Hits[i]
+			break
+		}
+	}
+	if hit == nil {
+		t.Fatalf("capability billing/invoicing not found in hits: %+v", res.Hits)
+	}
+	if hit.File != specPath {
+		t.Fatalf("hit.File = %q, want %q", hit.File, specPath)
+	}
+}
+
+func TestExecuteSpecByCode_UsecaseMention(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	usecasePath := "scenarios/scenario-test-uc.md"
+	specPath := "specs/billing/invoicing/spec.md"
+
+	usecaseFile := insertFileDirect(t, db, usecasePath)
+	specFile := insertFileDirect(t, db, specPath)
+
+	capID := insertSpecConfigAndCapabilityDirect(t, db, specFile, "billing/invoicing")
+
+	// spec_usecase привязан к usecase-файлу, но использует тот же spec_config.
+	var cfgID int64
+	if err := db.QueryRow(`SELECT spec_config_id FROM spec_capabilities WHERE id = $1`, capID).Scan(&cfgID); err != nil {
+		t.Fatalf("get spec_config_id: %v", err)
+	}
+	ucID := insertSpecUsecaseDirect(t, db, usecaseFile, cfgID, "scenario-test-uc")
+
+	// Связь usecase → capability (usecase_involves).
+	insertRelationDirect(t, db, "spec_usecase", ucID, "spec_capability", capID, "usecase_involves", "explicit")
+
+	// Упоминание код-сущности в usecase-файле.
+	insertSpecCodeMentionDirect(t, db, usecaseFile, "spec_usecase", ucID, "PROC_TEST_USECASE", "procedure", 5)
+
+	res, err := specsvc.ExecuteSpecByCode(ctx, db, "PROC_TEST_USECASE", 50)
+	if err != nil {
+		t.Fatalf("ExecuteSpecByCode: %v", err)
+	}
+	if !res.Resolved {
+		t.Fatalf("expected Resolved=true, got false")
+	}
+	if len(res.Hits) == 0 {
+		t.Fatalf("expected non-empty Hits, got 0")
+	}
+	var hit *specsvc.SpecByCodeHit
+	for i := range res.Hits {
+		if res.Hits[i].CapabilityName == "billing/invoicing" {
+			hit = &res.Hits[i]
+			break
+		}
+	}
+	if hit == nil {
+		t.Fatalf("capability billing/invoicing not found in hits: %+v", res.Hits)
+	}
+	if hit.File != usecasePath {
+		t.Fatalf("hit.File = %q, want %q (usecase file, not spec.md)", hit.File, usecasePath)
+	}
+}
+
+func TestExecuteSpecByCode_NotFound(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	res, err := specsvc.ExecuteSpecByCode(ctx, db, "NONEXISTENT_PROC_12345", 50)
+	if err != nil {
+		t.Fatalf("ExecuteSpecByCode: %v", err)
+	}
+	if res.Resolved {
+		t.Fatalf("expected Resolved=false, got true")
+	}
+	if len(res.Hits) != 0 {
+		t.Fatalf("expected 0 hits, got %d: %+v", len(res.Hits), res.Hits)
+	}
+}
