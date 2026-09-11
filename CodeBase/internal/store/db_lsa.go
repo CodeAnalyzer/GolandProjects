@@ -34,6 +34,49 @@ func (db *DB) LoadAllSpecCapabilitiesForLSA(ctx context.Context) ([]model.SpecCa
 	return result, rows.Err()
 }
 
+// LoadAllSpecCapabilitiesWithReqsForLSA загружает все capability с агрегированным текстом
+// требований и сценариев (LSAText) для обучения LSA. Агрегация детерминирована:
+// string_agg с ORDER BY, NULL-поля пропускаются через concat_ws, текст требования
+// предшествует сценариям этого же требования (interleave по req_order).
+func (db *DB) LoadAllSpecCapabilitiesWithReqsForLSA(ctx context.Context) ([]model.SpecCapability, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT c.id, c.title, c.purpose, c.notes,
+		       COALESCE((
+		           SELECT string_agg(t.part, ' ' ORDER BY t.ord1, t.ord2, t.ord3, t.id)
+		           FROM (
+		               SELECT req.req_order AS ord1, 0 AS ord2, 0 AS ord3, req.id AS id,
+		                      concat_ws(' ', req.requirement_name, req.body_text) AS part
+		               FROM spec_requirements req
+		               WHERE req.capability_id = c.id
+		               UNION ALL
+		               SELECT req.req_order, 1, s.scn_order, s.id,
+		                      concat_ws(' ', s.scenario_name, s.given_text, s.when_text, s.then_text)
+		               FROM spec_scenarios s
+		               JOIN spec_requirements req ON req.id = s.requirement_id
+		               WHERE req.capability_id = c.id
+		           ) t
+		       ), '')
+		FROM spec_capabilities c
+		ORDER BY c.id`)
+	if err != nil {
+		return nil, fmt.Errorf("LoadAllSpecCapabilitiesWithReqsForLSA: %w", err)
+	}
+	defer rows.Close()
+
+	var result []model.SpecCapability
+	for rows.Next() {
+		var c model.SpecCapability
+		var purpose, notes sql.NullString
+		if err := rows.Scan(&c.ID, &c.Title, &purpose, &notes, &c.LSAText); err != nil {
+			return nil, fmt.Errorf("LoadAllSpecCapabilitiesWithReqsForLSA scan: %w", err)
+		}
+		c.Purpose = purpose.String
+		c.Notes = notes.String
+		result = append(result, c)
+	}
+	return result, rows.Err()
+}
+
 // CountSpecCapabilities возвращает количество capability в БД.
 func (db *DB) CountSpecCapabilities(ctx context.Context) (int, error) {
 	var count int

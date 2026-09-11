@@ -80,11 +80,11 @@ func (v *Vocab) TFIDFMatrix(docs []Document) *DenseMatrix {
 	m := NewDenseMatrix(nDocs, nTerms)
 
 	for i, doc := range docs {
-		stems := TokenizeToStems(doc.Text)
+		counts := TokenizeToStemCounts(doc.Text)
 		tf := make(map[int]float64)
-		for _, s := range stems {
-			if idx, ok := v.Index[s]; ok {
-				tf[idx]++
+		for stem, count := range counts {
+			if idx, ok := v.Index[stem]; ok {
+				tf[idx] = float64(count)
 			}
 		}
 		// TF = 1 + log(count), weight = TF * IDF
@@ -113,11 +113,11 @@ func (v *Vocab) TFIDFMatrix(docs []Document) *DenseMatrix {
 func (v *Vocab) ProjectQuery(query string, vt *DenseMatrix) []float64 {
 	nTerms := len(v.Terms)
 	q := make([]float64, nTerms)
-	stems := TokenizeToStems(query)
+	counts := TokenizeToStemCounts(query)
 	tf := make(map[int]float64)
-	for _, s := range stems {
-		if idx, ok := v.Index[s]; ok {
-			tf[idx]++
+	for stem, count := range counts {
+		if idx, ok := v.Index[stem]; ok {
+			tf[idx] = float64(count)
 		}
 	}
 	for j, count := range tf {

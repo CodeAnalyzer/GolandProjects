@@ -4,15 +4,75 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
+	"time"
 
 	"github.com/codebase/internal/config"
 	"github.com/codebase/internal/model"
 	"github.com/codebase/internal/specfts"
 )
 
+// lsaRetrainDecision — решение машины состояний переобучения LSA.
+type lsaRetrainDecision int
+
+const (
+	lsaDecisionRetrain       lsaRetrainDecision = iota // переобучить на текущем корпусе
+	lsaDecisionSkipIdempotent                          // fingerprint совпал — модель актуальна
+	lsaDecisionDefer                                   // корпус изменился, порог не достигнут — отложить
+)
+
+// lsaDecisionInput — входные данные решения о переобучении.
+type lsaDecisionInput struct {
+	State       *specfts.LSAState // nil — state отсутствует (первый запуск или миграция)
+	Fingerprint string            // fingerprint текущего корпуса
+	Params      specfts.LSAParams // текущие параметры модели из конфига
+	CorpusDelta int               // изменённые сущности спек за прогон (cap + req + scn)
+	DeletedCaps int               // оценка удалённых capability: state.NumDocs - nDocs (>= 0)
+	Threshold   int               // порог накопленных изменений; 0 = переобучать при любом изменении
+}
+
+// decideLSARetrain — чистая функция принятия решения о переобучении (тестируется без БД).
+//
+// Особенность конвейера: удаление устаревших файлов применяется ПОСЛЕ пост-обработки,
+// поэтому в прогоне удаления корпус в БД ещё не изменился (fingerprint совпадает),
+// а реальное изменение корпуса фиксируется следующим прогоном через DeletedCaps
+// и отличие fingerprint — переобучение отстаёт на один прогон, это корректно:
+// обучаться в прогоне удаления означало бы включить удалённые сущности.
+func decideLSARetrain(in lsaDecisionInput) (lsaRetrainDecision, int) {
+	if in.State == nil {
+		// Нет state: модель не обучена либо миграция со старой версии — обучаем.
+		return lsaDecisionRetrain, 0
+	}
+	if in.State.Algorithm != specfts.AlgorithmVersion {
+		// Смена алгоритма обучения (код) — переобучаем безусловно,
+		// амортизация порогом на это не распространяется.
+		return lsaDecisionRetrain, 0
+	}
+	if in.State.Params != in.Params {
+		// Смена параметров модели (min_df/max_df/k) — действие оператора:
+		// применяем немедленно, амортизация предназначена только для дрейфа корпуса.
+		return lsaDecisionRetrain, 0
+	}
+	if in.State.Fingerprint == in.Fingerprint {
+		// Корпус и параметры идентичны обученным — идемпотентный пропуск.
+		return lsaDecisionSkipIdempotent, in.State.Pending
+	}
+	delta := in.CorpusDelta + in.DeletedCaps
+	if delta < 1 {
+		// Fingerprint отличается — минимум одно изменение есть (например,
+		// удаление capability, не зафиксированное в статистике прогона).
+		delta = 1
+	}
+	if in.State.Pending+delta >= in.Threshold {
+		return lsaDecisionRetrain, 0
+	}
+	return lsaDecisionDefer, in.State.Pending + delta
+}
+
 // postProcessSpecLSA выполняет LSA-обучение и вставку vocab/embeddings.
 // Вызывается после всех параллельных постпроцессоров и профилирования продукта.
+// Политика переобучения: fingerprint корпуса (тексты + параметры + версии) и
+// кумулятивный порог изменений — см. decideLSARetrain и openspec change
+// lsa-quality-improvement (design D2).
 func (idx *Indexer) postProcessSpecLSA(ctx context.Context, collector *statsCollector) {
 	cfg := config.Get()
 	if cfg == nil || !cfg.Spec.LSAEnabled {
@@ -20,12 +80,42 @@ func (idx *Indexer) postProcessSpecLSA(ctx context.Context, collector *statsColl
 	}
 
 	stats := collector.Snapshot()
+	params := specfts.LSAParams{
+		MinDF: cfg.Spec.LSAMinDF,
+		MaxDF: cfg.Spec.LSAMaxDF,
+		K:     cfg.Spec.LSAK,
+	}
 
-	// Подсчёт изменённых capability
-	changedCount := stats.SpecCapabilities
+	modelPath := cfg.Spec.LSAModelPath
+	if modelPath == "" {
+		modelPath = filepath.Join(filepath.Dir(config.GetConfigFile()), "spec_lsa_model.bin")
+	}
+	statePath := filepath.Join(filepath.Dir(modelPath), "spec_lsa_state.json")
 
-	// Загрузка всех capability
-	caps, err := idx.db.LoadAllSpecCapabilitiesForLSA(ctx)
+	// Изменённые за прогон сущности спек: capability + requirements + scenarios.
+	corpusDelta := stats.SpecCapabilities + stats.SpecRequirements + stats.SpecScenarios
+
+	state, err := specfts.LoadLSAState(statePath)
+	if err != nil {
+		idx.logError("<post-processing>", "spec-lsa: state load error (treating as missing): %v", err)
+		state = nil
+	}
+
+	// Быстрый путь: за прогон 0 изменений спек, параметры и версия алгоритма
+	// совпадают — корпус не грузим.
+	if state != nil && state.Params == params && state.Algorithm == specfts.AlgorithmVersion && corpusDelta == 0 {
+		if _, err := os.Stat(modelPath); err == nil {
+			return
+		}
+	}
+
+	setStage := func(stage string) {
+		collector.Add(func(stats *model.ScanStats) { stats.Stage = stage })
+	}
+	defer setStage("") // сброс стадии для прогресс-репортера при любом выходе
+
+	setStage("spec-lsa: load corpus")
+	caps, err := idx.db.LoadAllSpecCapabilitiesWithReqsForLSA(ctx)
 	if err != nil {
 		idx.logError("<post-processing>", "spec-lsa: error loading capabilities: %v", err)
 		return
@@ -35,44 +125,58 @@ func (idx *Indexer) postProcessSpecLSA(ctx context.Context, collector *statsColl
 	if nDocs == 0 {
 		return
 	}
-
-	// Проверка минимального размера корпуса
 	if nDocs < cfg.Spec.LSAMinCorpus {
 		return
 	}
 
-	modelPath := cfg.Spec.LSAModelPath
-	if modelPath == "" {
-		modelPath = filepath.Join(filepath.Dir(config.GetConfigFile()), "spec_lsa_model.bin")
+	// Сборка документов: title×2 + purpose + notes + тексты требований и сценариев.
+	docs := make([]specfts.Document, nDocs)
+	for i, c := range caps {
+		docs[i] = specfts.Document{
+			ID:   c.ID,
+			Text: specfts.LSADocText(c.Title, c.Purpose, c.Notes, c.LSAText),
+		}
+	}
+	fingerprint := specfts.CorpusFingerprint(docs, params)
+
+	deletedCaps := 0
+	if state != nil && state.NumDocs > nDocs {
+		deletedCaps = state.NumDocs - nDocs
 	}
 
-	// Проверка порога пересчёта (только для update, не init)
-	// При init (changedCount == nDocs) — всегда обучаем
-	// При update — если changedCount >= threshold
-	if _, err := os.Stat(modelPath); err == nil && changedCount < nDocs && changedCount < cfg.Spec.LSARetrainThreshold {
+	decision, newPending := decideLSARetrain(lsaDecisionInput{
+		State:       state,
+		Fingerprint: fingerprint,
+		Params:      params,
+		CorpusDelta: corpusDelta,
+		DeletedCaps: deletedCaps,
+		Threshold:   cfg.Spec.RetrainThreshold(),
+	})
+
+	switch decision {
+	case lsaDecisionSkipIdempotent:
+		return
+	case lsaDecisionDefer:
+		state.Pending = newPending
+		if err := specfts.SaveLSAState(statePath, state); err != nil {
+			idx.logError("<post-processing>", "spec-lsa: state save error: %v", err)
+		}
 		return
 	}
 
-	// Сборка документов
-	docs := make([]specfts.Document, nDocs)
-	for i, c := range caps {
-		text := strings.Join([]string{c.Title, c.Purpose, c.Notes}, " ")
-		docs[i] = specfts.Document{
-			ID:   c.ID,
-			Text: text,
-		}
-	}
-
 	// Построение словаря
+	setStage("spec-lsa: build vocab")
 	vocab := specfts.BuildVocab(docs, cfg.Spec.LSAMinDF, cfg.Spec.LSAMaxDF)
 	if len(vocab.Terms) == 0 {
 		return
 	}
 
 	// TF-IDF матрица
+	setStage("spec-lsa: tf-idf matrix")
 	tfidf := vocab.TFIDFMatrix(docs)
 
 	// SVD
+	setStage("spec-lsa: svd (may take 1-2 min)")
 	k := cfg.Spec.LSAK
 	u, s, vt, err := specfts.SVD(tfidf, k)
 	if err != nil {
@@ -86,6 +190,7 @@ func (idx *Indexer) postProcessSpecLSA(ctx context.Context, collector *statsColl
 	actualK := len(s)
 
 	// Сохранение модели в файл
+	setStage("spec-lsa: save model + vocab + embeddings")
 	lsaModel := &specfts.LSAModel{
 		Vocab:     vocab,
 		VT:        vt,
@@ -126,7 +231,7 @@ func (idx *Indexer) postProcessSpecLSA(ctx context.Context, collector *statsColl
 	embeddings := make([]model.SpecEmbedding, nDocs)
 	for i, c := range caps {
 		emb := specfts.DocEmbedding(u, s, i)
-		embedText := strings.Join([]string{c.Title, c.Purpose, c.Notes}, " ")
+		embedText := specfts.LSADocText(c.Title, c.Purpose, c.Notes, c.LSAText)
 		embeddings[i] = model.SpecEmbedding{
 			SpecID:      c.ID,
 			EmbedLevel:  "spec",
@@ -140,8 +245,17 @@ func (idx *Indexer) postProcessSpecLSA(ctx context.Context, collector *statsColl
 		idx.logError("<post-processing>", "spec-lsa: insert embeddings error: %v", err)
 		return
 	}
-	// Проверка что файл модели существует
-	if _, err := os.Stat(modelPath); err != nil {
-		idx.logError("<post-processing>", "spec-lsa: model file not found after save: %v", err)
+
+	// Модель и её состояние сохранены атомарно по факту успеха: state пишется последним,
+	// при ошибке обучения выше state остаётся прежним и следующий прогон повторит попытку.
+	if err := specfts.SaveLSAState(statePath, &specfts.LSAState{
+		Fingerprint: fingerprint,
+		Pending:     0,
+		Params:      params,
+		Algorithm:   specfts.AlgorithmVersion,
+		NumDocs:     nDocs,
+		TrainedAt:   time.Now(), // локальное время оператора
+	}); err != nil {
+		idx.logError("<post-processing>", "spec-lsa: state save error: %v", err)
 	}
 }

@@ -357,5 +357,6 @@ func (idx *Indexer) runPostProcessingParallel(ctx context.Context, collector *st
 
 	// LSA-обучение запускается после всех spec-постпроцессоров,
 	// т.к. зависит от финального состояния spec_capabilities.
+	// (postProcessSpecLSA выставляет собственные стадии spec-lsa: ...)
 	idx.postProcessSpecLSA(ctx, collector)
 }

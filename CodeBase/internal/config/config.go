@@ -81,13 +81,41 @@ type MCPConfig struct {
 
 // SpecConfig конфигурация полнотекстового слоя OpenSpec (LSA)
 type SpecConfig struct {
-	LSAEnabled       bool    `toml:"lsa_enabled"`         // включить LSA-постпроцессинг (default: true)
-	LSAK             int     `toml:"lsa_k"`               // размерность LSA (default: 128)
-	LSAMinDF         int     `toml:"lsa_min_df"`          // минимальная document frequency (default: 3)
-	LSAMaxDF         float64 `toml:"lsa_max_df"`          // максимальная доля документов (default: 0.3)
-	LSAMinCorpus     int     `toml:"lsa_min_corpus"`      // минимальный размер корпуса для обучения (default: 100)
-	LSARetrainThreshold int  `toml:"lsa_retrain_threshold"` // порог изменённых capability для пересчёта (default: 50)
-	LSAModelPath     string  `toml:"lsa_model_path"`      // путь к файлу модели (default: рядом с БД)
+	LSAEnabled          bool     `toml:"lsa_enabled"`           // включить LSA-постпроцессинг (default: true)
+	LSAK                int      `toml:"lsa_k"`                 // размерность LSA (default: 512 — по данным lsaktune поднимает редкие термины в топ-5)
+	LSAMinDF            int      `toml:"lsa_min_df"`            // минимальная document frequency (default: 3)
+	LSAMaxDF            float64  `toml:"lsa_max_df"`            // максимальная доля документов (default: 0.3)
+	LSAMinCorpus        int      `toml:"lsa_min_corpus"`        // минимальный размер корпуса для обучения (default: 100)
+	LSARetrainThreshold *int     `toml:"lsa_retrain_threshold"` // порог накопленных изменений для амортизации переобучения; nil = 100, явный 0 = переобучать при любом изменении fingerprint
+	LSAModelPath        string   `toml:"lsa_model_path"`        // путь к файлу модели (default: рядом с БД)
+	LSAMinCosine        *float64 `toml:"lsa_min_cosine"`        // минимальный cosine для semantic-хита; nil = 0.15, 0 = без абсолютного фильтра
+	LSARelativeCutoff   *float64 `toml:"lsa_relative_cutoff"`   // относительный cutoff: доля от maxRank; nil = 0.5, 0 = без relative cutoff
+}
+
+// RetrainThreshold возвращает эффективный порог накопленных изменений.
+// Дефолт 100 — амортизация дорогого SVD (замер: ~97 c на корпусе 2322 capability);
+// явный 0 отключает амортизацию («переобучать при любом изменении fingerprint»).
+func (s SpecConfig) RetrainThreshold() int {
+	if s.LSARetrainThreshold == nil {
+		return 100
+	}
+	return *s.LSARetrainThreshold
+}
+
+// MinCosine возвращает эффективное значение абсолютного порога cosine.
+func (s SpecConfig) MinCosine() float64 {
+	if s.LSAMinCosine == nil {
+		return 0.15
+	}
+	return *s.LSAMinCosine
+}
+
+// RelativeCutoff возвращает эффективное значение относительного cutoff.
+func (s SpecConfig) RelativeCutoff() float64 {
+	if s.LSARelativeCutoff == nil {
+		return 0.5
+	}
+	return *s.LSARelativeCutoff
 }
 
 var (
@@ -232,7 +260,7 @@ func Load() error {
 
 	// Spec defaults
 	if cfg.Spec.LSAK <= 0 {
-		cfg.Spec.LSAK = 128
+		cfg.Spec.LSAK = 512
 	}
 	if cfg.Spec.LSAMinDF <= 0 {
 		cfg.Spec.LSAMinDF = 3
@@ -243,8 +271,18 @@ func Load() error {
 	if cfg.Spec.LSAMinCorpus <= 0 {
 		cfg.Spec.LSAMinCorpus = 100
 	}
-	if cfg.Spec.LSARetrainThreshold <= 0 {
-		cfg.Spec.LSARetrainThreshold = 50
+	// LSARetrainThreshold: дефолт применяется через геттер RetrainThreshold();
+	// явный 0 легален («переобучать при любом изменении»), отрицательные значения — ошибка.
+	if cfg.Spec.LSARetrainThreshold != nil && *cfg.Spec.LSARetrainThreshold < 0 {
+		return fmt.Errorf("spec.lsa_retrain_threshold must be >= 0, got %d", *cfg.Spec.LSARetrainThreshold)
+	}
+	// Пороги semantic-фильтрации: nil → дефолты применяются через методы-геттеры;
+	// явные значения обязаны лежать в [0, 1].
+	if cfg.Spec.LSAMinCosine != nil && (*cfg.Spec.LSAMinCosine < 0 || *cfg.Spec.LSAMinCosine > 1) {
+		return fmt.Errorf("spec.lsa_min_cosine must be in [0, 1], got %v", *cfg.Spec.LSAMinCosine)
+	}
+	if cfg.Spec.LSARelativeCutoff != nil && (*cfg.Spec.LSARelativeCutoff < 0 || *cfg.Spec.LSARelativeCutoff > 1) {
+		return fmt.Errorf("spec.lsa_relative_cutoff must be in [0, 1], got %v", *cfg.Spec.LSARelativeCutoff)
 	}
 
 	return nil
@@ -338,16 +376,26 @@ func CreateDefault(rootPath string) *Config {
 		},
 		Spec: SpecConfig{
 			LSAEnabled:          true,
-			LSAK:                128,
+			LSAK:                512,
 			LSAMinDF:            3,
 			LSAMaxDF:            0.3,
 			LSAMinCorpus:        100,
-			LSARetrainThreshold: 50,
+			LSARetrainThreshold: intPtr(100),
+			LSAMinCosine:        float64Ptr(0.15),
+			LSARelativeCutoff:   float64Ptr(0.5),
 		},
 	}
 	return cfg
 }
 
 func boolPtr(v bool) *bool {
+	return &v
+}
+
+func float64Ptr(v float64) *float64 {
+	return &v
+}
+
+func intPtr(v int) *int {
 	return &v
 }

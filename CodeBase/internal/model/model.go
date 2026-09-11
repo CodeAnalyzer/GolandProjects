@@ -432,6 +432,10 @@ type ScanStats struct {
 	ProcessMs     int64 // wall-clock: завершение walk+save → завершение пула (Update only; 0 для Init)
 	PostProcessMs int64 // пост-обработка relations
 	CleanupMs     int64 // удаление устаревших/исчезнувших файлов (только update)
+
+	// Stage — текущая длинная стадия для прогресс-репортера
+	// (например, "spec-lsa: svd (may take 1-2 min)"). Пусто — стадия не активна.
+	Stage string
 }
 
 // APIBusinessObject бизнес-объект DSArchitect.
@@ -664,6 +668,7 @@ type SpecCapability struct {
 	Purpose        string
 	Notes          string
 	RelatedCode    string
+	LSAText        string // агрегированный текст требований и сценариев для LSA (заполняется при загрузке для обучения)
 	LineStart      int
 	LineEnd        int
 	ApiTotal       *int // покрытие из Notes; nil = считать из relations

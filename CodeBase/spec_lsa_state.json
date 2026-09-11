@@ -1,0 +1,12 @@
+{
+  "fingerprint": "3f80918500fba6c09e40a404924d9ca4c54fd718d81c87e2d9ecce9c914f41ac",
+  "pending": 0,
+  "params": {
+    "min_df": 3,
+    "max_df": 0.3,
+    "k": 512
+  },
+  "algorithm": 2,
+  "num_docs": 2322,
+  "trained_at": "2026-09-11T19:03:10.2167843+03:00"
+}

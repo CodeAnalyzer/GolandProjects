@@ -1698,6 +1698,8 @@ func startProgressReporter(mode string, snapshot func() model.ScanStats) func() 
 	done := make(chan struct{})
 	var once sync.Once
 	frames := []rune{'|', '/', '-', '\\'}
+	lastLen := 0 // длина предыдущей строки: новая дополняется пробелами,
+	// чтобы затирать более длинный предыдущий кадр (артефакты \r)
 
 	go func() {
 		ticker := time.NewTicker(progressInterval)
@@ -1707,13 +1709,17 @@ func startProgressReporter(mode string, snapshot func() model.ScanStats) func() 
 		for {
 			select {
 			case <-done:
-				fmt.Printf("\r%s %s\n", mode, strings.Repeat(" ", 80))
+				clear := lastLen
+				if clear < 80 {
+					clear = 80
+				}
+				fmt.Printf("\r%s\r", strings.Repeat(" ", clear))
 				return
 			case <-ticker.C:
 				stats := snapshot()
 				frame := frames[frameIndex%len(frames)]
-				fmt.Printf(
-					"\r%s %c scanned=%d indexed=%d post-processed=%d errors=%d",
+				line := fmt.Sprintf(
+					"%s %c scanned=%d indexed=%d post-processed=%d errors=%d",
 					mode,
 					frame,
 					stats.FilesScanned,
@@ -1721,6 +1727,16 @@ func startProgressReporter(mode string, snapshot func() model.ScanStats) func() 
 					stats.PostProcessed,
 					stats.Errors,
 				)
+				if stats.Stage != "" {
+					// Длинная стадия (например, LSA SVD ~1-2 мин) — показываем,
+					// чтобы прогресс не выглядел зависшим.
+					line += " | " + stats.Stage
+				}
+				if len(line) < lastLen {
+					line += strings.Repeat(" ", lastLen-len(line))
+				}
+				lastLen = len(line)
+				fmt.Printf("\r%s", line)
 				frameIndex++
 			}
 		}

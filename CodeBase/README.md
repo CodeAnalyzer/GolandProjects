@@ -1206,7 +1206,7 @@ CodeBase/
 - Упоминания кода извлекаются из Related code, inline-текстов требований/сценариев и delta-текстов; разрешаются в пост-обработке в relations `references_code`.
 - Строятся relations: `depends_on_capability` (5 маркеров: markdown-ссылки, «Связан с доменами», inline-упоминания, cci:-хвост, sibling-резолв), `change_modifies` (из delta и proposal-извлечений).
 - Dual-write: spec-сущности дублируются в `symbols` для unified `query symbol`.
-- Полнотекстовый поиск: лексический слой (tsvector 'russian' + pg_trgm) + семантический слой (TF-IDF + LSA через gonum, k=128). Модель пересчитывается при достижении порога изменённых capability.
+- Полнотекстовый поиск: лексический слой (tsvector 'russian' + pg_trgm) + семантический слой (TF-IDF + LSA через gonum, k=512 (настраивается)). Модель пересчитывается при достижении порога изменённых capability.
 - Профиль продукта детектируется автоматически: usecase_layout, id_style, has_changes, has_adr, normative_lang, cross_ref_style.
 - Инкрементальность: `codebase update` переиндексирует только изменённые `.md`/`.yaml` файлы.
 

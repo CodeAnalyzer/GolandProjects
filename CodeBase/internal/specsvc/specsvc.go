@@ -19,8 +19,19 @@ import (
 
 // SpecSearchResult — результат двухслойного поиска по спекам.
 type SpecSearchResult struct {
-	Exact    []SpecSearchHit `json:"exact"`
-	Semantic []SpecSearchHit `json:"semantic,omitempty"`
+	Exact        []SpecSearchHit `json:"exact"`
+	Semantic     []SpecSearchHit `json:"semantic,omitempty"`
+	SemanticMeta *SpecSearchMeta `json:"semantic_meta,omitempty"`
+}
+
+// SpecSearchMeta — диагностика semantic-секции: почему пуста или какие термины
+// запроса не вошли в словарь LSA.
+type SpecSearchMeta struct {
+	FilteredOut int      `json:"filtered_out,omitempty"` // сколько кандидатов отсеяно порогами
+	Threshold   float64  `json:"threshold,omitempty"`    // применённый абсолютный порог cosine
+	Reason      string   `json:"reason,omitempty"`       // threshold | oov
+	OOVTerms    []string `json:"oov_terms,omitempty"`    // стемы запроса вне словаря LSA
+	Hint        string   `json:"hint,omitempty"`         // подсказка для пользователя
 }
 
 type SpecSearchHit struct {
@@ -366,9 +377,10 @@ func ExecuteSpecSearch(ctx context.Context, db *store.DB, query string, product 
 
 	// Слой 2: semantic — LSA через spec_embeddings
 	if (layer == "semantic" || layer == "both") && (level == "" || strings.EqualFold(level, "capability")) {
-		semantic, err := searchSpecSemantic(ctx, db, query, product, limit)
+		semantic, meta, err := searchSpecSemantic(ctx, db, query, product, limit)
 		if err == nil {
 			result.Semantic = semantic
+			result.SemanticMeta = meta
 		}
 	}
 
@@ -1137,10 +1149,59 @@ func searchSpecArtifacts(ctx context.Context, db *store.DB, query, product, leve
 	return hits, rows.Err()
 }
 
+// filterSemanticHits фильтрует semantic-хиты: абсолютный порог → сортировка DESC →
+// относительный cutoff (доля от maxRank) → limit. Чистая функция, тестируется без БД.
+func filterSemanticHits(hits []SpecSearchHit, minCosine, relativeCutoff float64, limit int) []SpecSearchHit {
+	filtered := make([]SpecSearchHit, 0, len(hits))
+	for _, hit := range hits {
+		if hit.Rank > minCosine {
+			filtered = append(filtered, hit)
+		}
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		return filtered[i].Rank > filtered[j].Rank
+	})
+	if len(filtered) > 0 && relativeCutoff > 0 {
+		cutoff := relativeCutoff * filtered[0].Rank
+		kept := filtered[:0]
+		for _, hit := range filtered {
+			if hit.Rank >= cutoff {
+				kept = append(kept, hit)
+			}
+		}
+		filtered = kept
+	}
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	return filtered
+}
+
+// oovQueryStems возвращает стемы запроса, отсутствующие в словаре модели.
+func oovQueryStems(query string, vocab *specfts.Vocab) []string {
+	stems := specfts.TokenizeToStems(query)
+	var oov []string
+	for _, s := range stems {
+		if _, ok := vocab.Index[s]; !ok {
+			oov = append(oov, s)
+		}
+	}
+	return oov
+}
+
 // searchSpecSemantic — LSA поиск через spec_embeddings.
-func searchSpecSemantic(ctx context.Context, db *store.DB, query, product string, limit int) ([]SpecSearchHit, error) {
+// Возвращает диагностику: OOV-термины запроса и причину пустой секции.
+func searchSpecSemantic(ctx context.Context, db *store.DB, query, product string, limit int) ([]SpecSearchHit, *SpecSearchMeta, error) {
+	cfg := config.Get()
+	minCosine := 0.15
+	relativeCutoff := 0.5
+	if cfg != nil {
+		minCosine = cfg.Spec.MinCosine()
+		relativeCutoff = cfg.Spec.RelativeCutoff()
+	}
+
 	modelPath := filepath.Join(filepath.Dir(config.GetConfigFile()), "spec_lsa_model.bin")
-	if cfg := config.Get(); cfg != nil && cfg.Spec.LSAModelPath != "" {
+	if cfg != nil && cfg.Spec.LSAModelPath != "" {
 		modelPath = cfg.Spec.LSAModelPath
 		if !filepath.IsAbs(modelPath) {
 			modelPath = filepath.Join(filepath.Dir(config.GetConfigFile()), modelPath)
@@ -1148,11 +1209,11 @@ func searchSpecSemantic(ctx context.Context, db *store.DB, query, product string
 	}
 	model, err := specfts.LoadLSAModel(modelPath)
 	if err != nil || model.Vocab == nil || model.VT == nil {
-		return nil, errs.ErrSpecModelNotFound
+		return nil, nil, errs.ErrSpecModelNotFound
 	}
 	queryVec := model.Vocab.ProjectQuery(query, model.VT)
 	if len(queryVec) == 0 {
-		return nil, errs.ErrSpecModelNotFound
+		return nil, nil, errs.ErrSpecModelNotFound
 	}
 
 	rows, err := db.QueryContext(ctx, `
@@ -1165,7 +1226,7 @@ func searchSpecSemantic(ctx context.Context, db *store.DB, query, product string
 		WHERE se.embed_level = 'spec' AND ($1 = '' OR dp.product_name = $1)
 		ORDER BY se.spec_id`, product)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 
@@ -1175,34 +1236,51 @@ func searchSpecSemantic(ctx context.Context, db *store.DB, query, product string
 		var embArr string
 		if err := rows.Scan(&hit.CapabilityID, &embArr, &hit.CapabilityName, &hit.Title,
 			&hit.Purpose, &hit.LineStart, &hit.LineEnd, &hit.Snippet, &hit.Product); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		emb := parsePGFloatArray(embArr)
 		if len(emb) != len(queryVec) {
 			continue
 		}
 		hit.Rank = specfts.CosineSimilarity(queryVec, emb)
-		if hit.Rank <= 0.01 {
-			continue
-		}
 		hit.EntityID = hit.CapabilityID
 		hit.Level = "capability"
 		hit.Source = "lsa"
 		hits = append(hits, hit)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	for i := 0; i < len(hits); i++ {
-		for j := i + 1; j < len(hits); j++ {
-			if hits[j].Rank > hits[i].Rank {
-				hits[i], hits[j] = hits[j], hits[i]
-			}
+	total := len(hits)
+	hits = filterSemanticHits(hits, minCosine, relativeCutoff, limit)
+
+	meta := buildSemanticMeta(query, model.Vocab, total-len(hits), minCosine, len(hits))
+	return hits, meta, nil
+}
+
+// buildSemanticMeta строит диагностику semantic-секции: пустота после фильтрации
+// или OOV-термины запроса. Чистая функция, тестируется без БД.
+func buildSemanticMeta(query string, vocab *specfts.Vocab, filteredOut int, minCosine float64, keptHits int) *SpecSearchMeta {
+	oov := oovQueryStems(query, vocab)
+	if keptHits > 0 && len(oov) == 0 {
+		return nil
+	}
+	meta := &SpecSearchMeta{
+		FilteredOut: filteredOut,
+		Threshold:   minCosine,
+		OOVTerms:    oov,
+	}
+	allStems := specfts.TokenizeToStems(query)
+	switch {
+	case len(allStems) > 0 && len(oov) == len(allStems):
+		meta.Reason = "oov"
+		meta.Hint = "все значимые термины запроса вне словаря LSA — см. секцию точных совпадений (exact)"
+	case keptHits == 0:
+		meta.Reason = "threshold"
+		if len(oov) > 0 {
+			meta.Hint = "часть терминов запроса вне словаря LSA; релевантные результаты может находить exact-слой"
 		}
 	}
-	if len(hits) > limit {
-		hits = hits[:limit]
-	}
-	return hits, nil
+	return meta
 }

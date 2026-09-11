@@ -91,9 +91,9 @@ func SVD(m *DenseMatrix, k int) (u *DenseMatrix, s []float64, vt *DenseMatrix, e
 	s = make([]float64, actualK)
 	copy(s, singulars[:actualK])
 
-	// Фактические размеры U и Vᵀ после SVDThin
+	// Фактические размеры U и V после SVDThin
 	uRows, uCols := uDense.Dims()
-	vtRows, vtCols := vtDense.Dims()
+	vtRows, _ := vtDense.Dims()
 
 	// U: rows×actualK (но не больше uCols)
 	uColsEff := actualK
@@ -107,21 +107,19 @@ func SVD(m *DenseMatrix, k int) (u *DenseMatrix, s []float64, vt *DenseMatrix, e
 		}
 	}
 
-	// Vᵀ: actualK×cols
-	// svd.VTo возвращает V (nTerms×k), нужно транспонировать
+	// Vᵀ: actualK×cols (nTerms) — ВСЕ термины.
+	// svd.VTo возвращает V размером nTerms×r, где r = min(nDocs, nTerms).
+	// Vᵀ[j][t] = V[t][j]: индекс термина t ограничен строками V (= nTerms),
+	// индекс сингулярного направления j — колонками V (= r), у нас j < actualK ≤ r.
+	// Ошибочно было клампить число колонок VT до r: при nTerms > nDocs термины
+	// с индексом ≥ r выпадали из проекции запроса (см. AlgorithmVersion 2).
 	vtRowsEff := actualK
 	if vtRowsEff > vtRows {
 		vtRowsEff = vtRows
 	}
-	vtColsEff := cols
-	if vtColsEff > vtCols {
-		vtColsEff = vtCols
-	}
-	vt = NewDenseMatrix(vtRowsEff, vtColsEff)
-	// vtDense имеет размер nTerms×k (V, не Vᵀ)
-	// Vᵀ[i][j] = V[j][i]
+	vt = NewDenseMatrix(vtRowsEff, cols)
 	for i := 0; i < vtRowsEff; i++ {
-		for j := 0; j < vtColsEff; j++ {
+		for j := 0; j < cols; j++ {
 			vt.Set(i, j, vtDense.At(j, i))
 		}
 	}

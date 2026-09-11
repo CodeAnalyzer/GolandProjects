@@ -74,6 +74,10 @@ const (
 func Tokenize(text string) []Token {
 	var tokens []Token
 
+	// Нормализация ё→е: «счёт» и «счет» дают один стем (TokenizerVersion 2).
+	text = strings.ReplaceAll(text, "ё", "е")
+	text = strings.ReplaceAll(text, "Ё", "Е")
+
 	// 2. Техимена — извлекаем первыми, чтобы не разрезать русским стеммером
 	techSet := map[string]bool{}
 	for _, m := range reTechName.FindAllString(text, -1) {
@@ -149,6 +153,17 @@ func TokenizeToStems(text string) []string {
 		}
 	}
 	return result
+}
+
+// TokenizeToStemCounts возвращает стемы с кратностями вхождения —
+// основа TF: повторения термина в документе (включая удвоенный title) повышают вес.
+func TokenizeToStemCounts(text string) map[string]int {
+	tokens := Tokenize(text)
+	counts := make(map[string]int, len(tokens))
+	for _, t := range tokens {
+		counts[t.Stemmed]++
+	}
+	return counts
 }
 
 // isTechName проверяет, является ли строка техименем.
