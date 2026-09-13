@@ -244,6 +244,20 @@ func TestParseSpecFile(t *testing.T) {
 	}
 }
 
+func TestParseSpecFile_ScenarioLineEndUsesSourceBoundary(t *testing.T) {
+	content := "### Requirement: R\nbody\n\n#### Scenario: First\n- **GIVEN** g\n\n<!-- note -->\n- **WHEN** w\n- **THEN** t\n\n#### Scenario: Second\n- **WHEN** w2\n- **THEN** t2"
+	spec := ParseSpecFile(content)
+	if len(spec.Requirements) != 1 || len(spec.Requirements[0].Scenarios) != 2 {
+		t.Fatalf("unexpected parsed structure: %+v", spec)
+	}
+	if got := spec.Requirements[0].Scenarios[0].LineEnd; got != 10 {
+		t.Fatalf("first scenario LineEnd = %d, want 10", got)
+	}
+	if got := spec.Requirements[0].Scenarios[1].LineEnd; got != 13 {
+		t.Fatalf("second scenario LineEnd = %d, want 13", got)
+	}
+}
+
 func TestParseSpecFile_NoH1NoRequirementsHeader(t *testing.T) {
 	// Фикстура fa-factoring: спека начинается с ## Purpose, без ## Requirements
 	content := "## Purpose\n\nФакторинговые договоры.\n\n### Requirement: Регистрация договора\nСистема SHALL регистрировать договор.\n\n#### Scenario: Регистрация\n- **WHEN** поступает новый договор\n- **THEN** создаётся запись\n"
@@ -538,6 +552,17 @@ func TestParseDeltaSpec(t *testing.T) {
 	}
 	if deltas[1].Section != "REMOVED" || !strings.Contains(deltas[1].BodyText, "удалённого") {
 		t.Fatalf("deltas[1] = %+v", deltas[1])
+	}
+}
+
+func TestParseDeltaSpec_MultilineBodyLineEnd(t *testing.T) {
+	content := "## ADDED Requirements\n\n### Requirement: R\nfirst body line\nsecond body line\n#### Scenario: S\n- **WHEN** action\n- **THEN** result"
+	deltas := ParseDeltaSpec(content)
+	if len(deltas) != 1 {
+		t.Fatalf("deltas = %d, want 1", len(deltas))
+	}
+	if deltas[0].LineStart != 3 || deltas[0].LineEnd != 5 {
+		t.Fatalf("delta lines = %d-%d, want 3-5", deltas[0].LineStart, deltas[0].LineEnd)
 	}
 }
 

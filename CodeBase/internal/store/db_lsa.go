@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/codebase/internal/model"
+	"github.com/lib/pq"
 )
 
 // LoadAllSpecCapabilitiesForLSA загружает все capability с текстом для LSA.
@@ -87,95 +89,103 @@ func (db *DB) CountSpecCapabilities(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-// ClearSpecVocab удаляет все записи из spec_vocab.
-func (db *DB) ClearSpecVocab(ctx context.Context) error {
-	_, err := db.ExecContext(ctx, `DELETE FROM spec_vocab`)
+func (db *DB) PublishSpecLSAGeneration(ctx context.Context, generation string, terms []model.SpecVocabTerm, embeddings []model.SpecEmbedding) error {
+	generation = strings.TrimSpace(generation)
+	if generation == "" {
+		return fmt.Errorf("PublishSpecLSAGeneration: generation must not be empty")
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("ClearSpecVocab: %w", err)
+		return fmt.Errorf("PublishSpecLSAGeneration begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM spec_vocab WHERE generation = $1`, generation); err != nil {
+		return fmt.Errorf("PublishSpecLSAGeneration delete vocab: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM spec_embeddings WHERE generation = $1`, generation); err != nil {
+		return fmt.Errorf("PublishSpecLSAGeneration delete embeddings: %w", err)
+	}
+
+	vocabStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO spec_vocab (generation, term, doc_freq, idf)
+		VALUES ($1, $2, $3, $4)`)
+	if err != nil {
+		return fmt.Errorf("PublishSpecLSAGeneration prepare vocab: %w", err)
+	}
+	for _, term := range terms {
+		if _, err := vocabStmt.ExecContext(ctx, generation, term.Term, term.DocFreq, term.IDF); err != nil {
+			_ = vocabStmt.Close()
+			return fmt.Errorf("PublishSpecLSAGeneration insert vocab: %w", err)
+		}
+	}
+	if err := vocabStmt.Close(); err != nil {
+		return fmt.Errorf("PublishSpecLSAGeneration close vocab: %w", err)
+	}
+
+	embeddingStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO spec_embeddings (generation, spec_id, embed_level, embed_text, embedding, embed_method, embed_dim)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`)
+	if err != nil {
+		return fmt.Errorf("PublishSpecLSAGeneration prepare embeddings: %w", err)
+	}
+	for _, embedding := range embeddings {
+		if _, err := embeddingStmt.ExecContext(ctx, generation, embedding.SpecID, embedding.EmbedLevel,
+			embedding.EmbedText, pq.Array(embedding.Embedding), embedding.EmbedMethod, embedding.EmbedDim); err != nil {
+			_ = embeddingStmt.Close()
+			return fmt.Errorf("PublishSpecLSAGeneration insert embeddings: %w", err)
+		}
+	}
+	if err := embeddingStmt.Close(); err != nil {
+		return fmt.Errorf("PublishSpecLSAGeneration close embeddings: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("PublishSpecLSAGeneration commit: %w", err)
 	}
 	return nil
 }
 
-// ClearSpecEmbeddings удаляет все записи из spec_embeddings.
-func (db *DB) ClearSpecEmbeddings(ctx context.Context) error {
-	_, err := db.ExecContext(ctx, `DELETE FROM spec_embeddings`)
+func (db *DB) HasSpecLSAGeneration(ctx context.Context, generation string) (bool, error) {
+	generation = strings.TrimSpace(generation)
+	if generation == "" {
+		return false, fmt.Errorf("HasSpecLSAGeneration: generation must not be empty")
+	}
+	var exists bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM spec_embeddings WHERE generation = $1)`, generation).Scan(&exists); err != nil {
+		return false, fmt.Errorf("HasSpecLSAGeneration: %w", err)
+	}
+	return exists, nil
+}
+
+func (db *DB) DeleteSpecLSAGenerationsExcept(ctx context.Context, current, previous string) error {
+	current = strings.TrimSpace(current)
+	previous = strings.TrimSpace(previous)
+	if current == "" {
+		return fmt.Errorf("DeleteSpecLSAGenerationsExcept: current generation must not be empty")
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("ClearSpecEmbeddings: %w", err)
+		return fmt.Errorf("DeleteSpecLSAGenerationsExcept begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	keepPrevious := previous != ""
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM spec_vocab
+		WHERE generation <> $1 AND ($2 = FALSE OR generation <> $3)`, current, keepPrevious, previous); err != nil {
+		return fmt.Errorf("DeleteSpecLSAGenerationsExcept delete vocab: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM spec_embeddings
+		WHERE generation <> $1 AND ($2 = FALSE OR generation <> $3)`, current, keepPrevious, previous); err != nil {
+		return fmt.Errorf("DeleteSpecLSAGenerationsExcept delete embeddings: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("DeleteSpecLSAGenerationsExcept commit: %w", err)
 	}
 	return nil
-}
-
-// InsertSpecVocabBatch вставляет слайс vocab-терминов пакетами.
-func (db *DB) InsertSpecVocabBatch(ctx context.Context, terms []model.SpecVocabTerm) error {
-	if len(terms) == 0 {
-		return nil
-	}
-	txn, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("InsertSpecVocabBatch begin: %w", err)
-	}
-	defer txn.Rollback()
-
-	stmt, err := txn.Prepare(`
-		INSERT INTO spec_vocab (term, doc_freq, idf)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (term) DO UPDATE SET doc_freq = EXCLUDED.doc_freq, idf = EXCLUDED.idf`)
-	if err != nil {
-		return fmt.Errorf("InsertSpecVocabBatch prepare: %w", err)
-	}
-	defer stmt.Close()
-
-	for _, t := range terms {
-		if _, err := stmt.Exec(t.Term, t.DocFreq, t.IDF); err != nil {
-			return fmt.Errorf("InsertSpecVocabBatch exec: %w", err)
-		}
-	}
-
-	return txn.Commit()
-}
-
-// InsertSpecEmbeddingsBatch вставляет LSA-эмбеддинги пакетами.
-func (db *DB) InsertSpecEmbeddingsBatch(ctx context.Context, embeddings []model.SpecEmbedding) error {
-	if len(embeddings) == 0 {
-		return nil
-	}
-	txn, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("InsertSpecEmbeddingsBatch begin: %w", err)
-	}
-	defer txn.Rollback()
-
-	stmt, err := txn.Prepare(`
-		INSERT INTO spec_embeddings (spec_id, embed_level, embed_text, embedding, embed_method, embed_dim)
-		VALUES ($1, $2, $3, $4, $5, $6)`)
-	if err != nil {
-		return fmt.Errorf("InsertSpecEmbeddingsBatch prepare: %w", err)
-	}
-	defer stmt.Close()
-
-	for _, e := range embeddings {
-		// PostgreSQL array literal: {1.0,2.0,3.0}
-		arrStr := floatSliceToPGArray(e.Embedding)
-		if _, err := stmt.Exec(e.SpecID, e.EmbedLevel, e.EmbedText, arrStr, e.EmbedMethod, e.EmbedDim); err != nil {
-			return fmt.Errorf("InsertSpecEmbeddingsBatch exec: %w", err)
-		}
-	}
-
-	return txn.Commit()
-}
-
-// floatSliceToPGArray преобразует слайс float64 в PostgreSQL array literal.
-func floatSliceToPGArray(vals []float64) string {
-	if len(vals) == 0 {
-		return "{}"
-	}
-	result := "{"
-	for i, v := range vals {
-		if i > 0 {
-			result += ","
-		}
-		result += fmt.Sprintf("%g", v)
-	}
-	result += "}"
-	return result
 }

@@ -3,7 +3,6 @@ package indexer
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/codebase/internal/config"
@@ -15,9 +14,9 @@ import (
 type lsaRetrainDecision int
 
 const (
-	lsaDecisionRetrain       lsaRetrainDecision = iota // переобучить на текущем корпусе
-	lsaDecisionSkipIdempotent                          // fingerprint совпал — модель актуальна
-	lsaDecisionDefer                                   // корпус изменился, порог не достигнут — отложить
+	lsaDecisionRetrain        lsaRetrainDecision = iota // переобучить на текущем корпусе
+	lsaDecisionSkipIdempotent                           // fingerprint совпал — модель актуальна
+	lsaDecisionDefer                                    // корпус изменился, порог не достигнут — отложить
 )
 
 // lsaDecisionInput — входные данные решения о переобучении.
@@ -30,16 +29,35 @@ type lsaDecisionInput struct {
 	Threshold   int               // порог накопленных изменений; 0 = переобучать при любом изменении
 }
 
+func lsaPublicationReady(state *specfts.LSAState, model *specfts.LSAModel, hasGeneration bool) bool {
+	return state != nil && model != nil && state.Generation != "" &&
+		model.Generation != "" && state.Generation == model.Generation && hasGeneration
+}
+
+func selectLSADecisionState(loadedState *specfts.LSAState, model *specfts.LSAModel, hasGeneration bool) (*specfts.LSAState, string) {
+	if loadedState == nil {
+		return nil, ""
+	}
+	if lsaPublicationReady(loadedState, model, hasGeneration) {
+		return loadedState, loadedState.Generation
+	}
+	if loadedState.RetryFingerprint != "" {
+		return loadedState, ""
+	}
+	return nil, ""
+}
+
 // decideLSARetrain — чистая функция принятия решения о переобучении (тестируется без БД).
 //
-// Особенность конвейера: удаление устаревших файлов применяется ПОСЛЕ пост-обработки,
-// поэтому в прогоне удаления корпус в БД ещё не изменился (fingerprint совпадает),
-// а реальное изменение корпуса фиксируется следующим прогоном через DeletedCaps
-// и отличие fingerprint — переобучение отстаёт на один прогон, это корректно:
-// обучаться в прогоне удаления означало бы включить удалённые сущности.
+// Особенность конвейера: удаление устаревших файлов применяется ДО пост-обработки,
+// поэтому в прогоне удаления корпус в БД уже отражает актуальное состояние,
+// а отличие fingerprint приводит к переобучению в том же прогоне.
 func decideLSARetrain(in lsaDecisionInput) (lsaRetrainDecision, int) {
 	if in.State == nil {
 		// Нет state: модель не обучена либо миграция со старой версии — обучаем.
+		return lsaDecisionRetrain, 0
+	}
+	if in.State.RetryFingerprint != "" {
 		return lsaDecisionRetrain, 0
 	}
 	if in.State.Algorithm != specfts.AlgorithmVersion {
@@ -86,28 +104,35 @@ func (idx *Indexer) postProcessSpecLSA(ctx context.Context, collector *statsColl
 		K:     cfg.Spec.LSAK,
 	}
 
-	modelPath := cfg.Spec.LSAModelPath
-	if modelPath == "" {
-		modelPath = filepath.Join(filepath.Dir(config.GetConfigFile()), "spec_lsa_model.bin")
-	}
-	statePath := filepath.Join(filepath.Dir(modelPath), "spec_lsa_state.json")
+	modelPath := config.SpecLSAModelPath()
+	statePath := config.SpecLSAStatePath()
 
 	// Изменённые за прогон сущности спек: capability + requirements + scenarios.
 	corpusDelta := stats.SpecCapabilities + stats.SpecRequirements + stats.SpecScenarios
 
-	state, err := specfts.LoadLSAState(statePath)
+	loadedState, err := specfts.LoadLSAState(statePath)
 	if err != nil {
 		idx.logError("<post-processing>", "spec-lsa: state load error (treating as missing): %v", err)
-		state = nil
+		loadedState = nil
 	}
-
-	// Быстрый путь: за прогон 0 изменений спек, параметры и версия алгоритма
-	// совпадают — корпус не грузим.
-	if state != nil && state.Params == params && state.Algorithm == specfts.AlgorithmVersion && corpusDelta == 0 {
-		if _, err := os.Stat(modelPath); err == nil {
-			return
+	var loadedModel *specfts.LSAModel
+	hasGeneration := false
+	if loadedState != nil {
+		var modelErr error
+		loadedModel, modelErr = specfts.LoadLSAModel(modelPath)
+		if modelErr != nil {
+			idx.logError("<post-processing>", "spec-lsa: model load error (treating publication as missing): %v", modelErr)
+			loadedModel = nil
+		} else {
+			var generationErr error
+			hasGeneration, generationErr = idx.db.HasSpecLSAGeneration(ctx, loadedModel.Generation)
+			if generationErr != nil {
+				idx.logError("<post-processing>", "spec-lsa: generation check error (treating publication as missing): %v", generationErr)
+				hasGeneration = false
+			}
 		}
 	}
+	state, previousGeneration := selectLSADecisionState(loadedState, loadedModel, hasGeneration)
 
 	setStage := func(stage string) {
 		collector.Add(func(stats *model.ScanStats) { stats.Stage = stage })
@@ -158,9 +183,29 @@ func (idx *Indexer) postProcessSpecLSA(ctx context.Context, collector *statsColl
 		return
 	case lsaDecisionDefer:
 		state.Pending = newPending
+		state.RetryFingerprint = ""
 		if err := specfts.SaveLSAState(statePath, state); err != nil {
 			idx.logError("<post-processing>", "spec-lsa: state save error: %v", err)
 		}
+		return
+	}
+
+	retryState := &specfts.LSAState{
+		Fingerprint:      "",
+		Generation:       "",
+		RetryFingerprint: fingerprint,
+		Pending:          0,
+		Params:           params,
+		Algorithm:        specfts.AlgorithmVersion,
+		NumDocs:          nDocs,
+	}
+	if state != nil {
+		copyState := *state
+		retryState = &copyState
+		retryState.RetryFingerprint = fingerprint
+	}
+	if err := specfts.SaveLSAState(statePath, retryState); err != nil {
+		idx.logError("<post-processing>", "spec-lsa: retry marker save error: %v", err)
 		return
 	}
 
@@ -191,41 +236,25 @@ func (idx *Indexer) postProcessSpecLSA(ctx context.Context, collector *statsColl
 
 	// Сохранение модели в файл
 	setStage("spec-lsa: save model + vocab + embeddings")
+	generation := fingerprint
 	lsaModel := &specfts.LSAModel{
-		Vocab:     vocab,
-		VT:        vt,
-		Singulars: s,
-		K:         actualK,
-		NumDocs:   nDocs,
-		NumTerms:  len(vocab.Terms),
-	}
-
-	if err := specfts.SaveLSAModel(lsaModel, modelPath); err != nil {
-		idx.logError("<post-processing>", "spec-lsa: save model error: %v", err)
-		return
-	}
-	// Очистка и вставка vocab
-	if err := idx.db.ClearSpecVocab(ctx); err != nil {
-		idx.logError("<post-processing>", "spec-lsa: clear vocab error: %v", err)
-		return
+		Generation: generation,
+		Vocab:      vocab,
+		VT:         vt,
+		Singulars:  s,
+		K:          actualK,
+		NumDocs:    nDocs,
+		NumTerms:   len(vocab.Terms),
 	}
 
 	vocabTerms := make([]model.SpecVocabTerm, len(vocab.Terms))
 	for i, term := range vocab.Terms {
 		vocabTerms[i] = model.SpecVocabTerm{
-			Term:    term,
-			DocFreq: vocab.DocFreq[i],
-			IDF:     vocab.IDF[i],
+			Generation: generation,
+			Term:       term,
+			DocFreq:    vocab.DocFreq[i],
+			IDF:        vocab.IDF[i],
 		}
-	}
-	if err := idx.db.InsertSpecVocabBatch(ctx, vocabTerms); err != nil {
-		idx.logError("<post-processing>", "spec-lsa: insert vocab error: %v", err)
-		return
-	}
-	// Очистка и вставка embeddings
-	if err := idx.db.ClearSpecEmbeddings(ctx); err != nil {
-		idx.logError("<post-processing>", "spec-lsa: clear embeddings error: %v", err)
-		return
 	}
 
 	embeddings := make([]model.SpecEmbedding, nDocs)
@@ -233,6 +262,7 @@ func (idx *Indexer) postProcessSpecLSA(ctx context.Context, collector *statsColl
 		emb := specfts.DocEmbedding(u, s, i)
 		embedText := specfts.LSADocText(c.Title, c.Purpose, c.Notes, c.LSAText)
 		embeddings[i] = model.SpecEmbedding{
+			Generation:  generation,
 			SpecID:      c.ID,
 			EmbedLevel:  "spec",
 			EmbedText:   embedText,
@@ -241,21 +271,37 @@ func (idx *Indexer) postProcessSpecLSA(ctx context.Context, collector *statsColl
 			EmbedDim:    actualK,
 		}
 	}
-	if err := idx.db.InsertSpecEmbeddingsBatch(ctx, embeddings); err != nil {
-		idx.logError("<post-processing>", "spec-lsa: insert embeddings error: %v", err)
+
+	tempPath, err := specfts.WriteLSAModelTemp(lsaModel, modelPath)
+	if err != nil {
+		idx.logError("<post-processing>", "spec-lsa: save model temp error: %v", err)
 		return
 	}
-
+	if err := idx.db.PublishSpecLSAGeneration(ctx, generation, vocabTerms, embeddings); err != nil {
+		_ = os.Remove(tempPath)
+		idx.logError("<post-processing>", "spec-lsa: publish generation error: %v", err)
+		return
+	}
+	if err := specfts.ActivateLSAModel(tempPath, modelPath); err != nil {
+		idx.logError("<post-processing>", "spec-lsa: activate model error: %v", err)
+		return
+	}
 	// Модель и её состояние сохранены атомарно по факту успеха: state пишется последним,
 	// при ошибке обучения выше state остаётся прежним и следующий прогон повторит попытку.
 	if err := specfts.SaveLSAState(statePath, &specfts.LSAState{
-		Fingerprint: fingerprint,
-		Pending:     0,
-		Params:      params,
-		Algorithm:   specfts.AlgorithmVersion,
-		NumDocs:     nDocs,
-		TrainedAt:   time.Now(), // локальное время оператора
+		Fingerprint:      fingerprint,
+		Generation:       generation,
+		RetryFingerprint: "",
+		Pending:          0,
+		Params:           params,
+		Algorithm:        specfts.AlgorithmVersion,
+		NumDocs:          nDocs,
+		TrainedAt:        time.Now(), // локальное время оператора
 	}); err != nil {
 		idx.logError("<post-processing>", "spec-lsa: state save error: %v", err)
+		return
+	}
+	if err := idx.db.DeleteSpecLSAGenerationsExcept(ctx, generation, previousGeneration); err != nil {
+		idx.logError("<post-processing>", "spec-lsa: stale generation cleanup error: %v", err)
 	}
 }

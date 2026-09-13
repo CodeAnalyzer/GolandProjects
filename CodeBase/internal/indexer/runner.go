@@ -257,11 +257,6 @@ errorLoopUpdate:
 		}
 	}
 
-	if ctx.Err() == nil {
-		idx.runPostProcessingParallel(ctx, collector, parallel)
-	}
-	postProcessDone := time.Now()
-
 	// Batch delete removed files (not seen in walker).
 	removedPaths := make([]string, 0, 128)
 	for path := range existing {
@@ -277,6 +272,11 @@ errorLoopUpdate:
 		}
 		collector.Add(func(stats *model.ScanStats) { stats.FilesDeleted += len(removedPaths) })
 	}
+
+	if ctx.Err() == nil {
+		idx.runPostProcessingParallel(ctx, collector, parallel)
+	}
+	postProcessDone := time.Now()
 	cleanupDone := time.Now()
 
 	stats := collector.Snapshot()

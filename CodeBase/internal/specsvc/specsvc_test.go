@@ -22,13 +22,20 @@ func TestExecuteSpecSearchValidation(t *testing.T) {
 
 func TestMergeSpecSearchHits(t *testing.T) {
 	hits := []SpecSearchHit{
-		{Level: "capability", EntityID: 1, Source: "tsvector"},
-		{Level: "capability", EntityID: 1, Source: "trgm"},
-		{Level: "requirement", EntityID: 2, Source: "trgm"},
+		{Level: "capability", EntityID: 1, Source: "tsvector", Rank: 0.4},
+		{Level: "capability", EntityID: 1, Source: "trgm", Rank: 0.9},
+		{Level: "requirement", EntityID: 2, Source: "trgm", Rank: 0.8},
+		{Level: "scenario", EntityID: 3, Source: "tsvector", Rank: 0.8},
 	}
 	got := mergeSpecSearchHits(hits, 2)
-	if len(got) != 2 || got[0].Source != "tsvector" || got[1].EntityID != 2 {
+	if len(got) != 2 {
 		t.Fatalf("merged hits = %+v", got)
+	}
+	if got[0].EntityID != 1 || got[0].Source != "trgm" || got[0].Rank != 0.9 {
+		t.Fatalf("higher duplicate rank did not replace lower hit: %+v", got)
+	}
+	if got[1].EntityID != 3 || got[1].Source != "tsvector" {
+		t.Fatalf("tie ordering or limit applied incorrectly: %+v", got)
 	}
 }
 

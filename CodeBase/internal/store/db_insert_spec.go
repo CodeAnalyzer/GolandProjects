@@ -9,6 +9,17 @@ import (
 	"github.com/lib/pq"
 )
 
+const (
+	specCapabilitySearchVectorExpression = `setweight(to_tsvector('russian', coalesce(capability_name,'') || ' ' || coalesce(title,'')), 'A') ||
+	setweight(to_tsvector('russian', coalesce(purpose,'') || ' ' || coalesce(notes,'')), 'B')`
+	specRequirementSearchVectorExpression = `setweight(to_tsvector('russian', coalesce(requirement_name,'')), 'A') ||
+	setweight(to_tsvector('russian', coalesce(body_text,'')), 'B')`
+	specScenarioSearchVectorExpression = `setweight(to_tsvector('russian', coalesce(scenario_name,'')), 'A') ||
+	setweight(to_tsvector('russian', coalesce(given_text,'') || ' ' || coalesce(when_text,'') || ' ' || coalesce(then_text,'')), 'B')`
+	specUsecaseSearchVectorExpression = `setweight(to_tsvector('russian', coalesce(usecase_name,'') || ' ' || coalesce(title,'')), 'A') ||
+	setweight(to_tsvector('russian', coalesce(description,'')), 'B')`
+)
+
 // copyInBatches разбивает [0,total) на куски по batchSize и вызывает insertRange.
 func copyInBatches(total int, batchSize int, insertRange func(from, to int) error) error {
 	if total == 0 {
@@ -344,92 +355,23 @@ func (db *DB) BatchInsertSpecCodeMentions(ctx context.Context, mentions []*model
 	})
 }
 
-// BatchInsertSpecVocab пакетная вставка словаря LSA (уникальность по term —
-// перед вставкой словарь пересоздаётся в ReplaceSpecVocab).
-func (db *DB) BatchInsertSpecVocab(ctx context.Context, terms []*model.SpecVocabTerm, batchSize int) error {
-	insertBatch := func(items []*model.SpecVocabTerm) error {
-		return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
-			stmt, err := tx.Prepare(pq.CopyIn("spec_vocab", "term", "doc_freq", "idf"))
-			if err != nil {
-				return err
-			}
-			defer stmt.Close()
-			for _, term := range items {
-				if _, err := stmt.Exec(sanitizeUTF8String(term.Term), term.DocFreq, term.IDF); err != nil {
-					return err
-				}
-			}
-			_, err = stmt.Exec()
-			return err
-		})
+func specSearchVectorUpdateStatements(predicate string) []string {
+	return []string{
+		fmt.Sprintf(`UPDATE spec_configs SET search_vector =
+			to_tsvector('russian', coalesce(product_name,'') || ' ' || coalesce(context_text,'')) %s`, predicate),
+		fmt.Sprintf(`UPDATE spec_capabilities SET search_vector = %s %s`, specCapabilitySearchVectorExpression, predicate),
+		fmt.Sprintf(`UPDATE spec_requirements SET search_vector = %s %s`, specRequirementSearchVectorExpression, predicate),
+		fmt.Sprintf(`UPDATE spec_scenarios SET search_vector = %s %s`, specScenarioSearchVectorExpression, predicate),
+		fmt.Sprintf(`UPDATE spec_usecases SET search_vector = %s %s`, specUsecaseSearchVectorExpression, predicate),
+		fmt.Sprintf(`UPDATE spec_changes SET search_vector =
+			to_tsvector('russian', coalesce(change_name,'') || ' ' || coalesce(status,'')) %s`, predicate),
 	}
-	return copyInBatches(len(terms), batchSize, func(from, to int) error {
-		return insertBatch(terms[from:to])
-	})
-}
-
-// ReplaceSpecVocab пересоздаёт словарь LSA целиком.
-func (db *DB) ReplaceSpecVocab(ctx context.Context, terms []*model.SpecVocabTerm, batchSize int) error {
-	if _, err := db.ExecContext(ctx, `DELETE FROM spec_vocab`); err != nil {
-		return fmt.Errorf("clear spec_vocab: %w", err)
-	}
-	return db.BatchInsertSpecVocab(ctx, terms, batchSize)
-}
-
-// ReplaceSpecEmbeddings заменяет LSA-векторы для capability-уровня.
-func (db *DB) ReplaceSpecEmbeddings(ctx context.Context, embeddings []*model.SpecEmbedding, batchSize int) error {
-	if _, err := db.ExecContext(ctx, `DELETE FROM spec_embeddings WHERE embed_level = 'spec'`); err != nil {
-		return fmt.Errorf("clear spec_embeddings: %w", err)
-	}
-	insertBatch := func(items []*model.SpecEmbedding) error {
-		return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
-			stmt, err := tx.Prepare(pq.CopyIn("spec_embeddings",
-				"spec_id", "embed_level", "embed_text", "embedding", "embed_method", "embed_dim"))
-			if err != nil {
-				return err
-			}
-			defer stmt.Close()
-			for _, e := range items {
-				if _, err := stmt.Exec(
-					e.SpecID, sanitizeUTF8String(e.EmbedLevel), sanitizeUTF8String(e.EmbedText),
-					pq.Array(e.Embedding), sanitizeUTF8String(e.EmbedMethod), e.EmbedDim,
-				); err != nil {
-					return err
-				}
-			}
-			_, err = stmt.Exec()
-			return err
-		})
-	}
-	return copyInBatches(len(embeddings), batchSize, func(from, to int) error {
-		return insertBatch(embeddings[from:to])
-	})
 }
 
 // EnsureSpecSearchVectors заполняет search_vector (tsvector 'russian') для spec-сущностей
 // файла, вставленных без полнотекстового вектора. Вызывается после batch insert файла.
 func (db *DB) EnsureSpecSearchVectors(ctx context.Context, fileID int64) error {
-	statements := []string{
-		`UPDATE spec_configs SET search_vector =
-			to_tsvector('russian', coalesce(product_name,'') || ' ' || coalesce(context_text,''))
-			WHERE file_id = $1 AND search_vector IS NULL`,
-		`UPDATE spec_capabilities SET search_vector =
-			to_tsvector('russian', coalesce(capability_name,'') || ' ' || coalesce(title,'') || ' ' || coalesce(purpose,'') || ' ' || coalesce(notes,''))
-			WHERE file_id = $1 AND search_vector IS NULL`,
-		`UPDATE spec_requirements SET search_vector =
-			to_tsvector('russian', coalesce(requirement_name,'') || ' ' || coalesce(body_text,''))
-			WHERE file_id = $1 AND search_vector IS NULL`,
-		`UPDATE spec_scenarios SET search_vector =
-			to_tsvector('russian', coalesce(scenario_name,'') || ' ' || coalesce(given_text,'') || ' ' || coalesce(when_text,'') || ' ' || coalesce(then_text,''))
-			WHERE file_id = $1 AND search_vector IS NULL`,
-		`UPDATE spec_usecases SET search_vector =
-			to_tsvector('russian', coalesce(usecase_name,'') || ' ' || coalesce(title,'') || ' ' || coalesce(description,''))
-			WHERE file_id = $1 AND search_vector IS NULL`,
-		`UPDATE spec_changes SET search_vector =
-			to_tsvector('russian', coalesce(change_name,'') || ' ' || coalesce(status,''))
-			WHERE file_id = $1 AND search_vector IS NULL`,
-	}
-	for _, stmt := range statements {
+	for _, stmt := range specSearchVectorUpdateStatements("WHERE file_id = $1 AND search_vector IS NULL") {
 		if _, err := db.ExecContext(ctx, stmt, fileID); err != nil {
 			return fmt.Errorf("ensure search_vector: %w", err)
 		}

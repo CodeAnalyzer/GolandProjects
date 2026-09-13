@@ -12,10 +12,10 @@ func TestDecideLSARetrain(t *testing.T) {
 	params := specfts.LSAParams{MinDF: 3, MaxDF: 0.3, K: 128}
 
 	tests := []struct {
-		name       string
-		input      lsaDecisionInput
-		want       lsaRetrainDecision
-		wantPend   int
+		name     string
+		input    lsaDecisionInput
+		want     lsaRetrainDecision
+		wantPend int
 	}{
 		{
 			name:     "первый запуск: state отсутствует — обучение",
@@ -107,5 +107,118 @@ func TestDecideLSARetrain(t *testing.T) {
 				t.Errorf("pending = %d, want %d", pend, tt.wantPend)
 			}
 		})
+	}
+}
+
+func TestLSAPublicationReady(t *testing.T) {
+	state := &specfts.LSAState{Generation: specfts.LegacyGeneration}
+	model := &specfts.LSAModel{Generation: specfts.LegacyGeneration}
+	currentState := &specfts.LSAState{Generation: "gen-current"}
+	currentModel := &specfts.LSAModel{Generation: "gen-current"}
+
+	for _, tc := range []struct {
+		name          string
+		state         *specfts.LSAState
+		model         *specfts.LSAModel
+		hasGeneration bool
+		want          bool
+	}{
+		{name: "nil state", state: nil, model: model, hasGeneration: true},
+		{name: "nil model", state: state, model: nil, hasGeneration: true},
+		{name: "mismatched generation", state: state, model: currentModel, hasGeneration: true},
+		{name: "missing database generation", state: currentState, model: currentModel, hasGeneration: false},
+		{name: "valid legacy", state: state, model: model, hasGeneration: true, want: true},
+		{name: "valid current", state: currentState, model: currentModel, hasGeneration: true, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := lsaPublicationReady(tc.state, tc.model, tc.hasGeneration); got != tc.want {
+				t.Fatalf("lsaPublicationReady() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSelectLSADecisionState(t *testing.T) {
+	validState := &specfts.LSAState{Generation: "gen-current"}
+	validModel := &specfts.LSAModel{Generation: "gen-current"}
+	markerState := &specfts.LSAState{Generation: "gen-current", RetryFingerprint: "fp-new"}
+	invalidModel := &specfts.LSAModel{Generation: "gen-other"}
+
+	for _, tc := range []struct {
+		name          string
+		loadedState   *specfts.LSAState
+		model         *specfts.LSAModel
+		hasGeneration bool
+		wantState     *specfts.LSAState
+		wantPrevious  string
+	}{
+		{name: "valid publication without marker", loadedState: validState, model: validModel, hasGeneration: true, wantState: validState, wantPrevious: "gen-current"},
+		{name: "invalid publication without marker", loadedState: validState, model: invalidModel, hasGeneration: true},
+		{name: "missing model with marker", loadedState: markerState, model: nil, hasGeneration: false, wantState: markerState},
+		{name: "invalid publication with marker", loadedState: markerState, model: invalidModel, hasGeneration: true, wantState: markerState},
+		{name: "valid publication with marker", loadedState: markerState, model: validModel, hasGeneration: true, wantState: markerState, wantPrevious: "gen-current"},
+		{name: "missing generation with marker", loadedState: markerState, model: validModel, hasGeneration: false, wantState: markerState},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gotState, gotPrevious := selectLSADecisionState(tc.loadedState, tc.model, tc.hasGeneration)
+			if gotState != tc.wantState || gotPrevious != tc.wantPrevious {
+				t.Fatalf("selectLSADecisionState() = (%p, %q), want (%p, %q)", gotState, gotPrevious, tc.wantState, tc.wantPrevious)
+			}
+		})
+	}
+}
+
+func TestLSARetrainWithRetryMarkerIgnoresThreshold(t *testing.T) {
+	params := specfts.LSAParams{MinDF: 1, MaxDF: 1, K: 1}
+	decision, pending := decideLSARetrain(lsaDecisionInput{
+		State: &specfts.LSAState{
+			Fingerprint:      "fp-old",
+			RetryFingerprint: "fp-new",
+			Params:           params,
+			Algorithm:        specfts.AlgorithmVersion,
+		},
+		Fingerprint: "fp-old",
+		Params:      params,
+		CorpusDelta: 0,
+		Threshold:   1000,
+	})
+	if decision != lsaDecisionRetrain || pending != 0 {
+		t.Fatalf("decision = %v, pending = %d, want retrain/0", decision, pending)
+	}
+}
+
+func TestLSARetrainWhenPublicationIsNotReady(t *testing.T) {
+	params := specfts.LSAParams{MinDF: 1, MaxDF: 1, K: 1}
+	state := &specfts.LSAState{Generation: "gen-state", Fingerprint: "same", Params: params, Algorithm: specfts.AlgorithmVersion}
+	model := &specfts.LSAModel{Generation: "gen-model"}
+	if lsaPublicationReady(state, model, true) {
+		t.Fatal("mismatched publication must not be ready")
+	}
+	decision, pending := decideLSARetrain(lsaDecisionInput{
+		State:       nil,
+		Fingerprint: "same",
+		Params:      params,
+		CorpusDelta: 0,
+		Threshold:   100,
+	})
+	if decision != lsaDecisionRetrain || pending != 0 {
+		t.Fatalf("decision = %v, pending = %d, want retrain/0", decision, pending)
+	}
+}
+
+func TestLSARetrainAfterCorpusDeletionWithoutDelta(t *testing.T) {
+	params := specfts.LSAParams{MinDF: 1, MaxDF: 1, K: 1}
+	oldFingerprint := specfts.CorpusFingerprint([]specfts.Document{{ID: 1, Text: "one"}, {ID: 2, Text: "two"}}, params)
+	currentFingerprint := specfts.CorpusFingerprint([]specfts.Document{{ID: 1, Text: "one"}}, params)
+	decision, pending := decideLSARetrain(lsaDecisionInput{
+		State:       &specfts.LSAState{Fingerprint: oldFingerprint, NumDocs: 2, Params: params, Algorithm: specfts.AlgorithmVersion},
+		Fingerprint: currentFingerprint,
+		Params:      params,
+		CorpusDelta: 0,
+		DeletedCaps: 1,
+		Threshold:   0,
+	})
+	if decision != lsaDecisionRetrain || pending != 0 {
+		t.Fatalf("decision = %v, pending = %d, want retrain/0", decision, pending)
 	}
 }

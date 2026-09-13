@@ -448,8 +448,8 @@ codebase query inspect --name MassAccrual_Start --type procedure --json
 
 ```bash
 # Полнотекстовый поиск по спецификациям (лексический + семантический)
-codebase query spec search --text "отключение SMS-уведомлений"
-codebase query spec search --text "арест счёта" --layer both --json
+codebase query spec search --query "отключение SMS-уведомлений"
+codebase query spec search --query "арест счёта" --layer both --json
 
 # Спеки по имени код-сущности (обратные references_code)
 codebase query spec by-code --name API_DepoAccount_MassInsert

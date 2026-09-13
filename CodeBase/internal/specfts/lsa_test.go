@@ -131,13 +131,21 @@ func TestLSAState_SaveLoadRoundTrip(t *testing.T) {
 	}
 
 	orig := &LSAState{
-		Fingerprint: "abc",
-		Pending:     7,
-		Params:      LSAParams{MinDF: 3, MaxDF: 0.3, K: 128},
-		NumDocs:     120,
+		Fingerprint:      "abc",
+		Pending:          7,
+		Params:           LSAParams{MinDF: 3, MaxDF: 0.3, K: 128},
+		NumDocs:          120,
+		Generation:       "gen-test",
+		RetryFingerprint: "retry-test",
 	}
 	if err := SaveLSAState(path, orig); err != nil {
 		t.Fatalf("SaveLSAState: %v", err)
+	}
+	if err := SaveLSAState(path, orig); err != nil {
+		t.Fatalf("second SaveLSAState: %v", err)
+	}
+	if tempPaths, err := filepath.Glob(path + ".tmp-*"); err != nil || len(tempPaths) != 0 {
+		t.Fatalf("temporary state files = %v, err=%v", tempPaths, err)
 	}
 
 	loaded, err := LoadLSAState(path)
@@ -145,11 +153,29 @@ func TestLSAState_SaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("LoadLSAState: %v", err)
 	}
 	if loaded.Fingerprint != orig.Fingerprint || loaded.Pending != orig.Pending ||
-		loaded.Params != orig.Params || loaded.NumDocs != orig.NumDocs {
+		loaded.Params != orig.Params || loaded.NumDocs != orig.NumDocs ||
+		loaded.Generation != orig.Generation || loaded.RetryFingerprint != orig.RetryFingerprint {
 		t.Errorf("round-trip mismatch: %+v vs %+v", loaded, orig)
 	}
 	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
 		t.Errorf("tmp file must be cleaned after rename")
+	}
+}
+
+func TestLoadLSAState_LegacyGeneration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spec_lsa_state.json")
+	if err := os.WriteFile(path, []byte(`{"fingerprint":"legacy"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := LoadLSAState(path)
+	if err != nil {
+		t.Fatalf("LoadLSAState: %v", err)
+	}
+	if st.Generation != LegacyGeneration {
+		t.Fatalf("Generation = %q, want %q", st.Generation, LegacyGeneration)
+	}
+	if st.RetryFingerprint != "" {
+		t.Fatalf("RetryFingerprint = %q, want empty", st.RetryFingerprint)
 	}
 }
 

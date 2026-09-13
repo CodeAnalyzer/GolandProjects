@@ -2,6 +2,7 @@ package specsvc
 
 import (
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -30,18 +31,39 @@ func parsePGFloatArray(s string) []float64 {
 }
 
 func mergeSpecSearchHits(hits []SpecSearchHit, limit int) []SpecSearchHit {
-	seen := make(map[string]struct{}, len(hits))
+	indices := make(map[string]int, len(hits))
 	result := make([]SpecSearchHit, 0, len(hits))
 	for _, hit := range hits {
 		key := hit.Level + "|" + strconv.FormatInt(hit.EntityID, 10)
-		if _, exists := seen[key]; exists {
+		if index, exists := indices[key]; exists {
+			if hit.Rank > result[index].Rank {
+				result[index] = hit
+			}
 			continue
 		}
-		seen[key] = struct{}{}
+		indices[key] = len(result)
 		result = append(result, hit)
-		if len(result) == limit {
-			break
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Rank != result[j].Rank {
+			return result[i].Rank > result[j].Rank
 		}
+		if result[i].Source != result[j].Source {
+			if result[i].Source == "tsvector" {
+				return true
+			}
+			if result[j].Source == "tsvector" {
+				return false
+			}
+			return result[i].Source < result[j].Source
+		}
+		if result[i].Level != result[j].Level {
+			return result[i].Level < result[j].Level
+		}
+		return result[i].EntityID < result[j].EntityID
+	})
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
 	}
 	return result
 }

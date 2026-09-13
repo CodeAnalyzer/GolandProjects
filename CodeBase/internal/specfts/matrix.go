@@ -4,6 +4,7 @@ import (
 	"encoding/gob"
 	"math"
 	"os"
+	"path/filepath"
 
 	"gonum.org/v1/gonum/mat"
 )
@@ -129,6 +130,7 @@ func SVD(m *DenseMatrix, k int) (u *DenseMatrix, s []float64, vt *DenseMatrix, e
 
 // LSAModel — сохраняемая LSA-модель.
 type LSAModel struct {
+	Generation string
 	Vocab      *Vocab
 	VT         *DenseMatrix // k×nTerms
 	Singulars  []float64    // k сингулярных значений
@@ -137,19 +139,56 @@ type LSAModel struct {
 	NumTerms   int
 }
 
-// SaveLSAModel сохраняет модель в файл.
-func SaveLSAModel(model *LSAModel, path string) error {
-	f, err := os.Create(path)
+func writeTempFile(path string, write func(*os.File) error) (string, error) {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return err
+		return "", err
 	}
-	defer f.Close()
+	tempPath := f.Name()
+	cleanup := func() {
+		_ = f.Close()
+		_ = os.Remove(tempPath)
+	}
+	if err := write(f); err != nil {
+		cleanup()
+		return "", err
+	}
+	if err := f.Sync(); err != nil {
+		cleanup()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return "", err
+	}
+	return tempPath, nil
+}
 
-	enc := gob.NewEncoder(f)
-	if err := enc.Encode(model); err != nil {
+func activateTempFile(tempPath, path string) error {
+	if err := replaceFile(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
 		return err
 	}
 	return nil
+}
+
+func WriteLSAModelTemp(model *LSAModel, path string) (string, error) {
+	return writeTempFile(path, func(f *os.File) error {
+		return gob.NewEncoder(f).Encode(model)
+	})
+}
+
+func ActivateLSAModel(tempPath, path string) error {
+	return activateTempFile(tempPath, path)
+}
+
+// SaveLSAModel сохраняет модель в файл.
+func SaveLSAModel(model *LSAModel, path string) error {
+	tempPath, err := WriteLSAModelTemp(model, path)
+	if err != nil {
+		return err
+	}
+	return ActivateLSAModel(tempPath, path)
 }
 
 // LoadLSAModel загружает модель из файла.
@@ -164,6 +203,9 @@ func LoadLSAModel(path string) (*LSAModel, error) {
 	dec := gob.NewDecoder(f)
 	if err := dec.Decode(&model); err != nil {
 		return nil, err
+	}
+	if model.Generation == "" {
+		model.Generation = LegacyGeneration
 	}
 	return &model, nil
 }

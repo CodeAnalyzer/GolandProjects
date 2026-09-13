@@ -5,9 +5,16 @@ package specsvc_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/codebase/internal/config"
 	"github.com/codebase/internal/errs"
+	"github.com/codebase/internal/model"
+	"github.com/codebase/internal/specfts"
 	"github.com/codebase/internal/specsvc"
 	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/store/testutil"
@@ -33,6 +40,47 @@ func insertFileDirect(t *testing.T, db *store.DB, path string) int64 {
 	return fileID
 }
 
+func configureSemanticModel(t *testing.T, modelPath string) {
+	t.Helper()
+	oldConfigFile := config.GetConfigFile()
+	oldCfg := config.Get()
+	var oldCfgCopy config.Config
+	if oldCfg != nil {
+		oldCfgCopy = *oldCfg
+	}
+	config.CreateDefault(filepath.Dir(modelPath))
+	cfg := config.Get()
+	cfg.Spec.LSAModelPath = modelPath
+	cfg.Spec.LSAEnabled = true
+	config.SetConfigFile(filepath.Join(filepath.Dir(modelPath), "codebase.toml"))
+	t.Cleanup(func() {
+		config.SetConfigFile(oldConfigFile)
+		if current := config.Get(); current != nil {
+			if oldCfg != nil {
+				*current = oldCfgCopy
+			} else {
+				current.Spec.LSAEnabled = false
+			}
+		}
+	})
+}
+
+func writeSemanticTestModel(t *testing.T, path, generation string) {
+	t.Helper()
+	vocab := &specfts.Vocab{
+		Terms:   []string{"арест"},
+		Index:   map[string]int{"арест": 0},
+		DocFreq: []int{1},
+		IDF:     []float64{1},
+	}
+	vt := specfts.NewDenseMatrix(1, 1)
+	vt.Set(0, 0, 1)
+	model := &specfts.LSAModel{Generation: generation, Vocab: vocab, VT: vt, Singulars: []float64{1}, K: 1, NumDocs: 1, NumTerms: 1}
+	if err := specfts.SaveLSAModel(model, path); err != nil {
+		t.Fatalf("SaveLSAModel: %v", err)
+	}
+}
+
 // insertSpecConfigAndCapabilityDirect вставляет spec_config + spec_capability, возвращает capability_id.
 func insertSpecConfigAndCapabilityDirect(t *testing.T, db *store.DB, fileID int64, capName string) int64 {
 	t.Helper()
@@ -55,6 +103,41 @@ func insertSpecConfigAndCapabilityDirect(t *testing.T, db *store.DB, fileID int6
 }
 
 // insertSpecChangeDirect вставляет spec_change, возвращает change_id.
+func insertRequirementDirect(t *testing.T, db *store.DB, fileID, capabilityID int64, name, body string, lineStart, lineEnd int) int64 {
+	t.Helper()
+	var id int64
+	if err := db.QueryRow(`
+		INSERT INTO spec_requirements (file_id, capability_id, requirement_name, body_text, line_start, line_end)
+		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		fileID, capabilityID, name, body, lineStart, lineEnd,
+	).Scan(&id); err != nil {
+		t.Fatalf("insert requirement %s: %v", name, err)
+	}
+	return id
+}
+
+func insertScenarioDirect(t *testing.T, db *store.DB, fileID, requirementID int64, name, given, when, then string, lineStart, lineEnd int) int64 {
+	t.Helper()
+	var id int64
+	if err := db.QueryRow(`
+		INSERT INTO spec_scenarios (file_id, requirement_id, scenario_name, given_text, when_text, then_text, line_start, line_end)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+		fileID, requirementID, name, given, when, then, lineStart, lineEnd,
+	).Scan(&id); err != nil {
+		t.Fatalf("insert scenario %s: %v", name, err)
+	}
+	return id
+}
+
+func insertCodeMentionDirect(t *testing.T, db *store.DB, fileID int64, sourceType string, sourceID int64, name string, line int) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO spec_code_mentions (file_id, source_type, source_id, mention_name, mention_kind, line_number)
+		VALUES ($1, $2, $3, $4, 'api', $5)`, fileID, sourceType, sourceID, name, line); err != nil {
+		t.Fatalf("insert code mention %s: %v", name, err)
+	}
+}
+
 func insertSpecChangeDirect(t *testing.T, db *store.DB, fileID int64, changeName, status string) int64 {
 	t.Helper()
 	var cfgID int64
@@ -523,6 +606,187 @@ func TestExecuteSpecUsecase_ByNameWithFullFields(t *testing.T) {
 	}
 }
 
+func TestExecuteSpecSearchWeightedRequirementName(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+	fileID := insertFileDirect(t, db, "specs/weighted/spec.md")
+	capID := insertSpecConfigAndCapabilityDirect(t, db, fileID, "weighted")
+	nameID := insertRequirementDirect(t, db, fileID, capID, "арест", "обычный текст", 3, 5)
+	bodyID := insertRequirementDirect(t, db, fileID, capID, "обычное требование", "арест в описательном тексте требования", 6, 8)
+	if err := db.EnsureSpecSearchVectors(ctx, fileID); err != nil {
+		t.Fatalf("EnsureSpecSearchVectors: %v", err)
+	}
+
+	result, err := specsvc.ExecuteSpecSearch(ctx, db, "арест", "", "requirement", "exact", 10)
+	if err != nil {
+		t.Fatalf("ExecuteSpecSearch: %v", err)
+	}
+	var nameRank, bodyRank float64
+	for _, hit := range result.Exact {
+		switch hit.EntityID {
+		case nameID:
+			nameRank = hit.Rank
+		case bodyID:
+			bodyRank = hit.Rank
+		}
+	}
+	if nameRank <= bodyRank || bodyRank == 0 {
+		t.Fatalf("name rank = %v, body rank = %v, hits = %+v", nameRank, bodyRank, result.Exact)
+	}
+}
+
+func TestExecuteSpecSearchTrgmMentionFindsLongScenario(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+	fileID := insertFileDirect(t, db, "specs/mentions/spec.md")
+	capID := insertSpecConfigAndCapabilityDirect(t, db, fileID, "mentions")
+	reqID := insertRequirementDirect(t, db, fileID, capID, "API requirement", "requirement body", 3, 5)
+	longText := strings.Repeat("длинный описательный текст сценария ", 80)
+	scenarioID := insertScenarioDirect(t, db, fileID, reqID, "Long scenario", longText, longText, longText, 6, 20)
+	insertCodeMentionDirect(t, db, fileID, "spec_scenario", scenarioID, "API_CCred_BindClassifier", 12)
+	if err := db.EnsureSpecSearchVectors(ctx, fileID); err != nil {
+		t.Fatalf("EnsureSpecSearchVectors: %v", err)
+	}
+
+	for _, query := range []string{"api_ccred_bindclassifier", "API_CCred_BindClassifie"} {
+		result, err := specsvc.ExecuteSpecSearch(ctx, db, query, "", "scenario", "exact", 10)
+		if err != nil {
+			t.Fatalf("ExecuteSpecSearch %q: %v", query, err)
+		}
+		found := false
+		for _, hit := range result.Exact {
+			if hit.EntityID == scenarioID && hit.Level == "scenario" && hit.Source == "trgm" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("scenario mention not found for %q: %+v", query, result.Exact)
+		}
+	}
+}
+
+func TestExecuteSpecSearchTrgmMentionSourcesAndDedup(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+	fileID := insertFileDirect(t, db, "specs/sources/spec.md")
+	capID := insertSpecConfigAndCapabilityDirect(t, db, fileID, "sources")
+	reqID := insertRequirementDirect(t, db, fileID, capID, "Requirement", "Requirement body", 10, 12)
+	scenarioID := insertScenarioDirect(t, db, fileID, reqID, "Scenario", "given", "when", "then", 13, 16)
+	ucConfigID := func() int64 {
+		var id int64
+		if err := db.QueryRow(`INSERT INTO spec_configs (file_id, product_name) VALUES ($1, 'sources') RETURNING id`, fileID).Scan(&id); err != nil {
+			t.Fatalf("insert usecase config: %v", err)
+		}
+		return id
+	}()
+	ucFileID := insertFileDirect(t, db, "usecases/sources.md")
+	var usecaseID int64
+	if err := db.QueryRow(`
+		INSERT INTO spec_usecases (file_id, spec_config_id, usecase_name, title, description, line_start, line_end)
+		VALUES ($1, $2, 'UsecaseMention', 'Usecase title', 'Usecase description', 30, 40) RETURNING id`,
+		ucFileID, ucConfigID).Scan(&usecaseID); err != nil {
+		t.Fatalf("insert usecase: %v", err)
+	}
+
+	const mention = "API_SourceMention"
+	insertCodeMentionDirect(t, db, fileID, "spec_capability", capID, mention, 4)
+	insertCodeMentionDirect(t, db, fileID, "spec_requirement", reqID, mention, 11)
+	insertCodeMentionDirect(t, db, fileID, "spec_scenario", scenarioID, mention, 14)
+	insertCodeMentionDirect(t, db, fileID, "spec_scenario", scenarioID, mention, 15)
+	insertCodeMentionDirect(t, db, ucFileID, "spec_usecase", usecaseID, mention, 35)
+
+	result, err := specsvc.ExecuteSpecSearch(ctx, db, "api_sourcemention", "", "", "exact", 100)
+	if err != nil {
+		t.Fatalf("ExecuteSpecSearch: %v", err)
+	}
+	seen := map[string]specsvc.SpecSearchHit{}
+	for _, hit := range result.Exact {
+		key := hit.Level + ":" + fmt.Sprint(hit.EntityID)
+		if hit.Source == "trgm" {
+			seen[key] = hit
+		}
+	}
+	for _, tc := range []struct {
+		level string
+		id    int64
+		line  int
+		capID int64
+	}{
+		{level: "capability", id: capID, line: 1, capID: capID},
+		{level: "requirement", id: reqID, line: 10, capID: capID},
+		{level: "scenario", id: scenarioID, line: 13, capID: capID},
+		{level: "usecase", id: usecaseID, line: 30, capID: 0},
+	} {
+		hit, ok := seen[tc.level+":"+fmt.Sprint(tc.id)]
+		if !ok || hit.LineStart != tc.line || hit.Snippet == "" || hit.CapabilityID != tc.capID {
+			t.Fatalf("missing/invalid %s hit: %+v; all=%+v", tc.level, hit, result.Exact)
+		}
+	}
+	countScenario := 0
+	for _, hit := range result.Exact {
+		if hit.Level == "scenario" && hit.EntityID == scenarioID {
+			countScenario++
+		}
+	}
+	if countScenario != 1 {
+		t.Fatalf("scenario duplicate count = %d, want 1", countScenario)
+	}
+}
+
+func explainPlan(t *testing.T, db *store.DB, query string) string {
+	t.Helper()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatalf("disable seqscan: %v", err)
+	}
+	rows, err := tx.Query("EXPLAIN (COSTS OFF) " + query)
+	if err != nil {
+		t.Fatalf("EXPLAIN: %v", err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		plan.WriteString(line)
+		plan.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return plan.String()
+}
+
+func explainUsesIndex(t *testing.T, db *store.DB, query, indexName string) {
+	t.Helper()
+	plan := explainPlan(t, db, query)
+	if !strings.Contains(plan, indexName) {
+		t.Fatalf("plan does not use %s:\n%s", indexName, plan)
+	}
+}
+
+func TestSpecSearchTrgmIndexes(t *testing.T) {
+	db := testutil.Open(t)
+	explainUsesIndex(t, db, `SELECT id FROM spec_capabilities WHERE related_code % 'API_CCred_BindClassifier'`, "idx_spec_capabilities_related_code_trgm")
+	explainUsesIndex(t, db, `SELECT id FROM spec_requirements WHERE body_text % 'API_CCred_BindClassifier'`, "idx_spec_requirements_body_trgm")
+	explainUsesIndex(t, db, `SELECT id FROM spec_scenarios WHERE (scenario_name || ' ' || COALESCE(given_text, '') || ' ' || COALESCE(when_text, '') || ' ' || COALESCE(then_text, '')) % 'API_CCred_BindClassifier'`, "idx_spec_scenarios_text_trgm")
+	explainUsesIndex(t, db, `SELECT id FROM spec_usecases WHERE (usecase_name || ' ' || title || ' ' || COALESCE(description, '') || ' ' || COALESCE(actors, '') || ' ' || COALESCE(preconditions, '') || ' ' || COALESCE(postconditions, '') || ' ' || COALESCE(business_value, '') || ' ' || COALESCE(architecture, '') || ' ' || COALESCE(data_schema, '')) % 'API_CCred_BindClassifier'`, "idx_spec_usecases_text_trgm")
+	explainUsesIndex(t, db, `SELECT id FROM spec_code_mentions WHERE mention_name % 'API_CCred_BindClassifier'`, "idx_spec_code_mentions_name_trgm")
+	mentionPlan := explainPlan(t, db, `SELECT id FROM spec_code_mentions WHERE (LOWER(mention_name) = LOWER('API_CCred_BindClassifier') OR mention_name % 'API_CCred_BindClassifier')`)
+	if strings.Contains(mentionPlan, "Seq Scan on spec_code_mentions") {
+		t.Fatalf("production mention predicate uses sequential scan:\n%s", mentionPlan)
+	}
+	if !strings.Contains(mentionPlan, "idx_spec_code_mentions_name_lower") && !strings.Contains(mentionPlan, "idx_spec_code_mentions_name_trgm") {
+		t.Fatalf("production mention predicate uses neither mention index:\n%s", mentionPlan)
+	}
+}
+
 func TestExecuteSpecUsecase_ByPageId(t *testing.T) {
 	db := testutil.Open(t)
 	ctx := context.Background()
@@ -861,5 +1125,137 @@ func TestExecuteSpecByCode_NotFound(t *testing.T) {
 	}
 	if len(res.Hits) != 0 {
 		t.Fatalf("expected 0 hits, got %d: %+v", len(res.Hits), res.Hits)
+	}
+}
+
+func TestExecuteSpecSearchMissingModelClassification(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+	fileID := insertFileDirect(t, db, "specs/semantic-missing/spec.md")
+	capID := insertSpecConfigAndCapabilityDirect(t, db, fileID, "semantic-missing")
+	insertRequirementDirect(t, db, fileID, capID, "арест", "exact body", 2, 4)
+	if err := db.EnsureSpecSearchVectors(ctx, fileID); err != nil {
+		t.Fatalf("EnsureSpecSearchVectors: %v", err)
+	}
+	configureSemanticModel(t, filepath.Join(t.TempDir(), "missing-model.bin"))
+
+	both, err := specsvc.ExecuteSpecSearch(ctx, db, "арест", "", "", "both", 10)
+	if err != nil {
+		t.Fatalf("both search: %v", err)
+	}
+	if len(both.Exact) == 0 || both.SemanticMeta == nil || both.SemanticMeta.Reason != "unavailable" {
+		t.Fatalf("unexpected both result: %+v", both)
+	}
+	if both.SemanticMeta.Hint == "" {
+		t.Fatal("missing unavailable semantic hint")
+	}
+	_, err = specsvc.ExecuteSpecSearch(ctx, db, "арест", "", "", "semantic", 10)
+	if !errors.Is(err, errs.ErrSpecModelNotFound) {
+		t.Fatalf("semantic error = %v, want ErrSpecModelNotFound", err)
+	}
+}
+
+func TestExecuteSpecSearchCorruptedModelIsError(t *testing.T) {
+	db := testutil.Open(t)
+	modelPath := filepath.Join(t.TempDir(), "corrupted-model.bin")
+	if err := os.WriteFile(modelPath, []byte("not a gob model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configureSemanticModel(t, modelPath)
+	_, err := specsvc.ExecuteSpecSearch(context.Background(), db, "арест", "", "", "both", 10)
+	if err == nil || errors.Is(err, errs.ErrSpecModelNotFound) {
+		t.Fatalf("corrupted model error = %v, want non-model-not-found error", err)
+	}
+}
+
+func TestExecuteSpecSearchMissingGenerationIsError(t *testing.T) {
+	db := testutil.Open(t)
+	modelPath := filepath.Join(t.TempDir(), "missing-generation-model.bin")
+	writeSemanticTestModel(t, modelPath, "generation-without-rows")
+	configureSemanticModel(t, modelPath)
+	_, err := specsvc.ExecuteSpecSearch(context.Background(), db, "арест", "", "", "semantic", 10)
+	if err == nil || !strings.Contains(err.Error(), "has no embeddings") {
+		t.Fatalf("missing generation error = %v", err)
+	}
+}
+
+func TestExecuteSpecSearchDBFailureIsPropagated(t *testing.T) {
+	db := testutil.Open(t)
+	fileID := insertFileDirect(t, db, "specs/semantic-db/spec.md")
+	capID := insertSpecConfigAndCapabilityDirect(t, db, fileID, "semantic-db")
+	modelPath := filepath.Join(t.TempDir(), "db-failure-model.bin")
+	writeSemanticTestModel(t, modelPath, "generation-with-rows")
+	configureSemanticModel(t, modelPath)
+	if err := db.PublishSpecLSAGeneration(context.Background(), "generation-with-rows", nil, []model.SpecEmbedding{{
+		SpecID: capID, EmbedLevel: "spec", EmbedText: "embedding", Embedding: []float64{1}, EmbedMethod: "tfidf-lsa", EmbedDim: 1,
+	}}); err != nil {
+		t.Fatalf("PublishSpecLSAGeneration: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := specsvc.ExecuteSpecSearch(ctx, db, "арест", "", "", "semantic", 10)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("DB error = %v, want context.Canceled", err)
+	}
+}
+
+func TestExecuteSpecByCodeSourceSnippets(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+	specFile := insertFileDirect(t, db, "specs/by-code/spec.md")
+	capID := insertSpecConfigAndCapabilityDirect(t, db, specFile, "by-code")
+	if _, err := db.Exec(`UPDATE spec_capabilities SET title = 'capability-marker', purpose = 'capability purpose' WHERE id = $1`, capID); err != nil {
+		t.Fatal(err)
+	}
+	reqID := insertRequirementDirect(t, db, specFile, capID, "Requirement", "requirement-marker", 10, 12)
+	scenarioID := insertScenarioDirect(t, db, specFile, reqID, "Scenario", "scenario-marker", "when", "then", 13, 16)
+
+	ucFile := insertFileDirect(t, db, "usecases/by-code.md")
+	var cfgID int64
+	if err := db.QueryRow(`INSERT INTO spec_configs (file_id, product_name) VALUES ($1, 'by-code') RETURNING id`, ucFile).Scan(&cfgID); err != nil {
+		t.Fatalf("insert usecase config: %v", err)
+	}
+	var usecaseID int64
+	if err := db.QueryRow(`
+		INSERT INTO spec_usecases (file_id, spec_config_id, usecase_name, title, description, line_start, line_end)
+		VALUES ($1, $2, 'by-code-usecase', 'Usecase title', 'usecase-marker', 30, 40) RETURNING id`, ucFile, cfgID).Scan(&usecaseID); err != nil {
+		t.Fatalf("insert usecase: %v", err)
+	}
+	insertRelationDirect(t, db, "spec_usecase", usecaseID, "spec_capability", capID, "usecase_involves", "test")
+
+	const mention = "API_ByCodeMarker"
+	insertCodeMentionDirect(t, db, specFile, "spec_capability", capID, mention, 4)
+	insertCodeMentionDirect(t, db, specFile, "spec_requirement", reqID, mention, 11)
+	insertCodeMentionDirect(t, db, specFile, "spec_scenario", scenarioID, mention, 14)
+	insertCodeMentionDirect(t, db, ucFile, "spec_usecase", usecaseID, mention, 35)
+
+	result, err := specsvc.ExecuteSpecByCode(ctx, db, mention, 20)
+	if err != nil {
+		t.Fatalf("ExecuteSpecByCode: %v", err)
+	}
+	want := map[string]struct {
+		marker string
+		file   string
+	}{
+		"spec_capability":  {marker: "capability-marker", file: "specs/by-code/spec.md"},
+		"spec_requirement": {marker: "requirement-marker", file: "specs/by-code/spec.md"},
+		"spec_scenario":    {marker: "scenario-marker", file: "specs/by-code/spec.md"},
+		"spec_usecase":     {marker: "usecase-marker", file: "usecases/by-code.md"},
+	}
+	seen := map[string]bool{}
+	for _, hit := range result.Hits {
+		expected, ok := want[hit.SourceType]
+		if !ok {
+			continue
+		}
+		if hit.Snippet == "" || !strings.Contains(hit.Snippet, expected.marker) || hit.File != expected.file {
+			t.Fatalf("invalid %s hit: %+v", hit.SourceType, hit)
+		}
+		seen[hit.SourceType] = true
+	}
+	for sourceType := range want {
+		if !seen[sourceType] {
+			t.Fatalf("missing %s source hit: %+v", sourceType, result.Hits)
+		}
 	}
 }

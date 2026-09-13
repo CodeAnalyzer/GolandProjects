@@ -18,6 +18,10 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			files_indexed INTEGER NOT NULL DEFAULT 0,
 			errors_count INTEGER NOT NULL DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS schema_migrations (
+			version TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 		`CREATE TABLE IF NOT EXISTS ds_products (
 			id BIGSERIAL PRIMARY KEY,
 			product_name TEXT NOT NULL,
@@ -722,14 +726,16 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		)`,
 		// Полнотекстовый слой: словарь LSA
 		`CREATE TABLE IF NOT EXISTS spec_vocab (
-			id       SERIAL PRIMARY KEY,
-			term     TEXT NOT NULL UNIQUE,
-			doc_freq INTEGER NOT NULL,
-			idf      DOUBLE PRECISION
+			id         SERIAL PRIMARY KEY,
+			generation TEXT NOT NULL DEFAULT 'legacy',
+			term       TEXT NOT NULL,
+			doc_freq   INTEGER NOT NULL,
+			idf        DOUBLE PRECISION
 		)`,
 		// Полнотекстовый слой: LSA-векторы документов (embed_level='spec' → capability)
 		`CREATE TABLE IF NOT EXISTS spec_embeddings (
 			id           SERIAL PRIMARY KEY,
+			generation   TEXT NOT NULL DEFAULT 'legacy',
 			spec_id      BIGINT NOT NULL REFERENCES spec_capabilities(id) ON DELETE CASCADE,
 			embed_level  TEXT NOT NULL DEFAULT 'spec',
 			embed_text   TEXT NOT NULL,
@@ -738,6 +744,10 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			embed_dim    INTEGER NOT NULL DEFAULT 128,
 			updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		`ALTER TABLE spec_vocab ADD COLUMN IF NOT EXISTS generation TEXT NOT NULL DEFAULT 'legacy'`,
+		`ALTER TABLE spec_embeddings ADD COLUMN IF NOT EXISTS generation TEXT NOT NULL DEFAULT 'legacy'`,
+		`ALTER TABLE spec_vocab DROP CONSTRAINT IF EXISTS spec_vocab_term_key`,
+		`DROP INDEX IF EXISTS idx_spec_vocab_term`,
 		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ds_products_product_name ON ds_products(product_name)`,
 		`CREATE INDEX IF NOT EXISTS idx_files_scan_run_id ON files(scan_run_id)`,
@@ -747,7 +757,7 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_symbols_symbol_name_type_lower ON symbols(LOWER(symbol_name), symbol_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_symbols_symbol_name_trgm ON symbols USING GIN (symbol_name gin_trgm_ops)`,
 		`CREATE INDEX IF NOT EXISTS idx_symbols_signature_trgm ON symbols USING GIN (signature gin_trgm_ops)`,
-	`CREATE INDEX IF NOT EXISTS idx_symbols_entity_type_entity_id ON symbols(entity_type, entity_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_symbols_entity_type_entity_id ON symbols(entity_type, entity_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_procedures_file_id ON sql_procedures(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_procedures_proc_name_lower ON sql_procedures(LOWER(proc_name))`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_procedures_proc_name_trgm ON sql_procedures USING GIN (proc_name gin_trgm_ops)`,
@@ -863,8 +873,9 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_spec_change_delta_change ON spec_change_delta(change_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_spec_code_mentions_name_lower ON spec_code_mentions(LOWER(mention_name))`,
 		`CREATE INDEX IF NOT EXISTS idx_spec_code_mentions_source ON spec_code_mentions(source_type, source_id)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_spec_vocab_term ON spec_vocab(term)`,
-		`CREATE INDEX IF NOT EXISTS idx_spec_embeddings_spec ON spec_embeddings(spec_id, embed_level)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_spec_vocab_term ON spec_vocab(generation, term)`,
+		`DROP INDEX IF EXISTS idx_spec_embeddings_spec`,
+		`CREATE INDEX IF NOT EXISTS idx_spec_embeddings_spec ON spec_embeddings(generation, spec_id, embed_level)`,
 		`CREATE INDEX IF NOT EXISTS idx_spec_capabilities_fts ON spec_capabilities USING GIN (search_vector)`,
 		`CREATE INDEX IF NOT EXISTS idx_spec_requirements_fts ON spec_requirements USING GIN (search_vector)`,
 		`CREATE INDEX IF NOT EXISTS idx_spec_scenarios_fts ON spec_scenarios USING GIN (search_vector)`,
@@ -895,7 +906,45 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			return fmt.Errorf("failed to initialize schema: %w", err)
 		}
 	}
+	if err := db.applyMigration(ctx, "spec_search_vectors_weighted_v1", specSearchVectorUpdateStatements("")); err != nil {
+		return fmt.Errorf("failed to apply migration spec_search_vectors_weighted_v1: %w", err)
+	}
 
+	return nil
+}
+
+func (db *DB) applyMigration(ctx context.Context, version string, statements []string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migration %s begin: %w", version, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	lockKey := "schema-migration/" + version
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); err != nil {
+		return fmt.Errorf("migration %s lock: %w", version, err)
+	}
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)`, version).Scan(&exists); err != nil {
+		return fmt.Errorf("migration %s check: %w", version, err)
+	}
+	if exists {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("migration %s commit existing: %w", version, err)
+		}
+		return nil
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("migration %s statement: %w", version, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version); err != nil {
+		return fmt.Errorf("migration %s record: %w", version, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migration %s commit: %w", version, err)
+	}
 	return nil
 }
 

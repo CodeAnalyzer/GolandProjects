@@ -79,9 +79,9 @@ func ParseSpecFile(content string) *ParsedSpec {
 	var scn *ParsedScenario
 	lastGWTKind := "" // последний распознанный блок сценария: given|when|then
 
-	closeScenario := func() {
+	closeScenario := func(lineEnd int) {
 		if scn != nil {
-			scn.LineEnd = scn.LineStart + scnLineCount(scn) - 1
+			scn.LineEnd = lineEnd
 			if req != nil {
 				req.Scenarios = append(req.Scenarios, *scn)
 			}
@@ -104,7 +104,7 @@ func ParseSpecFile(content string) *ParsedSpec {
 		lineNo := i + 1
 
 		if m := reRequirementHeader.FindStringSubmatch(line); m != nil {
-			closeScenario()
+			closeScenario(lineNo - 1)
 			finishRequirement(lineNo - 1)
 			req = &ParsedRequirement{
 				Name:      strings.TrimSpace(m[1]),
@@ -114,7 +114,7 @@ func ParseSpecFile(content string) *ParsedSpec {
 			continue
 		}
 		if m := reScenarioHeader.FindStringSubmatch(line); m != nil {
-			closeScenario()
+			closeScenario(lineNo - 1)
 			if req == nil {
 				// Сценарий вне требования — структурная аномалия; пропускаем.
 				continue
@@ -129,7 +129,7 @@ func ParseSpecFile(content string) *ParsedSpec {
 		}
 		if m := reH2Header.FindStringSubmatch(line); m != nil {
 			// ## Purpose / ## Notes / ## Related code / ## Requirements / прочие
-			closeScenario()
+			closeScenario(lineNo - 1)
 			finishRequirement(lineNo - 1)
 			closeSection()
 			switch strings.ToLower(strings.TrimSpace(m[1])) {
@@ -191,25 +191,11 @@ func ParseSpecFile(content string) *ParsedSpec {
 		}
 	}
 
-	closeScenario()
+	closeScenario(len(lines))
 	finishRequirement(len(lines))
 	closeSection()
 
 	return spec
-}
-
-// scnLineCount — грубая оценка числа строк сценария для line_end.
-func scnLineCount(scn *ParsedScenario) int {
-	count := 1
-	for _, s := range []string{scn.Given, scn.When, scn.Then} {
-		if s != "" {
-			count += strings.Count(s, "\n") + 1
-		}
-	}
-	if count < 1 {
-		count = 1
-	}
-	return count
 }
 
 // parseGWTLine распознаёт строки сценариев "- **WHEN** текст" и "- WHEN текст"

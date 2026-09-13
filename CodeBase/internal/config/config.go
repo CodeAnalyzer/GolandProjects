@@ -37,12 +37,12 @@ type Config struct {
 
 // IndexerConfig конфигурация индексатора
 type IndexerConfig struct {
-	Parallel            int      `toml:"parallel"`
-	BatchSize           int      `toml:"batch_size"`
-	BatchInsertSize     int      `toml:"batch_insert_size"`
-	ProgressIntervalMs  int      `toml:"progress_interval_ms"`
-	IncludePatterns     []string `toml:"include_patterns"`
-	ExcludePatterns     []string `toml:"exclude_patterns"`
+	Parallel           int      `toml:"parallel"`
+	BatchSize          int      `toml:"batch_size"`
+	BatchInsertSize    int      `toml:"batch_insert_size"`
+	ProgressIntervalMs int      `toml:"progress_interval_ms"`
+	IncludePatterns    []string `toml:"include_patterns"`
+	ExcludePatterns    []string `toml:"exclude_patterns"`
 }
 
 // QueryConfig лимиты для query/rti/trc вызовов
@@ -73,7 +73,7 @@ type LoggingConfig struct {
 // MCPConfig конфигурация MCP-сервера
 type MCPConfig struct {
 	PaginationChunkSize   int    `toml:"pagination_chunk_size"`
-	PaginationTTL         string `toml:"pagination_ttl"` // Go duration: "15m", "30m"
+	PaginationTTL         string `toml:"pagination_ttl"`     // Go duration: "15m", "30m"
 	QueryTimeoutSec       int    `toml:"query_timeout_sec"`  // default 30
 	ReviewTimeoutSec      int    `toml:"review_timeout_sec"` // default 120
 	RegexpCacheMaxEntries int    `toml:"regexp_cache_max_entries"`
@@ -131,6 +131,34 @@ func SetConfigFile(path string) {
 // GetConfigFile возвращает путь к файлу конфигурации
 func GetConfigFile() string {
 	return configFile
+}
+
+func SpecLSAModelPath() string {
+	modelPath := ""
+	if cfg != nil {
+		modelPath = cfg.Spec.LSAModelPath
+	}
+	if modelPath == "" {
+		modelPath = "spec_lsa_model.bin"
+	}
+	if filepath.IsAbs(modelPath) {
+		return filepath.Clean(modelPath)
+	}
+
+	base := "."
+	if configFile != "" {
+		base = filepath.Dir(configFile)
+	}
+	if absBase, err := filepath.Abs(base); err == nil {
+		base = absBase
+	} else {
+		base = filepath.Clean(base)
+	}
+	return filepath.Clean(filepath.Join(base, modelPath))
+}
+
+func SpecLSAStatePath() string {
+	return filepath.Join(filepath.Dir(SpecLSAModelPath()), "spec_lsa_state.json")
 }
 
 // Load загружает конфигурацию из файла

@@ -4,6 +4,7 @@ package store_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/codebase/internal/store/testutil"
@@ -14,11 +15,18 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 	if err := db.InitSchemaCtx(context.Background()); err != nil {
 		t.Fatalf("second InitSchema: %v", err)
 	}
+	var migrationExists bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 'spec_search_vectors_weighted_v1')`).Scan(&migrationExists); err != nil {
+		t.Fatalf("check weighted migration: %v", err)
+	}
+	if !migrationExists {
+		t.Fatal("weighted search vector migration is not recorded")
+	}
 
 	requiredTables := []string{
 		"scan_runs", "files", "symbols", "sql_procedures", "relations",
 		"rti_sessions", "trc_sessions", "api_contracts", "ds_return_codes",
-		"spec_configs", "spec_capabilities", "spec_requirements", "spec_scenarios",
+		"schema_migrations", "spec_configs", "spec_capabilities", "spec_requirements", "spec_scenarios",
 		"spec_usecases", "spec_usecase_steps", "spec_changes", "spec_change_delta",
 		"spec_code_mentions", "spec_vocab", "spec_embeddings",
 	}
@@ -100,6 +108,126 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		}
 		if exists {
 			t.Fatalf("dropped index still exists: %s", idx)
+		}
+	}
+}
+
+func TestInitSchema_WeightedMigrationRunsOnce(t *testing.T) {
+	db := testutil.Open(t)
+	var scanRunID, fileID, configID, capabilityID int64
+	if err := db.QueryRow(`INSERT INTO scan_runs (root_path, status) VALUES ('repo', 'done') RETURNING id`).Scan(&scanRunID); err != nil {
+		t.Fatalf("insert scan run: %v", err)
+	}
+	if err := db.QueryRow(`
+		INSERT INTO files (scan_run_id, path, rel_path, extension, hash_sha256, modified_at)
+		VALUES ($1, 'repo/spec.md', 'spec.md', '.md', 'hash', NOW()) RETURNING id`, scanRunID).Scan(&fileID); err != nil {
+		t.Fatalf("insert file: %v", err)
+	}
+	if err := db.QueryRow(`INSERT INTO spec_configs (file_id, product_name) VALUES ($1, 'product') RETURNING id`, fileID).Scan(&configID); err != nil {
+		t.Fatalf("insert config: %v", err)
+	}
+	if err := db.QueryRow(`
+		INSERT INTO spec_capabilities (file_id, spec_config_id, capability_name, title)
+		VALUES ($1, $2, 'sentinel-capability', 'Sentinel') RETURNING id`, fileID, configID).Scan(&capabilityID); err != nil {
+		t.Fatalf("insert capability: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE spec_capabilities SET search_vector = to_tsvector('simple', 'sentinel') WHERE id = $1`, capabilityID); err != nil {
+		t.Fatalf("set sentinel vector: %v", err)
+	}
+	if err := db.InitSchemaCtx(context.Background()); err != nil {
+		t.Fatalf("second InitSchema: %v", err)
+	}
+	var vectorText string
+	if err := db.QueryRow(`SELECT search_vector::text FROM spec_capabilities WHERE id = $1`, capabilityID).Scan(&vectorText); err != nil {
+		t.Fatalf("read sentinel vector: %v", err)
+	}
+	if !strings.Contains(vectorText, "sentinel") {
+		t.Fatalf("sentinel vector was overwritten: %q", vectorText)
+	}
+}
+
+func TestWeightedSpecRequirementRankPrefersName(t *testing.T) {
+	db := testutil.Open(t)
+	var scanRunID, fileID, configID, capabilityID int64
+	if err := db.QueryRow(`INSERT INTO scan_runs (root_path, status) VALUES ('repo', 'done') RETURNING id`).Scan(&scanRunID); err != nil {
+		t.Fatalf("insert scan run: %v", err)
+	}
+	if err := db.QueryRow(`
+		INSERT INTO files (scan_run_id, path, rel_path, extension, hash_sha256, modified_at)
+		VALUES ($1, 'repo/spec.md', 'spec.md', '.md', 'hash', NOW()) RETURNING id`, scanRunID).Scan(&fileID); err != nil {
+		t.Fatalf("insert file: %v", err)
+	}
+	if err := db.QueryRow(`INSERT INTO spec_configs (file_id, product_name) VALUES ($1, 'product') RETURNING id`, fileID).Scan(&configID); err != nil {
+		t.Fatalf("insert config: %v", err)
+	}
+	if err := db.QueryRow(`
+		INSERT INTO spec_capabilities (file_id, spec_config_id, capability_name, title)
+		VALUES ($1, $2, 'weighted-capability', 'Weighted') RETURNING id`, fileID, configID).Scan(&capabilityID); err != nil {
+		t.Fatalf("insert capability: %v", err)
+	}
+	var nameID, bodyID int64
+	if err := db.QueryRow(`
+		INSERT INTO spec_requirements (file_id, capability_id, requirement_name, body_text)
+		VALUES ($1, $2, 'арест', 'обычный текст') RETURNING id`, fileID, capabilityID).Scan(&nameID); err != nil {
+		t.Fatalf("insert name requirement: %v", err)
+	}
+	if err := db.QueryRow(`
+		INSERT INTO spec_requirements (file_id, capability_id, requirement_name, body_text)
+		VALUES ($1, $2, 'обычное требование', 'арест') RETURNING id`, fileID, capabilityID).Scan(&bodyID); err != nil {
+		t.Fatalf("insert body requirement: %v", err)
+	}
+	if err := db.EnsureSpecSearchVectors(context.Background(), fileID); err != nil {
+		t.Fatalf("EnsureSpecSearchVectors: %v", err)
+	}
+	var nameRank, bodyRank float64
+	if err := db.QueryRow(`
+		SELECT ts_rank(search_vector, plainto_tsquery('russian', 'арест'))
+		FROM spec_requirements WHERE id = $1`, nameID).Scan(&nameRank); err != nil {
+		t.Fatalf("name rank: %v", err)
+	}
+	if err := db.QueryRow(`
+		SELECT ts_rank(search_vector, plainto_tsquery('russian', 'арест'))
+		FROM spec_requirements WHERE id = $1`, bodyID).Scan(&bodyRank); err != nil {
+		t.Fatalf("body rank: %v", err)
+	}
+	if nameRank <= bodyRank {
+		t.Fatalf("name rank = %v, body rank = %v, want name > body", nameRank, bodyRank)
+	}
+}
+
+func TestInitSchema_LSAGenerationSchema(t *testing.T) {
+	db := testutil.Open(t)
+	for _, tc := range []struct {
+		table string
+	}{
+		{table: "spec_vocab"},
+		{table: "spec_embeddings"},
+	} {
+		var columnDefault, isNullable string
+		if err := db.QueryRow(`
+			SELECT column_default, is_nullable
+			FROM information_schema.columns
+			WHERE table_name = $1 AND column_name = 'generation'`, tc.table).Scan(&columnDefault, &isNullable); err != nil {
+			t.Fatalf("generation column %s: %v", tc.table, err)
+		}
+		if !strings.Contains(columnDefault, "legacy") || isNullable != "NO" {
+			t.Fatalf("generation column %s: default=%q nullable=%q", tc.table, columnDefault, isNullable)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{name: "idx_spec_vocab_term", want: "(generation, term)"},
+		{name: "idx_spec_embeddings_spec", want: "(generation, spec_id, embed_level)"},
+	} {
+		var definition string
+		if err := db.QueryRow(`SELECT indexdef FROM pg_indexes WHERE indexname = $1`, tc.name).Scan(&definition); err != nil {
+			t.Fatalf("index %s: %v", tc.name, err)
+		}
+		if !strings.Contains(definition, tc.want) {
+			t.Fatalf("index %s definition = %q, want %q", tc.name, definition, tc.want)
 		}
 	}
 }

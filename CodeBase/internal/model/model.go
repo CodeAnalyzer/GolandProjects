@@ -771,15 +771,17 @@ type SpecCodeMention struct {
 
 // SpecVocabTerm — термин словаря полнотекстового слоя (LSA)
 type SpecVocabTerm struct {
-	ID      int
-	Term    string
-	DocFreq int
-	IDF     float64
+	ID         int
+	Generation string
+	Term       string
+	DocFreq    int
+	IDF        float64
 }
 
 // SpecEmbedding — LSA-вектор документа (embed_level="spec" → capability)
 type SpecEmbedding struct {
 	ID          int
+	Generation  string
 	SpecID      int64
 	EmbedLevel  string
 	EmbedText   string

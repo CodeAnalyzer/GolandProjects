@@ -3,8 +3,9 @@ package specsvc
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
-	"path/filepath"
+	"os"
 	"runtime"
 	"sort"
 	"strconv"
@@ -378,7 +379,16 @@ func ExecuteSpecSearch(ctx context.Context, db *store.DB, query string, product 
 	// Слой 2: semantic — LSA через spec_embeddings
 	if (layer == "semantic" || layer == "both") && (level == "" || strings.EqualFold(level, "capability")) {
 		semantic, meta, err := searchSpecSemantic(ctx, db, query, product, limit)
-		if err == nil {
+		if err != nil {
+			if errors.Is(err, errs.ErrSpecModelNotFound) && layer == "both" {
+				result.SemanticMeta = &SpecSearchMeta{
+					Reason: "unavailable",
+					Hint:   "семантический слой недоступен: LSA-модель ещё не построена",
+				}
+			} else {
+				return nil, fmt.Errorf("spec search semantic: %w", err)
+			}
+		} else {
 			result.Semantic = semantic
 			result.SemanticMeta = meta
 		}
@@ -408,12 +418,13 @@ func ExecuteSpecByCode(ctx context.Context, db *store.DB, name string, limit int
 		       COALESCE(f.rel_path, ''),
 		       COALESCE(c.line_start, req.line_start, s.line_start, uc.line_start, 0),
 		       COALESCE(c.line_end, req.line_end, s.line_end, uc.line_end, 0),
-		       COALESCE(
-		           CONCAT_WS(' ', c.title, c.purpose, c.notes, c.related_code),
-		           req.body_text,
-		           CONCAT_WS(' ', s.given_text, s.when_text, s.then_text),
-		           CONCAT_WS(' ', uc.description, uc.actors, uc.preconditions, uc.postconditions)
-		       )
+		       CASE m.source_type
+		           WHEN 'spec_capability' THEN COALESCE(NULLIF(CONCAT_WS(' ', c.title, c.purpose, c.notes, c.related_code), ''), '')
+		           WHEN 'spec_requirement' THEN COALESCE(NULLIF(req.body_text, ''), req.requirement_name, '')
+		           WHEN 'spec_scenario' THEN COALESCE(NULLIF(CONCAT_WS(' ', s.given_text, s.when_text, s.then_text), ''), s.scenario_name, '')
+		           WHEN 'spec_usecase' THEN COALESCE(NULLIF(CONCAT_WS(' ', uc.description, uc.actors, uc.preconditions, uc.postconditions, uc.business_value, uc.architecture, uc.data_schema), ''), uc.title, uc.usecase_name, '')
+		           ELSE ''
+		       END
 		FROM spec_code_mentions m
 		JOIN files f ON f.id = m.file_id
 		LEFT JOIN spec_capabilities c ON m.source_type = 'spec_capability' AND c.id = m.source_id
@@ -1072,41 +1083,21 @@ func normalizeHistorySelectors(capabilityName, changeName string) (string, strin
 
 // searchSpecExact — tsvector поиск по сущностям спек.
 func searchSpecExact(ctx context.Context, db *store.DB, query, product, level string, limit int) ([]SpecSearchHit, error) {
-	return searchSpecArtifacts(ctx, db, query, product, level, limit, false)
-}
-
-// searchSpecTrgm — trgm поиск по техименам.
-func searchSpecTrgm(ctx context.Context, db *store.DB, query, product, level string, limit int) ([]SpecSearchHit, error) {
-	return searchSpecArtifacts(ctx, db, query, product, level, limit, true)
-}
-
-func searchSpecArtifacts(ctx context.Context, db *store.DB, query, product, level string, limit int, trgm bool) ([]SpecSearchHit, error) {
-	rankExpr := "ts_rank(a.search_vector, plainto_tsquery('russian', $1))"
-	matchExpr := "a.search_vector @@ plainto_tsquery('russian', $1)"
-	source := "tsvector"
-	if trgm {
-		rankExpr = "similarity(a.search_text, $1)"
-		matchExpr = "similarity(a.search_text, $1) > 0.3"
-		source = "trgm"
-	}
-	statement := fmt.Sprintf(`
+	rows, err := db.QueryContext(ctx, `
 		WITH artifacts AS (
 			SELECT c.id AS entity_id, c.id AS capability_id, c.capability_name,
 			       'capability'::text AS level, c.title, COALESCE(c.purpose, '') AS purpose,
 			       c.line_start, c.line_end,
-			       CONCAT_WS(' ', c.title, c.purpose, c.notes, c.related_code) AS search_text,
 			       CONCAT_WS(' ', c.title, c.purpose, c.notes) AS snippet,
 			       c.search_vector, c.ds_product_id
 			FROM spec_capabilities c
 			UNION ALL
 			SELECT req.id, c.id, c.capability_name, 'requirement', req.requirement_name, '',
-			       req.line_start, req.line_end, CONCAT_WS(' ', req.requirement_name, req.body_text),
-			       req.body_text, req.search_vector, c.ds_product_id
+			       req.line_start, req.line_end, req.body_text, req.search_vector, c.ds_product_id
 			FROM spec_requirements req JOIN spec_capabilities c ON c.id = req.capability_id
 			UNION ALL
 			SELECT s.id, c.id, c.capability_name, 'scenario', s.scenario_name, '',
 			       s.line_start, s.line_end,
-			       CONCAT_WS(' ', s.scenario_name, s.given_text, s.when_text, s.then_text),
 			       CONCAT_WS(' ', s.given_text, s.when_text, s.then_text), s.search_vector, c.ds_product_id
 			FROM spec_scenarios s
 			JOIN spec_requirements req ON req.id = s.requirement_id
@@ -1114,22 +1105,21 @@ func searchSpecArtifacts(ctx context.Context, db *store.DB, query, product, leve
 			UNION ALL
 			SELECT uc.id, 0, uc.usecase_name, 'usecase', uc.title, '',
 			       uc.line_start, uc.line_end,
-			       CONCAT_WS(' ', uc.usecase_name, uc.title, uc.description, uc.actors,
-			                     uc.preconditions, uc.postconditions, uc.business_value,
-			                     uc.architecture, uc.data_schema),
 			       CONCAT_WS(' ', uc.description, uc.actors, uc.preconditions, uc.postconditions),
 			       uc.search_vector, cfg.ds_product_id
 			FROM spec_usecases uc JOIN spec_configs cfg ON cfg.id = uc.spec_config_id
 		)
 		SELECT a.capability_id, a.capability_name, a.entity_id, a.level, a.title, a.purpose,
-		       a.line_start, a.line_end, a.snippet, %s AS rank, COALESCE(dp.product_name, '')
+		       a.line_start, a.line_end, a.snippet,
+		       ts_rank(a.search_vector, plainto_tsquery('russian', $1)) AS rank,
+		       COALESCE(dp.product_name, '')
 		FROM artifacts a
 		LEFT JOIN ds_products dp ON dp.id = a.ds_product_id
-		WHERE %s AND ($2 = '' OR dp.product_name = $2)
+		WHERE a.search_vector @@ plainto_tsquery('russian', $1)
+		  AND ($2 = '' OR dp.product_name = $2)
 		  AND ($3 = '' OR LOWER(a.level) = LOWER($3))
 		ORDER BY rank DESC, a.level, a.entity_id
-		LIMIT $4`, rankExpr, matchExpr)
-	rows, err := db.QueryContext(ctx, statement, query, product, level, limit)
+		LIMIT $4`, query, product, level, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1143,7 +1133,117 @@ func searchSpecArtifacts(ctx context.Context, db *store.DB, query, product, leve
 			&hit.Rank, &hit.Product); err != nil {
 			return nil, err
 		}
-		hit.Source = source
+		hit.Source = "tsvector"
+		hits = append(hits, hit)
+	}
+	return hits, rows.Err()
+}
+
+// searchSpecTrgm — trgm поиск по индексируемым именам и code mentions.
+func searchSpecTrgm(ctx context.Context, db *store.DB, query, product, level string, limit int) ([]SpecSearchHit, error) {
+	rows, err := db.QueryContext(ctx, `
+		WITH trgm_hits AS (
+			SELECT c.id AS capability_id, c.capability_name, c.id AS entity_id, 'capability'::text AS level,
+			       c.title, COALESCE(c.purpose, '') AS purpose, c.line_start, c.line_end,
+			       CONCAT_WS(' ', c.title, c.purpose, c.notes, c.related_code) AS snippet,
+			       similarity(c.related_code, $1) AS rank,
+			       COALESCE(dp.product_name, '') AS product
+			FROM spec_capabilities c
+			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+			WHERE c.related_code % $1
+			UNION ALL
+			SELECT c.id, c.capability_name, req.id, 'requirement', req.requirement_name, '',
+			       req.line_start, req.line_end, req.body_text,
+			       similarity(req.body_text, $1),
+			       COALESCE(dp.product_name, '')
+			FROM spec_requirements req
+			JOIN spec_capabilities c ON c.id = req.capability_id
+			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+			WHERE req.body_text % $1
+			UNION ALL
+			SELECT c.id, c.capability_name, s.id, 'scenario', s.scenario_name, '',
+			       s.line_start, s.line_end,
+			       CONCAT_WS(' ', s.given_text, s.when_text, s.then_text),
+			       similarity(s.scenario_name || ' ' || COALESCE(s.given_text, '') || ' ' || COALESCE(s.when_text, '') || ' ' || COALESCE(s.then_text, ''), $1),
+			       COALESCE(dp.product_name, '')
+			FROM spec_scenarios s
+			JOIN spec_requirements req ON req.id = s.requirement_id
+			JOIN spec_capabilities c ON c.id = req.capability_id
+			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+			WHERE (s.scenario_name || ' ' || COALESCE(s.given_text, '') || ' ' || COALESCE(s.when_text, '') || ' ' || COALESCE(s.then_text, '')) % $1
+			UNION ALL
+			SELECT 0, uc.usecase_name, uc.id, 'usecase', uc.title, '', uc.line_start, uc.line_end,
+			       CONCAT_WS(' ', uc.description, uc.actors, uc.preconditions, uc.postconditions,
+			                     uc.business_value, uc.architecture, uc.data_schema),
+			       similarity(uc.usecase_name || ' ' || uc.title || ' ' || COALESCE(uc.description, '') || ' ' || COALESCE(uc.actors, '') || ' ' || COALESCE(uc.preconditions, '') || ' ' || COALESCE(uc.postconditions, '') || ' ' || COALESCE(uc.business_value, '') || ' ' || COALESCE(uc.architecture, '') || ' ' || COALESCE(uc.data_schema, ''), $1),
+			       COALESCE(dp.product_name, '')
+			FROM spec_usecases uc
+			JOIN spec_configs cfg ON cfg.id = uc.spec_config_id
+			LEFT JOIN ds_products dp ON dp.id = cfg.ds_product_id
+			WHERE (uc.usecase_name || ' ' || uc.title || ' ' || COALESCE(uc.description, '') || ' ' || COALESCE(uc.actors, '') || ' ' || COALESCE(uc.preconditions, '') || ' ' || COALESCE(uc.postconditions, '') || ' ' || COALESCE(uc.business_value, '') || ' ' || COALESCE(uc.architecture, '') || ' ' || COALESCE(uc.data_schema, '')) % $1
+			UNION ALL
+			SELECT c.id, c.capability_name, c.id, 'capability', c.title, COALESCE(c.purpose, ''), c.line_start, c.line_end,
+			       CONCAT_WS(' ', c.title, c.purpose, c.notes, c.related_code),
+			       CASE WHEN LOWER(m.mention_name) = LOWER($1) THEN 1.0 ELSE similarity(m.mention_name, $1) END,
+			       COALESCE(dp.product_name, '')
+			FROM spec_code_mentions m
+			JOIN spec_capabilities c ON m.source_type = 'spec_capability' AND c.id = m.source_id
+			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+			WHERE m.source_type = 'spec_capability' AND (LOWER(m.mention_name) = LOWER($1) OR m.mention_name % $1)
+			UNION ALL
+			SELECT c.id, c.capability_name, req.id, 'requirement', req.requirement_name, '', req.line_start, req.line_end,
+			       req.body_text,
+			       CASE WHEN LOWER(m.mention_name) = LOWER($1) THEN 1.0 ELSE similarity(m.mention_name, $1) END,
+			       COALESCE(dp.product_name, '')
+			FROM spec_code_mentions m
+			JOIN spec_requirements req ON m.source_type = 'spec_requirement' AND req.id = m.source_id
+			JOIN spec_capabilities c ON c.id = req.capability_id
+			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+			WHERE m.source_type = 'spec_requirement' AND (LOWER(m.mention_name) = LOWER($1) OR m.mention_name % $1)
+			UNION ALL
+			SELECT c.id, c.capability_name, s.id, 'scenario', s.scenario_name, '', s.line_start, s.line_end,
+			       CONCAT_WS(' ', s.given_text, s.when_text, s.then_text),
+			       CASE WHEN LOWER(m.mention_name) = LOWER($1) THEN 1.0 ELSE similarity(m.mention_name, $1) END,
+			       COALESCE(dp.product_name, '')
+			FROM spec_code_mentions m
+			JOIN spec_scenarios s ON m.source_type = 'spec_scenario' AND s.id = m.source_id
+			JOIN spec_requirements req ON req.id = s.requirement_id
+			JOIN spec_capabilities c ON c.id = req.capability_id
+			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+			WHERE m.source_type = 'spec_scenario' AND (LOWER(m.mention_name) = LOWER($1) OR m.mention_name % $1)
+			UNION ALL
+			SELECT 0, uc.usecase_name, uc.id, 'usecase', uc.title, '', uc.line_start, uc.line_end,
+			       CONCAT_WS(' ', uc.description, uc.actors, uc.preconditions, uc.postconditions,
+			                     uc.business_value, uc.architecture, uc.data_schema),
+			       CASE WHEN LOWER(m.mention_name) = LOWER($1) THEN 1.0 ELSE similarity(m.mention_name, $1) END,
+			       COALESCE(dp.product_name, '')
+			FROM spec_code_mentions m
+			JOIN spec_usecases uc ON m.source_type = 'spec_usecase' AND uc.id = m.source_id
+			JOIN spec_configs cfg ON cfg.id = uc.spec_config_id
+			LEFT JOIN ds_products dp ON dp.id = cfg.ds_product_id
+			WHERE m.source_type = 'spec_usecase' AND (LOWER(m.mention_name) = LOWER($1) OR m.mention_name % $1)
+		)
+		SELECT capability_id, capability_name, entity_id, level, title, purpose, line_start, line_end,
+		       snippet, rank, product
+		FROM trgm_hits
+		WHERE ($2 = '' OR product = $2)
+		  AND ($3 = '' OR LOWER(level) = LOWER($3))
+		ORDER BY rank DESC, level, entity_id
+		LIMIT $4`, query, product, level, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var hits []SpecSearchHit
+	for rows.Next() {
+		var hit SpecSearchHit
+		if err := rows.Scan(&hit.CapabilityID, &hit.CapabilityName, &hit.EntityID, &hit.Level,
+			&hit.Title, &hit.Purpose, &hit.LineStart, &hit.LineEnd, &hit.Snippet,
+			&hit.Rank, &hit.Product); err != nil {
+			return nil, err
+		}
+		hit.Source = "trgm"
 		hits = append(hits, hit)
 	}
 	return hits, rows.Err()
@@ -1200,20 +1300,27 @@ func searchSpecSemantic(ctx context.Context, db *store.DB, query, product string
 		relativeCutoff = cfg.Spec.RelativeCutoff()
 	}
 
-	modelPath := filepath.Join(filepath.Dir(config.GetConfigFile()), "spec_lsa_model.bin")
-	if cfg != nil && cfg.Spec.LSAModelPath != "" {
-		modelPath = cfg.Spec.LSAModelPath
-		if !filepath.IsAbs(modelPath) {
-			modelPath = filepath.Join(filepath.Dir(config.GetConfigFile()), modelPath)
-		}
-	}
+	modelPath := config.SpecLSAModelPath()
 	model, err := specfts.LoadLSAModel(modelPath)
-	if err != nil || model.Vocab == nil || model.VT == nil {
-		return nil, nil, errs.ErrSpecModelNotFound
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, errs.ErrSpecModelNotFound
+		}
+		return nil, nil, fmt.Errorf("load spec LSA model: %w", err)
+	}
+	if model.Vocab == nil || model.VT == nil || model.Generation == "" || model.K <= 0 {
+		return nil, nil, fmt.Errorf("invalid spec LSA model")
+	}
+	hasGeneration, err := db.HasSpecLSAGeneration(ctx, model.Generation)
+	if err != nil {
+		return nil, nil, fmt.Errorf("check spec LSA generation: %w", err)
+	}
+	if !hasGeneration {
+		return nil, nil, fmt.Errorf("spec LSA generation %q has no embeddings", model.Generation)
 	}
 	queryVec := model.Vocab.ProjectQuery(query, model.VT)
 	if len(queryVec) == 0 {
-		return nil, nil, errs.ErrSpecModelNotFound
+		return nil, nil, fmt.Errorf("invalid spec LSA query projection")
 	}
 
 	rows, err := db.QueryContext(ctx, `
@@ -1223,8 +1330,8 @@ func searchSpecSemantic(ctx context.Context, db *store.DB, query, product string
 		FROM spec_embeddings se
 		JOIN spec_capabilities sc ON se.spec_id = sc.id
 		LEFT JOIN ds_products dp ON dp.id = sc.ds_product_id
-		WHERE se.embed_level = 'spec' AND ($1 = '' OR dp.product_name = $1)
-		ORDER BY se.spec_id`, product)
+		WHERE se.generation = $2 AND se.embed_level = 'spec' AND ($1 = '' OR dp.product_name = $1)
+		ORDER BY se.spec_id`, product, model.Generation)
 	if err != nil {
 		return nil, nil, err
 	}

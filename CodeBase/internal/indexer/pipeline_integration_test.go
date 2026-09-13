@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/codebase/internal/config"
+	"github.com/codebase/internal/specfts"
 	"github.com/codebase/internal/store/testutil"
 )
 
@@ -23,7 +24,7 @@ func newTestIndexer(t *testing.T) (*Indexer, string) {
 		t.Fatalf("copy testdata: %v", err)
 	}
 	idx := &Indexer{
-		db:          db,
+		db: db,
 		config: &config.Config{Indexer: config.IndexerConfig{
 			Parallel:        1,
 			BatchSize:       100,
@@ -250,5 +251,103 @@ func TestInitMiniTree_SMFInstrumentInSymbols(t *testing.T) {
 	}
 	if filteredCount != 1 {
 		t.Fatalf("filtered count = %d, want 1", filteredCount)
+	}
+}
+
+func TestUpdateDeletesSpecBeforeLSAPublication(t *testing.T) {
+	idx, root := newTestIndexer(t)
+	idx.config.Indexer.IncludePatterns = []string{"*.sql", "*.js", "*.xml", "*.h", "*.smf", "*.md", "*.yaml"}
+
+	specDir := filepath.Join(root, "openspec", "specs")
+	if err := os.MkdirAll(filepath.Join(specDir, "first"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(specDir, "second"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "openspec", "config.yaml"), []byte("schema: spec-driven\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	content := func(name string) []byte {
+		return []byte("# " + name + "\n\n## Purpose\n\nPurpose " + name + ".\n\n## Requirements\n\n### Requirement: " + name + "\nSystem SHALL support " + name + ".\n\n#### Scenario: Main\n- **WHEN** action\n- **THEN** result\n")
+	}
+	firstPath := filepath.Join(specDir, "first", "spec.md")
+	secondPath := filepath.Join(specDir, "second", "spec.md")
+	if err := os.WriteFile(firstPath, content("First"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondPath, content("Second"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldConfigFile := config.GetConfigFile()
+	oldCfg := config.Get()
+	var oldCfgCopy config.Config
+	if oldCfg != nil {
+		oldCfgCopy = *oldCfg
+	}
+	config.CreateDefault(root)
+	cfg := config.Get()
+	cfg.Spec.LSAEnabled = true
+	cfg.Spec.LSAMinCorpus = 1
+	cfg.Spec.LSAMinDF = 1
+	cfg.Spec.LSAMaxDF = 1
+	cfg.Spec.LSAK = 1
+	threshold := 0
+	cfg.Spec.LSARetrainThreshold = &threshold
+	config.SetConfigFile(filepath.Join(root, "codebase.toml"))
+	t.Cleanup(func() {
+		config.SetConfigFile(oldConfigFile)
+		if current := config.Get(); current != nil {
+			if oldCfg != nil {
+				*current = oldCfgCopy
+			} else {
+				current.Spec.LSAEnabled = false
+			}
+		}
+	})
+
+	if _, err := idx.Init(root, 1); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	var initialCapabilities int
+	if err := idx.db.QueryRow(`SELECT count(*) FROM spec_capabilities`).Scan(&initialCapabilities); err != nil {
+		t.Fatalf("initial capability count: %v", err)
+	}
+	if initialCapabilities != 2 {
+		t.Fatalf("initial capabilities = %d, want 2", initialCapabilities)
+	}
+
+	if err := os.Remove(firstPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.Update(root, true, 1); err != nil {
+		t.Fatalf("Update after spec deletion: %v", err)
+	}
+	var remainingCapabilities int
+	if err := idx.db.QueryRow(`SELECT count(*) FROM spec_capabilities`).Scan(&remainingCapabilities); err != nil {
+		t.Fatalf("remaining capability count: %v", err)
+	}
+	if remainingCapabilities != 1 {
+		t.Fatalf("remaining capabilities = %d, want 1", remainingCapabilities)
+	}
+	var firstExists bool
+	if err := idx.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM spec_capabilities WHERE capability_name LIKE '%first%')`).Scan(&firstExists); err != nil {
+		t.Fatalf("check deleted capability: %v", err)
+	}
+	if firstExists {
+		t.Fatal("deleted capability remains after update")
+	}
+
+	model, err := specfts.LoadLSAModel(config.SpecLSAModelPath())
+	if err != nil {
+		t.Fatalf("load published model: %v", err)
+	}
+	var embeddingCount int
+	if err := idx.db.QueryRow(`SELECT count(*) FROM spec_embeddings WHERE generation = $1`, model.Generation).Scan(&embeddingCount); err != nil {
+		t.Fatalf("count current embeddings: %v", err)
+	}
+	if embeddingCount != 1 {
+		t.Fatalf("current generation embeddings = %d, want 1", embeddingCount)
 	}
 }

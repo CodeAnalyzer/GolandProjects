@@ -13,11 +13,11 @@ type ParsedChange struct {
 }
 
 var (
-	reChangeH2     = regexp.MustCompile(`^##\s+(.+)$`)
-	reSpecRef      = regexp.MustCompile(`openspec[/\\]specs[/\\]([A-Za-z0-9_.\-/\\]+?)(?:[/\\]spec\.md|[^A-Za-z0-9_.\-/\\]|$)`)
-	reH3           = regexp.MustCompile(`^###\s+(.+)$`)
-	reCapListItem  = regexp.MustCompile("^[-*]\\s+`([A-Za-z0-9_.\\-/]+)`")
-	reCapBacktick  = regexp.MustCompile("`([A-Za-z0-9_.\\-/]+)`")
+	reChangeH2    = regexp.MustCompile(`^##\s+(.+)$`)
+	reSpecRef     = regexp.MustCompile(`openspec[/\\]specs[/\\]([A-Za-z0-9_.\-/\\]+?)(?:[/\\]spec\.md|[^A-Za-z0-9_.\-/\\]|$)`)
+	reH3          = regexp.MustCompile(`^###\s+(.+)$`)
+	reCapListItem = regexp.MustCompile("^[-*]\\s+`([A-Za-z0-9_.\\-/]+)`")
+	reCapBacktick = regexp.MustCompile("`([A-Za-z0-9_.\\-/]+)`")
 )
 
 // ParseChangeProposal разбирает proposal.md: описание change (для контекста)
@@ -200,7 +200,7 @@ func ParseDeltaSpec(content string) []ParsedDelta {
 				// сценарий без тела требования — фиксируем пустое тело
 				finish(lineNo - 1)
 			} else if delta != nil {
-				finish(delta.LineStart)
+				finish(lineNo - 1)
 				// пропускаем строки сценарариев: они не попадают в body
 				continue
 			}

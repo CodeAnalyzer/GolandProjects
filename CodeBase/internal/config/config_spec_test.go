@@ -110,3 +110,60 @@ func TestSpecThresholds_OutOfRangeRejected(t *testing.T) {
 		}
 	}
 }
+
+func TestSpecLSAPaths(t *testing.T) {
+	oldCfg := cfg
+	oldConfigFile := configFile
+	oldCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cfg = oldCfg
+		configFile = oldConfigFile
+		if err := os.Chdir(oldCwd); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
+
+	root := t.TempDir()
+	configDir := filepath.Join(root, "cfg")
+	configPath := filepath.Join(configDir, "codebase.toml")
+	absoluteModel := filepath.Join(root, "absolute") + string(filepath.Separator) + ".." + string(filepath.Separator) + "absolute.bin"
+	cases := []struct {
+		name      string
+		modelPath string
+		wantModel string
+		changeCwd bool
+	}{
+		{name: "default", wantModel: filepath.Join(configDir, "spec_lsa_model.bin")},
+		{name: "relative", modelPath: "models/spec.bin", wantModel: filepath.Join(configDir, "models", "spec.bin"), changeCwd: true},
+		{name: "absolute", modelPath: absoluteModel, wantModel: filepath.Clean(absoluteModel)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg = &Config{Spec: SpecConfig{LSAModelPath: tc.modelPath}}
+			configFile = configPath
+			if tc.changeCwd {
+				otherDir := t.TempDir()
+				if err := os.Chdir(otherDir); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := os.Chdir(oldCwd); err != nil {
+						t.Errorf("restore cwd: %v", err)
+					}
+				})
+			}
+
+			if got := SpecLSAModelPath(); got != tc.wantModel {
+				t.Errorf("SpecLSAModelPath() = %q, want %q", got, tc.wantModel)
+			}
+			wantState := filepath.Join(filepath.Dir(tc.wantModel), "spec_lsa_state.json")
+			if got := SpecLSAStatePath(); got != wantState {
+				t.Errorf("SpecLSAStatePath() = %q, want %q", got, wantState)
+			}
+		})
+	}
+}

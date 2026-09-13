@@ -32,6 +32,8 @@ const TokenizerVersion = 2
 //	2: VT строится на все nTerms; bump принудительно переобучает существующие модели
 const AlgorithmVersion = 2
 
+const LegacyGeneration = "legacy"
+
 // LSAParams — параметры обучения, входящие в fingerprint модели.
 type LSAParams struct {
 	MinDF int     `json:"min_df"`
@@ -67,12 +69,14 @@ func CorpusFingerprint(docs []Document, params LSAParams) string {
 
 // LSAState — состояние LSA-обучения (sidecar-файл рядом с файлом модели).
 type LSAState struct {
-	Fingerprint string    `json:"fingerprint"` // fingerprint корпуса, на котором обучена модель
-	Pending     int       `json:"pending"`     // накопленные изменения с прошлого обучения
-	Params      LSAParams `json:"params"`      // параметры обученной модели
-	Algorithm   int       `json:"algorithm"`   // версия алгоритма обучения (AlgorithmVersion)
-	NumDocs     int       `json:"num_docs"`    // размер корпуса при обучении
-	TrainedAt   time.Time `json:"trained_at"`
+	Fingerprint      string    `json:"fingerprint"` // fingerprint корпуса, на котором обучена модель
+	Pending          int       `json:"pending"`     // накопленные изменения с прошлого обучения
+	Params           LSAParams `json:"params"`      // параметры обученной модели
+	Algorithm        int       `json:"algorithm"`   // версия алгоритма обучения (AlgorithmVersion)
+	NumDocs          int       `json:"num_docs"`    // размер корпуса при обучении
+	Generation       string    `json:"generation"`
+	RetryFingerprint string    `json:"retry_fingerprint,omitempty"`
+	TrainedAt        time.Time `json:"trained_at"`
 }
 
 // LoadLSAState загружает состояние из файла. Отсутствие файла — не ошибка: (nil, nil).
@@ -88,6 +92,9 @@ func LoadLSAState(path string) (*LSAState, error) {
 	if err := json.Unmarshal(data, &st); err != nil {
 		return nil, fmt.Errorf("LoadLSAState parse %s: %w", path, err)
 	}
+	if st.Generation == "" {
+		st.Generation = LegacyGeneration
+	}
 	return &st, nil
 }
 
@@ -97,12 +104,14 @@ func SaveLSAState(path string, st *LSAState) error {
 	if err != nil {
 		return fmt.Errorf("SaveLSAState marshal: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return fmt.Errorf("SaveLSAState tmp %s: %w", tmp, err)
+	tempPath, err := writeTempFile(path, func(f *os.File) error {
+		_, err := f.Write(data)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("SaveLSAState tmp: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := activateTempFile(tempPath, path); err != nil {
 		return fmt.Errorf("SaveLSAState rename %s: %w", path, err)
 	}
 	return nil

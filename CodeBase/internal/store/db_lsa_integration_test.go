@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codebase/internal/model"
 	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/store/testutil"
 )
@@ -136,5 +137,77 @@ func TestLoadAllSpecCapabilitiesWithReqsForLSA(t *testing.T) {
 	}
 	if again[0].LSAText != c.LSAText {
 		t.Errorf("aggregation not deterministic: %q vs %q", again[0].LSAText, c.LSAText)
+	}
+}
+
+func TestPublishSpecLSAGeneration(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	var scanRunID, fileID, configID, capabilityID int64
+	if err := db.QueryRow(`INSERT INTO scan_runs (root_path, status) VALUES ('repo', 'completed') RETURNING id`).Scan(&scanRunID); err != nil {
+		t.Fatalf("insert scan run: %v", err)
+	}
+	if err := db.QueryRow(`
+		INSERT INTO files (scan_run_id, path, rel_path, extension, hash_sha256, modified_at)
+		VALUES ($1, 'repo/spec.md', 'spec.md', '.md', 'hash', NOW()) RETURNING id`, scanRunID).Scan(&fileID); err != nil {
+		t.Fatalf("insert file: %v", err)
+	}
+	if err := db.QueryRow(`INSERT INTO spec_configs (file_id, product_name) VALUES ($1, 'product') RETURNING id`, fileID).Scan(&configID); err != nil {
+		t.Fatalf("insert spec config: %v", err)
+	}
+	if err := db.QueryRow(`
+		INSERT INTO spec_capabilities (file_id, spec_config_id, capability_name, title)
+		VALUES ($1, $2, 'capability', 'Capability') RETURNING id`, fileID, configID).Scan(&capabilityID); err != nil {
+		t.Fatalf("insert capability: %v", err)
+	}
+
+	terms := []model.SpecVocabTerm{{Term: "term", DocFreq: 1, IDF: 1}}
+	embeddings := []model.SpecEmbedding{{SpecID: capabilityID, EmbedLevel: "spec", EmbedText: "text", Embedding: []float64{1}, EmbedMethod: "tfidf-lsa", EmbedDim: 1}}
+	if err := db.PublishSpecLSAGeneration(ctx, "gen-current", terms, embeddings); err != nil {
+		t.Fatalf("publish current generation: %v", err)
+	}
+	if ok, err := db.HasSpecLSAGeneration(ctx, "gen-current"); err != nil || !ok {
+		t.Fatalf("current generation exists = %v, err=%v", ok, err)
+	}
+
+	invalidEmbeddings := []model.SpecEmbedding{{SpecID: capabilityID + 1000, EmbedLevel: "spec", EmbedText: "invalid", Embedding: []float64{1}, EmbedMethod: "tfidf-lsa", EmbedDim: 1}}
+	if err := db.PublishSpecLSAGeneration(ctx, "gen-invalid", terms, invalidEmbeddings); err == nil {
+		t.Fatal("invalid embedding SpecID must fail")
+	}
+	var vocabCount, embeddingCount int
+	if err := db.QueryRow(`SELECT count(*) FROM spec_vocab WHERE generation = 'gen-invalid'`).Scan(&vocabCount); err != nil {
+		t.Fatalf("count invalid vocab: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM spec_embeddings WHERE generation = 'gen-invalid'`).Scan(&embeddingCount); err != nil {
+		t.Fatalf("count invalid embeddings: %v", err)
+	}
+	if vocabCount != 0 || embeddingCount != 0 {
+		t.Fatalf("rollback left invalid generation rows: vocab=%d embeddings=%d", vocabCount, embeddingCount)
+	}
+
+	for _, generation := range []string{"gen-previous", "gen-old"} {
+		if err := db.PublishSpecLSAGeneration(ctx, generation, terms, embeddings); err != nil {
+			t.Fatalf("publish %s: %v", generation, err)
+		}
+	}
+	if err := db.DeleteSpecLSAGenerationsExcept(ctx, "gen-current", "gen-previous"); err != nil {
+		t.Fatalf("delete stale generations: %v", err)
+	}
+	for _, tc := range []struct {
+		generation string
+		want       bool
+	}{
+		{generation: "gen-current", want: true},
+		{generation: "gen-previous", want: true},
+		{generation: "gen-old", want: false},
+	} {
+		got, err := db.HasSpecLSAGeneration(ctx, tc.generation)
+		if err != nil {
+			t.Fatalf("check %s: %v", tc.generation, err)
+		}
+		if got != tc.want {
+			t.Fatalf("generation %s exists = %v, want %v", tc.generation, got, tc.want)
+		}
 	}
 }
