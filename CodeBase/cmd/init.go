@@ -27,8 +27,12 @@ func printPipelineTimings(stats *model.ScanStats) {
 	if stats.SaveMs > 0 || stats.ParseMs > 0 {
 		fmt.Printf("  Save (Σ workers):  %d ms\n", stats.SaveMs)
 		fmt.Printf("  Parse (Σ workers): %d ms\n", stats.ParseMs)
-		if stats.WalkSaveMs > 0 {
-			ratio := float64(stats.SaveMs+stats.ParseMs) / float64(stats.WalkSaveMs)
+		// Знаменатель — полное wall-clock время работы воркеров:
+		// для init ProcessMs=0 (воркеры в окне WalkSaveMs),
+		// для update воркеры продолжают работать в фазе ProcessMs (post-walk).
+		workerWallMs := stats.WalkSaveMs + stats.ProcessMs
+		if workerWallMs > 0 {
+			ratio := float64(stats.SaveMs+stats.ParseMs) / float64(workerWallMs)
 			fmt.Printf("  Parallel efficiency: %.1fx (Σ / wall-clock)\n", ratio)
 		}
 	}
