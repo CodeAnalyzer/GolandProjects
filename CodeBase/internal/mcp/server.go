@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -29,15 +30,11 @@ func RunStdio(serverVersion string, profile string, logger *log.Logger) error {
 	globalPages.startGCLoop()
 	defer globalPages.stopGCLoop()
 
-	db, err := store.NewDB(cfg.DB)
+	db, err := prepareMCPDatabase(context.Background(), cfg.DB)
 	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
+		return err
 	}
 	defer db.Close()
-
-	if err := db.InitSchema(); err != nil {
-		return fmt.Errorf("failed to init schema: %w", err)
-	}
 
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "codebase",
@@ -51,6 +48,25 @@ func RunStdio(serverVersion string, profile string, logger *log.Logger) error {
 	registerSDKCoreTools(server, registry, profile, logger)
 
 	return server.Run(context.Background(), &mcpsdk.StdioTransport{})
+}
+
+func prepareMCPDatabase(ctx context.Context, cfg config.DBConfig) (*store.DB, error) {
+	db, err := store.NewDB(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+	if err := db.CheckSchemaVersion(ctx); err != nil {
+		_ = db.Close()
+		switch {
+		case errors.Is(err, store.ErrSchemaNotInitialized):
+			return nil, fmt.Errorf("database schema is not initialized; run codebase init --config <path>: %w", err)
+		case errors.Is(err, store.ErrSchemaUpdateRequired):
+			return nil, fmt.Errorf("database schema update is required; run codebase update --config <path>: %w", err)
+		default:
+			return nil, fmt.Errorf("schema compatibility check failure: %w", err)
+		}
+	}
+	return db, nil
 }
 
 func registerSDKCoreTools(server *mcpsdk.Server, registry map[string]registeredTool, profile string, logger *log.Logger) {
@@ -191,4 +207,3 @@ func sdkToolErrorResult(err error) *mcpsdk.CallToolResult {
 		IsError: true,
 	}
 }
-

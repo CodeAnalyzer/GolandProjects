@@ -2,8 +2,13 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
+
+const CurrentSchemaVersion = "codebase_schema_v1"
+
+const schemaInitLockKey = "codebase/schema-init"
 
 // InitSchema создаёт схему БД если она не существует
 func (db *DB) InitSchemaCtx(ctx context.Context) error {
@@ -901,37 +906,45 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`DROP INDEX IF EXISTS idx_relations_relation_type`,
 	}
 
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire schema init connection: %w", err)
+	}
+	defer conn.Close()
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin schema initialization transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, schemaInitLockKey); err != nil {
+		return fmt.Errorf("acquire schema init lock: %w", err)
+	}
 	for _, stmt := range statements {
-		if _, err := db.ExecContext(ctx, stmt); err != nil {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("failed to initialize schema: %w", err)
 		}
 	}
-	if err := db.applyMigration(ctx, "spec_search_vectors_weighted_v1", specSearchVectorUpdateStatements("")); err != nil {
+	if err := applyMigrationTx(ctx, tx, "spec_search_vectors_weighted_v1", specSearchVectorUpdateStatements("")); err != nil {
 		return fmt.Errorf("failed to apply migration spec_search_vectors_weighted_v1: %w", err)
+	}
+	if err := applyMigrationTx(ctx, tx, CurrentSchemaVersion, nil); err != nil {
+		return fmt.Errorf("failed to record schema version: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit schema initialization: %w", err)
 	}
 
 	return nil
 }
 
-func (db *DB) applyMigration(ctx context.Context, version string, statements []string) error {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("migration %s begin: %w", version, err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	lockKey := "schema-migration/" + version
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); err != nil {
-		return fmt.Errorf("migration %s lock: %w", version, err)
-	}
+func applyMigrationTx(ctx context.Context, tx *sql.Tx, version string, statements []string) error {
 	var exists bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)`, version).Scan(&exists); err != nil {
 		return fmt.Errorf("migration %s check: %w", version, err)
 	}
 	if exists {
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("migration %s commit existing: %w", version, err)
-		}
 		return nil
 	}
 	for _, statement := range statements {
@@ -941,9 +954,6 @@ func (db *DB) applyMigration(ctx context.Context, version string, statements []s
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version); err != nil {
 		return fmt.Errorf("migration %s record: %w", version, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("migration %s commit: %w", version, err)
 	}
 	return nil
 }

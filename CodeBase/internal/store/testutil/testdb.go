@@ -23,7 +23,7 @@ const envTestDSN = "CODEBASE_TEST_DSN"
 // и удаляет её в t.Cleanup. При недоступном Postgres делает t.Skip.
 func Open(t *testing.T) *store.DB {
 	t.Helper()
-	db := openEmpty(t)
+	db := OpenEmptyHandles(t, 1)[0]
 	if err := db.InitSchema(); err != nil {
 		t.Fatalf("InitSchema: %v", err)
 	}
@@ -33,11 +33,25 @@ func Open(t *testing.T) *store.DB {
 // OpenEmpty как Open, но без InitSchema — для тестов миграции колонок.
 func OpenEmpty(t *testing.T) *store.DB {
 	t.Helper()
-	return openEmpty(t)
+	return OpenEmptyHandles(t, 1)[0]
 }
 
-func openEmpty(t *testing.T) *store.DB {
+// ConfigFor returns connection settings for the temporary database behind db.
+func ConfigFor(t *testing.T, db *store.DB) config.DBConfig {
 	t.Helper()
+	cfg := resolveAdminConfig(t)
+	if err := db.QueryRow(`SELECT current_database()`).Scan(&cfg.Database); err != nil {
+		t.Fatalf("read temporary database name: %v", err)
+	}
+	return cfg
+}
+
+// OpenEmptyHandles creates independent handles connected to one temporary database.
+func OpenEmptyHandles(t *testing.T, count int) []*store.DB {
+	t.Helper()
+	if count <= 0 {
+		t.Fatal("count must be positive")
+	}
 	adminCfg := resolveAdminConfig(t)
 	adminDSN := store.FormatDSN(adminCfg)
 	admin, err := sql.Open("postgres", adminDSN)
@@ -57,19 +71,27 @@ func openEmpty(t *testing.T) *store.DB {
 
 	testCfg := adminCfg
 	testCfg.Database = name
-	db, err := store.NewDB(testCfg)
-	if err != nil {
-		_, _ = admin.Exec(fmt.Sprintf(`DROP DATABASE IF EXISTS "%s" WITH (FORCE)`, name))
-		_ = admin.Close()
-		t.Fatalf("open test database %s: %v", name, err)
+	handles := make([]*store.DB, count)
+	for i := range handles {
+		handles[i], err = store.NewDB(testCfg)
+		if err != nil {
+			for _, db := range handles[:i] {
+				_ = db.Close()
+			}
+			_, _ = admin.Exec(fmt.Sprintf(`DROP DATABASE IF EXISTS "%s" WITH (FORCE)`, name))
+			_ = admin.Close()
+			t.Fatalf("open test database %s: %v", name, err)
+		}
 	}
 
 	t.Cleanup(func() {
-		_ = db.Close()
+		for _, db := range handles {
+			_ = db.Close()
+		}
 		_, _ = admin.Exec(fmt.Sprintf(`DROP DATABASE IF EXISTS "%s" WITH (FORCE)`, name))
 		_ = admin.Close()
 	})
-	return db
+	return handles
 }
 
 func resolveAdminConfig(t *testing.T) config.DBConfig {

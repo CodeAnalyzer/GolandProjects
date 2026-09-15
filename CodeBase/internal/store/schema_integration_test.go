@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/store/testutil"
 )
 
@@ -21,6 +22,13 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 	}
 	if !migrationExists {
 		t.Fatal("weighted search vector migration is not recorded")
+	}
+	var currentMarkerExists bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)`, store.CurrentSchemaVersion).Scan(&currentMarkerExists); err != nil {
+		t.Fatalf("check current schema marker: %v", err)
+	}
+	if !currentMarkerExists {
+		t.Fatal("current schema marker is not recorded")
 	}
 
 	requiredTables := []string{
