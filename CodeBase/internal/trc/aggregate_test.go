@@ -5,12 +5,12 @@ import "testing"
 // TestAggregateByProcedure_Basic — проверка count/min/max/avg/total.
 func TestAggregateByProcedure_Basic(t *testing.T) {
 	events := []TRCEvent{
-		{Procedure: "ProcA", DurationMs: 100},
-		{Procedure: "ProcA", DurationMs: 200},
-		{Procedure: "ProcA", DurationMs: 300},
-		{Procedure: "ProcB", DurationMs: 50},
-		{Procedure: "ProcB", DurationMs: 150},
-		{Procedure: "NoProc", DurationMs: 999}, // empty Procedure — ignored
+		{EventName: "SP:Completed", Procedure: "ProcA", DurationMs: 100},
+		{EventName: "SP:Completed", Procedure: "ProcA", DurationMs: 200},
+		{EventName: "SP:Completed", Procedure: "ProcA", DurationMs: 300},
+		{EventName: "SP:Completed", Procedure: "ProcB", DurationMs: 50},
+		{EventName: "SP:Completed", Procedure: "ProcB", DurationMs: 150},
+		{EventName: "SP:Completed", Procedure: "NoProc", DurationMs: 999}, // empty Procedure — ignored
 	}
 	// Last event has no Procedure
 	events[5].Procedure = ""
@@ -52,8 +52,8 @@ func TestAggregateByProcedure_Basic(t *testing.T) {
 // min/max/avg/total остаются нулевыми.
 func TestAggregateByProcedure_NoDuration(t *testing.T) {
 	events := []TRCEvent{
-		{Procedure: "ProcX"},
-		{Procedure: "ProcX"},
+		{EventName: "SP:Completed", Procedure: "ProcX"},
+		{EventName: "SP:Completed", Procedure: "ProcX"},
 	}
 	aggs := AggregateByProcedure(events)
 	if len(aggs) != 1 {
@@ -64,6 +64,28 @@ func TestAggregateByProcedure_NoDuration(t *testing.T) {
 	}
 	if aggs[0].TotalMs != 0 || aggs[0].MinMs != 0 || aggs[0].MaxMs != 0 {
 		t.Errorf("expected zero durations, got total=%d min=%d max=%d", aggs[0].TotalMs, aggs[0].MinMs, aggs[0].MaxMs)
+	}
+}
+
+func TestAggregateByProcedure_CompletedOnly(t *testing.T) {
+	events := []TRCEvent{
+		{EventName: "SP:Completed", Procedure: "Proc", DurationMs: 100},
+		{EventName: "SP:StmtCompleted", Procedure: "Proc", DurationMs: 100},
+		{EventName: "SQL:StmtCompleted", Procedure: "Proc", DurationMs: 100},
+	}
+	aggs := AggregateByProcedure(events)
+	if len(aggs) != 1 || aggs[0].Count != 1 || aggs[0].TotalMs != 100 {
+		t.Fatalf("got %+v, want one completed event with total 100", aggs)
+	}
+}
+
+func TestAggregateByProcedure_IncludesZeroDuration(t *testing.T) {
+	aggs := AggregateByProcedure([]TRCEvent{
+		{EventName: "SP:Completed", Procedure: "Proc", DurationMs: 0},
+		{EventName: "SP:Completed", Procedure: "Proc", DurationMs: 100},
+	})
+	if len(aggs) != 1 || aggs[0].Count != 2 || aggs[0].TotalMs != 100 || aggs[0].MinMs != 0 || aggs[0].MaxMs != 100 || aggs[0].AvgMs != 50 {
+		t.Fatalf("got %+v, want count=2 total=100 min=0 max=100 avg=50", aggs)
 	}
 }
 

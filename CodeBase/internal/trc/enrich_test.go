@@ -11,9 +11,13 @@ import (
 // mockLookup — тестовая реализация ProcedureLookup.
 type mockLookup struct {
 	procs map[string]*query.SQLProcedureResult
+	calls map[string]int
 }
 
 func (m *mockLookup) GetProcedureResult(ctx context.Context, name string) (*query.SQLProcedureResult, error) {
+	if m.calls != nil {
+		m.calls[name]++
+	}
 	if proc, ok := m.procs[name]; ok {
 		return proc, nil
 	}
@@ -95,6 +99,26 @@ func TestEnrichEvents_Dedup(t *testing.T) {
 	}
 	if e, ok := enrichMap["ProcA"]; !ok || !e.Found {
 		t.Errorf("ProcA not enriched properly: %+v", e)
+	}
+}
+
+func TestEnrichProcedureNames_DeduplicatesAndKeepsNotFoundSoft(t *testing.T) {
+	mock := &mockLookup{
+		procs: map[string]*query.SQLProcedureResult{"Found": {ProcName: "Found", File: "/found.sql"}},
+		calls: make(map[string]int),
+	}
+	result := EnrichProcedureNames(context.Background(), mock, []string{"Found", "Found", "Missing", "", "Missing"})
+	if mock.calls["Found"] != 1 || mock.calls["Missing"] != 1 {
+		t.Fatalf("lookup calls = %+v, want one per unique name", mock.calls)
+	}
+	if !result["Found"].Found || result["Found"].SourceFile != "/found.sql" {
+		t.Fatalf("found enrichment = %+v", result["Found"])
+	}
+	if result["Missing"].Found || result["Missing"].SourceFile != "(not found)" {
+		t.Fatalf("missing enrichment = %+v", result["Missing"])
+	}
+	if _, ok := result[""]; ok {
+		t.Fatal("empty procedure name should be skipped")
 	}
 }
 

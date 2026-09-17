@@ -82,6 +82,58 @@ func TestPruneAndDeleteTRCSessions(t *testing.T) {
 	}
 }
 
+func TestLoadProceduresAggregated_CompletedOnlyAndZeroDuration(t *testing.T) {
+	db := testutil.Open(t)
+	var sessionID int64
+	if err := db.QueryRow(`INSERT INTO trc_sessions (file_path, file_size, total_events) VALUES ('agg-test.trc', 10, 4) RETURNING id`).Scan(&sessionID); err != nil {
+		t.Fatal(err)
+	}
+	defer DeleteSession(context.Background(), db, sessionID)
+	for _, e := range []struct {
+		name     string
+		duration int
+	}{
+		{"SP:Completed", 0}, {"SP:Completed", 100}, {"SP:StmtCompleted", 100}, {"SQL:StmtCompleted", 100},
+	} {
+		if _, err := db.Exec(`INSERT INTO trc_events (session_id, event_class, event_name, procedure, duration_ms) VALUES ($1, 10, $2, 'ProcA', $3)`, sessionID, e.name, e.duration); err != nil {
+			t.Fatal(err)
+		}
+	}
+	aggs, err := LoadProceduresAggregated(context.Background(), db, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggs) != 1 || aggs[0].Count != 2 || aggs[0].TotalMs != 100 || aggs[0].MinMs != 0 || aggs[0].MaxMs != 100 || aggs[0].AvgMs != 50 {
+		t.Fatalf("got %+v", aggs)
+	}
+}
+
+func TestLoadEventsFilteredAndCount(t *testing.T) {
+	db := testutil.Open(t)
+	var sessionID int64
+	if err := db.QueryRow(`INSERT INTO trc_sessions (file_path, file_size, total_events) VALUES ('filter-test.trc', 10, 3) RETURNING id`).Scan(&sessionID); err != nil {
+		t.Fatal(err)
+	}
+	defer DeleteSession(context.Background(), db, sessionID)
+	for _, proc := range []string{"ProcA", "ProcA", "ProcB"} {
+		if _, err := db.Exec(`INSERT INTO trc_events (session_id, event_class, event_name, procedure, duration_ms) VALUES ($1, 10, 'SP:Completed', $2, 1)`, sessionID, proc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := TRCEventFilter{Procedure: "ProcA"}
+	events, err := LoadEventsFiltered(context.Background(), db, sessionID, f, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, err := LoadEventCountFiltered(context.Background(), db, sessionID, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || count != 2 {
+		t.Fatalf("len=%d count=%d, want 1/2", len(events), count)
+	}
+}
+
 func TestLoadEventsForTree_DiagnosticFilteredFromRoot(t *testing.T) {
 	db := testutil.Open(t)
 

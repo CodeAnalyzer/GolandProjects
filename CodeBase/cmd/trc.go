@@ -10,16 +10,16 @@ import (
 )
 
 var (
-	trcOutputJSON     bool
-	trcSlowThreshold  int
-	trcProcedure      string
-	trcSessionID      int64
-	trcKeepLast       int
-	trcListLimit      int
-	trcSPID           int
-	trcMaxDepth       int
-	trcTreeLimit      int
-	trcLimit          int
+	trcOutputJSON    bool
+	trcSlowThreshold int
+	trcProcedure     string
+	trcSessionID     int64
+	trcKeepLast      int
+	trcListLimit     int
+	trcSPID          int
+	trcMaxDepth      int
+	trcTreeLimit     int
+	trcLimit         int
 )
 
 var trcCmd = &cobra.Command{
@@ -30,8 +30,8 @@ var trcCmd = &cobra.Command{
 Subcommands:
   parse      - parse .trc file, save session, print summary
   summary    - print summary info
-  events     - list decoded events (filters: --spid, --proc)
-  procedures - aggregate events by procedure (count/min/max/avg/total duration)
+  events     - list decoded events (filters: --spid, --proc; counts include matched and returned)
+  procedures - aggregate completed SP calls only (SP:Completed; count/min/max/avg/total duration)
   tree       - print call trees grouped by SPID
   errors     - print events with non-zero Error column
   slow       - print slowest events (threshold --slow-ms)
@@ -167,6 +167,10 @@ func runTRCSummary(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func formatTRCEventsHeader(result *trcsvc.EventsResult) string {
+	return fmt.Sprintf("%d event(s) returned (%d matched, %d total, limit %d):\n\n", result.ReturnedCount, result.FilteredCount, result.TotalCount, result.Limit)
+}
+
 func runTRCEvents(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	db := openDB()
@@ -183,7 +187,7 @@ func runTRCEvents(cmd *cobra.Command, args []string) error {
 	if trcOutputJSON {
 		return printJSON(result)
 	}
-	fmt.Printf("%d event(s) (of %d total, limit %d):\n\n", result.FilteredCount, result.TotalCount, result.Limit)
+	fmt.Print(formatTRCEventsHeader(result))
 	for _, ev := range result.Events {
 		printEventLine(ev)
 	}

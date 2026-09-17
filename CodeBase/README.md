@@ -54,7 +54,7 @@
   - **Спеки**: полнотекстовый поиск по спецификациям (лексический tsvector+trgm и семантический LSA), спецификации по имени код-сущности, граф зависимостей capability, usecase-слой с involved capabilities, покрытие кода спеками, история изменения capability по changes
 - **Review (проверка SQL перед деплоем)**: статический анализ SQL-файлов с детекцией deploy stoppers (использование внешних таблиц/процедур, небезопасные конструкции IF/EXISTS, отсутствие required hints, и т.д.)
 - **RTI-анализатор** (`codebase rti`): парсинг и анализ RTI-трейс логов Diasoft 5NT; извлечение вызовов процедур, параметров, контрольных точек, кодов ошибок, бизнес-лог блоков (`M_BUSINESSLOG_BLOCK_BEGIN/END`), checkpoint-временных меток, дампов таблиц (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`), клиентских событий (thick client d5nt: SQL blocks, recordset open, connection, BPL load, errors, memory); enrichment из индекса (PAS-файлы, DFM-формы, SQL-фрагменты); сохранение в БД для повторного анализа
-- **TRC-анализатор** (`codebase trc`): парсинг и анализ файлов SQL Server Profiler — бинарных `.trc`, XML-экспортов `.xml` и Extended Events `.xel`; декодирование событий (RPC:Completed, SQL:BatchCompleted, SP:StmtCompleted и др.), извлечение вызовов процедур и параметров из TextData, агрегация по процедурам (count/min/max/avg/total duration), дерево вызовов по SPID с восстановлением вложенности через Starting/Completed пары, enrichment из индекса (путь к файлу и строки); сохранение в БД для повторного анализа
+- **TRC-анализатор** (`codebase trc`): парсинг и анализ файлов SQL Server Profiler — бинарных `.trc`, XML-экспортов `.xml` и Extended Events `.xel`; декодирование событий (RPC:Completed, SQL:BatchCompleted, SP:StmtCompleted и др.), извлечение вызовов процедур и параметров из TextData, агрегация только завершённых вызовов `SP:Completed` (count/min/max/avg/total duration), список событий с раздельными matched/returned counts и limit, дерево вызовов по SPID с восстановлением вложенности через Starting/Completed пары, enrichment из индекса (путь к файлу и строки); сохранение в БД для повторного анализа
 - **Кодировки**: CP866/WIN1251/UTF8 с эвристическим выбором для legacy-форматов, включая TPR и препроцессированные `.t01`; MD — авто-детекция (UTF-8 приоритет, CP1251 fallback), YAML — UTF-8
 
 ## Требования
@@ -627,11 +627,11 @@ codebase trc parse path/to/file.xel
 codebase trc summary path/to/file.trc
 codebase trc summary --session 42
 
-# Список декодированных событий (с фильтрами)
+# Список декодированных событий (с фильтрами и matched/returned counts)
 codebase trc events path/to/file.trc
 codebase trc events --session 42 --spid 55 --proc MyProc
 
-# Агрегация событий по процедурам (count/min/max/avg/total duration)
+# Агрегация завершённых вызовов SP (только SP:Completed; count/min/max/avg/total duration)
 codebase trc procedures path/to/file.trc
 codebase trc procedures --session 42 --json
 
@@ -668,8 +668,8 @@ codebase trc prune --keep-last 5
 Подкоманды:
 - **`parse`** — распарсить `.trc`, `.xml` или `.xel` файл и сохранить результат в БД; выводит сводку + session ID
 - **`summary`** — общая сводка: total_events, метаданные провайдера/сервера/версии
-- **`events`** — список декодированных событий с опциональной фильтрацией по SPID и процедуре
-- **`procedures`** — агрегация событий по имени процедуры (извлечённому из exec-statements в TextData): count, min/max/avg/total duration; enrichment из индекса (путь к файлу)
+- **`events`** — список декодированных событий с опциональной фильтрацией по SPID и процедуре; выводит total_count, полное filtered_count до limit и returned_count
+- **`procedures`** — агрегация только завершённых вызовов `SP:Completed`: count, min/max/avg/total duration; enrichment из индекса (путь к файлу)
 - **`tree`** — дерево вызовов, сгруппированное по SPID, с восстановлением вложенности через Starting/Completed пары (RPC, SQL:Batch, SQL:Stmt, SP, SP:Stmt)
 - **`errors`** — события с ненулевой колонкой Error(31)
 - **`slow`** — события медленнее порога (по умолчанию 100 мс), отсортированные по убыванию длительности
@@ -907,8 +907,8 @@ IDE может подключить несколько MCP-серверов на
 | `codebase_trc_parse` | Парсинг `.trc`, `.xml` или `.xel` файла и сохранение в БД | `file_path` |
 | `codebase_trc_list` | Список сохранённых сессий | — |
 | `codebase_trc_summary` | Сводка сессии: total_events, метаданные | `session_id` или `file_path` |
-| `codebase_trc_events` | Декодированные события с фильтрами | `session_id` или `file_path`, опц. `spid`/`procedure`/`limit` |
-| `codebase_trc_procedures` | Агрегация по процедурам с enrichment | `session_id` или `file_path` |
+| `codebase_trc_events` | Декодированные события с фильтрами; total_count, полное filtered_count до limit и returned_count | `session_id` или `file_path`, опц. `spid`/`procedure`/`event_name`/`limit` |
+| `codebase_trc_procedures` | Агрегация только `SP:Completed` с enrichment | `session_id` или `file_path` |
 | `codebase_trc_tree` | Дерево вызовов по SPID с опц. фильтром по процедуре | `session_id` или `file_path`, опц. `spid`/`max_depth`/`limit`/`procedure` |
 | `codebase_trc_errors` | События с ненулевой Error(31) | `session_id` или `file_path` |
 | `codebase_trc_slow` | Медленные события (порог DurationMs) | `session_id` или `file_path`, опц. `threshold_ms` |

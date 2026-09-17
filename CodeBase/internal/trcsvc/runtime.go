@@ -110,24 +110,21 @@ func ExecuteSummary(ctx context.Context, db *store.DB, src SessionSource) (*Summ
 // ExecuteEvents возвращает список событий с фильтрацией.
 func ExecuteEvents(ctx context.Context, db *store.DB, p EventsParams) (*EventsResult, error) {
 	limit := normalizeLimit(p.Limit)
-
+	f := trc.TRCEventFilter{SPID: p.SPID, Procedure: p.Procedure, EventName: p.EventName}
 	if p.Source.SessionID > 0 && db != nil {
-		f := trc.TRCEventFilter{
-			SPID:      p.SPID,
-			Procedure: p.Procedure,
-			EventName: p.EventName,
-		}
 		events, err := trc.LoadEventsFiltered(ctx, db, p.Source.SessionID, f, limit)
 		if err != nil {
 			return nil, err
 		}
-		totalCount, _ := trc.LoadEventCount(ctx, db, p.Source.SessionID)
-		return &EventsResult{
-			Events:        events,
-			TotalCount:    totalCount,
-			FilteredCount: len(events),
-			Limit:         limit,
-		}, nil
+		totalCount, err := trc.LoadEventCount(ctx, db, p.Source.SessionID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to count events: %w", err)
+		}
+		filteredCount, err := trc.LoadEventCountFiltered(ctx, db, p.Source.SessionID, f)
+		if err != nil {
+			return nil, err
+		}
+		return &EventsResult{Events: events, TotalCount: totalCount, FilteredCount: filteredCount, ReturnedCount: len(events), Limit: limit}, nil
 	}
 
 	events, _, err := resolveSession(ctx, db, p.Source)
@@ -135,6 +132,7 @@ func ExecuteEvents(ctx context.Context, db *store.DB, p EventsParams) (*EventsRe
 		return nil, err
 	}
 	var filtered []trc.TRCEvent
+	filteredCount := 0
 	for _, ev := range events {
 		if p.SPID > 0 {
 			if spid, ok := ev.Columns[12].(int32); !ok || int(spid) != p.SPID {
@@ -147,17 +145,21 @@ func ExecuteEvents(ctx context.Context, db *store.DB, p EventsParams) (*EventsRe
 		if p.EventName != "" && ev.EventName != p.EventName {
 			continue
 		}
-		filtered = append(filtered, ev)
-		if len(filtered) >= limit {
-			break
+		filteredCount++
+		if len(filtered) < limit {
+			filtered = append(filtered, ev)
 		}
 	}
-	return &EventsResult{
-		Events:        filtered,
-		TotalCount:    len(events),
-		FilteredCount: len(filtered),
-		Limit:         limit,
-	}, nil
+	return &EventsResult{Events: filtered, TotalCount: len(events), FilteredCount: filteredCount, ReturnedCount: len(filtered), Limit: limit}, nil
+}
+
+func enrichProcedureAggregates(ctx context.Context, q trc.ProcedureLookup, aggs []trc.TRCProcAgg) {
+	names := make([]string, 0, len(aggs))
+	for _, agg := range aggs {
+		names = append(names, agg.Procedure)
+	}
+	enrichMap := trc.EnrichProcedureNames(ctx, q, names)
+	trc.EnrichAggregates(aggs, enrichMap)
 }
 
 // ExecuteProcedures агрегирует статистику по процедурам.
@@ -168,12 +170,7 @@ func ExecuteProcedures(ctx context.Context, db *store.DB, src SessionSource) (*P
 			return nil, err
 		}
 		if len(aggs) > 0 {
-			q := query.New(db)
-			sampleEvents, _ := trc.LoadEventsFiltered(ctx, db, src.SessionID, trc.TRCEventFilter{}, 1000)
-			if len(sampleEvents) > 0 {
-				enrichMap := trc.EnrichEvents(ctx, q, sampleEvents)
-				trc.EnrichAggregates(aggs, enrichMap)
-			}
+			enrichProcedureAggregates(ctx, query.New(db), aggs)
 		}
 		return &ProceduresResult{
 			Procedures: aggs,
@@ -188,8 +185,7 @@ func ExecuteProcedures(ctx context.Context, db *store.DB, src SessionSource) (*P
 	aggs := trc.AggregateByProcedure(events)
 	if db != nil && len(aggs) > 0 {
 		q := query.New(db)
-		enrichMap := trc.EnrichEvents(ctx, q, events)
-		trc.EnrichAggregates(aggs, enrichMap)
+		enrichProcedureAggregates(ctx, q, aggs)
 	}
 	return &ProceduresResult{
 		Procedures: aggs,

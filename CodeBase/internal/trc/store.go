@@ -537,6 +537,27 @@ type TRCEventFilter struct {
 	EventName string // "" = all
 }
 
+func buildEventFilterWhere(sessionID int64, f TRCEventFilter) (string, []interface{}) {
+	where := "session_id = $1"
+	args := []interface{}{sessionID}
+	argIdx := 2
+	if f.SPID > 0 {
+		where += fmt.Sprintf(" AND spid = $%d", argIdx)
+		args = append(args, f.SPID)
+		argIdx++
+	}
+	if f.Procedure != "" {
+		where += fmt.Sprintf(" AND procedure = $%d", argIdx)
+		args = append(args, f.Procedure)
+		argIdx++
+	}
+	if f.EventName != "" {
+		where += fmt.Sprintf(" AND event_name = $%d", argIdx)
+		args = append(args, f.EventName)
+	}
+	return where, args
+}
+
 // LoadEventsFiltered загружает события сессии с серверной фильтрацией и лимитом.
 func LoadEventsFiltered(ctx context.Context, db *store.DB, sessionID int64, f TRCEventFilter, limit int) ([]TRCEvent, error) {
 	if limit <= 0 {
@@ -545,28 +566,10 @@ func LoadEventsFiltered(ctx context.Context, db *store.DB, sessionID int64, f TR
 	if limit > 1000 {
 		limit = 1000
 	}
-
+	where, args := buildEventFilterWhere(sessionID, f)
 	query := `SELECT event_class, event_name, procedure, duration_ms, params, columns,
-	                 parent_id, depth
-	          FROM trc_events WHERE session_id = $1`
-	args := []interface{}{sessionID}
-	argIdx := 2
-	if f.SPID > 0 {
-		query += fmt.Sprintf(" AND spid = $%d", argIdx)
-		args = append(args, f.SPID)
-		argIdx++
-	}
-	if f.Procedure != "" {
-		query += fmt.Sprintf(" AND procedure = $%d", argIdx)
-		args = append(args, f.Procedure)
-		argIdx++
-	}
-	if f.EventName != "" {
-		query += fmt.Sprintf(" AND event_name = $%d", argIdx)
-		args = append(args, f.EventName)
-		argIdx++
-	}
-	query += fmt.Sprintf(" ORDER BY id LIMIT $%d", argIdx)
+	                 parent_id, depth FROM trc_events WHERE ` + where
+	query += fmt.Sprintf(" ORDER BY id LIMIT $%d", len(args)+1)
 	args = append(args, limit)
 
 	rows, err := db.QueryContext(ctx, query, args...)
@@ -584,6 +587,16 @@ func LoadEventsFiltered(ctx context.Context, db *store.DB, sessionID int64, f TR
 		events = append(events, ev)
 	}
 	return events, rows.Err()
+}
+
+// LoadEventCountFiltered возвращает число событий, совпадающих с фильтрами.
+func LoadEventCountFiltered(ctx context.Context, db *store.DB, sessionID int64, f TRCEventFilter) (int, error) {
+	where, args := buildEventFilterWhere(sessionID, f)
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM trc_events WHERE `+where, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count filtered events: %w", err)
+	}
+	return count, nil
 }
 
 // LoadSlowEvents загружает самые медленные события сессии.
@@ -698,11 +711,11 @@ func LoadProceduresAggregated(ctx context.Context, db *store.DB, sessionID int64
 		`SELECT procedure,
 		        count(*) AS cnt,
 		        COALESCE(sum(duration_ms), 0) AS total_ms,
-		        COALESCE(min(duration_ms) FILTER (WHERE duration_ms > 0), 0) AS min_ms,
+		        COALESCE(min(duration_ms), 0) AS min_ms,
 		        COALESCE(max(duration_ms), 0) AS max_ms,
-		        COALESCE(avg(duration_ms) FILTER (WHERE duration_ms > 0), 0) AS avg_ms
+		        COALESCE(avg(duration_ms), 0) AS avg_ms
 		 FROM trc_events
-		 WHERE session_id = $1 AND procedure IS NOT NULL AND procedure <> ''
+		 WHERE session_id = $1 AND event_name = 'SP:Completed' AND procedure IS NOT NULL AND procedure <> ''
 		 GROUP BY procedure
 		 ORDER BY total_ms DESC`,
 		sessionID,

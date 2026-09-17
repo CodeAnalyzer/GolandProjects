@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
+	"strconv"
 	"time"
 
 	"github.com/codebase/internal/query"
@@ -47,19 +49,39 @@ func optionalStringSlice(args map[string]interface{}, key string) ([]string, err
 	return result, nil
 }
 
+func integerValue(value interface{}, key string, bitSize int) (int64, error) {
+	min := -float64(uint64(1) << (bitSize - 1))
+	max := float64(uint64(1) << (bitSize - 1))
+	var n int64
+	switch v := value.(type) {
+	case int:
+		n = int64(v)
+	case int64:
+		n = v
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v {
+			return 0, fmt.Errorf("argument %s must be integer", key)
+		}
+		if v < min || v >= max {
+			return 0, fmt.Errorf("argument %s is out of range", key)
+		}
+		return int64(v), nil
+	default:
+		return 0, fmt.Errorf("argument %s must be integer", key)
+	}
+	if bitSize < 64 && (float64(n) < min || float64(n) >= max) {
+		return 0, fmt.Errorf("argument %s is out of range", key)
+	}
+	return n, nil
+}
+
 func optionalInt(args map[string]interface{}, key string) (int, error) {
 	value, ok := args[key]
 	if !ok || value == nil {
 		return 0, nil
 	}
-	switch v := value.(type) {
-	case int:
-		return v, nil
-	case float64:
-		return int(v), nil
-	default:
-		return 0, fmt.Errorf("argument %s must be integer", key)
-	}
+	n, err := integerValue(value, key, strconv.IntSize)
+	return int(n), err
 }
 
 func requiredInt(args map[string]interface{}, key string) (int, error) {
@@ -67,14 +89,8 @@ func requiredInt(args map[string]interface{}, key string) (int, error) {
 	if !ok || value == nil {
 		return 0, fmt.Errorf("missing required argument: %s", key)
 	}
-	switch v := value.(type) {
-	case int:
-		return v, nil
-	case float64:
-		return int(v), nil
-	default:
-		return 0, fmt.Errorf("argument %s must be integer", key)
-	}
+	n, err := integerValue(value, key, strconv.IntSize)
+	return int(n), err
 }
 
 var toolRegistry = buildToolRegistry(nil)
@@ -914,27 +930,54 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		"codebase_trc_list": {
 			Definition: toolDefinition{Name: "codebase_trc_list", Description: "List saved trc parsing sessions from the database, ordered by most recent first. Returns session ID, file path, total events, file size, and parse timestamp.", InputSchema: objectSchema(map[string]interface{}{"limit": intProp("Max sessions to return (default 20)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				limit := optionalLimit(args)
+				limit, err := optionalInt(args, "limit")
+				if err != nil {
+					return nil, err
+				}
 				return trcsvc.ExecuteList(ctx, db, limit)
 			},
 		},
 		"codebase_trc_summary": {
 			Definition: toolDefinition{Name: "codebase_trc_summary", Description: "Get summary info for a trc session: total events and session metadata (provider/server/version). Requires either a saved session ID or a file path to parse on the fly.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file to parse on the fly")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				sessionID, _ := optionalInt64(args, "session_id")
-				filePath, _ := optionalString(args, "file_path")
+				sessionID, err := optionalInt64(args, "session_id")
+				if err != nil {
+					return nil, err
+				}
+				filePath, err := optionalString(args, "file_path")
+				if err != nil {
+					return nil, err
+				}
 				return trcsvc.ExecuteSummary(ctx, db, trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath})
 			},
 		},
 		"codebase_trc_events": {
-			Definition: toolDefinition{Name: "codebase_trc_events", Description: "List decoded events from a trc session, with optional filters. Returns event class, name, procedure, params, duration, and full decoded columns. Supports server-side filtering by SPID, procedure, and event_name with limit.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spid": intProp("Optional SPID filter"), "procedure": stringProp("Optional procedure name filter (exact match)"), "event_name": stringProp("Optional event name filter (e.g. RPC:Completed)"), "limit": intProp("Max events to return (default 100, max 1000)")})},
+			Definition: toolDefinition{Name: "codebase_trc_events", Description: "List decoded events from a trc session, with optional filters. Returns event class, name, procedure, params, duration, and full decoded columns. The result includes total_count for all session events, filtered_count for all matching events before limit, returned_count for events returned, and the applied limit. Supports server-side filtering by SPID, procedure, and event_name.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spid": intProp("Optional SPID filter"), "procedure": stringProp("Optional procedure name filter (exact match)"), "event_name": stringProp("Optional event name filter (e.g. RPC:Completed)"), "limit": intProp("Max events to return (default 100, max 1000)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				limit, _ := optionalInt(args, "limit")
-				spidFilter, _ := optionalInt(args, "spid")
-				procFilter, _ := optionalString(args, "procedure")
-				eventNameFilter, _ := optionalString(args, "event_name")
-				sessionID, _ := optionalInt64(args, "session_id")
-				filePath, _ := optionalString(args, "file_path")
+				limit, err := optionalInt(args, "limit")
+				if err != nil {
+					return nil, err
+				}
+				spidFilter, err := optionalInt(args, "spid")
+				if err != nil {
+					return nil, err
+				}
+				procFilter, err := optionalString(args, "procedure")
+				if err != nil {
+					return nil, err
+				}
+				eventNameFilter, err := optionalString(args, "event_name")
+				if err != nil {
+					return nil, err
+				}
+				sessionID, err := optionalInt64(args, "session_id")
+				if err != nil {
+					return nil, err
+				}
+				filePath, err := optionalString(args, "file_path")
+				if err != nil {
+					return nil, err
+				}
 				return trcsvc.ExecuteEvents(ctx, db, trcsvc.EventsParams{
 					Source:    trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
 					SPID:      spidFilter,
@@ -945,22 +988,46 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_trc_procedures": {
-			Definition: toolDefinition{Name: "codebase_trc_procedures", Description: "Aggregate trc session events by procedure name (extracted from exec-statements in TextData): call count, min/max/avg/total duration. Enriched with source file location from CodeBase index. Sorted by total duration descending. Uses server-side SQL aggregation when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file")})},
+			Definition: toolDefinition{Name: "codebase_trc_procedures", Description: "Aggregate completed stored procedure calls from a trc session by procedure name using only SP:Completed events: call count, min/max/avg/total duration. Enriched with source file location from CodeBase index. Sorted by total duration descending. Uses server-side SQL aggregation when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				sessionID, _ := optionalInt64(args, "session_id")
-				filePath, _ := optionalString(args, "file_path")
+				sessionID, err := optionalInt64(args, "session_id")
+				if err != nil {
+					return nil, err
+				}
+				filePath, err := optionalString(args, "file_path")
+				if err != nil {
+					return nil, err
+				}
 				return trcsvc.ExecuteProcedures(ctx, db, trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath})
 			},
 		},
 		"codebase_trc_tree": {
 			Definition: toolDefinition{Name: "codebase_trc_tree", Description: "Build call trees from a trc session, grouped by SPID, restoring nesting via Starting/Completed event pairs (RPC, SQL:Batch, SQL:Stmt, SP, SP:Stmt). Uses server-side recursive CTE when session_id is provided. If spid is given, returns only that SPID's tree. max_depth limits tree depth (0 = unlimited). limit caps the number of root nodes and children per node (0 = unlimited). procedure filters the tree to show only subtrees rooted at events with the matching procedure name.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spid": intProp("Optional SPID filter (0 = auto-select busiest SPID)"), "max_depth": intProp("Maximum tree depth (0 = unlimited)"), "limit": intProp("Maximum root nodes and children per node (0 = unlimited)"), "procedure": stringProp("Optional procedure name filter — show only subtrees rooted at events with this procedure")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				maxDepth, _ := optionalInt(args, "max_depth")
-				limit, _ := optionalInt(args, "limit")
-				spidFilter, _ := optionalInt(args, "spid")
-				sessionID, _ := optionalInt64(args, "session_id")
-				filePath, _ := optionalString(args, "file_path")
-				procedure, _ := optionalString(args, "procedure")
+				maxDepth, err := optionalInt(args, "max_depth")
+				if err != nil {
+					return nil, err
+				}
+				limit, err := optionalInt(args, "limit")
+				if err != nil {
+					return nil, err
+				}
+				spidFilter, err := optionalInt(args, "spid")
+				if err != nil {
+					return nil, err
+				}
+				sessionID, err := optionalInt64(args, "session_id")
+				if err != nil {
+					return nil, err
+				}
+				filePath, err := optionalString(args, "file_path")
+				if err != nil {
+					return nil, err
+				}
+				procedure, err := optionalString(args, "procedure")
+				if err != nil {
+					return nil, err
+				}
 				return trcsvc.ExecuteTree(ctx, db, trcsvc.TreeParams{
 					Source:    trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
 					SPID:      spidFilter,
@@ -973,10 +1040,22 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		"codebase_trc_slow": {
 			Definition: toolDefinition{Name: "codebase_trc_slow", Description: "Find the slowest events in a trc session above a duration threshold (DurationMs). Sorted by duration descending. Uses server-side SQL when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "threshold_ms": intProp("Minimum duration in milliseconds (default 100)"), "limit": intProp("Max events to return (default 100, max 1000)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				threshold, _ := optionalInt(args, "threshold_ms")
-				limit, _ := optionalInt(args, "limit")
-				sessionID, _ := optionalInt64(args, "session_id")
-				filePath, _ := optionalString(args, "file_path")
+				threshold, err := optionalInt(args, "threshold_ms")
+				if err != nil {
+					return nil, err
+				}
+				limit, err := optionalInt(args, "limit")
+				if err != nil {
+					return nil, err
+				}
+				sessionID, err := optionalInt64(args, "session_id")
+				if err != nil {
+					return nil, err
+				}
+				filePath, err := optionalString(args, "file_path")
+				if err != nil {
+					return nil, err
+				}
 				return trcsvc.ExecuteSlow(ctx, db, trcsvc.SlowParams{
 					Source:      trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
 					ThresholdMs: threshold,
@@ -987,9 +1066,18 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		"codebase_trc_errors": {
 			Definition: toolDefinition{Name: "codebase_trc_errors", Description: "Find events with a non-zero Error(31) column in a trc session. Uses server-side SQL when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "limit": intProp("Max events to return (default 100, max 1000)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				limit, _ := optionalInt(args, "limit")
-				sessionID, _ := optionalInt64(args, "session_id")
-				filePath, _ := optionalString(args, "file_path")
+				limit, err := optionalInt(args, "limit")
+				if err != nil {
+					return nil, err
+				}
+				sessionID, err := optionalInt64(args, "session_id")
+				if err != nil {
+					return nil, err
+				}
+				filePath, err := optionalString(args, "file_path")
+				if err != nil {
+					return nil, err
+				}
 				return trcsvc.ExecuteErrors(ctx, db, trcsvc.ErrorsParams{
 					Source: trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
 					Limit:  limit,
@@ -1281,16 +1369,7 @@ func optionalInt64(args map[string]interface{}, key string) (int64, error) {
 	if !ok || value == nil {
 		return 0, nil
 	}
-	switch v := value.(type) {
-	case float64:
-		return int64(v), nil
-	case int:
-		return int64(v), nil
-	case int64:
-		return v, nil
-	default:
-		return 0, fmt.Errorf("argument %s must be integer", key)
-	}
+	return integerValue(value, key, 64)
 }
 
 // buildTimelineFilter constructs a TimelineFilter from common MCP args.

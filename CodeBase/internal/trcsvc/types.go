@@ -19,7 +19,7 @@ type ParseResult struct {
 
 // SummaryResult — статистика по сессии.
 type SummaryResult struct {
-	TotalEvents int             `json:"total_events"`
+	TotalEvents int              `json:"total_events"`
 	Header      *trc.TraceHeader `json:"header"`
 	Session     *trc.TRCSession  `json:"session,omitempty"`
 }
@@ -29,6 +29,7 @@ type EventsResult struct {
 	Events        []trc.TRCEvent `json:"events"`
 	TotalCount    int            `json:"total_count"`
 	FilteredCount int            `json:"filtered_count"`
+	ReturnedCount int            `json:"returned_count"`
 	Limit         int            `json:"limit"`
 }
 

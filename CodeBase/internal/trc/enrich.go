@@ -21,12 +21,12 @@ type ProcedureLookup interface {
 
 // ProcedureEnrichment — результат обогащения процедуры данными из CodeBase.
 type ProcedureEnrichment struct {
-	Procedure  string                  `json:"procedure"`
-	SourceFile string                  `json:"source_file,omitempty"`
-	LineStart  int                     `json:"line_start,omitempty"`
-	LineEnd    int                     `json:"line_end,omitempty"`
-	Params     []query.SQLParamResult  `json:"params,omitempty"`
-	Found      bool                    `json:"found"`
+	Procedure  string                 `json:"procedure"`
+	SourceFile string                 `json:"source_file,omitempty"`
+	LineStart  int                    `json:"line_start,omitempty"`
+	LineEnd    int                    `json:"line_end,omitempty"`
+	Params     []query.SQLParamResult `json:"params,omitempty"`
+	Found      bool                   `json:"found"`
 }
 
 // EnrichProcedure ищет процедуру в CodeBase DB и возвращает enrichment.
@@ -82,26 +82,21 @@ func GetSlowThresholdMs() int {
 	return trcSlowThresholdMs
 }
 
-// EnrichEvents обогащает события данными из CodeBase DB. Возвращает map:
-// procedure name (как в TRCEvent.Procedure) → enrichment.
-// Параллельно обрабатывает уникальные имена процедур через chunk-based
-// паттерн (sync.WaitGroup + sync.Mutex для map), лимит — maxEnrichWorkers.
-func EnrichEvents(ctx context.Context, q ProcedureLookup, events []TRCEvent) map[string]*ProcedureEnrichment {
-	uniqueProcs := make(map[string]struct{})
-	for _, ev := range events {
-		if ev.Procedure != "" {
-			uniqueProcs[ev.Procedure] = struct{}{}
+// EnrichProcedureNames обогащает уникальные имена процедур данными из CodeBase DB.
+func EnrichProcedureNames(ctx context.Context, q ProcedureLookup, procedureNames []string) map[string]*ProcedureEnrichment {
+	unique := make(map[string]struct{}, len(procedureNames))
+	for _, name := range procedureNames {
+		if name != "" {
+			unique[name] = struct{}{}
 		}
 	}
-	if len(uniqueProcs) == 0 {
-		return map[string]*ProcedureEnrichment{}
-	}
-
-	procs := make([]string, 0, len(uniqueProcs))
-	for name := range uniqueProcs {
+	procs := make([]string, 0, len(unique))
+	for name := range unique {
 		procs = append(procs, name)
 	}
-
+	if len(procs) == 0 {
+		return map[string]*ProcedureEnrichment{}
+	}
 	if len(procs) < minProcsForParallelEnrich {
 		result := make(map[string]*ProcedureEnrichment, len(procs))
 		for _, procName := range procs {
@@ -112,7 +107,6 @@ func EnrichEvents(ctx context.Context, q ProcedureLookup, events []TRCEvent) map
 
 	result := make(map[string]*ProcedureEnrichment, len(procs))
 	var mu sync.Mutex
-
 	workers := runtime.NumCPU()
 	if workers > len(procs) {
 		workers = len(procs)
@@ -120,7 +114,6 @@ func EnrichEvents(ctx context.Context, q ProcedureLookup, events []TRCEvent) map
 	if workers > maxEnrichWorkers {
 		workers = maxEnrichWorkers
 	}
-
 	chunkSize := (len(procs) + workers - 1) / workers
 	var wg sync.WaitGroup
 	for i := 0; i < len(procs); i += chunkSize {
@@ -141,6 +134,15 @@ func EnrichEvents(ctx context.Context, q ProcedureLookup, events []TRCEvent) map
 	}
 	wg.Wait()
 	return result
+}
+
+// EnrichEvents обогащает процедуры, встречающиеся в событиях.
+func EnrichEvents(ctx context.Context, q ProcedureLookup, events []TRCEvent) map[string]*ProcedureEnrichment {
+	names := make([]string, 0, len(events))
+	for _, ev := range events {
+		names = append(names, ev.Procedure)
+	}
+	return EnrichProcedureNames(ctx, q, names)
 }
 
 // enrichSingle — helper для переиспользования между последовательным и

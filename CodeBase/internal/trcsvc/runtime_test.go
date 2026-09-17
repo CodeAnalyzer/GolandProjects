@@ -2,13 +2,34 @@ package trcsvc
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/trc"
 )
+
+type fakeProcedureLookup struct {
+	result *query.SQLProcedureResult
+	calls  int
+}
+
+func (f *fakeProcedureLookup) GetProcedureResult(ctx context.Context, name string) (*query.SQLProcedureResult, error) {
+	f.calls++
+	if f.result == nil {
+		return nil, os.ErrNotExist
+	}
+	return f.result, nil
+}
+
+type statelessProcedureLookup struct{}
+
+func (statelessProcedureLookup) GetProcedureResult(ctx context.Context, name string) (*query.SQLProcedureResult, error) {
+	return &query.SQLProcedureResult{File: "/" + name + ".sql"}, nil
+}
 
 // modificationsDir — папка с тестовыми файлами (.trc/.xml), относительно
 // пакета internal/trcsvc.
@@ -35,6 +56,29 @@ func trcTestPath(t *testing.T) string {
 	p := filepath.Join(modificationsDir(t), "DIAPR-391.trc")
 	skipIfMissing(t, p)
 	return p
+}
+
+func TestEnrichProcedureAggregates(t *testing.T) {
+	lookup := &fakeProcedureLookup{result: &query.SQLProcedureResult{File: "/proc.sql"}}
+	aggs := []trc.TRCProcAgg{{Procedure: "ProcAfterSample"}}
+	enrichProcedureAggregates(context.Background(), lookup, aggs)
+	if lookup.calls != 1 || aggs[0].SourceFile != "/proc.sql" {
+		t.Fatalf("calls=%d aggs=%+v", lookup.calls, aggs)
+	}
+}
+
+func TestEnrichProcedureAggregates_AllAggregates(t *testing.T) {
+	aggs := make([]trc.TRCProcAgg, 1001)
+	for i := range aggs {
+		aggs[i].Procedure = fmt.Sprintf("Proc%04d", i)
+	}
+	enrichProcedureAggregates(context.Background(), statelessProcedureLookup{}, aggs)
+	if aggs[0].SourceFile != "/Proc0000.sql" {
+		t.Errorf("first SourceFile = %q, want /Proc0000.sql", aggs[0].SourceFile)
+	}
+	if aggs[1000].SourceFile != "/Proc1000.sql" {
+		t.Errorf("last SourceFile = %q, want /Proc1000.sql", aggs[1000].SourceFile)
+	}
 }
 
 func TestExecuteParse_FileMode(t *testing.T) {
@@ -100,11 +144,17 @@ func TestExecuteEvents_FileMode(t *testing.T) {
 	if result.TotalCount <= 0 {
 		t.Errorf("TotalCount = %d, want > 0", result.TotalCount)
 	}
-	if result.FilteredCount > 10 {
-		t.Errorf("FilteredCount = %d, want <= 10", result.FilteredCount)
+	if result.ReturnedCount != 10 {
+		t.Errorf("ReturnedCount = %d, want 10", result.ReturnedCount)
 	}
-	if len(result.Events) > 10 {
-		t.Errorf("Events len = %d, want <= 10", len(result.Events))
+	if result.ReturnedCount != len(result.Events) {
+		t.Errorf("ReturnedCount = %d, want %d", result.ReturnedCount, len(result.Events))
+	}
+	if result.FilteredCount != result.TotalCount {
+		t.Errorf("FilteredCount = %d, want TotalCount %d", result.FilteredCount, result.TotalCount)
+	}
+	if result.FilteredCount <= result.ReturnedCount {
+		t.Errorf("FilteredCount = %d, want > ReturnedCount %d", result.FilteredCount, result.ReturnedCount)
 	}
 }
 
@@ -123,6 +173,33 @@ func TestExecuteEvents_FileMode_WithEventNameFilter(t *testing.T) {
 		if ev.EventName != "RPC:Completed" {
 			t.Errorf("EventName = %q, want RPC:Completed", ev.EventName)
 		}
+	}
+	if result.ReturnedCount != len(result.Events) {
+		t.Errorf("ReturnedCount = %d, want %d", result.ReturnedCount, len(result.Events))
+	}
+	if result.FilteredCount < result.ReturnedCount {
+		t.Errorf("FilteredCount = %d, want >= ReturnedCount %d", result.FilteredCount, result.ReturnedCount)
+	}
+	if result.ReturnedCount < result.Limit && result.FilteredCount != result.ReturnedCount {
+		t.Errorf("FilteredCount = %d, want ReturnedCount %d when limit not reached", result.FilteredCount, result.ReturnedCount)
+	}
+}
+
+func TestExecuteEvents_FileMode_EmptyResult(t *testing.T) {
+	p := trcTestPath(t)
+	result, err := ExecuteEvents(context.Background(), nil, EventsParams{
+		Source:    SessionSource{FilePath: p},
+		EventName: "EventNameThatDoesNotExistInGolden",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteEvents error: %v", err)
+	}
+	if result.TotalCount <= 0 {
+		t.Fatalf("TotalCount = %d, want > 0", result.TotalCount)
+	}
+	if result.FilteredCount != 0 || result.ReturnedCount != 0 || len(result.Events) != 0 {
+		t.Fatalf("got filtered=%d returned=%d len=%d, want zeroes", result.FilteredCount, result.ReturnedCount, len(result.Events))
 	}
 }
 

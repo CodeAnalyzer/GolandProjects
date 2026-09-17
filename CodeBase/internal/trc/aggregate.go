@@ -16,52 +16,48 @@ type TRCProcAgg struct {
 	SourceFile string `json:"source_file,omitempty"`
 }
 
-// AggregateByProcedure агрегирует события с непустым Procedure по имени
-// процедуры, отсортированные по TotalMs по убыванию (самые "дорогие"
-// процедуры первыми). События без Procedure (не exec-вызовы) игнорируются.
+// AggregateByProcedure агрегирует завершённые вызовы процедур по имени,
+// отсортированные по TotalMs по убыванию.
 func AggregateByProcedure(events []TRCEvent) []TRCProcAgg {
 	type acc struct {
-		count   int
-		total   int64
-		min     int64
-		max     int64
-		hasDur  bool
+		count int
+		total int64
+		min   int64
+		max   int64
 	}
 	byProc := make(map[string]*acc)
 	var order []string
 	for _, ev := range events {
-		if ev.Procedure == "" {
+		if ev.EventName != "SP:Completed" || ev.Procedure == "" {
 			continue
 		}
 		a, ok := byProc[ev.Procedure]
 		if !ok {
-			a = &acc{min: -1}
+			a = &acc{min: ev.DurationMs, max: ev.DurationMs}
 			byProc[ev.Procedure] = a
 			order = append(order, ev.Procedure)
 		}
 		a.count++
-		if ev.DurationMs > 0 {
-			a.hasDur = true
-			a.total += ev.DurationMs
-			if a.min < 0 || ev.DurationMs < a.min {
-				a.min = ev.DurationMs
-			}
-			if ev.DurationMs > a.max {
-				a.max = ev.DurationMs
-			}
+		a.total += ev.DurationMs
+		if ev.DurationMs < a.min {
+			a.min = ev.DurationMs
+		}
+		if ev.DurationMs > a.max {
+			a.max = ev.DurationMs
 		}
 	}
 
 	result := make([]TRCProcAgg, 0, len(order))
 	for _, proc := range order {
 		a := byProc[proc]
-		agg := TRCProcAgg{Procedure: proc, Count: a.count, TotalMs: a.total}
-		if a.hasDur {
-			agg.MinMs = a.min
-			agg.MaxMs = a.max
-			agg.AvgMs = float64(a.total) / float64(a.count)
-		}
-		result = append(result, agg)
+		result = append(result, TRCProcAgg{
+			Procedure: proc,
+			Count:     a.count,
+			TotalMs:   a.total,
+			MinMs:     a.min,
+			MaxMs:     a.max,
+			AvgMs:     float64(a.total) / float64(a.count),
+		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].TotalMs > result[j].TotalMs })
 	return result

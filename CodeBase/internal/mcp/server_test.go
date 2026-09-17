@@ -3,7 +3,10 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +14,63 @@ import (
 
 	"github.com/codebase/internal/config"
 )
+
+func TestOptionalInt(t *testing.T) {
+	valid := []interface{}{int(7), int64(7), float64(7)}
+	for _, value := range valid {
+		if got, err := optionalInt(map[string]interface{}{"n": value}, "n"); err != nil || got != 7 {
+			t.Errorf("optionalInt(%T) = %d, %v", value, got, err)
+		}
+	}
+	invalid := []interface{}{"7", 1.5, math.NaN(), math.Inf(1), struct{}{}}
+	for _, value := range invalid {
+		if _, err := optionalInt(map[string]interface{}{"n": value}, "n"); err == nil {
+			t.Errorf("optionalInt(%T) accepted invalid value", value)
+		}
+	}
+	if strconv.IntSize == 32 {
+		if _, err := optionalInt(map[string]interface{}{"n": float64(1 << 32)}, "n"); err == nil {
+			t.Fatal("expected int32 overflow")
+		}
+	}
+}
+
+func TestOptionalInt64(t *testing.T) {
+	for _, value := range []interface{}{int(7), int64(7), float64(7)} {
+		if got, err := optionalInt64(map[string]interface{}{"n": value}, "n"); err != nil || got != 7 {
+			t.Errorf("optionalInt64(%T) = %d, %v", value, got, err)
+		}
+	}
+	for _, value := range []interface{}{"7", 1.5, math.NaN(), math.Inf(1), struct{}{}} {
+		if _, err := optionalInt64(map[string]interface{}{"n": value}, "n"); err == nil {
+			t.Errorf("optionalInt64(%T) accepted invalid value", value)
+		}
+	}
+	if _, err := optionalInt64(map[string]interface{}{"n": float64(1 << 63)}, "n"); err == nil {
+		t.Fatal("expected int64 overflow")
+	}
+}
+
+func TestTRCHandlersRejectInvalidOptionalArguments(t *testing.T) {
+	tests := []struct{ tool, key string }{
+		{"codebase_trc_list", "limit"},
+		{"codebase_trc_summary", "session_id"}, {"codebase_trc_summary", "file_path"},
+		{"codebase_trc_events", "limit"}, {"codebase_trc_events", "spid"}, {"codebase_trc_events", "procedure"}, {"codebase_trc_events", "event_name"}, {"codebase_trc_events", "session_id"}, {"codebase_trc_events", "file_path"},
+		{"codebase_trc_procedures", "session_id"}, {"codebase_trc_procedures", "file_path"},
+		{"codebase_trc_tree", "max_depth"}, {"codebase_trc_tree", "limit"}, {"codebase_trc_tree", "spid"}, {"codebase_trc_tree", "session_id"}, {"codebase_trc_tree", "file_path"}, {"codebase_trc_tree", "procedure"},
+		{"codebase_trc_slow", "threshold_ms"}, {"codebase_trc_slow", "limit"}, {"codebase_trc_slow", "session_id"}, {"codebase_trc_slow", "file_path"},
+		{"codebase_trc_errors", "limit"}, {"codebase_trc_errors", "session_id"}, {"codebase_trc_errors", "file_path"},
+		{"codebase_trc_delete", "session_id"}, {"codebase_trc_prune", "keep_last"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.tool+"/"+tt.key, func(t *testing.T) {
+			_, err := toolRegistry[tt.tool].Handler(context.Background(), map[string]interface{}{tt.key: struct{}{}})
+			if err == nil || !strings.Contains(err.Error(), tt.key) {
+				t.Fatalf("error = %v, want key %q", err, tt.key)
+			}
+		})
+	}
+}
 
 func TestToolRegistryContainsPing(t *testing.T) {
 	tool, ok := toolRegistry["codebase_ping"]
