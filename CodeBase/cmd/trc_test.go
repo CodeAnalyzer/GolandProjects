@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/codebase/internal/trcsvc"
+	"github.com/spf13/cobra"
 )
 
 func intPtr(v int) *int { return &v }
@@ -76,5 +77,41 @@ func TestParseRFC3339Flag(t *testing.T) {
 	_, err = parseRFC3339Flag("2026-09-14 13:56:50", "--time-from")
 	if err == nil || !strings.Contains(err.Error(), "--time-from") {
 		t.Fatalf("err = %v, want --time-from RFC3339 error", err)
+	}
+}
+
+func TestTRCCompareAndSpidsCommandsFlags(t *testing.T) {
+	for _, tc := range []struct {
+		cmd  string
+		want []string
+	}{
+		{"compare-procedures", []string{"focus-spid", "compare-spids", "event-names", "top", "sort", "session"}},
+		{"spids", []string{"spids", "time-from", "time-to", "sort", "limit", "session"}},
+	} {
+		var cmd *cobra.Command
+		for _, c := range trcCmd.Commands() {
+			if c.Name() == tc.cmd {
+				cmd = c
+				break
+			}
+		}
+		if cmd == nil {
+			t.Fatalf("subcommand %s not registered", tc.cmd)
+		}
+		for _, flag := range tc.want {
+			if cmd.Flags().Lookup(flag) == nil {
+				t.Errorf("%s missing flag --%s", tc.cmd, flag)
+			}
+		}
+	}
+}
+
+func TestDerefFloat(t *testing.T) {
+	if derefFloat(nil) != 0 {
+		t.Fatal("nil must be 0")
+	}
+	v := 1.5
+	if derefFloat(&v) != 1.5 {
+		t.Fatal("value must pass through")
 	}
 }

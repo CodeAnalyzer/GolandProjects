@@ -644,6 +644,16 @@ codebase trc procedures --session 42 --spids 728 --top 20 --sort avg_ms
 codebase trc procedures --session 42 --group-by-spid
 codebase trc procedures --session 42 --event-names "RPC:Completed"
 
+# Сравнение Top-N процедур focus SPID с peer SPID (одним вызовом:
+# focus-метрики, каждый peer, взвешенный peer_combined, ratios)
+codebase trc compare-procedures --session 42 --focus-spid 728 --compare-spids 700,179
+codebase trc compare-procedures --session 42 --focus-spid 728 --compare-spids 700,179 --top 10 --sort count
+
+# Сводка активности SPID без выгрузки сырых событий (первый обзор трейса)
+codebase trc spids --session 42
+codebase trc spids --session 42 --sort error_count
+codebase trc spids path/to/file.trc --spids 728,700 --time-from 2026-09-14T13:00:00Z
+
 # Дерево вызовов, сгруппированное по SPID
 codebase trc tree path/to/file.trc
 codebase trc tree --session 42 --spid 55 --max-depth 3 --limit 50
@@ -679,6 +689,8 @@ codebase trc prune --keep-last 5
 - **`summary`** — общая сводка: total_events, метаданные провайдера/сервера/версии
 - **`events`** — список декодированных событий с фильтрами (`--spids`, `--event-names`, `--proc`, `--time-from/--time-to`, `--min-duration-ms`), постраничной выборкой (`--after-id`) и форматами (`--format full|short`). Ответ содержит `filtered_count` (полный размер отфильтрованного набора — на каждой странице), `total_count` (только на первой странице, при `after_id` отсутствует), `has_more` и `next_after_id` (курсор следующей страницы, отсутствует при `has_more=false`). Short-формат исключает `params`/`columns`; для saved-session short-запрос не читает JSONB-колонки. `--spid` — legacy-алиас `--spids` с одним значением; одновременно `--spid` и `--spids` — ошибка
 - **`procedures`** — агрегация вызовов процедур: по умолчанию только `SP:Completed` с непустым именем (count, min/max/avg/total duration; enrichment из индекса). `--event-names` задаёт явный набор классов событий (длительности разных уровней пересекаются — суммы не являются wall-clock time), `--spids` ограничивает SPID, `--top N` (0 = все, max 1000), `--sort total_ms|avg_ms|max_ms|count` (secondary: procedure, затем spid), `--group-by-spid` — группы `(spid, procedure)` без событий с NULL spid
+- **`compare-procedures`** — одним вызовом: Top-N самых дорогих процедур focus SPID (`--focus-spid`) и те же процедуры для каждого peer (`--compare-spids`, focus исключается). Отсутствующая пара `(spid, procedure)` — `count=0`, `total_ms=0`, nullable `min/max/avg` (отличимо от нулевой длительности); `peer_combined` — взвешенное среднее по всем peer-вызовам (не среднее средних); ratios `avg_vs_peers`/`max_vs_peers`/`count_vs_peers` (null при нулевом знаменателе). `--top` default 20, max 100. Ответ содержит warnings: completed-only, elapsed ≠ wall-clock и «метрики длительности недоступны» для трейсов без колонки Duration (рабочий путь — `--sort count` и `count_vs_peers`)
+- **`spids`** — сводка активности SPID без сырых событий: `event_count`, `first/last_time` (null без start_time), счётчики `sp/rpc/batch_completed`, `error_count`, `max_duration_ms`, самые частые `application_name`/`login_name`/`host_name` (tie — самое раннее событие). Первый инструмент обзора после parse; `--sort event_count|first_time|last_time|max_duration_ms|error_count`, фильтры `--spids`/`--time-from`/`--time-to`. Только факты, без флага «незавершённости»
 - **`tree`** — дерево вызовов, сгруппированное по SPID, с восстановлением вложенности через Starting/Completed пары (RPC, SQL:Batch, SQL:Stmt, SP, SP:Stmt)
 - **`errors`** — события с ненулевой колонкой Error(31)
 - **`slow`** — события медленнее порога (по умолчанию 100 мс), отсортированные по убыванию длительности
@@ -925,6 +937,8 @@ IDE может подключить несколько MCP-серверов на
 | `codebase_trc_summary` | Сводка сессии: total_events, метаданные | `session_id` или `file_path` |
 | `codebase_trc_events` | Декодированные события с server-side фильтрами и keyset-пагинацией; `filtered_count` на каждой странице, `total_count` только на первой, `has_more`/`next_after_id`, `format=full\|short` | `session_id` или `file_path`, опц. `spids[]`/`event_names[]`/`procedure`/`time_from`/`time_to`/`min_duration_ms`/`after_id`/`format`/`limit`; legacy `spid`/`event_name` нормализуются в массивы |
 | `codebase_trc_procedures` | Агрегация вызовов процедур (default `SP:Completed`) с enrichment, `spids[]`, `event_names[]`, `top`, `sort_by`, `group_by_spid` | `session_id` или `file_path`, опц. `spids[]`/`event_names[]`/`top`/`sort_by`/`group_by_spid` |
+| `codebase_trc_compare_procedures` | Top-N процедур focus SPID vs те же процедуры в peer SPID: nullable peer-метрики, взвешенный `peer_combined`, ratios `avg/max/count_vs_peers`, warnings | `session_id` или `file_path`, `focus_spid`, `compare_spids[]`, опц. `event_names[]`/`top` (default 20)/`sort_by` |
+| `codebase_trc_spids` | Сводка активности SPID без сырых событий: счётчики, границы времени, ошибки, max duration, мода app/login/host | `session_id` или `file_path`, опц. `spids[]`/`time_from`/`time_to`/`sort_by`/`limit` |
 | `codebase_trc_tree` | Дерево вызовов по SPID с опц. фильтром по процедуре | `session_id` или `file_path`, опц. `spid`/`max_depth`/`limit`/`procedure` |
 | `codebase_trc_errors` | События с ненулевой Error(31) | `session_id` или `file_path` |
 | `codebase_trc_slow` | Медленные события (порог DurationMs) | `session_id` или `file_path`, опц. `threshold_ms` |

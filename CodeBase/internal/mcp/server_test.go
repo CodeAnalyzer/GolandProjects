@@ -59,6 +59,8 @@ func TestTRCHandlersRejectInvalidOptionalArguments(t *testing.T) {
 		{"codebase_trc_events", "spids"}, {"codebase_trc_events", "event_names"}, {"codebase_trc_events", "time_from"}, {"codebase_trc_events", "time_to"}, {"codebase_trc_events", "min_duration_ms"}, {"codebase_trc_events", "after_id"}, {"codebase_trc_events", "format"},
 		{"codebase_trc_procedures", "session_id"}, {"codebase_trc_procedures", "file_path"},
 		{"codebase_trc_procedures", "spids"}, {"codebase_trc_procedures", "event_names"}, {"codebase_trc_procedures", "top"}, {"codebase_trc_procedures", "sort_by"}, {"codebase_trc_procedures", "group_by_spid"},
+		{"codebase_trc_compare_procedures", "focus_spid"}, {"codebase_trc_compare_procedures", "compare_spids"}, {"codebase_trc_compare_procedures", "event_names"}, {"codebase_trc_compare_procedures", "top"}, {"codebase_trc_compare_procedures", "sort_by"}, {"codebase_trc_compare_procedures", "session_id"}, {"codebase_trc_compare_procedures", "file_path"},
+		{"codebase_trc_spids", "spids"}, {"codebase_trc_spids", "time_from"}, {"codebase_trc_spids", "time_to"}, {"codebase_trc_spids", "sort_by"}, {"codebase_trc_spids", "limit"}, {"codebase_trc_spids", "session_id"}, {"codebase_trc_spids", "file_path"},
 		{"codebase_trc_tree", "max_depth"}, {"codebase_trc_tree", "limit"}, {"codebase_trc_tree", "spid"}, {"codebase_trc_tree", "session_id"}, {"codebase_trc_tree", "file_path"}, {"codebase_trc_tree", "procedure"},
 		{"codebase_trc_slow", "threshold_ms"}, {"codebase_trc_slow", "limit"}, {"codebase_trc_slow", "session_id"}, {"codebase_trc_slow", "file_path"},
 		{"codebase_trc_errors", "limit"}, {"codebase_trc_errors", "session_id"}, {"codebase_trc_errors", "file_path"},
@@ -345,6 +347,8 @@ func TestTRCToolsInRegistry(t *testing.T) {
 		"codebase_trc_slow",
 		"codebase_trc_events",
 		"codebase_trc_procedures",
+		"codebase_trc_compare_procedures",
+		"codebase_trc_spids",
 		"codebase_trc_delete",
 		"codebase_trc_prune",
 	}
@@ -513,6 +517,72 @@ func TestTRCProceduresHandlerValidatesParams(t *testing.T) {
 	_, err = tool.Handler(context.Background(), map[string]interface{}{"sort_by": "duration"})
 	if err == nil || !strings.Contains(err.Error(), "sort_by") {
 		t.Fatalf("err = %v, want sort_by validation error", err)
+	}
+}
+
+func TestTRCCompareProceduresHandlerValidatesParams(t *testing.T) {
+	tool, ok := toolRegistry["codebase_trc_compare_procedures"]
+	if !ok {
+		t.Fatal("codebase_trc_compare_procedures not in toolRegistry")
+	}
+	// focus в peer-списке: после нормализации пусто
+	_, err := tool.Handler(context.Background(), map[string]interface{}{
+		"focus_spid":    float64(728),
+		"compare_spids": []interface{}{float64(728)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "compare_spids") {
+		t.Fatalf("err = %v, want compare_spids empty-after-focus error", err)
+	}
+	// top за пределами 1..100
+	_, err = tool.Handler(context.Background(), map[string]interface{}{
+		"focus_spid":    float64(728),
+		"compare_spids": []interface{}{float64(700)},
+		"top":           float64(101),
+	})
+	if err == nil || !strings.Contains(err.Error(), "top") {
+		t.Fatalf("err = %v, want top validation error", err)
+	}
+}
+
+func TestTRCCompareAndSpidsSchemas(t *testing.T) {
+	compare, ok := toolRegistry["codebase_trc_compare_procedures"]
+	if !ok {
+		t.Fatal("codebase_trc_compare_procedures not in toolRegistry")
+	}
+	compareProps, _ := compare.Definition.InputSchema["properties"].(map[string]interface{})
+	for _, key := range []string{"focus_spid", "compare_spids", "event_names", "top", "sort_by", "session_id", "file_path"} {
+		if _, ok := compareProps[key]; !ok {
+			t.Errorf("compare schema missing property %s", key)
+		}
+	}
+	if prop, _ := compareProps["compare_spids"].(map[string]interface{}); prop["type"] != "array" {
+		t.Error("compare_spids must be array type")
+	}
+	// scalar-alias быть не должно
+	if _, ok := compareProps["spid"]; ok {
+		t.Error("compare schema must not contain scalar alias spid")
+	}
+
+	spids, ok := toolRegistry["codebase_trc_spids"]
+	if !ok {
+		t.Fatal("codebase_trc_spids not in toolRegistry")
+	}
+	spidsProps, _ := spids.Definition.InputSchema["properties"].(map[string]interface{})
+	for _, key := range []string{"spids", "time_from", "time_to", "sort_by", "limit", "session_id", "file_path"} {
+		if _, ok := spidsProps[key]; !ok {
+			t.Errorf("spids schema missing property %s", key)
+		}
+	}
+}
+
+func TestTRCSpidsHandlerRejectsBadSort(t *testing.T) {
+	tool, ok := toolRegistry["codebase_trc_spids"]
+	if !ok {
+		t.Fatal("codebase_trc_spids not in toolRegistry")
+	}
+	_, err := tool.Handler(context.Background(), map[string]interface{}{"sort_by": "avg_ms"})
+	if err == nil || !strings.Contains(err.Error(), "sort_by") {
+		t.Fatalf("err = %v, want sort_by enum error", err)
 	}
 }
 

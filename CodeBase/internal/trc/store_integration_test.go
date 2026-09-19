@@ -5,9 +5,12 @@ package trc
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/store/testutil"
 	"github.com/lib/pq"
 )
@@ -535,5 +538,376 @@ func TestLoadEventsForTree_DiagnosticFilteredFromRoot(t *testing.T) {
 	}
 	if len(treeEvents) == 0 {
 		t.Fatal("expected at least RPC:Starting/Completed events in tree, got 0")
+	}
+}
+
+// compareRow описывает синтетическое событие для parity-тестов compare/spids:
+// одна спецификация порождает и SQL-строку, и эквивалентное TRCEvent.
+type compareRow struct {
+	spid      int32
+	name      string
+	proc      string
+	dur       int64
+	start     *time.Time
+	errCode   *int32
+	app       string
+}
+
+func (r compareRow) toEvent() TRCEvent {
+	cols := map[int]any{}
+	if r.spid != 0 {
+		cols[12] = r.spid
+	}
+	if r.start != nil {
+		cols[14] = SystemTimeFromLocalParts(*r.start)
+	}
+	if r.errCode != nil {
+		cols[31] = *r.errCode
+	}
+	if r.app != "" {
+		cols[10] = r.app
+	}
+	return TRCEvent{EventName: r.name, Procedure: r.proc, DurationMs: r.dur, Columns: cols}
+}
+
+// insertCompareRows вставляет события в БД в порядке спецификации (id растут).
+func insertCompareRows(t *testing.T, db *store.DB, sessionID int64, rows []compareRow) {
+	t.Helper()
+	for _, r := range rows {
+		var start, errCode, app, proc interface{}
+		if r.spid != 0 {
+			// spid передаётся как есть; 0 → NULL ниже
+		}
+		var spid interface{}
+		if r.spid != 0 {
+			spid = r.spid
+		}
+		if r.start != nil {
+			start = *r.start
+		}
+		if r.errCode != nil {
+			errCode = *r.errCode
+		}
+		if r.app != "" {
+			app = r.app
+		}
+		if r.proc != "" {
+			proc = r.proc
+		}
+		if _, err := db.Exec(
+			`INSERT INTO trc_events (session_id, event_class, event_name, spid, procedure, duration_ms, start_time, error, application_name)
+			 VALUES ($1, 10, $2, $3, $4, $5, $6, $7, $8)`,
+			sessionID, r.name, spid, proc, r.dur, start, errCode, app,
+		); err != nil {
+			t.Fatalf("insert compare row: %v", err)
+		}
+	}
+}
+
+func compareTestRows() []compareRow {
+	base := time.Date(2026, 9, 14, 13, 0, 0, 0, time.UTC)
+	min := base
+	errCode := int32(50000)
+	rows := make([]compareRow, 0, 12)
+	// focus 728: A×3, B×1
+	rows = append(rows,
+		compareRow{spid: 728, name: "SP:Completed", proc: "A", dur: 300, start: &min},
+		compareRow{spid: 728, name: "SP:Completed", proc: "A", dur: 100, errCode: &errCode, app: "AppA"},
+		compareRow{spid: 728, name: "SP:StmtCompleted", proc: "A", dur: 50}, // не входит
+		compareRow{spid: 728, name: "SP:Completed", proc: "B", dur: 40, app: "AppB"},
+	)
+	// peer 700: A×2, C (только у peer)
+	rows = append(rows,
+		compareRow{spid: 700, name: "SP:Combined", proc: "A", dur: 1}, // не входит (имя класса)
+		compareRow{spid: 700, name: "SP:Completed", proc: "A", dur: 200, start: &min},
+		compareRow{spid: 700, name: "SP:Completed", proc: "A", dur: 100},
+		compareRow{spid: 700, name: "SP:Completed", proc: "C", dur: 9999},
+	)
+	// peer 179: пустой для A
+	rows = append(rows, compareRow{spid: 179, name: "SP:Completed", proc: "X", dur: 5})
+	return rows
+}
+
+// TestCompareProcedures_ServerParity — серверная сборка совпадает с file-mode
+// и с контрольным GROUP BY.
+func TestCompareProcedures_ServerParity(t *testing.T) {
+	db := testutil.Open(t)
+	var sessionID int64
+	if err := db.QueryRow(`INSERT INTO trc_sessions (file_path, file_size, total_events) VALUES ('cmp-parity.trc', 10, 0) RETURNING id`).Scan(&sessionID); err != nil {
+		t.Fatal(err)
+	}
+	defer DeleteSession(context.Background(), db, sessionID)
+
+	rows := compareTestRows()
+	insertCompareRows(t, db, sessionID, rows)
+
+	opts := CompareOptions{FocusSPID: 728, CompareSPIDs: []int{700, 179}, Top: 20, SortBy: "total_ms"}
+
+	// серверно: LoadProceduresAggregated (GroupBySPID) + сборка
+	aggRows, err := LoadProceduresAggregated(context.Background(), db, sessionID, AggregateOptions{
+		EventNames:  []string{"SP:Completed"},
+		SPIDs:       []int{728, 700, 179},
+		GroupBySPID: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverRes := CompareProceduresRows(aggRows, opts)
+
+	// file-mode
+	events := make([]TRCEvent, 0, len(rows))
+	for _, r := range rows {
+		events = append(events, r.toEvent())
+	}
+	fileRes := CompareProcedures(events, opts)
+
+	if len(serverRes.Procedures) != len(fileRes.Procedures) {
+		t.Fatalf("server %d vs file %d procedures", len(serverRes.Procedures), len(fileRes.Procedures))
+	}
+	for i := range serverRes.Procedures {
+		s, f := serverRes.Procedures[i], fileRes.Procedures[i]
+		if s.Rank != f.Rank || s.Procedure != f.Procedure {
+			t.Fatalf("row %d: server %d/%q vs file %d/%q", i, s.Rank, s.Procedure, f.Rank, f.Procedure)
+		}
+		if s.Focus != f.Focus {
+			t.Fatalf("%s focus: server %+v vs file %+v", s.Procedure, s.Focus, f.Focus)
+		}
+		if len(s.Peers) != len(f.Peers) {
+			t.Fatalf("%s peers len", s.Procedure)
+		}
+		for j := range s.Peers {
+			if !reflect.DeepEqual(s.Peers[j], f.Peers[j]) {
+				t.Fatalf("%s peer %d: server %+v vs file %+v", s.Procedure, j, s.Peers[j], f.Peers[j])
+			}
+		}
+	}
+
+	// контрольный GROUP BY для focus A
+	var cnt int
+	var total int64
+	if err := db.QueryRow(
+		`SELECT count(*), COALESCE(sum(duration_ms),0) FROM trc_events
+		 WHERE session_id=$1 AND event_name='SP:Completed' AND procedure='A' AND spid=728`,
+		sessionID,
+	).Scan(&cnt, &total); err != nil {
+		t.Fatal(err)
+	}
+	a := serverRes.Procedures[0]
+	if a.Procedure != "A" || a.Focus.Count != cnt || a.Focus.TotalMs != total {
+		t.Fatalf("A = %+v, want count=%d total=%d (control GROUP BY)", a, cnt, total)
+	}
+	// peer 179 для A — nullable-пустота
+	if a.Peers[1].SPID != 179 || a.Peers[1].Count != 0 || a.Peers[1].AvgMs != nil {
+		t.Fatalf("peer 179 = %+v, want nullable zeros", a.Peers[1])
+	}
+	// C отсутствует в ответе (Top-N только focus)
+	for _, p := range serverRes.Procedures {
+		if p.Procedure == "C" {
+			t.Fatal("peer-only procedure C leaked into compare result")
+		}
+	}
+}
+
+// TestLoadSPIDSummaries_ParityWithFileMode — серверная сводка совпадает с
+// file-mode: счётчики, границы, ошибка, мода identity с tie-break по id.
+func TestLoadSPIDSummaries_ParityWithFileMode(t *testing.T) {
+	db := testutil.Open(t)
+	var sessionID int64
+	if err := db.QueryRow(`INSERT INTO trc_sessions (file_path, file_size, total_events) VALUES ('spids-parity.trc', 10, 0) RETURNING id`).Scan(&sessionID); err != nil {
+		t.Fatal(err)
+	}
+	defer DeleteSession(context.Background(), db, sessionID)
+
+	base := time.Date(2026, 9, 14, 13, 0, 0, 0, time.UTC)
+	errCode := int32(50000)
+	rows := []compareRow{
+		{spid: 728, name: "SP:Completed", dur: 100, start: &base, app: "AppA"},
+		{spid: 728, name: "SP:Completed", dur: 0, start: &base, app: "AppB"},
+		{spid: 728, name: "RPC:Completed", dur: 50, start: &base, errCode: &errCode, app: "AppB"},
+		{spid: 728, name: "SQL:BatchCompleted", dur: 10}, // без времени и app
+		{spid: 700, name: "SP:Completed", dur: 5, app: "PeerApp"},
+		{spid: 0, name: "SP:Completed", dur: 77}, // без SPID — исключается с обеих сторон
+	}
+	insertCompareRows(t, db, sessionID, rows)
+
+	opts := SpidsOptions{SortBy: "event_count"}
+	serverRes, err := LoadSPIDSummaries(context.Background(), db, sessionID, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events := make([]TRCEvent, 0, len(rows))
+	for _, r := range rows {
+		events = append(events, r.toEvent())
+	}
+	fileRes := SummarizeSPIDs(events, opts)
+
+	if len(serverRes) != 2 || len(fileRes) != 2 {
+		t.Fatalf("server %d vs file %d spids, want 2 (events without spid excluded)", len(serverRes), len(fileRes))
+	}
+	for i := range serverRes {
+		s, f := serverRes[i], fileRes[i]
+		if s.SPID != f.SPID || s.EventCount != f.EventCount {
+			t.Fatalf("row %d: server %+v vs file %+v", i, s, f)
+		}
+		if s.SPCompletedCount != f.SPCompletedCount || s.RPCCompletedCount != f.RPCCompletedCount ||
+			s.BatchCompletedCount != f.BatchCompletedCount || s.ErrorCount != f.ErrorCount ||
+			s.MaxDurationMs != f.MaxDurationMs {
+			t.Fatalf("counters %d: server %+v vs file %+v", i, s, f)
+		}
+		if (s.FirstTime == nil) != (f.FirstTime == nil) || (s.LastTime == nil) != (f.LastTime == nil) {
+			t.Fatalf("time nullness %d: server %+v vs file %+v", i, s, f)
+		}
+		if s.FirstTime != nil && !s.FirstTime.Equal(*f.FirstTime) {
+			t.Fatalf("first_time %d: %v vs %v", i, s.FirstTime, f.FirstTime)
+		}
+		if s.ApplicationName != f.ApplicationName {
+			t.Fatalf("app %d: server %q vs file %q", i, s.ApplicationName, f.ApplicationName)
+		}
+	}
+	// мода AppA/AppB по 2 вхождения... AppA: 1 (первая строка), AppB: 2 → AppB
+	if serverRes[0].ApplicationName != "AppB" {
+		t.Fatalf("app mode = %q, want AppB (2 occurrences)", serverRes[0].ApplicationName)
+	}
+
+	// временной фильтр: только событие с start_time внутри — NULL-время исключается
+	from := base.Add(-time.Minute)
+	filtered, err := LoadSPIDSummaries(context.Background(), db, sessionID, SpidsOptions{TimeFrom: &from})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range filtered {
+		if s.SPID == 728 && s.EventCount != 3 {
+			t.Fatalf("filtered event_count = %d, want 3 (start_time only)", s.EventCount)
+		}
+	}
+
+	// LoadMaxDurationMs
+	maxDur, err := LoadMaxDurationMs(context.Background(), db, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if maxDur != 100 {
+		t.Fatalf("max duration = %d, want 100", maxDur)
+	}
+}
+
+// TestSpidsAndCompareQueryPlans — планы и тайминги сводки SPID и compare-
+// агрегации на объёмной сессии: без seq scan (индексы пригодны) и в разумное
+// время.
+func TestSpidsAndCompareQueryPlans(t *testing.T) {
+	db := testutil.Open(t)
+	var sessionID int64
+	if err := db.QueryRow(`INSERT INTO trc_sessions (file_path, file_size, total_events) VALUES ('plans-big.trc', 10, 0) RETURNING id`).Scan(&sessionID); err != nil {
+		t.Fatal(err)
+	}
+	defer DeleteSession(context.Background(), db, sessionID)
+
+	// 300K событий по 4 SPID, процедуры A..E
+	if _, err := db.Exec(`
+		INSERT INTO trc_events (session_id, event_class, event_name, spid, procedure, duration_ms, error, application_name)
+		SELECT $1, 10,
+		       CASE WHEN g % 10 = 0 THEN 'RPC:Completed' ELSE 'SP:Completed' END,
+		       700 + (g % 4),
+		       'Proc' || (g % 5),
+		       (g * 7) % 10000,
+		       CASE WHEN g % 1000 = 0 THEN 50000 ELSE NULL END,
+		       'App' || (g % 3)
+		FROM generate_series(1, 300000) AS g
+	`, sessionID); err != nil {
+		t.Fatalf("bulk insert: %v", err)
+	}
+	if _, err := db.Exec(`ANALYZE trc_events`); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// тайминги реальных функций
+	start := time.Now()
+	summaries, err := LoadSPIDSummaries(ctx, db, sessionID, SpidsOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spidsElapsed := time.Since(start)
+	if len(summaries) != 4 {
+		t.Fatalf("spids = %d, want 4", len(summaries))
+	}
+
+	start = time.Now()
+	aggRows, err := LoadProceduresAggregated(ctx, db, sessionID, AggregateOptions{
+		SPIDs:       []int{700, 701, 702},
+		GroupBySPID: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compareElapsed := time.Since(start)
+	if len(aggRows) == 0 {
+		t.Fatal("expected non-empty compare rows")
+	}
+	t.Logf("LoadSPIDSummaries: %s; LoadProceduresAggregated(GroupBySPID): %s", spidsElapsed, compareElapsed)
+	if spidsElapsed > 10*time.Second || compareElapsed > 10*time.Second {
+		t.Fatalf("too slow: spids=%s compare=%s", spidsElapsed, compareElapsed)
+	}
+
+	// планы без seq scan: запросы агрегаций используют индексы trc_events
+	if _, err := db.Exec(`SET enable_seqscan = off`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = db.Exec(`SET enable_seqscan = on`) }()
+
+	spidsQuery := `SELECT spid, count(*), min(start_time), max(start_time),
+	       count(*) FILTER (WHERE event_name = 'SP:Completed'),
+	       count(*) FILTER (WHERE error IS NOT NULL AND error <> 0),
+	       max(duration_ms)
+	FROM trc_events WHERE session_id = 1 AND spid IS NOT NULL GROUP BY spid`
+	compareQuery := `SELECT spid, procedure, count(*), sum(duration_ms), min(duration_ms), max(duration_ms)
+	FROM trc_events WHERE session_id = 1 AND event_name = ANY(ARRAY['SP:Completed'])
+	  AND procedure IS NOT NULL AND procedure <> '' AND spid = ANY(ARRAY[700,701,702]) AND spid IS NOT NULL
+	GROUP BY spid, procedure`
+	for _, q := range []string{spidsQuery, compareQuery} {
+		rows, err := db.Query(`EXPLAIN (FORMAT TEXT) ` + q)
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		var plan strings.Builder
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			plan.WriteString(line)
+			plan.WriteString("\n")
+		}
+		rows.Close()
+		if strings.Contains(plan.String(), "Seq Scan") {
+			t.Fatalf("plan uses Seq Scan:\n%s", plan.String())
+		}
+		if !strings.Contains(plan.String(), "idx_trc_events_") && !strings.Contains(plan.String(), "trc_events_pkey") {
+			t.Fatalf("plan uses no trc_events index:\n%s", plan.String())
+		}
+	}
+}
+
+// TestLoadMaxDurationMs_ZeroWhenNoDurations — все нули → 0 (недоступность).
+func TestLoadMaxDurationMs_ZeroWhenNoDurations(t *testing.T) {
+	db := testutil.Open(t)
+	var sessionID int64
+	if err := db.QueryRow(`INSERT INTO trc_sessions (file_path, file_size, total_events) VALUES ('nodur.trc', 10, 0) RETURNING id`).Scan(&sessionID); err != nil {
+		t.Fatal(err)
+	}
+	defer DeleteSession(context.Background(), db, sessionID)
+	insertCompareRows(t, db, sessionID, []compareRow{
+		{spid: 728, name: "SP:Completed", dur: 0},
+		{spid: 700, name: "SP:Completed", dur: 0},
+	})
+	maxDur, err := LoadMaxDurationMs(context.Background(), db, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if maxDur != 0 {
+		t.Fatalf("max duration = %d, want 0", maxDur)
 	}
 }

@@ -226,6 +226,8 @@ var trcTools = map[string]bool{
 	"codebase_trc_summary":    true,
 	"codebase_trc_events":     true,
 	"codebase_trc_procedures": true,
+	"codebase_trc_compare_procedures": true,
+	"codebase_trc_spids":      true,
 	"codebase_trc_tree":       true,
 	"codebase_trc_errors":     true,
 	"codebase_trc_slow":       true,
@@ -1138,6 +1140,88 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					Top:         top,
 					SortBy:      sortBy,
 					GroupBySPID: groupBySPID,
+				})
+			},
+		},
+		"codebase_trc_compare_procedures": {
+			Definition: toolDefinition{Name: "codebase_trc_compare_procedures", Description: "Answer in one call: which Top-N procedures are the most expensive in a focus SPID and how the same procedures ran in peer SPIDs. Top-N is determined by focus SPID statistics only (sort_by: total_ms default, avg_ms, max_ms, count). For each procedure returns focus metrics, per-peer metrics (missing (spid, procedure) pairs get count=0/total_ms=0 and null min/max/avg — distinguishable from a valid zero duration), peer_combined (weighted avg across all peer calls, not average of averages) and ratios avg_vs_peers/max_vs_peers/count_vs_peers (null on zero denominator). Only completed events are aggregated (default SP:Completed; pass event_names for an explicit set — durations of different levels overlap). Warnings include a notice when the trace has no duration data (count-based metrics remain usable). Uses server-side SQL aggregation when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "focus_spid": intProp("SPID whose statistics define the Top-N (positive)"), "compare_spids": intSliceProp("Non-empty list of peer SPIDs (duplicates removed, focus excluded)"), "event_names": stringSliceProp("Optional explicit set of event names to aggregate (default: SP:Completed only)"), "top": intProp("Max procedures in the ranking (default 20, max 100)"), "sort_by": stringProp("Sort metric for focus Top-N: total_ms (default), avg_ms, max_ms, count")})},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				focusSPID, err := optionalInt(args, "focus_spid")
+				if err != nil {
+					return nil, err
+				}
+				compareSPIDs, err := optionalIntSlice(args, "compare_spids")
+				if err != nil {
+					return nil, err
+				}
+				eventNames, err := optionalStringSlice(args, "event_names")
+				if err != nil {
+					return nil, err
+				}
+				top, err := optionalInt(args, "top")
+				if err != nil {
+					return nil, err
+				}
+				sortBy, err := optionalString(args, "sort_by")
+				if err != nil {
+					return nil, err
+				}
+				sessionID, err := optionalInt64(args, "session_id")
+				if err != nil {
+					return nil, err
+				}
+				filePath, err := optionalString(args, "file_path")
+				if err != nil {
+					return nil, err
+				}
+				return trcsvc.ExecuteCompareProcedures(ctx, db, trcsvc.CompareParams{
+					Source:       trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					FocusSPID:    focusSPID,
+					CompareSPIDs: compareSPIDs,
+					EventNames:   eventNames,
+					Top:          top,
+					SortBy:       sortBy,
+				})
+			},
+		},
+		"codebase_trc_spids": {
+			Definition: toolDefinition{Name: "codebase_trc_spids", Description: "Summarize SPID activity of a trc session without dumping raw events: for each SPID returns event_count, first_time/last_time (null when no event has start_time), completed counters (sp_completed_count, rpc_completed_count, batch_completed_count), error_count, max_duration_ms, and the most frequent non-empty application_name/login_name/host_name (ties resolved by the earliest event). Use this as the first overview tool after parse to decide which SPID to drill into. Optional filters: spids (subset), time_from/time_to (RFC3339 half-open interval by start_time; events without start_time fall out of a filtered summary). sort_by: event_count (default), first_time, last_time, max_duration_ms, error_count. Returns observed facts only — no unfinished flag; a warning is included when the trace has no duration data.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spids": intSliceProp("Optional subset of SPIDs to include"), "time_from": stringProp("Optional RFC3339 lower bound of start_time (inclusive)"), "time_to": stringProp("Optional RFC3339 upper bound of start_time (exclusive)"), "sort_by": stringProp("Sort: event_count (default), first_time, last_time, max_duration_ms, error_count"), "limit": intProp("Max SPIDs to return (default 100, max 1000)")})},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				spids, err := optionalIntSlice(args, "spids")
+				if err != nil {
+					return nil, err
+				}
+				timeFrom, err := optionalRFC3339(args, "time_from")
+				if err != nil {
+					return nil, err
+				}
+				timeTo, err := optionalRFC3339(args, "time_to")
+				if err != nil {
+					return nil, err
+				}
+				sortBy, err := optionalString(args, "sort_by")
+				if err != nil {
+					return nil, err
+				}
+				limit, err := optionalInt(args, "limit")
+				if err != nil {
+					return nil, err
+				}
+				sessionID, err := optionalInt64(args, "session_id")
+				if err != nil {
+					return nil, err
+				}
+				filePath, err := optionalString(args, "file_path")
+				if err != nil {
+					return nil, err
+				}
+				return trcsvc.ExecuteSpids(ctx, db, trcsvc.SpidsParams{
+					Source:   trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					SPIDs:    spids,
+					TimeFrom: timeFrom,
+					TimeTo:   timeTo,
+					SortBy:   sortBy,
+					Limit:    limit,
 				})
 			},
 		},

@@ -34,6 +34,11 @@ var (
 	trcTop           int
 	trcSortBy        string
 	trcGroupBySPID   bool
+
+	trcFocusSPID      int
+	trcCompareSPIDsRaw string
+	trcSpidsLimit     int
+	trcSpidsSortBy    string
 )
 
 var trcCmd = &cobra.Command{
@@ -48,6 +53,10 @@ Subcommands:
                --time-from/--time-to, --min-duration-ms; pagination: --after-id)
   procedures - aggregate procedure calls (default SP:Completed; filters: --spids,
                --event-names; --top, --sort, --group-by-spid)
+  compare-procedures - Top-N focus-SPID procedures vs the same procedures in peer
+               SPIDs (--focus-spid, --compare-spids; --top, --event-names, --sort)
+  spids      - SPID activity summary without raw events (--spids, --time-from,
+               --time-to, --sort, --limit)
   tree       - print call trees grouped by SPID
   errors     - print events with non-zero Error column
   slow       - print slowest events (threshold --slow-ms)
@@ -82,6 +91,20 @@ var trcProceduresCmd = &cobra.Command{
 	Short: "Aggregate events by procedure",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  runTRCProcedures,
+}
+
+var trcCompareProceduresCmd = &cobra.Command{
+	Use:   "compare-procedures [<file.trc>]",
+	Short: "Compare Top-N focus-SPID procedures against peer SPIDs",
+	Args:  cobra.MaximumNArgs(1),
+	RunE:  runTRCCompareProcedures,
+}
+
+var trcSpidsCmd = &cobra.Command{
+	Use:   "spids [<file.trc>]",
+	Short: "Summarize SPID activity without raw events",
+	Args:  cobra.MaximumNArgs(1),
+	RunE:  runTRCSpids,
 }
 
 var trcTreeCmd = &cobra.Command{
@@ -400,6 +423,120 @@ func runTRCProcedures(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runTRCCompareProcedures(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
+	db := openDB()
+	defer closeDB(db)
+
+	compareSPIDs, err := parseSPIDCSV(trcCompareSPIDsRaw, "--compare-spids")
+	if err != nil {
+		return err
+	}
+	eventNames, err := parseStringCSV(trcEventNamesRaw, "--event-names")
+	if err != nil {
+		return err
+	}
+	result, err := trcsvc.ExecuteCompareProcedures(ctx, db, trcsvc.CompareParams{
+		Source:       trcSource(args),
+		FocusSPID:    trcFocusSPID,
+		CompareSPIDs: compareSPIDs,
+		EventNames:   eventNames,
+		Top:          trcTop,
+		SortBy:       trcSortBy,
+	})
+	if err != nil {
+		return err
+	}
+	if trcOutputJSON {
+		return printJSON(result)
+	}
+	fmt.Printf("focus SPID %d vs peers %v, top %d by %s: %d procedure(s)\n\n",
+		result.FocusSPID, result.CompareSPIDs, result.Top, result.SortBy, len(result.Procedures))
+	for _, p := range result.Procedures {
+		fmt.Printf("%3d. %-45s focus: count=%-5d total=%dms avg=%.1fms\n",
+			p.Rank, p.Procedure, p.Focus.Count, p.Focus.TotalMs, p.Focus.AvgMs)
+		for _, peer := range p.Peers {
+			peerLine := fmt.Sprintf("     peer %-6d count=%-5d total=%dms", peer.SPID, peer.Count, peer.TotalMs)
+			if peer.AvgMs != nil {
+				peerLine += fmt.Sprintf(" avg=%.1fms", *peer.AvgMs)
+			} else {
+				peerLine += " avg=null"
+			}
+			fmt.Println(peerLine)
+		}
+		if p.Ratios.AvgVsPeers != nil {
+			fmt.Printf("     peer_combined: count=%d avg=%.1fms | ratios: avg_vs_peers=%.4f",
+				p.PeerCombined.Count, derefFloat(p.PeerCombined.AvgMs), *p.Ratios.AvgVsPeers)
+			if p.Ratios.CountVsPeers != nil {
+				fmt.Printf(" count_vs_peers=%.4f", *p.Ratios.CountVsPeers)
+			}
+			fmt.Println()
+		} else {
+			fmt.Printf("     peer_combined: count=%d | ratios: null (no peer calls)\n", p.PeerCombined.Count)
+		}
+	}
+	for _, w := range result.Warnings {
+		fmt.Printf("warning: %s\n", w)
+	}
+	return nil
+}
+
+func derefFloat(v *float64) float64 {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
+func runTRCSpids(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
+	db := openDB()
+	defer closeDB(db)
+
+	spids, err := parseSPIDCSV(trcSPIDsRaw, "--spids")
+	if err != nil {
+		return err
+	}
+	timeFrom, err := parseRFC3339Flag(trcTimeFrom, "--time-from")
+	if err != nil {
+		return err
+	}
+	timeTo, err := parseRFC3339Flag(trcTimeTo, "--time-to")
+	if err != nil {
+		return err
+	}
+	result, err := trcsvc.ExecuteSpids(ctx, db, trcsvc.SpidsParams{
+		Source:   trcSource(args),
+		SPIDs:    spids,
+		TimeFrom: timeFrom,
+		TimeTo:   timeTo,
+		SortBy:   trcSpidsSortBy,
+		Limit:    applyQueryLimit(trcSpidsLimit),
+	})
+	if err != nil {
+		return err
+	}
+	if trcOutputJSON {
+		return printJSON(result)
+	}
+	fmt.Printf("%d spid(s):\n\n", len(result.Spids))
+	for _, s := range result.Spids {
+		fmt.Printf("  SPID=%-6d events=%-6d SP=%-5d RPC=%-5d batch=%-5d errors=%-4d max=%dms",
+			s.SPID, s.EventCount, s.SPCompletedCount, s.RPCCompletedCount, s.BatchCompletedCount, s.ErrorCount, s.MaxDurationMs)
+		if s.FirstTime != nil {
+			fmt.Printf("  %s → %s", s.FirstTime.Format("15:04:05"), s.LastTime.Format("15:04:05"))
+		}
+		if s.ApplicationName != "" || s.LoginName != "" || s.HostName != "" {
+			fmt.Printf("  [%s|%s@%s]", s.ApplicationName, s.LoginName, s.HostName)
+		}
+		fmt.Println()
+	}
+	for _, w := range result.Warnings {
+		fmt.Printf("warning: %s\n", w)
+	}
+	return nil
+}
+
 func runTRCTree(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	db := openDB()
@@ -558,6 +695,20 @@ func init() {
 	trcProceduresCmd.Flags().StringVar(&trcSortBy, "sort", "total_ms", "sort metric: total_ms, avg_ms, max_ms, count")
 	trcProceduresCmd.Flags().BoolVar(&trcGroupBySPID, "group-by-spid", false, "group aggregates by (spid, procedure)")
 
+	trcCompareProceduresCmd.Flags().Int64Var(&trcSessionID, "session", 0, "load from saved session ID instead of file")
+	trcCompareProceduresCmd.Flags().IntVar(&trcFocusSPID, "focus-spid", 0, "SPID whose statistics define the Top-N (required)")
+	trcCompareProceduresCmd.Flags().StringVar(&trcCompareSPIDsRaw, "compare-spids", "", "comma-separated peer SPIDs (required, focus excluded)")
+	trcCompareProceduresCmd.Flags().StringVar(&trcEventNamesRaw, "event-names", "", "comma-separated event names to aggregate (default: SP:Completed only)")
+	trcCompareProceduresCmd.Flags().IntVar(&trcTop, "top", 0, "max procedures in the ranking (default 20, max 100)")
+	trcCompareProceduresCmd.Flags().StringVar(&trcSortBy, "sort", "total_ms", "focus Top-N metric: total_ms, avg_ms, max_ms, count")
+
+	trcSpidsCmd.Flags().Int64Var(&trcSessionID, "session", 0, "load from saved session ID instead of file")
+	trcSpidsCmd.Flags().StringVar(&trcSPIDsRaw, "spids", "", "comma-separated subset of SPIDs")
+	trcSpidsCmd.Flags().StringVar(&trcTimeFrom, "time-from", "", "RFC3339 lower bound of start_time (inclusive)")
+	trcSpidsCmd.Flags().StringVar(&trcTimeTo, "time-to", "", "RFC3339 upper bound of start_time (exclusive)")
+	trcSpidsCmd.Flags().StringVar(&trcSpidsSortBy, "sort", "event_count", "sort: event_count, first_time, last_time, max_duration_ms, error_count")
+	trcSpidsCmd.Flags().IntVar(&trcSpidsLimit, "limit", 100, "max SPIDs to return (max 1000)")
+
 	trcTreeCmd.Flags().Int64Var(&trcSessionID, "session", 0, "load from saved session ID instead of file")
 	trcTreeCmd.Flags().IntVar(&trcSPID, "spid", 0, "filter by SPID (0 = all)")
 	trcTreeCmd.Flags().IntVar(&trcMaxDepth, "max-depth", 0, "maximum tree depth (0 = unlimited)")
@@ -581,6 +732,8 @@ func init() {
 	trcCmd.AddCommand(trcSummaryCmd)
 	trcCmd.AddCommand(trcEventsCmd)
 	trcCmd.AddCommand(trcProceduresCmd)
+	trcCmd.AddCommand(trcCompareProceduresCmd)
+	trcCmd.AddCommand(trcSpidsCmd)
 	trcCmd.AddCommand(trcTreeCmd)
 	trcCmd.AddCommand(trcErrorsCmd)
 	trcCmd.AddCommand(trcSlowCmd)

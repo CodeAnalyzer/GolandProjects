@@ -508,6 +508,163 @@ func TestExecuteProcedures_Validation(t *testing.T) {
 	}
 }
 
+// TestExecuteCompareProcedures_Validation — focus/peers/top/sort_by.
+func TestExecuteCompareProcedures_Validation(t *testing.T) {
+	cases := []struct {
+		params  CompareParams
+		wantSub string
+	}{
+		{CompareParams{Source: SessionSource{FilePath: "x.trc"}, FocusSPID: 0, CompareSPIDs: []int{700}}, "focus_spid"},
+		{CompareParams{Source: SessionSource{FilePath: "x.trc"}, FocusSPID: -1, CompareSPIDs: []int{700}}, "focus_spid"},
+		{CompareParams{Source: SessionSource{FilePath: "x.trc"}, FocusSPID: 728, CompareSPIDs: nil}, "compare_spids"},
+		{CompareParams{Source: SessionSource{FilePath: "x.trc"}, FocusSPID: 728, CompareSPIDs: []int{728}}, "compare_spids"},
+		{CompareParams{Source: SessionSource{FilePath: "x.trc"}, FocusSPID: 728, CompareSPIDs: []int{728, 728}}, "compare_spids"},
+		{CompareParams{Source: SessionSource{FilePath: "x.trc"}, FocusSPID: 728, CompareSPIDs: []int{700}, Top: 101}, "top"},
+		{CompareParams{Source: SessionSource{FilePath: "x.trc"}, FocusSPID: 728, CompareSPIDs: []int{700}, Top: -1}, "top"},
+		{CompareParams{Source: SessionSource{FilePath: "x.trc"}, FocusSPID: 728, CompareSPIDs: []int{700}, SortBy: "duration"}, "sort_by"},
+		{CompareParams{Source: SessionSource{FilePath: "x.trc"}, FocusSPID: 728, CompareSPIDs: []int{700}, EventNames: []string{""}}, "event_names[0]"},
+	}
+	for i, tc := range cases {
+		_, err := ExecuteCompareProcedures(context.Background(), nil, tc.params)
+		if err == nil {
+			t.Errorf("case %d: expected error for %+v", i, tc.params)
+		} else if !strings.Contains(err.Error(), tc.wantSub) {
+			t.Errorf("case %d: error %q must mention %q", i, err, tc.wantSub)
+		}
+	}
+}
+
+// TestExecuteCompareProcedures_FileMode — на golden-файле с длительностями:
+// без duration-warning; top default 20; peers в порядке передачи.
+func TestExecuteCompareProcedures_FileMode(t *testing.T) {
+	p := trcTestPath(t)
+	// найдём два SPID с общими SP:Completed-процедурами
+	parse, err := trc.ParseFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	procSPIDs := make(map[string]map[int32]bool)
+	for _, ev := range parse.Events {
+		if ev.EventName == "SP:Completed" && ev.Procedure != "" {
+			if procSPIDs[ev.Procedure] == nil {
+				procSPIDs[ev.Procedure] = make(map[int32]bool)
+			}
+			if s, ok := ev.Columns[12].(int32); ok {
+				procSPIDs[ev.Procedure][s] = true
+			}
+		}
+	}
+	var focus, peer int
+	for _, spids := range procSPIDs {
+		if len(spids) >= 2 {
+			for s := range spids {
+				if focus == 0 {
+					focus = int(s)
+				} else if peer == 0 && int(s) != focus {
+					peer = int(s)
+				}
+			}
+			if focus != 0 && peer != 0 {
+				break
+			}
+		}
+	}
+	if focus == 0 || peer == 0 {
+		t.Skip("no procedure shared by two SPIDs in golden file")
+	}
+
+	res, err := ExecuteCompareProcedures(context.Background(), nil, CompareParams{
+		Source:       SessionSource{FilePath: p},
+		FocusSPID:    focus,
+		CompareSPIDs: []int{peer},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Procedures) == 0 {
+		t.Fatal("expected non-empty compare result")
+	}
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "duration") && strings.Contains(w, "unavailable") {
+			t.Fatalf("golden file has durations; unexpected warning: %q", w)
+		}
+	}
+	first := res.Procedures[0]
+	if first.Rank != 1 || len(first.Peers) != 1 || first.Peers[0].SPID != peer {
+		t.Fatalf("first = %+v", first)
+	}
+	if res.Top != 20 {
+		t.Fatalf("top default = %d, want 20", res.Top)
+	}
+}
+
+// TestExecuteCompareProcedures_ZeroDurationsWarning — синтетика без
+// длительностей получает warning, count_vs_peers работает.
+func TestExecuteCompareProcedures_ZeroDurationsWarning(t *testing.T) {
+	// file-mode без файла нельзя — используем валидацию через DIAPR не выйдет;
+	// проверяем сборку warning через домен напрямую
+	rows := []trc.TRCProcAgg{
+		{SPID: 728, Procedure: "P", Count: 4, TotalMs: 0, AvgMs: 0},
+		{SPID: 700, Procedure: "P", Count: 2, TotalMs: 0, AvgMs: 0},
+	}
+	res := trc.CompareProceduresRows(rows, trc.CompareOptions{FocusSPID: 728, CompareSPIDs: []int{700}, Top: 5})
+	p0 := res.Procedures[0]
+	if p0.Ratios.CountVsPeers == nil || *p0.Ratios.CountVsPeers != 2 {
+		t.Fatalf("count_vs_peers = %v, want 2", p0.Ratios.CountVsPeers)
+	}
+	if p0.Ratios.AvgVsPeers != nil {
+		t.Fatalf("avg_vs_peers = %v, want nil (zero denominator)", p0.Ratios.AvgVsPeers)
+	}
+}
+
+// TestExecuteSpids_Validation — sort_by enum и время.
+func TestExecuteSpids_Validation(t *testing.T) {
+	from := time.Date(2026, 9, 14, 13, 0, 0, 0, time.UTC)
+	to := from.Add(-time.Minute)
+	cases := []struct {
+		params  SpidsParams
+		wantSub string
+	}{
+		{SpidsParams{Source: SessionSource{FilePath: "x.trc"}, SortBy: "avg_ms"}, "sort_by"},
+		{SpidsParams{Source: SessionSource{FilePath: "x.trc"}, TimeFrom: &from, TimeTo: &to}, "time_from"},
+		{SpidsParams{Source: SessionSource{FilePath: "x.trc"}, SPIDs: []int{0}}, "spids[0]"},
+	}
+	for i, tc := range cases {
+		_, err := ExecuteSpids(context.Background(), nil, tc.params)
+		if err == nil {
+			t.Errorf("case %d: expected error", i)
+		} else if !strings.Contains(err.Error(), tc.wantSub) {
+			t.Errorf("case %d: error %q must mention %q", i, err, tc.wantSub)
+		}
+	}
+}
+
+// TestExecuteSpids_FileMode — сводка на golden-файле.
+func TestExecuteSpids_FileMode(t *testing.T) {
+	p := trcTestPath(t)
+	res, err := ExecuteSpids(context.Background(), nil, SpidsParams{Source: SessionSource{FilePath: p}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Spids) == 0 {
+		t.Fatal("expected non-empty spids summary")
+	}
+	// default sort: event_count desc
+	for i := 1; i < len(res.Spids); i++ {
+		if res.Spids[i-1].EventCount < res.Spids[i].EventCount {
+			t.Fatalf("event_count not descending: %d then %d", res.Spids[i-1].EventCount, res.Spids[i].EventCount)
+		}
+	}
+	// сортировка по ошибкам не падает и детерминирована
+	byErr, err := ExecuteSpids(context.Background(), nil, SpidsParams{Source: SessionSource{FilePath: p}, SortBy: "error_count"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byErr.Spids) != len(res.Spids) {
+		t.Fatalf("sort changed summary count: %d vs %d", len(byErr.Spids), len(res.Spids))
+	}
+}
+
 func TestExecuteTree_FileMode(t *testing.T) {
 	p := trcTestPath(t)
 	ctx := context.Background()

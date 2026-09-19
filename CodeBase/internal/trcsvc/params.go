@@ -109,3 +109,51 @@ func normalizeSortBy(sortBy string) (string, error) {
 		return "", fmt.Errorf("sort_by must be one of total_ms, avg_ms, max_ms, count, got %q", sortBy)
 	}
 }
+
+const (
+	defaultCompareTop = 20
+	maxCompareTop     = 100
+)
+
+// normalizeCompareTop: 0 → default 20; 1..100 допустимо.
+func normalizeCompareTop(top int) (int, error) {
+	if top == 0 {
+		return defaultCompareTop, nil
+	}
+	if top < 0 || top > maxCompareTop {
+		return 0, fmt.Errorf("top must be between 1 and %d (0 = default %d), got %d", maxCompareTop, defaultCompareTop, top)
+	}
+	return top, nil
+}
+
+// normalizeCompareSPIDs дедуплицирует peer-список с сохранением порядка,
+// удаляет focus и требует непустой результат.
+func normalizeCompareSPIDs(focusSPID int, compareSPIDs []int) ([]int, error) {
+	spids, err := normalizeSPIDs(compareSPIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]int, 0, len(spids))
+	for _, s := range spids {
+		if s == focusSPID {
+			continue
+		}
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("compare_spids must contain at least one SPID other than focus_spid")
+	}
+	return out, nil
+}
+
+// normalizeSpidsSortBy проверяет enum сортировки сводки SPID; "" → event_count.
+func normalizeSpidsSortBy(sortBy string) (string, error) {
+	switch sortBy {
+	case "":
+		return "event_count", nil
+	case "first_time", "last_time", "event_count", "max_duration_ms", "error_count":
+		return sortBy, nil
+	default:
+		return "", fmt.Errorf("sort_by must be one of first_time, last_time, event_count, max_duration_ms, error_count, got %q", sortBy)
+	}
+}

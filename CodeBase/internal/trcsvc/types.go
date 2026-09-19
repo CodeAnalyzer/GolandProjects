@@ -190,3 +190,46 @@ type ErrorsParams struct {
 	Source SessionSource
 	Limit  int
 }
+
+// CompareParams — параметры ExecuteCompareProcedures: focus_spid определяет
+// Top-N, compare_spids — peer-список (focus удаляется при нормализации),
+// event_names при nil — SP:Completed, top default 20 max 100.
+type CompareParams struct {
+	Source       SessionSource
+	FocusSPID    int
+	CompareSPIDs []int
+	EventNames   []string
+	Top          int
+	SortBy       string
+}
+
+// CompareResult — сравнение focus/peer с предупреждениями контракта.
+type CompareResult struct {
+	trc.CompareResult
+	Warnings []string `json:"warnings"`
+}
+
+// SpidsParams — параметры ExecuteSpids: опциональный фильтр подмножества,
+// временной полуинтервал, сортировка (default event_count), limit default 100.
+type SpidsParams struct {
+	Source   SessionSource
+	SPIDs    []int
+	TimeFrom *time.Time
+	TimeTo   *time.Time
+	SortBy   string
+	Limit    int
+}
+
+// SpidsResult — сводка активности SPID с предупреждениями.
+type SpidsResult struct {
+	Spids    []trc.SPIDSummary `json:"spids"`
+	Warnings []string          `json:"warnings"`
+}
+
+// Предупреждения контрактов compare/spids.
+const (
+	warningCompletedOnly  = "Only completed events are included; unfinished calls are absent"
+	warningElapsedNested  = "Elapsed totals include child execution time and are not wall-clock totals"
+	warningNoDurations    = "Trace has no duration data (captured without Duration column); duration metrics are unavailable — use count-based metrics instead"
+	warningUnfinishedHint = "Absence of SQL:BatchCompleted does not prove that a SPID is unfinished"
+)

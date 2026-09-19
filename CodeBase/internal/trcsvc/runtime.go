@@ -565,3 +565,117 @@ func FileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
+
+// ExecuteCompareProcedures сравнивает Top-N процедур focus SPID с теми же
+// процедурами в peer SPID: saved-session — серверные агрегаты, file-mode —
+// в памяти; результат собирается общей функцией CompareProceduresRows.
+func ExecuteCompareProcedures(ctx context.Context, db *store.DB, p CompareParams) (*CompareResult, error) {
+	if p.FocusSPID <= 0 {
+		return nil, fmt.Errorf("focus_spid must be positive, got %d", p.FocusSPID)
+	}
+	peers, err := normalizeCompareSPIDs(p.FocusSPID, p.CompareSPIDs)
+	if err != nil {
+		return nil, err
+	}
+	eventNames, err := normalizeEventNames(p.EventNames)
+	if err != nil {
+		return nil, err
+	}
+	top, err := normalizeCompareTop(p.Top)
+	if err != nil {
+		return nil, err
+	}
+	sortBy, err := normalizeSortBy(p.SortBy)
+	if err != nil {
+		return nil, err
+	}
+	opts := trc.CompareOptions{
+		FocusSPID:    p.FocusSPID,
+		CompareSPIDs: peers,
+		EventNames:   eventNames,
+		Top:          top,
+		SortBy:       sortBy,
+	}
+
+	var result trc.CompareResult
+	var maxDuration int64
+	if p.Source.SessionID > 0 && db != nil {
+		all := append([]int{opts.FocusSPID}, opts.CompareSPIDs...)
+		rows, err := trc.LoadProceduresAggregated(ctx, db, p.Source.SessionID, trc.AggregateOptions{
+			EventNames:  opts.EventNames,
+			SPIDs:       all,
+			GroupBySPID: true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		result = trc.CompareProceduresRows(rows, opts)
+		maxDuration, err = trc.LoadMaxDurationMs(ctx, db, p.Source.SessionID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		events, _, err := resolveSession(ctx, db, p.Source)
+		if err != nil {
+			return nil, err
+		}
+		result = trc.CompareProcedures(events, opts)
+		maxDuration = trc.MaxDurationMsOfEvents(events)
+	}
+
+	warnings := []string{warningCompletedOnly, warningElapsedNested}
+	if maxDuration == 0 {
+		warnings = append(warnings, warningNoDurations)
+	}
+	return &CompareResult{CompareResult: result, Warnings: warnings}, nil
+}
+
+// ExecuteSpids возвращает сводку активности SPID без выгрузки сырых событий:
+// saved-session — серверно, file-mode — в памяти.
+func ExecuteSpids(ctx context.Context, db *store.DB, p SpidsParams) (*SpidsResult, error) {
+	spids, err := normalizeSPIDs(p.SPIDs)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateTimeRange(p.TimeFrom, p.TimeTo); err != nil {
+		return nil, err
+	}
+	sortBy, err := normalizeSpidsSortBy(p.SortBy)
+	if err != nil {
+		return nil, err
+	}
+	limit := normalizeLimit(p.Limit)
+	opts := trc.SpidsOptions{
+		SPIDs:    spids,
+		TimeFrom: p.TimeFrom,
+		TimeTo:   p.TimeTo,
+		SortBy:   sortBy,
+		Limit:    limit,
+	}
+
+	var summaries []trc.SPIDSummary
+	var maxDuration int64
+	if p.Source.SessionID > 0 && db != nil {
+		summaries, err = trc.LoadSPIDSummaries(ctx, db, p.Source.SessionID, opts)
+		if err != nil {
+			return nil, err
+		}
+		maxDuration, err = trc.LoadMaxDurationMs(ctx, db, p.Source.SessionID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		events, _, err := resolveSession(ctx, db, p.Source)
+		if err != nil {
+			return nil, err
+		}
+		summaries = trc.SummarizeSPIDs(events, opts)
+		maxDuration = trc.MaxDurationMsOfEvents(events)
+	}
+
+	warnings := []string{warningUnfinishedHint}
+	if maxDuration == 0 {
+		warnings = append(warnings, warningNoDurations)
+	}
+	return &SpidsResult{Spids: summaries, Warnings: warnings}, nil
+}
