@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/trc"
@@ -141,8 +143,8 @@ func TestExecuteEvents_FileMode(t *testing.T) {
 	if result.Limit != 10 {
 		t.Errorf("Limit = %d, want 10", result.Limit)
 	}
-	if result.TotalCount <= 0 {
-		t.Errorf("TotalCount = %d, want > 0", result.TotalCount)
+	if result.TotalCount == nil || *result.TotalCount <= 0 {
+		t.Errorf("TotalCount = %v, want > 0", result.TotalCount)
 	}
 	if result.ReturnedCount != 10 {
 		t.Errorf("ReturnedCount = %d, want 10", result.ReturnedCount)
@@ -150,11 +152,23 @@ func TestExecuteEvents_FileMode(t *testing.T) {
 	if result.ReturnedCount != len(result.Events) {
 		t.Errorf("ReturnedCount = %d, want %d", result.ReturnedCount, len(result.Events))
 	}
-	if result.FilteredCount != result.TotalCount {
-		t.Errorf("FilteredCount = %d, want TotalCount %d", result.FilteredCount, result.TotalCount)
+	if result.FilteredCount != *result.TotalCount {
+		t.Errorf("FilteredCount = %d, want TotalCount %d", result.FilteredCount, *result.TotalCount)
 	}
 	if result.FilteredCount <= result.ReturnedCount {
 		t.Errorf("FilteredCount = %d, want > ReturnedCount %d", result.FilteredCount, result.ReturnedCount)
+	}
+	// события страницы несут логический id (EventIndex+1)
+	for i, ev := range result.Events {
+		if ev.StoreID <= 0 {
+			t.Fatalf("event %d StoreID = %d, want > 0", i, ev.StoreID)
+		}
+	}
+	if !result.HasMore {
+		t.Error("HasMore = false, want true (filtered > limit)")
+	}
+	if result.NextAfterID != result.Events[len(result.Events)-1].StoreID {
+		t.Errorf("NextAfterID = %d, want StoreID of last event %d", result.NextAfterID, result.Events[len(result.Events)-1].StoreID)
 	}
 }
 
@@ -162,9 +176,9 @@ func TestExecuteEvents_FileMode_WithEventNameFilter(t *testing.T) {
 	p := trcTestPath(t)
 	ctx := context.Background()
 	result, err := ExecuteEvents(ctx, nil, EventsParams{
-		Source:    SessionSource{FilePath: p},
-		EventName: "RPC:Completed",
-		Limit:     100,
+		Source:     SessionSource{FilePath: p},
+		EventNames: []string{"RPC:Completed"},
+		Limit:      100,
 	})
 	if err != nil {
 		t.Fatalf("ExecuteEvents error: %v", err)
@@ -188,30 +202,309 @@ func TestExecuteEvents_FileMode_WithEventNameFilter(t *testing.T) {
 func TestExecuteEvents_FileMode_EmptyResult(t *testing.T) {
 	p := trcTestPath(t)
 	result, err := ExecuteEvents(context.Background(), nil, EventsParams{
-		Source:    SessionSource{FilePath: p},
-		EventName: "EventNameThatDoesNotExistInGolden",
-		Limit:     10,
+		Source:     SessionSource{FilePath: p},
+		EventNames: []string{"EventNameThatDoesNotExistInGolden"},
+		Limit:      10,
 	})
 	if err != nil {
 		t.Fatalf("ExecuteEvents error: %v", err)
 	}
-	if result.TotalCount <= 0 {
-		t.Fatalf("TotalCount = %d, want > 0", result.TotalCount)
+	if result.TotalCount == nil || *result.TotalCount <= 0 {
+		t.Fatalf("TotalCount = %v, want > 0", result.TotalCount)
 	}
 	if result.FilteredCount != 0 || result.ReturnedCount != 0 || len(result.Events) != 0 {
 		t.Fatalf("got filtered=%d returned=%d len=%d, want zeroes", result.FilteredCount, result.ReturnedCount, len(result.Events))
+	}
+	if result.HasMore || result.NextAfterID != 0 {
+		t.Fatalf("got has_more=%v next=%d, want false/0", result.HasMore, result.NextAfterID)
+	}
+}
+
+// TestExecuteEvents_FileMode_Pagination — последовательное чтение по курсору
+// EventIndex+1: страницы не пересекаются, не теряют события, filtered_count
+// стабилен, total_count отсутствует на страницах продолжения.
+func TestExecuteEvents_FileMode_Pagination(t *testing.T) {
+	p := trcTestPath(t)
+	ctx := context.Background()
+
+	first, err := ExecuteEvents(ctx, nil, EventsParams{Source: SessionSource{FilePath: p}, Limit: 5})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.TotalCount == nil {
+		t.Fatal("first page: TotalCount must be set")
+	}
+	if !first.HasMore {
+		t.Fatal("first page: HasMore expected")
+	}
+
+	seen := make(map[int64]bool)
+	for _, ev := range first.Events {
+		if seen[ev.StoreID] {
+			t.Fatalf("duplicate id %d on first page", ev.StoreID)
+		}
+		seen[ev.StoreID] = true
+	}
+
+	pages := 1
+	cursor := first.NextAfterID
+	filtered := first.FilteredCount
+	for {
+		page, err := ExecuteEvents(ctx, nil, EventsParams{
+			Source:  SessionSource{FilePath: p},
+			AfterID: &cursor,
+			Limit:   5,
+		})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages+1, err)
+		}
+		pages++
+		if page.TotalCount != nil {
+			t.Fatal("continuation page must not contain total_count")
+		}
+		if page.FilteredCount != filtered {
+			t.Fatalf("filtered_count changed between pages: %d != %d", page.FilteredCount, filtered)
+		}
+		for _, ev := range page.Events {
+			if seen[ev.StoreID] {
+				t.Fatalf("duplicate id %d across pages", ev.StoreID)
+			}
+			seen[ev.StoreID] = true
+		}
+		if !page.HasMore {
+			if page.NextAfterID != 0 {
+				t.Fatalf("last page next_after_id = %d, want 0", page.NextAfterID)
+			}
+			break
+		}
+		cursor = page.NextAfterID
+		if pages > 1000 {
+			t.Fatal("pagination does not terminate")
+		}
+	}
+	if len(seen) != filtered {
+		t.Fatalf("collected %d unique events, want filtered_count %d", len(seen), filtered)
+	}
+}
+
+// TestExecuteEvents_FileMode_ShortFormat — short-формат возвращает те же ID,
+// порядок и число событий, что и full, но без params/columns.
+func TestExecuteEvents_FileMode_ShortFormat(t *testing.T) {
+	p := trcTestPath(t)
+	ctx := context.Background()
+	full, err := ExecuteEvents(ctx, nil, EventsParams{Source: SessionSource{FilePath: p}, Limit: 7})
+	if err != nil {
+		t.Fatalf("full: %v", err)
+	}
+	short, err := ExecuteEvents(ctx, nil, EventsParams{Source: SessionSource{FilePath: p}, Limit: 7, Format: "short"})
+	if err != nil {
+		t.Fatalf("short: %v", err)
+	}
+	if len(short.Views) != len(full.Events) {
+		t.Fatalf("short len = %d, want full len %d", len(short.Views), len(full.Events))
+	}
+	if !short.Short || short.Events != nil {
+		t.Fatal("short result must be marked Short without full events")
+	}
+	for i := range full.Events {
+		if short.Views[i].ID != full.Events[i].StoreID {
+			t.Errorf("view %d ID = %d, want %d", i, short.Views[i].ID, full.Events[i].StoreID)
+		}
+		if short.Views[i].EventName != full.Events[i].EventName {
+			t.Errorf("view %d EventName = %q, want %q", i, short.Views[i].EventName, full.Events[i].EventName)
+		}
+		if short.Views[i].DurationMs != full.Events[i].DurationMs {
+			t.Errorf("view %d DurationMs = %d, want %d", i, short.Views[i].DurationMs, full.Events[i].DurationMs)
+		}
+	}
+}
+
+// TestExecuteEvents_FileMode_Filters — множественные SPID, имена событий,
+// временной полуинтервал и минимальная длительность в file-mode.
+func TestExecuteEvents_FileMode_Filters(t *testing.T) {
+	// Синтетический набор: фильтры применяются функцией eventMatchesFilter,
+	// используемой ExecuteEvents для file-mode.
+	base := time.Date(2026, 9, 14, 13, 0, 0, 0, time.UTC)
+	mk := func(minute int) (start, end time.Time) {
+		start = base.Add(time.Duration(minute) * time.Minute)
+		end = start.Add(30 * time.Second)
+		return
+	}
+	s1, e1 := mk(0)
+	s2, e2 := mk(15)
+	s3, e3 := mk(45)
+
+	events := []trc.TRCEvent{
+		{EventName: "SP:Completed", Procedure: "ProcA", DurationMs: 100, Columns: map[int]any{12: int32(728), 14: toSystemTime(t, s1), 15: toSystemTime(t, e1)}},
+		{EventName: "RPC:Completed", Procedure: "ProcB", DurationMs: 10, Columns: map[int]any{12: int32(700), 14: toSystemTime(t, s2), 15: toSystemTime(t, e2)}},
+		{EventName: "SP:Completed", Procedure: "ProcC", DurationMs: 900, Columns: map[int]any{12: int32(728), 14: toSystemTime(t, s3), 15: toSystemTime(t, e3)}},
+		{EventName: "SP:Completed", Procedure: "ProcD", DurationMs: 5}, // без SPID и времени
+	}
+
+	from := base.Add(10 * time.Minute)
+	to := base.Add(60 * time.Minute)
+	minDur := int64(50)
+
+	f := trc.TRCEventFilter{
+		SPIDs:         []int{728},
+		EventNames:    []string{"SP:Completed", "RPC:Completed"},
+		TimeFrom:      &from,
+		TimeTo:        &to,
+		MinDurationMs: &minDur,
+	}
+	var matched []trc.TRCEvent
+	for _, ev := range events {
+		if eventMatchesFilter(ev, f) {
+			matched = append(matched, ev)
+		}
+	}
+	// Проходит только третье событие: SPID 728, SP:Completed, start в [from;to), 900 >= 50
+	if len(matched) != 1 || matched[0].Procedure != "ProcC" {
+		t.Fatalf("got %+v, want only ProcC", matched)
+	}
+
+	// NULL start_time не попадает в заданный временной диапазон
+	timeOnly := trc.TRCEventFilter{TimeFrom: &from, TimeTo: &to}
+	if eventMatchesFilter(events[3], timeOnly) {
+		t.Fatal("event without start_time must not match time range")
+	}
+	if eventMatchesFilter(events[3], trc.TRCEventFilter{SPIDs: []int{728}}) {
+		t.Fatal("event without spid must not match spids filter")
+	}
+	// без фильтров — все события
+	all := trc.TRCEventFilter{}
+	count := 0
+	for _, ev := range events {
+		if eventMatchesFilter(ev, all) {
+			count++
+		}
+	}
+	if count != len(events) {
+		t.Fatalf("unfiltered matched %d, want %d", count, len(events))
+	}
+}
+
+func toSystemTime(t *testing.T, ts time.Time) trc.SystemTime {
+	t.Helper()
+	return trc.SystemTimeFromLocalParts(ts)
+}
+
+// TestExecuteEvents_Validation — некорректные параметры возвращают ошибку
+// с именем параметра до обращения к источнику.
+func TestExecuteEvents_Validation(t *testing.T) {
+	negative := int64(-1)
+	from := time.Date(2026, 9, 14, 13, 0, 0, 0, time.UTC)
+	to := from.Add(-time.Minute)
+
+	cases := []EventsParams{
+		{Source: SessionSource{FilePath: "x.trc"}, SPIDs: []int{728, 0}},
+		{Source: SessionSource{FilePath: "x.trc"}, SPIDs: []int{-1}},
+		{Source: SessionSource{FilePath: "x.trc"}, EventNames: []string{"SP:Completed", ""}},
+		{Source: SessionSource{FilePath: "x.trc"}, TimeFrom: &from, TimeTo: &to},
+		{Source: SessionSource{FilePath: "x.trc"}, TimeFrom: &from, TimeTo: &from},
+		{Source: SessionSource{FilePath: "x.trc"}, MinDurationMs: &negative},
+		{Source: SessionSource{FilePath: "x.trc"}, AfterID: &negative},
+		{Source: SessionSource{FilePath: "x.trc"}, Format: "compact"},
+	}
+	substrs := []string{"spids[1]", "spids[0]", "event_names[1]", "time_from", "time_from", "min_duration_ms", "after_id", "format"}
+	for i, p := range cases {
+		_, err := ExecuteEvents(context.Background(), nil, p)
+		if err == nil {
+			t.Errorf("case %d: expected error for %+v", i, p)
+		} else if !strings.Contains(err.Error(), substrs[i]) {
+			t.Errorf("case %d: error %q must mention %q", i, err, substrs[i])
+		}
+	}
+}
+
+// TestExecuteEvents_Dedup — дубликаты SPID и имён событий удаляются с
+// сохранением порядка первого появления (фильтр эквивалентен дедуплицированному).
+func TestExecuteEvents_Dedup(t *testing.T) {
+	spids, err := normalizeSPIDs([]int{700, 728, 700})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(spids, []int{700, 728}) {
+		t.Fatalf("spids = %v, want [700 728]", spids)
+	}
+	names, err := normalizeEventNames([]string{"SP:Completed", "RPC:Completed", "SP:Completed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(names, []string{"SP:Completed", "RPC:Completed"}) {
+		t.Fatalf("names = %v, want [SP:Completed RPC:Completed]", names)
 	}
 }
 
 func TestExecuteProcedures_FileMode(t *testing.T) {
 	p := trcTestPath(t)
 	ctx := context.Background()
-	result, err := ExecuteProcedures(ctx, nil, SessionSource{FilePath: p})
+	result, err := ExecuteProcedures(ctx, nil, ProceduresParams{Source: SessionSource{FilePath: p}})
 	if err != nil {
 		t.Fatalf("ExecuteProcedures error: %v", err)
 	}
 	if result.Count <= 0 {
 		t.Errorf("Count = %d, want > 0", result.Count)
+	}
+}
+
+// TestExecuteProcedures_FileMode_Params — top/sort/group_by_spid/event_names
+// в file-mode.
+func TestExecuteProcedures_FileMode_Params(t *testing.T) {
+	p := trcTestPath(t)
+	ctx := context.Background()
+	all, err := ExecuteProcedures(ctx, nil, ProceduresParams{Source: SessionSource{FilePath: p}})
+	if err != nil {
+		t.Fatalf("ExecuteProcedures error: %v", err)
+	}
+	if all.Count < 2 {
+		t.Skip("test file has fewer than 2 procedures")
+	}
+
+	top, err := ExecuteProcedures(ctx, nil, ProceduresParams{Source: SessionSource{FilePath: p}, Top: 1})
+	if err != nil {
+		t.Fatalf("ExecuteProcedures top: %v", err)
+	}
+	if top.Count != 1 || top.Procedures[0].Procedure != all.Procedures[0].Procedure {
+		t.Fatalf("top=1 = %+v, want first of all: %+v", top.Procedures, all.Procedures[0])
+	}
+
+	avg, err := ExecuteProcedures(ctx, nil, ProceduresParams{Source: SessionSource{FilePath: p}, SortBy: "avg_ms"})
+	if err != nil {
+		t.Fatalf("ExecuteProcedures sort: %v", err)
+	}
+	for i := 1; i < len(avg.Procedures); i++ {
+		if avg.Procedures[i-1].AvgMs < avg.Procedures[i].AvgMs {
+			t.Fatalf("avg_ms not descending: %v then %v", avg.Procedures[i-1].AvgMs, avg.Procedures[i].AvgMs)
+		}
+	}
+
+	grouped, err := ExecuteProcedures(ctx, nil, ProceduresParams{Source: SessionSource{FilePath: p}, GroupBySPID: true})
+	if err != nil {
+		t.Fatalf("ExecuteProcedures group: %v", err)
+	}
+	if grouped.Count > 0 && grouped.Procedures[0].SPID == 0 {
+		t.Fatal("grouped aggregates must carry positive SPID")
+	}
+}
+
+// TestExecuteProcedures_Validation — top за пределами 0..1000 и неизвестный
+// sort_by возвращают ошибку с именем параметра.
+func TestExecuteProcedures_Validation(t *testing.T) {
+	cases := []ProceduresParams{
+		{Source: SessionSource{FilePath: "x.trc"}, Top: 1001},
+		{Source: SessionSource{FilePath: "x.trc"}, Top: -1},
+		{Source: SessionSource{FilePath: "x.trc"}, SortBy: "duration"},
+		{Source: SessionSource{FilePath: "x.trc"}, EventNames: []string{""}},
+	}
+	substrs := []string{"top", "top", "sort_by", "event_names[0]"}
+	for i, p := range cases {
+		_, err := ExecuteProcedures(context.Background(), nil, p)
+		if err == nil {
+			t.Errorf("case %d: expected error for %+v", i, p)
+		} else if !strings.Contains(err.Error(), substrs[i]) {
+			t.Errorf("case %d: error %q must mention %q", i, err, substrs[i])
+		}
 	}
 }
 
@@ -236,7 +529,7 @@ func TestExecuteTree_Procedure(t *testing.T) {
 	ctx := context.Background()
 
 	// First get procedures to find a real one.
-	procResult, err := ExecuteProcedures(ctx, nil, SessionSource{FilePath: p})
+	procResult, err := ExecuteProcedures(ctx, nil, ProceduresParams{Source: SessionSource{FilePath: p}})
 	if err != nil {
 		t.Fatalf("ExecuteProcedures error: %v", err)
 	}

@@ -4,6 +4,7 @@ package store_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -53,6 +54,7 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		"idx_symbols_symbol_name_type_lower",
 		"idx_rti_calls_session_proc",
 		"idx_trc_events_session_proc",
+		"idx_trc_events_session_spid_id",
 		"idx_spec_capabilities_name_lower",
 		"idx_spec_capabilities_config_name_unique",
 		"idx_spec_capabilities_config",
@@ -106,6 +108,7 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		"idx_relations_relation_type",
 		"idx_rti_calls_session_id",
 		"idx_trc_events_session_id",
+		"idx_trc_events_session_spid",
 		"idx_api_contracts_name_kind",
 		"idx_symbols_symbol_name_lower",
 	}
@@ -374,6 +377,85 @@ func TestInitSchema_BackfillsSpecUsecaseStepFileID(t *testing.T) {
 	}
 	if !notNull || !cascade {
 		t.Fatalf("invalid file_id migration: notNull=%v cascade=%v", notNull, cascade)
+	}
+}
+
+// TestTRCEventsSpidIDIndexSupportsKeysetPagination — индекс
+// idx_trc_events_session_spid_id (session_id, spid, id) существует и
+// обслуживает keyset-пагинацию по SPID (план запроса использует индекс).
+func TestTRCEventsSpidIDIndexSupportsKeysetPagination(t *testing.T) {
+	db := testutil.Open(t)
+
+	var sessionID int64
+	if err := db.QueryRow(`INSERT INTO trc_sessions (file_path, file_size, total_events) VALUES ('idx-test.trc', 10, 0) RETURNING id`).Scan(&sessionID); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	defer func() {
+		_, _ = db.Exec(`DELETE FROM trc_sessions WHERE id = $1`, sessionID)
+	}()
+
+	// Объёмная вставка (500K событий; SPID 728/700 — по ~0.4%, «фоновый» SPID 999
+	// — остальные), чтобы keyset-фильтр по SPID был выборочным и планировщик
+	// выбирал индекс по статистике.
+	if _, err := db.Exec(`
+		INSERT INTO trc_events (session_id, event_class, event_name, spid, procedure, duration_ms)
+		SELECT $1, 10, 'SP:Completed',
+		       CASE WHEN g % 250 = 0 THEN 728 WHEN g % 250 = 1 THEN 700 ELSE 999 END,
+		       'Proc', 1
+		FROM generate_series(1, 500000) AS g
+	`, sessionID); err != nil {
+		t.Fatalf("bulk insert events: %v", err)
+	}
+	if _, err := db.Exec(`ANALYZE trc_events`); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+
+	// Проверка структуры индекса: (session_id, spid, id)
+	var cols string
+	if err := db.QueryRow(`
+		SELECT string_agg(a.attname, ',' ORDER BY x.ord)
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS x(attnum, ord) ON true
+		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = x.attnum
+		WHERE c.relname = 'idx_trc_events_session_spid_id'
+		GROUP BY i.indexrelid
+	`).Scan(&cols); err != nil {
+		t.Fatalf("read index definition: %v", err)
+	}
+	if cols != "session_id,spid,id" {
+		t.Fatalf("index columns = %q, want session_id,spid,id", cols)
+	}
+
+	// Keyset-запросы пагинации в реальной проекции short-строки: один SPID
+	// (индекс даёт порядок по id напрямую) и несколько SPID.
+	const projection = `id, event_class, event_name, spid, procedure, start_time, end_time, duration_ms`
+	queries := []string{
+		fmt.Sprintf(`SELECT %s FROM trc_events WHERE session_id = %d AND spid = 728 AND id > 0 ORDER BY id LIMIT 1001`, projection, sessionID),
+		fmt.Sprintf(`SELECT %s FROM trc_events WHERE session_id = %d AND spid = ANY(ARRAY[728,700]) AND id > 0 ORDER BY id LIMIT 1001`, projection, sessionID),
+	}
+	for _, query := range queries {
+		rows, err := db.Query(`EXPLAIN (FORMAT TEXT) ` + query)
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		var plan strings.Builder
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				rows.Close()
+				t.Fatalf("scan plan line: %v", err)
+			}
+			plan.WriteString(line)
+			plan.WriteString("\n")
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			t.Fatalf("explain rows: %v", err)
+		}
+		if !strings.Contains(plan.String(), "idx_trc_events_session_spid_id") {
+			t.Fatalf("plan does not use idx_trc_events_session_spid_id: %s", plan.String())
+		}
 	}
 }
 

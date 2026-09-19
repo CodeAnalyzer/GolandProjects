@@ -1,6 +1,9 @@
 package trcsvc
 
 import (
+	"encoding/json"
+	"time"
+
 	"github.com/codebase/internal/trc"
 )
 
@@ -24,13 +27,69 @@ type SummaryResult struct {
 	Session     *trc.TRCSession  `json:"session,omitempty"`
 }
 
-// EventsResult — список событий с фильтрацией.
+// TRCEventView — компактное представление события в ответе (format=short):
+// без params и columns. ID совпадает с id события в format=full.
+type TRCEventView struct {
+	ID         int64      `json:"id"`
+	EventClass int        `json:"event_class"`
+	EventName  string     `json:"event_name"`
+	SPID       int        `json:"spid,omitempty"`
+	Procedure  string     `json:"procedure,omitempty"`
+	StartTime  *time.Time `json:"start_time,omitempty"`
+	EndTime    *time.Time `json:"end_time,omitempty"`
+	DurationMs int64      `json:"duration_ms"`
+}
+
+// EventsResult — результат ExecuteEvents. Full-формат возвращает доменные
+// trc.TRCEvent (включая params/columns) в Events; short-формат — TRCEventView
+// в Views. TotalCount устанавливается только на первой странице (AfterID nil);
+// на страницах продолжения поле отсутствует в JSON.
 type EventsResult struct {
-	Events        []trc.TRCEvent `json:"events"`
-	TotalCount    int            `json:"total_count"`
-	FilteredCount int            `json:"filtered_count"`
-	ReturnedCount int            `json:"returned_count"`
-	Limit         int            `json:"limit"`
+	Events        []trc.TRCEvent
+	Views         []TRCEventView
+	Short         bool
+	TotalCount    *int
+	FilteredCount int
+	ReturnedCount int
+	Limit         int
+	HasMore       bool
+	NextAfterID   int64
+}
+
+// MarshalJSON сериализует результат: ключ events содержит доменные события
+// (full) или компактные представления (short); next_after_id отсутствует при
+// HasMore=false или пустой странице; total_count — только на первой странице.
+func (r EventsResult) MarshalJSON() ([]byte, error) {
+	out := struct {
+		Events        interface{} `json:"events"`
+		TotalCount    *int        `json:"total_count,omitempty"`
+		FilteredCount int         `json:"filtered_count"`
+		ReturnedCount int         `json:"returned_count"`
+		Limit         int         `json:"limit"`
+		HasMore       bool        `json:"has_more"`
+		NextAfterID   int64       `json:"next_after_id,omitempty"`
+	}{
+		TotalCount:    r.TotalCount,
+		FilteredCount: r.FilteredCount,
+		ReturnedCount: r.ReturnedCount,
+		Limit:         r.Limit,
+		HasMore:       r.HasMore,
+		NextAfterID:   r.NextAfterID,
+	}
+	if r.Short {
+		if r.Views == nil {
+			out.Events = []TRCEventView{}
+		} else {
+			out.Events = r.Views
+		}
+	} else {
+		if r.Events == nil {
+			out.Events = []trc.TRCEvent{}
+		} else {
+			out.Events = r.Events
+		}
+	}
+	return json.Marshal(out)
 }
 
 // ProceduresResult — агрегация по процедурам.
@@ -81,13 +140,33 @@ type PruneResult struct {
 
 // --- Параметры функций ---
 
-// EventsParams — параметры для ExecuteEvents.
+// EventsParams — параметры для ExecuteEvents. SPIDs/EventNames — канонические
+// массивы (legacy scalar-алиасы нормализуются на границе CLI/MCP); Format —
+// "" или "full" (default) / "short"; AfterID — keyset-курсор предыдущей
+// страницы (nil = первая страница).
 type EventsParams struct {
-	Source    SessionSource
-	SPID      int
-	Procedure string
-	EventName string
-	Limit     int
+	Source        SessionSource
+	SPIDs         []int
+	Procedure     string
+	EventNames    []string
+	TimeFrom      *time.Time
+	TimeTo        *time.Time
+	MinDurationMs *int64
+	AfterID       *int64
+	Format        string
+	Limit         int
+}
+
+// ProceduresParams — параметры для ExecuteProcedures. Отсутствие EventNames
+// означает агрегацию только SP:Completed (текущее поведение); Top 0 = все
+// процедуры; SortBy: total_ms (default), avg_ms, max_ms, count.
+type ProceduresParams struct {
+	Source      SessionSource
+	SPIDs       []int
+	EventNames  []string
+	Top         int
+	SortBy      string
+	GroupBySPID bool
 }
 
 // TreeParams — параметры для ExecuteTree.

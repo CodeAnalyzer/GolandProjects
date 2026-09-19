@@ -3,6 +3,9 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/codebase/internal/trc"
 	"github.com/codebase/internal/trcsvc"
@@ -20,6 +23,17 @@ var (
 	trcMaxDepth      int
 	trcTreeLimit     int
 	trcLimit         int
+
+	trcSPIDsRaw      string
+	trcEventNamesRaw string
+	trcAfterID       int64
+	trcTimeFrom      string
+	trcTimeTo        string
+	trcMinDuration   int64
+	trcFormat        string
+	trcTop           int
+	trcSortBy        string
+	trcGroupBySPID   bool
 )
 
 var trcCmd = &cobra.Command{
@@ -30,8 +44,10 @@ var trcCmd = &cobra.Command{
 Subcommands:
   parse      - parse .trc file, save session, print summary
   summary    - print summary info
-  events     - list decoded events (filters: --spid, --proc; counts include matched and returned)
-  procedures - aggregate completed SP calls only (SP:Completed; count/min/max/avg/total duration)
+  events     - list decoded events (filters: --spid/--spids, --proc, --event-names,
+               --time-from/--time-to, --min-duration-ms; pagination: --after-id)
+  procedures - aggregate procedure calls (default SP:Completed; filters: --spids,
+               --event-names; --top, --sort, --group-by-spid)
   tree       - print call trees grouped by SPID
   errors     - print events with non-zero Error column
   slow       - print slowest events (threshold --slow-ms)
@@ -167,19 +183,128 @@ func runTRCSummary(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// parseSPIDCSV разбирает CSV-список SPID: пустые элементы, нечисловые,
+// нулевые и отрицательные значения отклоняются с именем флага и значением.
+func parseSPIDCSV(raw, flagName string) ([]int, error) {
+	items, err := parseStringCSV(raw, flagName)
+	if err != nil {
+		return nil, err
+	}
+	if items == nil {
+		return nil, nil
+	}
+	out := make([]int, 0, len(items))
+	for i, s := range items {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return nil, fmt.Errorf("%s[%d]: invalid SPID %q", flagName, i, s)
+		}
+		if n <= 0 {
+			return nil, fmt.Errorf("%s[%d]: SPID must be positive, got %d", flagName, i, n)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// parseStringCSV разбирает CSV-список непустых строк с именем флага в ошибке.
+func parseStringCSV(raw, flagName string) ([]string, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return nil, fmt.Errorf("%s[%d]: must be non-empty", flagName, i)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// parseRFC3339Flag парсит временной флаг строго в RFC3339.
+func parseRFC3339Flag(raw, flagName string) (*time.Time, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s (expected RFC3339): %w", flagName, err)
+	}
+	return &t, nil
+}
+
+// resolveTRCSPIDsFilter объединяет legacy --spid и массив --spids с запретом
+// одновременной передачи.
+func resolveTRCSPIDsFilter(cmd *cobra.Command, spids []int) ([]int, error) {
+	if cmd.Flags().Changed("spid") && cmd.Flags().Changed("spids") {
+		return nil, fmt.Errorf("--spid and --spids are mutually exclusive: use --spids")
+	}
+	if trcSPID != 0 {
+		spids = append([]int{trcSPID}, spids...)
+	}
+	return spids, nil
+}
+
 func formatTRCEventsHeader(result *trcsvc.EventsResult) string {
-	return fmt.Sprintf("%d event(s) returned (%d matched, %d total, limit %d):\n\n", result.ReturnedCount, result.FilteredCount, result.TotalCount, result.Limit)
+	total := 0
+	if result.TotalCount != nil {
+		total = *result.TotalCount
+	}
+	header := fmt.Sprintf("%d event(s) returned (%d matched, %d total, limit %d):\n\n", result.ReturnedCount, result.FilteredCount, total, result.Limit)
+	if result.NextAfterID > 0 {
+		header += fmt.Sprintf("next page: --after-id %d\n\n", result.NextAfterID)
+	}
+	return header
 }
 
 func runTRCEvents(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	db := openDB()
 	defer closeDB(db)
+
+	spids, err := parseSPIDCSV(trcSPIDsRaw, "--spids")
+	if err != nil {
+		return err
+	}
+	spids, err = resolveTRCSPIDsFilter(cmd, spids)
+	if err != nil {
+		return err
+	}
+	eventNames, err := parseStringCSV(trcEventNamesRaw, "--event-names")
+	if err != nil {
+		return err
+	}
+	timeFrom, err := parseRFC3339Flag(trcTimeFrom, "--time-from")
+	if err != nil {
+		return err
+	}
+	timeTo, err := parseRFC3339Flag(trcTimeTo, "--time-to")
+	if err != nil {
+		return err
+	}
+	var minDuration *int64
+	if cmd.Flags().Changed("min-duration-ms") {
+		minDuration = &trcMinDuration
+	}
+	var afterID *int64
+	if cmd.Flags().Changed("after-id") {
+		afterID = &trcAfterID
+	}
+
 	result, err := trcsvc.ExecuteEvents(ctx, db, trcsvc.EventsParams{
-		Source:    trcSource(args),
-		SPID:      trcSPID,
-		Procedure: trcProcedure,
-		Limit:     applyQueryLimit(trcLimit),
+		Source:        trcSource(args),
+		SPIDs:         spids,
+		Procedure:     trcProcedure,
+		EventNames:    eventNames,
+		TimeFrom:      timeFrom,
+		TimeTo:        timeTo,
+		MinDurationMs: minDuration,
+		AfterID:       afterID,
+		Format:        trcFormat,
+		Limit:         applyQueryLimit(trcLimit),
 	})
 	if err != nil {
 		return err
@@ -188,8 +313,14 @@ func runTRCEvents(cmd *cobra.Command, args []string) error {
 		return printJSON(result)
 	}
 	fmt.Print(formatTRCEventsHeader(result))
-	for _, ev := range result.Events {
-		printEventLine(ev)
+	if result.Short {
+		for _, v := range result.Views {
+			printEventViewLine(v)
+		}
+	} else {
+		for _, ev := range result.Events {
+			printEventLine(ev)
+		}
 	}
 	return nil
 }
@@ -210,11 +341,43 @@ func printEventLine(ev trc.TRCEvent) {
 	fmt.Printf("  %s%s%s%s\n", ev.EventName, proc, duration, spid)
 }
 
+func printEventViewLine(v trcsvc.TRCEventView) {
+	proc := ""
+	if v.Procedure != "" {
+		proc = " exec " + v.Procedure
+	}
+	duration := ""
+	if v.DurationMs > 0 {
+		duration = fmt.Sprintf(" [%dms]", v.DurationMs)
+	}
+	spid := ""
+	if v.SPID != 0 {
+		spid = fmt.Sprintf(" SPID=%d", v.SPID)
+	}
+	fmt.Printf("  %s%s%s%s\n", v.EventName, proc, duration, spid)
+}
+
 func runTRCProcedures(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	db := openDB()
 	defer closeDB(db)
-	result, err := trcsvc.ExecuteProcedures(ctx, db, trcSource(args))
+
+	spids, err := parseSPIDCSV(trcSPIDsRaw, "--spids")
+	if err != nil {
+		return err
+	}
+	eventNames, err := parseStringCSV(trcEventNamesRaw, "--event-names")
+	if err != nil {
+		return err
+	}
+	result, err := trcsvc.ExecuteProcedures(ctx, db, trcsvc.ProceduresParams{
+		Source:      trcSource(args),
+		SPIDs:       spids,
+		EventNames:  eventNames,
+		Top:         trcTop,
+		SortBy:      trcSortBy,
+		GroupBySPID: trcGroupBySPID,
+	})
 	if err != nil {
 		return err
 	}
@@ -223,8 +386,12 @@ func runTRCProcedures(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("%d procedure(s):\n\n", result.Count)
 	for _, a := range result.Procedures {
-		fmt.Printf("  %-40s count=%-5d total=%dms min=%dms max=%dms avg=%.1fms",
-			a.Procedure, a.Count, a.TotalMs, a.MinMs, a.MaxMs, a.AvgMs)
+		spid := ""
+		if a.SPID != 0 {
+			spid = fmt.Sprintf(" SPID=%-5d", a.SPID)
+		}
+		fmt.Printf("  %s%-40s count=%-5d total=%dms min=%dms max=%dms avg=%.1fms",
+			spid, a.Procedure, a.Count, a.TotalMs, a.MinMs, a.MaxMs, a.AvgMs)
 		if a.SourceFile != "" {
 			fmt.Printf("  → %s", a.SourceFile)
 		}
@@ -373,11 +540,23 @@ func init() {
 	trcCmd.PersistentFlags().BoolVar(&trcOutputJSON, "json", false, "output as JSON")
 
 	trcEventsCmd.Flags().Int64Var(&trcSessionID, "session", 0, "load from saved session ID instead of file")
-	trcEventsCmd.Flags().IntVar(&trcSPID, "spid", 0, "filter by SPID (0 = all)")
+	trcEventsCmd.Flags().IntVar(&trcSPID, "spid", 0, "legacy SPID filter (0 = all); mutually exclusive with --spids")
 	trcEventsCmd.Flags().StringVar(&trcProcedure, "proc", "", "filter by procedure name (exact match)")
 	trcEventsCmd.Flags().IntVar(&trcLimit, "limit", 100, "max events to return (max 1000)")
+	trcEventsCmd.Flags().StringVar(&trcSPIDsRaw, "spids", "", "comma-separated SPID filter (e.g. 728,700)")
+	trcEventsCmd.Flags().StringVar(&trcEventNamesRaw, "event-names", "", "comma-separated event name filter (e.g. SP:Completed,RPC:Completed)")
+	trcEventsCmd.Flags().Int64Var(&trcAfterID, "after-id", 0, "keyset cursor: next_after_id of the previous page")
+	trcEventsCmd.Flags().StringVar(&trcTimeFrom, "time-from", "", "RFC3339 lower bound of start_time (inclusive)")
+	trcEventsCmd.Flags().StringVar(&trcTimeTo, "time-to", "", "RFC3339 upper bound of start_time (exclusive)")
+	trcEventsCmd.Flags().Int64Var(&trcMinDuration, "min-duration-ms", 0, "minimum duration_ms filter")
+	trcEventsCmd.Flags().StringVar(&trcFormat, "format", "full", "output format: full (params+columns) or short")
 
 	trcProceduresCmd.Flags().Int64Var(&trcSessionID, "session", 0, "load from saved session ID instead of file")
+	trcProceduresCmd.Flags().StringVar(&trcSPIDsRaw, "spids", "", "comma-separated SPID filter (e.g. 728,700)")
+	trcProceduresCmd.Flags().StringVar(&trcEventNamesRaw, "event-names", "", "comma-separated event names to aggregate (default: SP:Completed only)")
+	trcProceduresCmd.Flags().IntVar(&trcTop, "top", 0, "max procedures to return after aggregation (0 = all, max 1000)")
+	trcProceduresCmd.Flags().StringVar(&trcSortBy, "sort", "total_ms", "sort metric: total_ms, avg_ms, max_ms, count")
+	trcProceduresCmd.Flags().BoolVar(&trcGroupBySPID, "group-by-spid", false, "group aggregates by (spid, procedure)")
 
 	trcTreeCmd.Flags().Int64Var(&trcSessionID, "session", 0, "load from saved session ID instead of file")
 	trcTreeCmd.Flags().IntVar(&trcSPID, "spid", 0, "filter by SPID (0 = all)")

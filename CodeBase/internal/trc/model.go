@@ -57,6 +57,11 @@ type TRCEvent struct {
 	Params     []TRCParam
 	DurationMs int64
 
+	// StoreID — идентификатор события в источнике: id строки в trc_events
+	// (saved-session) или EventIndex + 1 (file-mode). Используется как
+	// keyset-курсор постраничной выборки.
+	StoreID int64 `json:"id,omitempty"`
+
 	// ParentID — индекс родительского события в срезе Events (для tree building).
 	// -1 (или 0) означает корень. Заполняется в ComputeParentIDs.
 	ParentID int

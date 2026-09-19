@@ -27,6 +27,8 @@ type registeredTool struct {
 	Handler    toolHandler
 }
 
+// optionalStringSlice извлекает обязательный строгий string-массив: элементы
+// не-строки и пустые строки — ошибки с индексом элемента.
 func optionalStringSlice(args map[string]interface{}, key string) ([]string, error) {
 	value, ok := args[key]
 	if !ok || value == nil {
@@ -37,16 +39,82 @@ func optionalStringSlice(args map[string]interface{}, key string) ([]string, err
 		return nil, fmt.Errorf("argument %s must be string array", key)
 	}
 	result := make([]string, 0, len(items))
-	for _, item := range items {
+	for i, item := range items {
 		text, ok := item.(string)
 		if !ok {
-			return nil, fmt.Errorf("argument %s must be string array", key)
+			return nil, fmt.Errorf("argument %s[%d] must be string", key, i)
 		}
-		if text != "" {
-			result = append(result, text)
+		if text == "" {
+			return nil, fmt.Errorf("argument %s[%d] must be non-empty string", key, i)
 		}
+		result = append(result, text)
 	}
 	return result, nil
+}
+
+// optionalIntSlice извлекает строгий integer-массив: каждый элемент проходит
+// integer-валидацию (без дробных и переполнения), ошибка содержит индекс.
+func optionalIntSlice(args map[string]interface{}, key string) ([]int, error) {
+	value, ok := args[key]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	items, ok := value.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("argument %s must be integer array", key)
+	}
+	result := make([]int, 0, len(items))
+	for i, item := range items {
+		n, err := integerValue(item, fmt.Sprintf("%s[%d]", key, i), strconv.IntSize)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, int(n))
+	}
+	return result, nil
+}
+
+// optionalInt64Ptr извлекает optional int64 как указатель: nil, когда аргумент
+// отсутствует (отличие отсутствия от явного нуля).
+func optionalInt64Ptr(args map[string]interface{}, key string) (*int64, error) {
+	value, ok := args[key]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	n, err := integerValue(value, key, 64)
+	if err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
+// optionalRFC3339 парсит optional timestamp строго в RFC3339.
+func optionalRFC3339(args map[string]interface{}, key string) (*time.Time, error) {
+	v, err := optionalString(args, key)
+	if err != nil {
+		return nil, err
+	}
+	if v == "" {
+		return nil, nil
+	}
+	t, perr := time.Parse(time.RFC3339, v)
+	if perr != nil {
+		return nil, fmt.Errorf("invalid %s (expected RFC3339): %w", key, perr)
+	}
+	return &t, nil
+}
+
+// rejectScalarArrayConflict запрещает одновременную передачу legacy scalar
+// и канонического array-параметра.
+func rejectScalarArrayConflict(args map[string]interface{}, scalarKey, arrayKey string) error {
+	sv, sok := args[scalarKey]
+	sok = sok && sv != nil
+	av, aok := args[arrayKey]
+	aok = aok && av != nil
+	if sok && aok {
+		return fmt.Errorf("arguments %s and %s are mutually exclusive: use %s", scalarKey, arrayKey, arrayKey)
+	}
+	return nil
 }
 
 func integerValue(value interface{}, key string, bitSize int) (int64, error) {
@@ -952,9 +1020,19 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_trc_events": {
-			Definition: toolDefinition{Name: "codebase_trc_events", Description: "List decoded events from a trc session, with optional filters. Returns event class, name, procedure, params, duration, and full decoded columns. The result includes total_count for all session events, filtered_count for all matching events before limit, returned_count for events returned, and the applied limit. Supports server-side filtering by SPID, procedure, and event_name.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spid": intProp("Optional SPID filter"), "procedure": stringProp("Optional procedure name filter (exact match)"), "event_name": stringProp("Optional event name filter (e.g. RPC:Completed)"), "limit": intProp("Max events to return (default 100, max 1000)")})},
+			Definition: toolDefinition{Name: "codebase_trc_events", Description: "List decoded events from a trc session with server-side filters and keyset pagination. Filters: spids (integer array), event_names (string array, e.g. [\"SP:Completed\",\"RPC:Completed\"]), procedure (exact match), time_from/time_to (RFC3339, half-open interval [from;to) by start_time), min_duration_ms. Use after_id=next_after_id of the previous page to fetch the next page: response has_more=true means more matching events exist. filtered_count is the full filtered set size on every page; total_count is returned only on the first page (absent when after_id is passed). format=short omits params/columns for lightweight analytical exports. Legacy scalar spid/event_name are accepted as aliases and normalized to arrays; passing both scalar and array is an error.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spids": intSliceProp("Optional SPID filter (positive integers)"), "event_names": stringSliceProp("Optional event name filter (exact match, e.g. SP:Completed)"), "procedure": stringProp("Optional procedure name filter (exact match)"), "time_from": stringProp("Optional RFC3339 lower bound of start_time (inclusive)"), "time_to": stringProp("Optional RFC3339 upper bound of start_time (exclusive)"), "min_duration_ms": intProp("Optional minimum duration_ms (>= 0)"), "after_id": intProp("Keyset cursor: next_after_id of the previous page (omit for the first page)"), "format": stringProp("Response format: full (default, includes params/columns) or short (no params/columns)"), "spid": intProp("Legacy alias for spids=[N] (0 = all)"), "event_name": stringProp("Legacy alias for event_names=[\"N\"]"), "limit": intProp("Max events to return (default 100, max 1000)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				limit, err := optionalInt(args, "limit")
+				if err != nil {
+					return nil, err
+				}
+				if err := rejectScalarArrayConflict(args, "spid", "spids"); err != nil {
+					return nil, err
+				}
+				if err := rejectScalarArrayConflict(args, "event_name", "event_names"); err != nil {
+					return nil, err
+				}
+				spids, err := optionalIntSlice(args, "spids")
 				if err != nil {
 					return nil, err
 				}
@@ -962,11 +1040,41 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if err != nil {
 					return nil, err
 				}
-				procFilter, err := optionalString(args, "procedure")
+				if spidFilter != 0 {
+					spids = append([]int{spidFilter}, spids...)
+				}
+				eventNames, err := optionalStringSlice(args, "event_names")
 				if err != nil {
 					return nil, err
 				}
 				eventNameFilter, err := optionalString(args, "event_name")
+				if err != nil {
+					return nil, err
+				}
+				if eventNameFilter != "" {
+					eventNames = append([]string{eventNameFilter}, eventNames...)
+				}
+				procFilter, err := optionalString(args, "procedure")
+				if err != nil {
+					return nil, err
+				}
+				timeFrom, err := optionalRFC3339(args, "time_from")
+				if err != nil {
+					return nil, err
+				}
+				timeTo, err := optionalRFC3339(args, "time_to")
+				if err != nil {
+					return nil, err
+				}
+				minDuration, err := optionalInt64Ptr(args, "min_duration_ms")
+				if err != nil {
+					return nil, err
+				}
+				afterID, err := optionalInt64Ptr(args, "after_id")
+				if err != nil {
+					return nil, err
+				}
+				format, err := optionalString(args, "format")
 				if err != nil {
 					return nil, err
 				}
@@ -979,17 +1087,42 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				return trcsvc.ExecuteEvents(ctx, db, trcsvc.EventsParams{
-					Source:    trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
-					SPID:      spidFilter,
-					Procedure: procFilter,
-					EventName: eventNameFilter,
-					Limit:     limit,
+					Source:        trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					SPIDs:         spids,
+					Procedure:     procFilter,
+					EventNames:    eventNames,
+					TimeFrom:      timeFrom,
+					TimeTo:        timeTo,
+					MinDurationMs: minDuration,
+					AfterID:       afterID,
+					Format:        format,
+					Limit:         limit,
 				})
 			},
 		},
 		"codebase_trc_procedures": {
-			Definition: toolDefinition{Name: "codebase_trc_procedures", Description: "Aggregate completed stored procedure calls from a trc session by procedure name using only SP:Completed events: call count, min/max/avg/total duration. Enriched with source file location from CodeBase index. Sorted by total duration descending. Uses server-side SQL aggregation when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file")})},
+			Definition: toolDefinition{Name: "codebase_trc_procedures", Description: "Aggregate completed procedure calls from a trc session: call count, min/max/avg/total duration, enriched with source file location. By default aggregates only SP:Completed events with a non-empty procedure name; pass event_names (e.g. [\"RPC:Completed\"] or [\"SP:Completed\",\"RPC:Completed\",\"SQL:BatchCompleted\"]) to aggregate an explicit set of event classes — durations of different levels overlap, so totals are not wall-clock time. spids restricts aggregation to specific SPIDs. group_by_spid=true returns (spid, procedure) groups, excluding events without SPID. top limits the result after aggregation (0 or omitted = all, max 1000); sort_by: total_ms (default), avg_ms, max_ms, count with deterministic procedure/spid tie-breakers. Uses server-side SQL aggregation when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spids": intSliceProp("Optional SPID filter (positive integers)"), "event_names": stringSliceProp("Optional explicit set of event names to aggregate (default: SP:Completed only)"), "top": intProp("Max procedures to return after aggregation (0 = all, max 1000)"), "sort_by": stringProp("Sort metric: total_ms (default), avg_ms, max_ms, count"), "group_by_spid": boolProp("Group aggregates by (spid, procedure) instead of procedure only")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				spids, err := optionalIntSlice(args, "spids")
+				if err != nil {
+					return nil, err
+				}
+				eventNames, err := optionalStringSlice(args, "event_names")
+				if err != nil {
+					return nil, err
+				}
+				top, err := optionalInt(args, "top")
+				if err != nil {
+					return nil, err
+				}
+				sortBy, err := optionalString(args, "sort_by")
+				if err != nil {
+					return nil, err
+				}
+				groupBySPID, err := optionalBool(args, "group_by_spid")
+				if err != nil {
+					return nil, err
+				}
 				sessionID, err := optionalInt64(args, "session_id")
 				if err != nil {
 					return nil, err
@@ -998,7 +1131,14 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if err != nil {
 					return nil, err
 				}
-				return trcsvc.ExecuteProcedures(ctx, db, trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath})
+				return trcsvc.ExecuteProcedures(ctx, db, trcsvc.ProceduresParams{
+					Source:      trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					SPIDs:       spids,
+					EventNames:  eventNames,
+					Top:         top,
+					SortBy:      sortBy,
+					GroupBySPID: groupBySPID,
+				})
 			},
 		},
 		"codebase_trc_tree": {
@@ -1288,6 +1428,22 @@ func boolProp(description string) map[string]interface{} {
 
 func intProp(description string) map[string]interface{} {
 	return map[string]interface{}{"type": "integer", "description": description}
+}
+
+func intSliceProp(description string) map[string]interface{} {
+	return map[string]interface{}{
+		"type":        "array",
+		"description": description,
+		"items":       map[string]interface{}{"type": "integer"},
+	}
+}
+
+func stringSliceProp(description string) map[string]interface{} {
+	return map[string]interface{}{
+		"type":        "array",
+		"description": description,
+		"items":       map[string]interface{}{"type": "string"},
+	}
 }
 
 func requiredString(args map[string]interface{}, key string) (string, error) {

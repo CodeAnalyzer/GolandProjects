@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/store"
@@ -107,50 +108,242 @@ func ExecuteSummary(ctx context.Context, db *store.DB, src SessionSource) (*Summ
 	}, nil
 }
 
-// ExecuteEvents возвращает список событий с фильтрацией.
+// eventStartTime возвращает start_time события из декодированной колонки 14.
+func eventStartTime(ev trc.TRCEvent) (time.Time, bool) {
+	st, ok := ev.Columns[14].(trc.SystemTime)
+	if !ok {
+		return time.Time{}, false
+	}
+	return st.ToTime()
+}
+
+// eventEndTime возвращает end_time события из декодированной колонки 15.
+func eventEndTime(ev trc.TRCEvent) (time.Time, bool) {
+	st, ok := ev.Columns[15].(trc.SystemTime)
+	if !ok {
+		return time.Time{}, false
+	}
+	return st.ToTime()
+}
+
+func containsInt(values []int, v int) bool {
+	for _, x := range values {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, v string) bool {
+	for _, x := range values {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// eventMatchesFilter применяет правила единой модели фильтров в памяти
+// (file-mode): множественные SPID (колонка 12) и имена событий, точная
+// процедура, полуинтервал [TimeFrom; TimeTo) по start_time (события без
+// start_time не попадают в диапазон) и минимальная длительность.
+func eventMatchesFilter(ev trc.TRCEvent, f trc.TRCEventFilter) bool {
+	if len(f.SPIDs) > 0 {
+		spid, ok := trc.EventSPID(ev)
+		if !ok || !containsInt(f.SPIDs, spid) {
+			return false
+		}
+	}
+	if f.Procedure != "" && ev.Procedure != f.Procedure {
+		return false
+	}
+	if len(f.EventNames) > 0 && !containsString(f.EventNames, ev.EventName) {
+		return false
+	}
+	if f.TimeFrom != nil || f.TimeTo != nil {
+		st, ok := eventStartTime(ev)
+		if !ok {
+			return false
+		}
+		if f.TimeFrom != nil && st.Before(*f.TimeFrom) {
+			return false
+		}
+		if f.TimeTo != nil && !st.Before(*f.TimeTo) {
+			return false
+		}
+	}
+	if f.MinDurationMs != nil && ev.DurationMs < *f.MinDurationMs {
+		return false
+	}
+	return true
+}
+
+// eventView строит короткое представление события file-mode; id — логический
+// идентификатор (позиция в потоке + 1).
+func eventView(ev trc.TRCEvent, id int64) TRCEventView {
+	v := TRCEventView{
+		ID:         id,
+		EventClass: ev.EventClass,
+		EventName:  ev.EventName,
+		Procedure:  ev.Procedure,
+		DurationMs: ev.DurationMs,
+	}
+	if spid, ok := trc.EventSPID(ev); ok {
+		v.SPID = spid
+	}
+	if t, ok := eventStartTime(ev); ok {
+		v.StartTime = &t
+	}
+	if t, ok := eventEndTime(ev); ok {
+		v.EndTime = &t
+	}
+	return v
+}
+
+// trcEventViewsFromRows преобразует short-строки saved-session в представления.
+func trcEventViewsFromRows(rows []trc.TRCEventRow) []TRCEventView {
+	views := make([]TRCEventView, 0, len(rows))
+	for _, r := range rows {
+		views = append(views, TRCEventView{
+			ID:         r.ID,
+			EventClass: r.EventClass,
+			EventName:  r.EventName,
+			SPID:       r.SPID,
+			Procedure:  r.Procedure,
+			StartTime:  r.StartTime,
+			EndTime:    r.EndTime,
+			DurationMs: r.DurationMs,
+		})
+	}
+	return views
+}
+
+// ExecuteEvents возвращает страницу событий с фильтрацией по правилам единой
+// модели фильтров: saved-session — серверно (включая keyset-пагинацию и
+// short-проекцию без JSONB), file-mode — эквивалентно в памяти с курсором
+// EventIndex+1. filtered_count возвращается на каждой странице; total_count —
+// только на первой (AfterID nil).
 func ExecuteEvents(ctx context.Context, db *store.DB, p EventsParams) (*EventsResult, error) {
 	limit := normalizeLimit(p.Limit)
-	f := trc.TRCEventFilter{SPID: p.SPID, Procedure: p.Procedure, EventName: p.EventName}
+
+	spids, err := normalizeSPIDs(p.SPIDs)
+	if err != nil {
+		return nil, err
+	}
+	eventNames, err := normalizeEventNames(p.EventNames)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateTimeRange(p.TimeFrom, p.TimeTo); err != nil {
+		return nil, err
+	}
+	if err := validateMinDuration(p.MinDurationMs); err != nil {
+		return nil, err
+	}
+	if err := validateAfterID(p.AfterID); err != nil {
+		return nil, err
+	}
+	short, err := normalizeEventsFormat(p.Format)
+	if err != nil {
+		return nil, err
+	}
+
+	f := trc.TRCEventFilter{
+		SPIDs:         spids,
+		Procedure:     p.Procedure,
+		EventNames:    eventNames,
+		TimeFrom:      p.TimeFrom,
+		TimeTo:        p.TimeTo,
+		MinDurationMs: p.MinDurationMs,
+		AfterID:       p.AfterID,
+	}
+	result := &EventsResult{Short: short, Limit: limit}
+
 	if p.Source.SessionID > 0 && db != nil {
-		events, err := trc.LoadEventsFiltered(ctx, db, p.Source.SessionID, f, limit)
-		if err != nil {
-			return nil, err
-		}
-		totalCount, err := trc.LoadEventCount(ctx, db, p.Source.SessionID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to count events: %w", err)
-		}
 		filteredCount, err := trc.LoadEventCountFiltered(ctx, db, p.Source.SessionID, f)
 		if err != nil {
 			return nil, err
 		}
-		return &EventsResult{Events: events, TotalCount: totalCount, FilteredCount: filteredCount, ReturnedCount: len(events), Limit: limit}, nil
+		result.FilteredCount = filteredCount
+		if p.AfterID == nil {
+			totalCount, err := trc.LoadEventCount(ctx, db, p.Source.SessionID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to count events: %w", err)
+			}
+			result.TotalCount = &totalCount
+		}
+		if short {
+			page, err := trc.LoadEventRowsFiltered(ctx, db, p.Source.SessionID, f, limit)
+			if err != nil {
+				return nil, err
+			}
+			result.Views = trcEventViewsFromRows(page.Rows)
+			result.ReturnedCount = len(page.Rows)
+			result.HasMore = page.HasMore
+			result.NextAfterID = page.NextAfterID
+			return result, nil
+		}
+		page, err := trc.LoadEventsFiltered(ctx, db, p.Source.SessionID, f, limit)
+		if err != nil {
+			return nil, err
+		}
+		result.Events = page.Events
+		result.ReturnedCount = len(page.Events)
+		result.HasMore = page.HasMore
+		result.NextAfterID = page.NextAfterID
+		return result, nil
 	}
 
+	// file-mode: логический ID события — позиция в потоке + 1.
 	events, _, err := resolveSession(ctx, db, p.Source)
 	if err != nil {
 		return nil, err
 	}
-	var filtered []trc.TRCEvent
-	filteredCount := 0
-	for _, ev := range events {
-		if p.SPID > 0 {
-			if spid, ok := ev.Columns[12].(int32); !ok || int(spid) != p.SPID {
-				continue
-			}
-		}
-		if p.Procedure != "" && ev.Procedure != p.Procedure {
-			continue
-		}
-		if p.EventName != "" && ev.EventName != p.EventName {
-			continue
-		}
-		filteredCount++
-		if len(filtered) < limit {
-			filtered = append(filtered, ev)
+	matched := make([]int, 0)
+	for i := range events {
+		if eventMatchesFilter(events[i], f) {
+			matched = append(matched, i)
 		}
 	}
-	return &EventsResult{Events: filtered, TotalCount: len(events), FilteredCount: filteredCount, ReturnedCount: len(filtered), Limit: limit}, nil
+	result.FilteredCount = len(matched)
+	if p.AfterID == nil {
+		total := len(events)
+		result.TotalCount = &total
+	}
+
+	var after int64
+	if p.AfterID != nil {
+		after = *p.AfterID
+	}
+	pageIdx := make([]int, 0, limit+1)
+	for _, i := range matched {
+		if int64(i+1) <= after {
+			continue
+		}
+		if len(pageIdx) > limit {
+			break
+		}
+		pageIdx = append(pageIdx, i)
+	}
+	result.HasMore = len(pageIdx) > limit
+	if result.HasMore {
+		pageIdx = pageIdx[:limit]
+		result.NextAfterID = int64(pageIdx[len(pageIdx)-1] + 1)
+	}
+	if short {
+		for _, i := range pageIdx {
+			result.Views = append(result.Views, eventView(events[i], int64(i+1)))
+		}
+	} else {
+		for _, i := range pageIdx {
+			ev := events[i]
+			ev.StoreID = int64(i + 1)
+			result.Events = append(result.Events, ev)
+		}
+	}
+	result.ReturnedCount = len(pageIdx)
+	return result, nil
 }
 
 func enrichProcedureAggregates(ctx context.Context, q trc.ProcedureLookup, aggs []trc.TRCProcAgg) {
@@ -162,10 +355,36 @@ func enrichProcedureAggregates(ctx context.Context, q trc.ProcedureLookup, aggs 
 	trc.EnrichAggregates(aggs, enrichMap)
 }
 
-// ExecuteProcedures агрегирует статистику по процедурам.
-func ExecuteProcedures(ctx context.Context, db *store.DB, src SessionSource) (*ProceduresResult, error) {
-	if src.SessionID > 0 && db != nil {
-		aggs, err := trc.LoadProceduresAggregated(ctx, db, src.SessionID)
+// ExecuteProcedures агрегирует статистику по процедурам: saved-session —
+// серверно (LoadProceduresAggregated), file-mode — в памяти с эквивалентными
+// правилами (AggregateByProcedure).
+func ExecuteProcedures(ctx context.Context, db *store.DB, p ProceduresParams) (*ProceduresResult, error) {
+	spids, err := normalizeSPIDs(p.SPIDs)
+	if err != nil {
+		return nil, err
+	}
+	eventNames, err := normalizeEventNames(p.EventNames)
+	if err != nil {
+		return nil, err
+	}
+	top, err := normalizeTop(p.Top)
+	if err != nil {
+		return nil, err
+	}
+	sortBy, err := normalizeSortBy(p.SortBy)
+	if err != nil {
+		return nil, err
+	}
+	opts := trc.AggregateOptions{
+		EventNames:  eventNames,
+		SPIDs:       spids,
+		GroupBySPID: p.GroupBySPID,
+		SortBy:      sortBy,
+		Top:         top,
+	}
+
+	if p.Source.SessionID > 0 && db != nil {
+		aggs, err := trc.LoadProceduresAggregated(ctx, db, p.Source.SessionID, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -178,11 +397,11 @@ func ExecuteProcedures(ctx context.Context, db *store.DB, src SessionSource) (*P
 		}, nil
 	}
 
-	events, _, err := resolveSession(ctx, db, src)
+	events, _, err := resolveSession(ctx, db, p.Source)
 	if err != nil {
 		return nil, err
 	}
-	aggs := trc.AggregateByProcedure(events)
+	aggs := trc.AggregateByProcedure(events, opts)
 	if db != nil && len(aggs) > 0 {
 		q := query.New(db)
 		enrichProcedureAggregates(ctx, q, aggs)

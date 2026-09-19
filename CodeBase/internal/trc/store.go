@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/codebase/internal/store"
 	"github.com/lib/pq"
@@ -474,7 +475,7 @@ func PruneSessions(ctx context.Context, db *store.DB, keepLast int) (int64, erro
 // декодированных Columns из JSONB-снапшота (см. marshalColumns).
 func LoadEvents(ctx context.Context, db *store.DB, sessionID int64) ([]TRCEvent, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
+		`SELECT id, event_class, event_name, procedure, duration_ms, params, columns,
 		        parent_id, depth
 		 FROM trc_events WHERE session_id = $1 ORDER BY id`,
 		sessionID,
@@ -496,12 +497,14 @@ func LoadEvents(ctx context.Context, db *store.DB, sessionID int64) ([]TRCEvent,
 }
 
 // scanEventRow scans a single event row from the common column set.
+// Первая колонка выборки — id строки (StoreID); все запросы, питающие
+// scanEventRow, обязаны включать её в проекцию.
 func scanEventRow(rows *sql.Rows) (TRCEvent, error) {
 	var ev TRCEvent
 	var eventName, procedure sql.NullString
 	var paramsJSON, columnsJSON sql.NullString
 	var parentID sql.NullInt64
-	if err := rows.Scan(&ev.EventClass, &eventName, &procedure, &ev.DurationMs,
+	if err := rows.Scan(&ev.StoreID, &ev.EventClass, &eventName, &procedure, &ev.DurationMs,
 		&paramsJSON, &columnsJSON, &parentID, &ev.Depth); err != nil {
 		return ev, err
 	}
@@ -530,20 +533,31 @@ func scanEventRow(rows *sql.Rows) (TRCEvent, error) {
 	return ev, nil
 }
 
-// TRCEventFilter — параметры серверной фильтрации событий.
+// TRCEventFilter — единая модель серверной фильтрации событий: списки SPID и
+// имён событий, точное имя процедуры, временной полуинтервал [TimeFrom; TimeTo),
+// минимальная длительность и опциональный keyset-курсор AfterID (id последнего
+// события предыдущей страницы). Пустые SPIDs/EventNames означают отсутствие
+// соответствующего фильтра; AfterID nil — отсутствие курсора (первая страница).
+// Курсор не участвует в вычислении filtered_count.
 type TRCEventFilter struct {
-	SPID      int    // 0 = all
-	Procedure string // "" = all
-	EventName string // "" = all
+	SPIDs         []int
+	Procedure     string
+	EventNames    []string
+	TimeFrom      *time.Time
+	TimeTo        *time.Time
+	MinDurationMs *int64
+	AfterID       *int64
 }
 
+// buildEventFilterWhere строит WHERE по пользовательским фильтрам (без курсора):
+// spid = ANY, procedure =, event_name = ANY, start_time >= / <, duration_ms >=.
 func buildEventFilterWhere(sessionID int64, f TRCEventFilter) (string, []interface{}) {
 	where := "session_id = $1"
 	args := []interface{}{sessionID}
 	argIdx := 2
-	if f.SPID > 0 {
-		where += fmt.Sprintf(" AND spid = $%d", argIdx)
-		args = append(args, f.SPID)
+	if len(f.SPIDs) > 0 {
+		where += fmt.Sprintf(" AND spid = ANY($%d)", argIdx)
+		args = append(args, pq.Array(f.SPIDs))
 		argIdx++
 	}
 	if f.Procedure != "" {
@@ -551,15 +565,47 @@ func buildEventFilterWhere(sessionID int64, f TRCEventFilter) (string, []interfa
 		args = append(args, f.Procedure)
 		argIdx++
 	}
-	if f.EventName != "" {
-		where += fmt.Sprintf(" AND event_name = $%d", argIdx)
-		args = append(args, f.EventName)
+	if len(f.EventNames) > 0 {
+		where += fmt.Sprintf(" AND event_name = ANY($%d)", argIdx)
+		args = append(args, pq.Array(f.EventNames))
+		argIdx++
+	}
+	if f.TimeFrom != nil {
+		where += fmt.Sprintf(" AND start_time >= $%d", argIdx)
+		args = append(args, *f.TimeFrom)
+		argIdx++
+	}
+	if f.TimeTo != nil {
+		where += fmt.Sprintf(" AND start_time < $%d", argIdx)
+		args = append(args, *f.TimeTo)
+		argIdx++
+	}
+	if f.MinDurationMs != nil {
+		where += fmt.Sprintf(" AND duration_ms >= $%d", argIdx)
+		args = append(args, *f.MinDurationMs)
 	}
 	return where, args
 }
 
-// LoadEventsFiltered загружает события сессии с серверной фильтрацией и лимитом.
-func LoadEventsFiltered(ctx context.Context, db *store.DB, sessionID int64, f TRCEventFilter, limit int) ([]TRCEvent, error) {
+// appendCursorWhere добавляет keyset-условие id > after к WHERE-части.
+func appendCursorWhere(where string, args []interface{}, after int64) (string, []interface{}) {
+	where += fmt.Sprintf(" AND id > $%d", len(args)+1)
+	return where, append(args, after)
+}
+
+// EventsPage — страница событий с keyset-метаданными: HasMore=true означает,
+// что после текущей страницы есть совпадающие события; NextAfterID — курсор
+// (id) последнего возвращённого события, 0 при HasMore=false или пустой странице.
+type EventsPage struct {
+	Events      []TRCEvent
+	HasMore     bool
+	NextAfterID int64
+}
+
+// LoadEventsFiltered загружает страницу событий с серверной фильтрацией,
+// keyset-пагинацией (id > AfterID) и лимитом: запрашивает limit+1 строку,
+// чтобы определить HasMore без дополнительного запроса.
+func LoadEventsFiltered(ctx context.Context, db *store.DB, sessionID int64, f TRCEventFilter, limit int) (*EventsPage, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -567,10 +613,13 @@ func LoadEventsFiltered(ctx context.Context, db *store.DB, sessionID int64, f TR
 		limit = 1000
 	}
 	where, args := buildEventFilterWhere(sessionID, f)
-	query := `SELECT event_class, event_name, procedure, duration_ms, params, columns,
+	if f.AfterID != nil {
+		where, args = appendCursorWhere(where, args, *f.AfterID)
+	}
+	query := `SELECT id, event_class, event_name, procedure, duration_ms, params, columns,
 	                 parent_id, depth FROM trc_events WHERE ` + where
 	query += fmt.Sprintf(" ORDER BY id LIMIT $%d", len(args)+1)
-	args = append(args, limit)
+	args = append(args, limit+1)
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -586,10 +635,113 @@ func LoadEventsFiltered(ctx context.Context, db *store.DB, sessionID int64, f TR
 		}
 		events = append(events, ev)
 	}
-	return events, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return finishPage(events, limit), nil
 }
 
-// LoadEventCountFiltered возвращает число событий, совпадающих с фильтрами.
+// TRCEventRow — компактное представление события, прочитанное только из
+// выделенных колонок trc_events (без params/columns JSONB). SPID=0 означает
+// NULL spid. Используется для short-формата списка событий.
+type TRCEventRow struct {
+	ID         int64
+	EventClass int
+	EventName  string
+	SPID       int
+	Procedure  string
+	StartTime  *time.Time
+	EndTime    *time.Time
+	DurationMs int64
+}
+
+// EventRowsPage — страница short-строк с keyset-метаданными.
+type EventRowsPage struct {
+	Rows        []TRCEventRow
+	HasMore     bool
+	NextAfterID int64
+}
+
+// LoadEventRowsFiltered загружает страницу short-строк (только выделенные
+// колонки, без чтения params/columns JSONB) с той же фильтрацией, keyset-курсором
+// и семантикой limit+1, что и LoadEventsFiltered.
+func LoadEventRowsFiltered(ctx context.Context, db *store.DB, sessionID int64, f TRCEventFilter, limit int) (*EventRowsPage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	where, args := buildEventFilterWhere(sessionID, f)
+	if f.AfterID != nil {
+		where, args = appendCursorWhere(where, args, *f.AfterID)
+	}
+	query := `SELECT id, event_class, event_name, spid, procedure, start_time, end_time, duration_ms
+		FROM trc_events WHERE ` + where
+	query += fmt.Sprintf(" ORDER BY id LIMIT $%d", len(args)+1)
+	args = append(args, limit+1)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load filtered event rows: %w", err)
+	}
+	defer rows.Close()
+
+	var result []TRCEventRow
+	for rows.Next() {
+		var r TRCEventRow
+		var eventName, procedure sql.NullString
+		var spid sql.NullInt64
+		var startTS, endTS sql.NullTime
+		if err := rows.Scan(&r.ID, &r.EventClass, &eventName, &spid, &procedure, &startTS, &endTS, &r.DurationMs); err != nil {
+			return nil, err
+		}
+		r.EventName = eventName.String
+		r.Procedure = procedure.String
+		if spid.Valid {
+			r.SPID = int(spid.Int64)
+		}
+		if startTS.Valid {
+			t := startTS.Time
+			r.StartTime = &t
+		}
+		if endTS.Valid {
+			t := endTS.Time
+			r.EndTime = &t
+		}
+		result = append(result, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	page := &EventRowsPage{Rows: result}
+	if len(result) > limit {
+		page.Rows = result[:limit]
+		page.HasMore = true
+	}
+	if page.HasMore && len(page.Rows) > 0 {
+		page.NextAfterID = page.Rows[len(page.Rows)-1].ID
+	}
+	return page, nil
+}
+
+// finishPage обрезает страницу до limit (лишняя строка limit+1 — признак
+// HasMore) и вычисляет курсор последнего события (только при HasMore).
+func finishPage(events []TRCEvent, limit int) *EventsPage {
+	page := &EventsPage{Events: events}
+	if len(events) > limit {
+		page.Events = events[:limit]
+		page.HasMore = true
+	}
+	if page.HasMore && len(page.Events) > 0 {
+		page.NextAfterID = page.Events[len(page.Events)-1].StoreID
+	}
+	return page
+}
+
+// LoadEventCountFiltered возвращает число событий, совпадающих с фильтрами
+// (без limit и без курсора).
 func LoadEventCountFiltered(ctx context.Context, db *store.DB, sessionID int64, f TRCEventFilter) (int, error) {
 	where, args := buildEventFilterWhere(sessionID, f)
 	var count int
@@ -608,7 +760,7 @@ func LoadSlowEvents(ctx context.Context, db *store.DB, sessionID int64, threshol
 		limit = 1000
 	}
 	rows, err := db.QueryContext(ctx,
-		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
+		`SELECT id, event_class, event_name, procedure, duration_ms, params, columns,
 		        parent_id, depth
 		 FROM trc_events
 		 WHERE session_id = $1 AND duration_ms >= $2
@@ -640,7 +792,7 @@ func LoadErrorEvents(ctx context.Context, db *store.DB, sessionID int64, limit i
 		limit = 1000
 	}
 	rows, err := db.QueryContext(ctx,
-		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
+		`SELECT id, event_class, event_name, procedure, duration_ms, params, columns,
 		        parent_id, depth
 		 FROM trc_events
 		 WHERE session_id = $1 AND error IS NOT NULL AND error <> 0
@@ -672,7 +824,7 @@ func LoadEventsByProcedure(ctx context.Context, db *store.DB, sessionID int64, p
 		limit = 1000
 	}
 	rows, err := db.QueryContext(ctx,
-		`SELECT event_class, event_name, procedure, duration_ms, params, columns,
+		`SELECT id, event_class, event_name, procedure, duration_ms, params, columns,
 		        parent_id, depth
 		 FROM trc_events
 		 WHERE session_id = $1 AND procedure = $2
@@ -705,21 +857,84 @@ func LoadEventCount(ctx context.Context, db *store.DB, sessionID int64) (int, er
 	return count, err
 }
 
-// LoadProceduresAggregated агрегирует статистику по процедурам на стороне БД.
-func LoadProceduresAggregated(ctx context.Context, db *store.DB, sessionID int64) ([]TRCProcAgg, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT procedure,
+// AggregateOptions — единые параметры агрегации процедур (SQL и file-mode):
+// EventNames nil → только SP:Completed (текущее поведение); SPIDs nil → все
+// SPID; GroupBySPID — группировка (spid, procedure) с исключением событий с
+// NULL spid; SortBy: total_ms (default), avg_ms, max_ms, count с secondary
+// сортировкой procedure, затем spid; Top: 0 = без ограничения, иначе 1..1000
+// и применяется после агрегации.
+type AggregateOptions struct {
+	EventNames  []string
+	SPIDs       []int
+	GroupBySPID bool
+	SortBy      string
+	Top         int
+}
+
+// AggregateEventNames возвращает набор агрегируемых имён событий с default.
+func (o AggregateOptions) AggregateEventNames() []string {
+	if len(o.EventNames) == 0 {
+		return []string{"SP:Completed"}
+	}
+	return o.EventNames
+}
+
+// aggregateSortColumn отображает SortBy в колонку сортировки SQL-агрегата.
+func aggregateSortColumn(sortBy string) string {
+	switch sortBy {
+	case "avg_ms":
+		return "avg_ms"
+	case "max_ms":
+		return "max_ms"
+	case "count":
+		return "cnt"
+	default:
+		return "total_ms"
+	}
+}
+
+// LoadProceduresAggregated агрегирует статистику по процедурам на стороне БД:
+// фильтры (spids, event_names), группировка procedure или (spid, procedure),
+// детерминированная сортировка и top выполняются в PostgreSQL.
+func LoadProceduresAggregated(ctx context.Context, db *store.DB, sessionID int64, opts AggregateOptions) ([]TRCProcAgg, error) {
+	where := "session_id = $1 AND event_name = ANY($2) AND procedure IS NOT NULL AND procedure <> ''"
+	args := []interface{}{sessionID, pq.Array(opts.AggregateEventNames())}
+	if len(opts.SPIDs) > 0 {
+		where += fmt.Sprintf(" AND spid = ANY($%d)", len(args)+1)
+		args = append(args, pq.Array(opts.SPIDs))
+	}
+	groupCols := "procedure"
+	selectCols := "procedure"
+	scanSPID := false
+	if opts.GroupBySPID {
+		where += " AND spid IS NOT NULL"
+		groupCols = "spid, procedure"
+		selectCols = "spid, procedure"
+		scanSPID = true
+	}
+	orderBy := aggregateSortColumn(opts.SortBy) + " DESC, procedure ASC"
+	if opts.GroupBySPID {
+		orderBy += ", spid ASC"
+	}
+	query := fmt.Sprintf(
+		`SELECT %s,
 		        count(*) AS cnt,
 		        COALESCE(sum(duration_ms), 0) AS total_ms,
 		        COALESCE(min(duration_ms), 0) AS min_ms,
 		        COALESCE(max(duration_ms), 0) AS max_ms,
 		        COALESCE(avg(duration_ms), 0) AS avg_ms
 		 FROM trc_events
-		 WHERE session_id = $1 AND event_name = 'SP:Completed' AND procedure IS NOT NULL AND procedure <> ''
-		 GROUP BY procedure
-		 ORDER BY total_ms DESC`,
-		sessionID,
+		 WHERE %s
+		 GROUP BY %s
+		 ORDER BY %s`,
+		selectCols, where, groupCols, orderBy,
 	)
+	if opts.Top > 0 {
+		query += fmt.Sprintf(" LIMIT $%d", len(args)+1)
+		args = append(args, opts.Top)
+	}
+
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load aggregated procedures: %w", err)
 	}
@@ -728,8 +943,18 @@ func LoadProceduresAggregated(ctx context.Context, db *store.DB, sessionID int64
 	var aggs []TRCProcAgg
 	for rows.Next() {
 		var a TRCProcAgg
-		if err := rows.Scan(&a.Procedure, &a.Count, &a.TotalMs, &a.MinMs, &a.MaxMs, &a.AvgMs); err != nil {
+		var spid sql.NullInt64
+		var dest []interface{}
+		if scanSPID {
+			dest = []interface{}{&spid, &a.Procedure, &a.Count, &a.TotalMs, &a.MinMs, &a.MaxMs, &a.AvgMs}
+		} else {
+			dest = []interface{}{&a.Procedure, &a.Count, &a.TotalMs, &a.MinMs, &a.MaxMs, &a.AvgMs}
+		}
+		if err := rows.Scan(dest...); err != nil {
 			return nil, err
+		}
+		if scanSPID {
+			a.SPID = int(spid.Int64)
 		}
 		aggs = append(aggs, a)
 	}
@@ -792,7 +1017,7 @@ func LoadEventsForTree(ctx context.Context, db *store.DB, sessionID int64, spid,
 		JOIN tree t ON c.parent_id = t.id
 		WHERE c.session_id = $1 AND c.spid = $2 AND ($3 = 0 OR t.tree_depth < $3)
 	)
-	SELECT event_class, event_name, procedure, duration_ms, params, columns,
+	SELECT id, event_class, event_name, procedure, duration_ms, params, columns,
 	       parent_id, depth
 	FROM tree`
 

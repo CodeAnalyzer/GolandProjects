@@ -627,13 +627,22 @@ codebase trc parse path/to/file.xel
 codebase trc summary path/to/file.trc
 codebase trc summary --session 42
 
-# Список декодированных событий (с фильтрами и matched/returned counts)
+# Список декодированных событий: массивы фильтров, время, длительность,
+# постраничная выборка и short-формат
 codebase trc events path/to/file.trc
 codebase trc events --session 42 --spid 55 --proc MyProc
+codebase trc events --session 42 --spids 728,700 --event-names "SP:Completed,RPC:Completed"
+codebase trc events --session 42 --spids 728 --time-from 2026-09-14T13:56:50Z --min-duration-ms 1000
+codebase trc events --session 42 --spids 728 --limit 1000 --format short
+codebase trc events --session 42 --spids 728 --after-id 12345 --format short   # следующая страница
 
-# Агрегация завершённых вызовов SP (только SP:Completed; count/min/max/avg/total duration)
+# Агрегация вызовов процедур (по умолчанию только SP:Completed;
+# --event-names задаёт явный набор классов, --top/--sort/--group-by-spid)
 codebase trc procedures path/to/file.trc
 codebase trc procedures --session 42 --json
+codebase trc procedures --session 42 --spids 728 --top 20 --sort avg_ms
+codebase trc procedures --session 42 --group-by-spid
+codebase trc procedures --session 42 --event-names "RPC:Completed"
 
 # Дерево вызовов, сгруппированное по SPID
 codebase trc tree path/to/file.trc
@@ -668,8 +677,8 @@ codebase trc prune --keep-last 5
 Подкоманды:
 - **`parse`** — распарсить `.trc`, `.xml` или `.xel` файл и сохранить результат в БД; выводит сводку + session ID
 - **`summary`** — общая сводка: total_events, метаданные провайдера/сервера/версии
-- **`events`** — список декодированных событий с опциональной фильтрацией по SPID и процедуре; выводит total_count, полное filtered_count до limit и returned_count
-- **`procedures`** — агрегация только завершённых вызовов `SP:Completed`: count, min/max/avg/total duration; enrichment из индекса (путь к файлу)
+- **`events`** — список декодированных событий с фильтрами (`--spids`, `--event-names`, `--proc`, `--time-from/--time-to`, `--min-duration-ms`), постраничной выборкой (`--after-id`) и форматами (`--format full|short`). Ответ содержит `filtered_count` (полный размер отфильтрованного набора — на каждой странице), `total_count` (только на первой странице, при `after_id` отсутствует), `has_more` и `next_after_id` (курсор следующей страницы, отсутствует при `has_more=false`). Short-формат исключает `params`/`columns`; для saved-session short-запрос не читает JSONB-колонки. `--spid` — legacy-алиас `--spids` с одним значением; одновременно `--spid` и `--spids` — ошибка
+- **`procedures`** — агрегация вызовов процедур: по умолчанию только `SP:Completed` с непустым именем (count, min/max/avg/total duration; enrichment из индекса). `--event-names` задаёт явный набор классов событий (длительности разных уровней пересекаются — суммы не являются wall-clock time), `--spids` ограничивает SPID, `--top N` (0 = все, max 1000), `--sort total_ms|avg_ms|max_ms|count` (secondary: procedure, затем spid), `--group-by-spid` — группы `(spid, procedure)` без событий с NULL spid
 - **`tree`** — дерево вызовов, сгруппированное по SPID, с восстановлением вложенности через Starting/Completed пары (RPC, SQL:Batch, SQL:Stmt, SP, SP:Stmt)
 - **`errors`** — события с ненулевой колонкой Error(31)
 - **`slow`** — события медленнее порога (по умолчанию 100 мс), отсортированные по убыванию длительности
@@ -682,7 +691,14 @@ codebase trc prune --keep-last 5
 - `--json` — вывод в JSON
 
 Командно-специфичные флаги:
-- `--spid N` — фильтр по SPID (для `events`, `tree`, 0 = все)
+- `--spid N` — legacy-фильтр по одному SPID (для `events`, `tree`, 0 = все); для `events` взаимоисключающ с `--spids`
+- `--spids A,B` — фильтр по списку SPID через запятую (для `events`, `procedures`; только положительные)
+- `--event-names A,B` — фильтр/набор имён событий через запятую (для `events`, `procedures`)
+- `--time-from`/`--time-to` — RFC3339-границы полуинтервала `[from;to)` по `start_time` (для `events`)
+- `--min-duration-ms N` — минимальная длительность (для `events`)
+- `--after-id N` — keyset-курсор `next_after_id` предыдущей страницы (для `events`)
+- `--format full|short` — представление событий ответа (для `events`, default full)
+- `--top N`, `--sort METRIC`, `--group-by-spid` — параметры агрегации (для `procedures`)
 - `--proc NAME` — фильтр по имени процедуры (для `events` и `tree`, exact match)
 - `--slow-ms N` — порог медленности в миллисекундах (для `slow`, по умолчанию из `[trc] slow_threshold_ms`)
 - `--max-depth N` — максимальная глубина дерева (для `tree`, 0 = без лимита)
@@ -907,8 +923,8 @@ IDE может подключить несколько MCP-серверов на
 | `codebase_trc_parse` | Парсинг `.trc`, `.xml` или `.xel` файла и сохранение в БД | `file_path` |
 | `codebase_trc_list` | Список сохранённых сессий | — |
 | `codebase_trc_summary` | Сводка сессии: total_events, метаданные | `session_id` или `file_path` |
-| `codebase_trc_events` | Декодированные события с фильтрами; total_count, полное filtered_count до limit и returned_count | `session_id` или `file_path`, опц. `spid`/`procedure`/`event_name`/`limit` |
-| `codebase_trc_procedures` | Агрегация только `SP:Completed` с enrichment | `session_id` или `file_path` |
+| `codebase_trc_events` | Декодированные события с server-side фильтрами и keyset-пагинацией; `filtered_count` на каждой странице, `total_count` только на первой, `has_more`/`next_after_id`, `format=full\|short` | `session_id` или `file_path`, опц. `spids[]`/`event_names[]`/`procedure`/`time_from`/`time_to`/`min_duration_ms`/`after_id`/`format`/`limit`; legacy `spid`/`event_name` нормализуются в массивы |
+| `codebase_trc_procedures` | Агрегация вызовов процедур (default `SP:Completed`) с enrichment, `spids[]`, `event_names[]`, `top`, `sort_by`, `group_by_spid` | `session_id` или `file_path`, опц. `spids[]`/`event_names[]`/`top`/`sort_by`/`group_by_spid` |
 | `codebase_trc_tree` | Дерево вызовов по SPID с опц. фильтром по процедуре | `session_id` или `file_path`, опц. `spid`/`max_depth`/`limit`/`procedure` |
 | `codebase_trc_errors` | События с ненулевой Error(31) | `session_id` или `file_path` |
 | `codebase_trc_slow` | Медленные события (порог DurationMs) | `session_id` или `file_path`, опц. `threshold_ms` |

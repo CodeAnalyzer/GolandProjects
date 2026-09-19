@@ -56,7 +56,9 @@ func TestTRCHandlersRejectInvalidOptionalArguments(t *testing.T) {
 		{"codebase_trc_list", "limit"},
 		{"codebase_trc_summary", "session_id"}, {"codebase_trc_summary", "file_path"},
 		{"codebase_trc_events", "limit"}, {"codebase_trc_events", "spid"}, {"codebase_trc_events", "procedure"}, {"codebase_trc_events", "event_name"}, {"codebase_trc_events", "session_id"}, {"codebase_trc_events", "file_path"},
+		{"codebase_trc_events", "spids"}, {"codebase_trc_events", "event_names"}, {"codebase_trc_events", "time_from"}, {"codebase_trc_events", "time_to"}, {"codebase_trc_events", "min_duration_ms"}, {"codebase_trc_events", "after_id"}, {"codebase_trc_events", "format"},
 		{"codebase_trc_procedures", "session_id"}, {"codebase_trc_procedures", "file_path"},
+		{"codebase_trc_procedures", "spids"}, {"codebase_trc_procedures", "event_names"}, {"codebase_trc_procedures", "top"}, {"codebase_trc_procedures", "sort_by"}, {"codebase_trc_procedures", "group_by_spid"},
 		{"codebase_trc_tree", "max_depth"}, {"codebase_trc_tree", "limit"}, {"codebase_trc_tree", "spid"}, {"codebase_trc_tree", "session_id"}, {"codebase_trc_tree", "file_path"}, {"codebase_trc_tree", "procedure"},
 		{"codebase_trc_slow", "threshold_ms"}, {"codebase_trc_slow", "limit"}, {"codebase_trc_slow", "session_id"}, {"codebase_trc_slow", "file_path"},
 		{"codebase_trc_errors", "limit"}, {"codebase_trc_errors", "session_id"}, {"codebase_trc_errors", "file_path"},
@@ -378,6 +380,139 @@ func TestTRCPruneHandlerAcceptsZeroKeepLast(t *testing.T) {
 	})
 	if err != nil && err.Error() == "keep_last must be >= 0" {
 		t.Fatalf("keep_last=0 should be accepted, got: %v", err)
+	}
+}
+
+func TestOptionalIntSlice(t *testing.T) {
+	got, err := optionalIntSlice(map[string]interface{}{"spids": []interface{}{float64(728), float64(700)}}, "spids")
+	if err != nil || len(got) != 2 || got[0] != 728 || got[1] != 700 {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	if v, err := optionalIntSlice(map[string]interface{}{}, "spids"); err != nil || v != nil {
+		t.Fatalf("absent: got %v, %v", v, err)
+	}
+	if _, err := optionalIntSlice(map[string]interface{}{"spids": 728}, "spids"); err == nil || !strings.Contains(err.Error(), "spids must be integer array") {
+		t.Fatalf("non-array: %v", err)
+	}
+	if _, err := optionalIntSlice(map[string]interface{}{"spids": []interface{}{float64(728), "700"}}, "spids"); err == nil || !strings.Contains(err.Error(), "spids[1]") {
+		t.Fatalf("non-integer element: %v", err)
+	}
+	if _, err := optionalIntSlice(map[string]interface{}{"spids": []interface{}{1.5}}, "spids"); err == nil {
+		t.Fatal("fractional element accepted")
+	}
+}
+
+func TestOptionalStringSliceStrict(t *testing.T) {
+	got, err := optionalStringSlice(map[string]interface{}{"names": []interface{}{"SP:Completed", "RPC:Completed"}}, "names")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	if _, err := optionalStringSlice(map[string]interface{}{"names": []interface{}{"SP:Completed", ""}}, "names"); err == nil || !strings.Contains(err.Error(), "names[1]") {
+		t.Fatalf("empty string: %v", err)
+	}
+	if _, err := optionalStringSlice(map[string]interface{}{"names": []interface{}{7}}, "names"); err == nil || !strings.Contains(err.Error(), "names[0]") {
+		t.Fatalf("non-string element: %v", err)
+	}
+}
+
+func TestTRCEventsHandlerScalarArrayConflict(t *testing.T) {
+	tool, ok := toolRegistry["codebase_trc_events"]
+	if !ok {
+		t.Fatal("codebase_trc_events not in toolRegistry")
+	}
+	for _, args := range []map[string]interface{}{
+		{"spid": float64(728), "spids": []interface{}{float64(728)}},
+		{"event_name": "SP:Completed", "event_names": []interface{}{"SP:Completed"}},
+	} {
+		_, err := tool.Handler(context.Background(), args)
+		if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Fatalf("args %v: err = %v, want mutually exclusive", args, err)
+		}
+	}
+}
+
+func TestTRCEventsHandlerLegacyScalarNormalization(t *testing.T) {
+	tool, ok := toolRegistry["codebase_trc_events"]
+	if !ok {
+		t.Fatal("codebase_trc_events not in toolRegistry")
+	}
+	// spid=-1 нормализуется в spids=[-1] и отклоняется валидацией с индексом
+	_, err := tool.Handler(context.Background(), map[string]interface{}{"spid": float64(-1)})
+	if err == nil || !strings.Contains(err.Error(), "spids[0]") {
+		t.Fatalf("err = %v, want spids[0] validation error", err)
+	}
+	// spid=0 — легаси-семантика «все» (фильтр не применяется)
+	_, err = tool.Handler(context.Background(), map[string]interface{}{"spid": float64(0)})
+	if err == nil || !strings.Contains(err.Error(), "either session_id or file_path") {
+		t.Fatalf("err = %v, want missing source error (validation passed)", err)
+	}
+}
+
+func TestTRCEventsHandlerRejectsBadRFC3339(t *testing.T) {
+	tool, ok := toolRegistry["codebase_trc_events"]
+	if !ok {
+		t.Fatal("codebase_trc_events not in toolRegistry")
+	}
+	for _, key := range []string{"time_from", "time_to"} {
+		_, err := tool.Handler(context.Background(), map[string]interface{}{key: "2026-09-14 13:56:50"})
+		if err == nil || !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "RFC3339") {
+			t.Fatalf("%s: err = %v, want RFC3339 error", key, err)
+		}
+	}
+}
+
+func TestTRCEventsSchemaNewParams(t *testing.T) {
+	tool, ok := toolRegistry["codebase_trc_events"]
+	if !ok {
+		t.Fatal("codebase_trc_events not in toolRegistry")
+	}
+	schema := tool.Definition.InputSchema
+	props, _ := schema["properties"].(map[string]interface{})
+	for _, key := range []string{"spids", "event_names", "time_from", "time_to", "min_duration_ms", "after_id", "format", "spid", "event_name"} {
+		if _, ok := props[key]; !ok {
+			t.Errorf("schema missing property %s", key)
+		}
+	}
+	for _, key := range []string{"spids", "event_names"} {
+		prop, _ := props[key].(map[string]interface{})
+		if prop["type"] != "array" {
+			t.Errorf("property %s type = %v, want array", key, prop["type"])
+		}
+	}
+}
+
+func TestTRCProceduresSchemaNewParams(t *testing.T) {
+	tool, ok := toolRegistry["codebase_trc_procedures"]
+	if !ok {
+		t.Fatal("codebase_trc_procedures not in toolRegistry")
+	}
+	schema := tool.Definition.InputSchema
+	props, _ := schema["properties"].(map[string]interface{})
+	for _, key := range []string{"spids", "event_names", "top", "sort_by", "group_by_spid"} {
+		if _, ok := props[key]; !ok {
+			t.Errorf("schema missing property %s", key)
+		}
+	}
+	// scalar-алиасы для procedures не вводятся
+	for _, key := range []string{"spid", "event_name"} {
+		if _, ok := props[key]; ok {
+			t.Errorf("schema must not contain scalar alias %s", key)
+		}
+	}
+}
+
+func TestTRCProceduresHandlerValidatesParams(t *testing.T) {
+	tool, ok := toolRegistry["codebase_trc_procedures"]
+	if !ok {
+		t.Fatal("codebase_trc_procedures not in toolRegistry")
+	}
+	_, err := tool.Handler(context.Background(), map[string]interface{}{"top": float64(1001)})
+	if err == nil || !strings.Contains(err.Error(), "top") {
+		t.Fatalf("err = %v, want top validation error", err)
+	}
+	_, err = tool.Handler(context.Background(), map[string]interface{}{"sort_by": "duration"})
+	if err == nil || !strings.Contains(err.Error(), "sort_by") {
+		t.Fatalf("err = %v, want sort_by validation error", err)
 	}
 }
 
