@@ -6,8 +6,11 @@ import (
 	"fmt"
 )
 
-// GetStats возвращает статистику индекса
-func (db *DB) GetStats(ctx context.Context) (*Stats, error) {
+// GetStats возвращает статистику индекса.
+// lsaGeneration — активное поколение LSA (из sidecar-state модели): при непустом
+// значении счётчики spec_vocab/spec_embeddings считаются по этому поколению,
+// при пустом — по всем поколениям (фолбэк при недоступном state).
+func (db *DB) GetStats(ctx context.Context, lsaGeneration string) (*Stats, error) {
 	stats := &Stats{}
 
 	if err := db.QueryRowContext(ctx, `
@@ -84,14 +87,44 @@ func (db *DB) GetStats(ctx context.Context) (*Stats, error) {
 		{`SELECT COUNT(*) FROM spec_changes`, &stats.SpecChanges, "spec changes"},
 		{`SELECT COUNT(*) FROM spec_change_delta`, &stats.SpecChangeDeltas, "spec change deltas"},
 		{`SELECT COUNT(*) FROM spec_code_mentions`, &stats.SpecCodeMentions, "spec code mentions"},
-		{`SELECT COUNT(*) FROM spec_vocab`, &stats.SpecVocabTerms, "spec vocab terms"},
-		{`SELECT COUNT(*) FROM spec_embeddings`, &stats.SpecEmbeddings, "spec embeddings"},
 	}
 
 	for _, aggregate := range aggregates {
 		if err := db.QueryRowContext(ctx, aggregate.query).Scan(aggregate.target); err != nil {
 			return nil, fmt.Errorf("failed to get %s count: %w", aggregate.name, err)
 		}
+	}
+
+	// Полнотекстовый слой спек: счётчики LSA generation-осведомлённы.
+	// Поколения согласованы между spec_vocab и spec_embeddings по конструкции
+	// публикации, поэтому число поколений берётся из spec_vocab.
+	if lsaGeneration != "" {
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM spec_vocab WHERE generation = $1`, lsaGeneration,
+		).Scan(&stats.SpecVocabTerms); err != nil {
+			return nil, fmt.Errorf("failed to get spec vocab terms count: %w", err)
+		}
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM spec_embeddings WHERE generation = $1`, lsaGeneration,
+		).Scan(&stats.SpecEmbeddings); err != nil {
+			return nil, fmt.Errorf("failed to get spec embeddings count: %w", err)
+		}
+	} else {
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM spec_vocab`,
+		).Scan(&stats.SpecVocabTerms); err != nil {
+			return nil, fmt.Errorf("failed to get spec vocab terms count: %w", err)
+		}
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM spec_embeddings`,
+		).Scan(&stats.SpecEmbeddings); err != nil {
+			return nil, fmt.Errorf("failed to get spec embeddings count: %w", err)
+		}
+	}
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT generation) FROM spec_vocab`,
+	).Scan(&stats.SpecLSAGenerations); err != nil {
+		return nil, fmt.Errorf("failed to get spec lsa generations count: %w", err)
 	}
 
 	var finishedAt sql.NullTime

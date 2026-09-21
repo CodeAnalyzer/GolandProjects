@@ -6,6 +6,7 @@ import (
 
 	"github.com/codebase/internal/config"
 	"github.com/codebase/internal/errs"
+	"github.com/codebase/internal/specfts"
 	"github.com/codebase/internal/store"
 )
 
@@ -58,9 +59,22 @@ func ExecuteStats(db *store.DB) (*store.Stats, error) {
 		return nil, errs.ErrConfigNotLoaded
 	}
 
-	stats, err := db.GetStats(context.Background())
+	// Активное поколение LSA — из sidecar-state модели: метрики полнотекстового
+	// слоя спек считаются по активному поколению, а не по сумме удерживаемых.
+	// Недоступный или повреждённый state — фолбэк на полный счёт.
+	stats, err := db.GetStats(context.Background(), lsaStateGeneration(config.SpecLSAStatePath()))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errs.ErrStatsFailed, err)
 	}
 	return stats, nil
+}
+
+// lsaStateGeneration возвращает активное поколение LSA из sidecar-state модели.
+// Отсутствующий, пустой или повреждённый state — "" (фолбэк на полный счёт).
+func lsaStateGeneration(modelPath string) string {
+	st, err := specfts.LoadLSAState(modelPath)
+	if err != nil || st == nil {
+		return ""
+	}
+	return st.Generation
 }

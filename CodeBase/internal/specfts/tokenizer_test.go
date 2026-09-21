@@ -2,6 +2,7 @@ package specfts
 
 import (
 	"testing"
+	"unicode/utf8"
 )
 
 func TestTokenize_RussianStemming(t *testing.T) {
@@ -116,21 +117,100 @@ func TestTokenize_MixedText(t *testing.T) {
 }
 
 func TestStemRussian_SimpleCases(t *testing.T) {
+	// stemRussian получает уже нормализованный (ё→е) ввод — нормализация
+	// выполняется в Tokenize до вызова.
 	tests := []struct {
 		input  string
 		expect string
 	}{
 		{"блокировка", "блокировк"},
 		{"блокировки", "блокировк"},
-		{"счёта", "счёт"},
-		{"счёт", "счёт"},
+		{"счета", "счет"},
+		{"счет", "счет"},
 		{"выполнять", "выполня"},
-		{"выполняется", "выполн"},
+		{"выполняется", "выполня"},
 	}
 	for _, tt := range tests {
 		got := stemRussian(tt.input)
 		if got != tt.expect {
 			t.Errorf("stemRussian(%q) = %q, want %q", tt.input, got, tt.expect)
+		}
+	}
+}
+
+// TestStemRussian_AdjectivalParadigm — вся падежная парадигма прилагательного
+// схлопывается в один стем; мусорные осколки («автоматическо», «автоматическу»)
+// не порождаются (регрессия самописного суффиксного стеммера).
+func TestStemRussian_AdjectivalParadigm(t *testing.T) {
+	forms := []string{
+		"автоматический", "автоматическим", "автоматического", "автоматическому", "автоматически",
+	}
+	const want = "автоматическ"
+	for _, f := range forms {
+		if got := stemRussian(f); got != want {
+			t.Errorf("stemRussian(%q) = %q, want %q", f, got, want)
+		}
+	}
+	for _, garbage := range []string{"автоматическо", "автоматическу"} {
+		for _, f := range forms {
+			if got := stemRussian(f); got == garbage {
+				t.Errorf("stemRussian(%q) produced garbage stem %q", f, got)
+			}
+		}
+	}
+}
+
+// TestTokenize_AdjectivalParadigmSingleVocabTerm — формы одной лексемы дают
+// один стем на уровне токенизации: словарь LSA получает одну строку.
+func TestTokenize_AdjectivalParadigmSingleVocabTerm(t *testing.T) {
+	stems := TokenizeToStemCounts("автоматический автоматическим автоматического автоматическому")
+	if len(stems) != 1 {
+		t.Fatalf("expected single stem for adjectival paradigm, got %v", stems)
+	}
+	if _, ok := stems["автоматическ"]; !ok {
+		t.Errorf("expected stem 'автоматическ', got %v", stems)
+	}
+}
+
+// TestTokenize_AbbreviationNotStemmed — аббревиатуры ≤ 4 символов (руны,
+// не байты) проходят целиком без стемминга: «США» не усекается до «сш».
+func TestTokenize_AbbreviationNotStemmed(t *testing.T) {
+	tokens := TokenizeToStems("США НДС ЦБ и БИК")
+	seen := map[string]bool{}
+	for _, tok := range tokens {
+		seen[tok] = true
+	}
+	for _, abbr := range []string{"сша", "ндс", "цб", "бик"} {
+		if !seen[abbr] {
+			t.Errorf("expected abbreviation token %q kept whole, got %v", abbr, tokens)
+		}
+	}
+	if seen["сш"] {
+		t.Errorf("abbreviation 'США' was stemmed to 'сш': %v", tokens)
+	}
+}
+
+// TestTokenize_MinStemLength — стемы короче 2 символов отбрасываются
+// («аяя» стеммится в одно-буквенный «а»).
+func TestTokenize_MinStemLength(t *testing.T) {
+	if got := stemRussian("аяя"); utf8.RuneCountInString(got) != 1 {
+		t.Fatalf("precondition: stemRussian(аяя) must yield 1-rune stem, got %q", got)
+	}
+	tokens := TokenizeToStems("аяя")
+	for _, tok := range tokens {
+		if tok == "а" {
+			t.Errorf("1-rune stem must be discarded, got %v", tokens)
+		}
+	}
+}
+
+// TestTokenize_StopWordInflectedForms — падежные формы стоп-слов фильтруются
+// по предвычисленным стемам записей стоп-словаря.
+func TestTokenize_StopWordInflectedForms(t *testing.T) {
+	tokens := TokenizeToStems("которого которому должны должна должным")
+	for _, tok := range tokens {
+		if tok == "котор" || tok == "должн" {
+			t.Errorf("inflected stop word leaked into tokens: %v", tokens)
 		}
 	}
 }

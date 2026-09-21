@@ -74,6 +74,7 @@ type Stats struct {
 	SpecCodeMentions   int
 	SpecVocabTerms     int
 	SpecEmbeddings     int
+	SpecLSAGenerations int
 	Errors             int
 	PASFields          int
 	LastScanID         int64

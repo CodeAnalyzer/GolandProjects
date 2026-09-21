@@ -4,6 +4,7 @@ package store_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -137,6 +138,64 @@ func TestLoadAllSpecCapabilitiesWithReqsForLSA(t *testing.T) {
 	}
 	if again[0].LSAText != c.LSAText {
 		t.Errorf("aggregation not deterministic: %q vs %q", again[0].LSAText, c.LSAText)
+	}
+}
+
+// TestGetStats_LSAGenerationCounts — метрики stats generation-осведомлённы:
+// при непустом поколении счётчики vocab/embeddings считаются по нему (не сумма
+// удерживаемых поколений), при пустом — полный счёт; spec_lsa_generations —
+// число различимых поколений. Числа 30/40/70 — масштабированный аналог
+// сценария спеки (11 000 + 11 200 → активное 11 000).
+func TestGetStats_LSAGenerationCounts(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+	capID := seedLSACaps(t, db)
+
+	terms := func(n int, prefix string) []model.SpecVocabTerm {
+		out := make([]model.SpecVocabTerm, n)
+		for i := range out {
+			out[i] = model.SpecVocabTerm{Term: fmt.Sprintf("%s-%03d", prefix, i), DocFreq: 1, IDF: 1}
+		}
+		return out
+	}
+	emb := []model.SpecEmbedding{{SpecID: capID, EmbedLevel: "spec", EmbedText: "text", Embedding: []float64{1}, EmbedMethod: "tfidf-lsa", EmbedDim: 1}}
+
+	// Активное поколение меньше предыдущего: проверяем выбор по generation,
+	// а не «максимум строк».
+	if err := db.PublishSpecLSAGeneration(ctx, "gen-active", terms(30, "active"), emb); err != nil {
+		t.Fatalf("publish active: %v", err)
+	}
+	if err := db.PublishSpecLSAGeneration(ctx, "gen-previous", terms(40, "prev"), emb); err != nil {
+		t.Fatalf("publish previous: %v", err)
+	}
+
+	stats, err := db.GetStats(ctx, "gen-active")
+	if err != nil {
+		t.Fatalf("GetStats(active): %v", err)
+	}
+	if stats.SpecVocabTerms != 30 {
+		t.Errorf("active generation: SpecVocabTerms = %d, want 30 (not sum 70)", stats.SpecVocabTerms)
+	}
+	if stats.SpecEmbeddings != 1 {
+		t.Errorf("active generation: SpecEmbeddings = %d, want 1", stats.SpecEmbeddings)
+	}
+	if stats.SpecLSAGenerations != 2 {
+		t.Errorf("SpecLSAGenerations = %d, want 2", stats.SpecLSAGenerations)
+	}
+
+	// Фолбэк: пустое поколение — полный счёт
+	stats, err = db.GetStats(ctx, "")
+	if err != nil {
+		t.Fatalf("GetStats(fallback): %v", err)
+	}
+	if stats.SpecVocabTerms != 70 {
+		t.Errorf("fallback: SpecVocabTerms = %d, want 70 (all generations)", stats.SpecVocabTerms)
+	}
+	if stats.SpecEmbeddings != 2 {
+		t.Errorf("fallback: SpecEmbeddings = %d, want 2 (all generations)", stats.SpecEmbeddings)
+	}
+	if stats.SpecLSAGenerations != 2 {
+		t.Errorf("fallback: SpecLSAGenerations = %d, want 2", stats.SpecLSAGenerations)
 	}
 }
 

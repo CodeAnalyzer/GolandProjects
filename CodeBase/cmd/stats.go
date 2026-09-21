@@ -65,6 +65,7 @@ type statsEntitiesSummary struct {
 	SpecCodeMentions   int `json:"spec_code_mentions"`
 	SpecVocabTerms     int `json:"spec_vocab_terms"`
 	SpecEmbeddings     int `json:"spec_embeddings"`
+	SpecLSAGenerations int `json:"spec_lsa_generations"`
 }
 
 type statsLastScanSummary struct {
@@ -181,6 +182,7 @@ var statsCmd = &cobra.Command{
 		fmt.Printf("  Code mentions:   %d\n", stats.SpecCodeMentions)
 		fmt.Printf("  Vocab terms:     %d\n", stats.SpecVocabTerms)
 		fmt.Printf("  Embeddings:      %d\n", stats.SpecEmbeddings)
+		fmt.Printf("  LSA generations: %d\n", stats.SpecLSAGenerations)
 		fmt.Printf("\n")
 		fmt.Printf("Errors:\n")
 		fmt.Printf("  Parse errors:    %d\n", stats.Errors)
@@ -268,6 +270,7 @@ func buildStatsResponse(stats *store.Stats) statsResponse {
 			SpecCodeMentions:   stats.SpecCodeMentions,
 			SpecVocabTerms:     stats.SpecVocabTerms,
 			SpecEmbeddings:     stats.SpecEmbeddings,
+			SpecLSAGenerations: stats.SpecLSAGenerations,
 		},
 		LastScan: statsLastScanSummary{
 			RunID:  stats.LastScanID,

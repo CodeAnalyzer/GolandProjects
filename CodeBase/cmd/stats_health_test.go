@@ -38,6 +38,7 @@ func TestBuildStatsResponse(t *testing.T) {
 		SpecCodeMentions:   23,
 		SpecVocabTerms:     24,
 		SpecEmbeddings:     25,
+		SpecLSAGenerations: 2,
 		Errors:             12,
 		LastScanID:         13,
 		LastScanStatus:     "completed",
@@ -58,7 +59,7 @@ func TestBuildStatsResponse(t *testing.T) {
 	if response.Entities.SpecConfigs != 16 || response.Entities.SpecCapabilities != 17 || response.Entities.SpecRequirements != 18 ||
 		response.Entities.SpecScenarios != 19 || response.Entities.SpecUsecases != 20 || response.Entities.SpecChanges != 21 ||
 		response.Entities.SpecChangeDeltas != 22 || response.Entities.SpecCodeMentions != 23 || response.Entities.SpecVocabTerms != 24 ||
-		response.Entities.SpecEmbeddings != 25 {
+		response.Entities.SpecEmbeddings != 25 || response.Entities.SpecLSAGenerations != 2 {
 		t.Fatalf("unexpected spec entities summary: %+v", response.Entities)
 	}
 	if response.LastScan.RunID != 13 || response.LastScan.Status != "completed" || response.LastScan.Errors != 12 {

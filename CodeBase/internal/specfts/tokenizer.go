@@ -4,6 +4,9 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
+
+	"github.com/kljensen/snowball"
 )
 
 // Категории терминов (design D6):
@@ -110,7 +113,8 @@ func Tokenize(text string) []Token {
 	// 1. Русские слова — lowercase + стемминг
 	for _, m := range reRussianWord.FindAllString(text, -1) {
 		// Пропускаем русские аббревиатуры (все заглавные, ≤ 4 символов) — они не стеммятся
-		if len(m) <= 4 && m == strings.ToUpper(m) && len(m) >= 2 {
+		// Длина считается в рунах: кириллица в UTF-8 — 2 байта на символ.
+		if runes := utf8.RuneCountInString(m); runes <= 4 && m == strings.ToUpper(m) && runes >= 2 {
 			// Аббревиатура — добавляем как техимя
 			lower := strings.ToLower(m)
 			if stopWords[lower] {
@@ -125,10 +129,10 @@ func Tokenize(text string) []Token {
 		}
 		lower := strings.ToLower(m)
 		stemmed := stemRussian(lower)
-		if stopWords[stemmed] || stopWords[lower] {
+		if stopWords[stemmed] || stopWords[lower] || stopStems[stemmed] {
 			continue
 		}
-		if len(stemmed) < 2 {
+		if utf8.RuneCountInString(stemmed) < 2 {
 			continue
 		}
 		tokens = append(tokens, Token{
@@ -200,30 +204,41 @@ func isHybrid(s string) bool {
 	return hasDigit && hasLetter
 }
 
-// stemRussian — простой суффиксный стеммер для русского языка.
-// Удаляет окончания: -ый, -ой, -ая, -ое, -ые, -ий, -ий, -ть, -ти, -тся,
-// -ется, -аться, -ение, -ация, -ость, -ство, -ние, -ния, -ом, -ам, -ям,
-// -ах, -ях, -ов, -ев, -ам, -ям, -ами, -ями, -ых, -их
+// stemRussian — стемминг русского слова алгоритмом Snowball (Russian).
+// Единая точка подмены стеммера: нормализация ё→е выполняется в Tokenize
+// до вызова (Snowball сам ё не нормализует). При ошибке стемминга слово
+// возвращается как есть.
 func stemRussian(word string) string {
-	// Окончания упорядочены по убыванию длины — длинные проверяются раньше,
-	// чтобы -ется не отрезалось раньше -яется.
-	endings := []string{
-		"ование", "ывание", "ирование",
-		"аться", "яться", "ться", "яется", "ется", "ация", "изация",
-		"ание", "ение", "ость", "ство", "ние", "ния",
-		"ами", "ями", "ых", "их", "ов", "ев", "ам", "ям", "ах", "ях",
-		"ый", "ой", "ая", "ое", "ые", "ий", "ее", "ить", "ть", "ти",
-		"ом", "ой", "ей", "ию", "ия", "ий", "тся",
-		"на", "но", "ны", "ну",
-		"ет", "ут", "ют", "ит", "ат", "ят",
-		"ел", "ал", "ил", "ол",
-		"го", "му", "ва", "во",
-		"а", "я", "ы", "и", "е", "о", "у", "ю",
+	stemmed, err := snowball.Stem(word, "russian", true)
+	if err != nil || stemmed == "" {
+		return word
 	}
-	for _, ending := range endings {
-		if strings.HasSuffix(word, ending) && len(word) > len(ending)+2 {
-			return word[:len(word)-len(ending)]
+	return stemmed
+}
+
+// stopStems — предвычисленные стемы записей стоп-словаря (Snowball, русские
+// записи): ловят падежные формы стоп-слов («которого», «которому») без
+// ручного перечисления форм. Английские записи стеммятся только по
+// исходной форме — они неизменяемые служебные слова.
+var stopStems = buildStopStems()
+
+func buildStopStems() map[string]bool {
+	stems := make(map[string]bool, len(stopWords)*2)
+	for w := range stopWords {
+		stems[w] = true
+		if hasCyrillic(w) {
+			stems[stemRussian(w)] = true
 		}
 	}
-	return word
+	return stems
+}
+
+// hasCyrillic сообщает, содержит ли строка кириллические буквы.
+func hasCyrillic(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Cyrillic, r) {
+			return true
+		}
+	}
+	return false
 }
