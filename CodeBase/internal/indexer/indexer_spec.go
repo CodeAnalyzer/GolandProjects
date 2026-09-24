@@ -574,7 +574,7 @@ func (idx *Indexer) insertSpecMentions(ctx context.Context, fileID int64, capID 
 		}
 		for _, s := range r.Scenarios {
 			scenarioID := scenarioIDs[reqID][s.Order]
-			for _, m := range openspecmd.ExtractMentionsInline(s.When + "\n" + s.Then) {
+			for _, m := range openspecmd.ExtractMentionsInline(s.Given + "\n" + s.When + "\n" + s.Then) {
 				mentions = append(mentions, &model.SpecCodeMention{
 					FileID:      fileID,
 					SourceType:  "spec_scenario",

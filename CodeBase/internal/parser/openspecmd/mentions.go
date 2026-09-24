@@ -22,6 +22,12 @@ var (
 	rePathSMF       = regexp.MustCompile(`\b[A-Za-z0-9_/\\]+\.smf\b`)
 	rePathDFM       = regexp.MustCompile(`\b[A-Za-z0-9_/\\]+\.dfm\b`)
 	rePathPAS       = regexp.MustCompile(`\b[A-Za-z0-9_/\\]+\.pas\b`)
+	// rePathReport — пути отчётных форм (.tpr/.rpt); резолв в report_forms.
+	rePathReport = regexp.MustCompile(`\b[A-Za-z0-9_/\\]+\.(?:tpr|rpt)\b`)
+	// reEventName — идентификаторы событийных контрактов (OnAfter*/OnBefore*).
+	reEventName = regexp.MustCompile(`\bOn(?:After|Before)[A-Z][A-Za-z0-9_]*`)
+	// reEventIdent — полноточный якорь для классификации одиночного токена.
+	reEventIdent      = regexp.MustCompile(`^On(?:After|Before)[A-Z][A-Za-z0-9_]*$`)
 	reUnderscoreIdent = regexp.MustCompile(`\b[A-Z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b`)
 )
 
@@ -121,6 +127,22 @@ func extractMentions(text string, bareIdentifiers bool) []Mention {
 			}
 		}
 
+		// Отчётные формы .tpr/.rpt — однозначный маркер в обоих режимах
+		for _, m := range rePathReport.FindAllString(line, -1) {
+			name, kind, ok := classifyMention(m)
+			if ok {
+				add(name, kind, lineNo)
+			}
+		}
+
+		// Событийные контракты OnAfter*/OnBefore* — однозначный маркер в обоих режимах
+		for _, m := range reEventName.FindAllString(line, -1) {
+			name, kind, ok := classifyMention(m)
+			if ok {
+				add(name, kind, lineNo)
+			}
+		}
+
 		// bare-идентификаторы с подчёркиваниями — только для Related code
 		// (там буллеты без бэктиков: "CardLimit_proc.sql — обработка")
 		if bareIdentifiers {
@@ -146,6 +168,27 @@ func classifyMention(raw string) (string, string, bool) {
 		return "", "", false
 	}
 
+	lowerFull := strings.ToLower(token)
+
+	// XML-пути DSArchitectData (до сведения пути к последнему сегменту):
+	// .../Event/<имя>.xml → событийный контракт; Table/pAPI_<имя>.xml →
+	// контрактная таблица API; прочие .xml (service-контракты, datamart) не резолвим.
+	if strings.HasSuffix(lowerFull, ".xml") {
+		idx := strings.LastIndexAny(token, `/\`)
+		base := token
+		if idx >= 0 {
+			base = token[idx+1:]
+		}
+		nameXML := strings.TrimSuffix(base, ".xml")
+		switch {
+		case hasPathSegment(token, "Event"):
+			return nameXML, "event", true
+		case strings.HasPrefix(strings.ToLower(nameXML), "papi_"):
+			return nameXML, "api_table", true
+		}
+		return "", "", false
+	}
+
 	// Путь → последний сегмент
 	if strings.ContainsAny(token, `/\`) {
 		idx := strings.LastIndexAny(token, `/\`)
@@ -163,6 +206,8 @@ func classifyMention(raw string) (string, string, bool) {
 		return strings.TrimSuffix(token, ".dfm"), "form", true
 	case strings.HasSuffix(lower, ".pas"):
 		return strings.TrimSuffix(token, ".pas"), "method", true
+	case strings.HasSuffix(lower, ".tpr"), strings.HasSuffix(lower, ".rpt"):
+		return strings.TrimSuffix(strings.TrimSuffix(token, ".tpr"), ".rpt"), "report", true
 	case strings.HasPrefix(lower, "api_"):
 		return token, "api", true
 	case strings.HasPrefix(lower, "fcd_"):
@@ -172,6 +217,17 @@ func classifyMention(raw string) (string, string, bool) {
 	// bare идентификаторы после трима пути
 	if len(token) < 4 {
 		return "", "", false
+	}
+
+	// Контрактные таблицы API (pAPI_*) — TVP-структуры, декларированные
+	// в контрактах; не сводятся к табличной эвристике t/p.
+	if strings.HasPrefix(lower, "papi_") {
+		return token, "api_table", true
+	}
+
+	// Событийные контракты On(After|Before)* — до underscore-эвристики procedure
+	if reEventIdent.MatchString(token) {
+		return token, "event", true
 	}
 
 	// t-таблицы / p-таблицы (в т.ч. pCard_Buf_TmpTbl)
@@ -188,6 +244,16 @@ func classifyMention(raw string) (string, string, bool) {
 		return token, "unknown", true
 	}
 	return "", "", false
+}
+
+// hasPathSegment сообщает, содержит ли путь сегмент seg (регистр не значим).
+func hasPathSegment(path string, seg string) bool {
+	for _, s := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if strings.EqualFold(s, seg) {
+			return true
+		}
+	}
+	return false
 }
 
 // bareAllowed — правдоподобный идентификатор, не подошедший ни под один kind:

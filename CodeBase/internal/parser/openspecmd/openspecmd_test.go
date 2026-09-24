@@ -680,6 +680,64 @@ func TestExtractMentions(t *testing.T) {
 	}
 }
 
+func TestExtractMentions_ReportEventApiTable(t *testing.T) {
+	related := `### Отчёты
+- ` + "`" + `ReservePortfolio/Reporting/rbr.tpr` + "`" + ` — локальный отчёт
+- ` + "`" + `API_Reserv/DSArchitectData/BObject/RsvPortfolio/Event/OnAfterPrtf_UpdateNorm.xml` + "`" + ` — событие нормы
+- ` + "`" + `API_Reserv/DSArchitectData/BObject/RsvPortfolio/Table/pAPI_Prtf_Rule.xml` + "`" + ` — таблица правил
+- ` + "`" + `fa-reports/FARPRT_Solution/DSArchitectData/Liquidity/r8938_prc.sql` + "`" + ` — строчная проца
+`
+	mentions := ExtractMentionsFromRelatedCode(related)
+	byKind := map[string][]string{}
+	for _, m := range mentions {
+		byKind[m.Kind] = append(byKind[m.Kind], m.Name)
+	}
+	if !containsName(byKind["report"], "rbr") {
+		t.Fatalf("report mentions = %v", byKind["report"])
+	}
+	if !containsName(byKind["event"], "OnAfterPrtf_UpdateNorm") {
+		t.Fatalf("event mentions (Event/*.xml path) = %v", byKind["event"])
+	}
+	if !containsName(byKind["api_table"], "pAPI_Prtf_Rule") {
+		t.Fatalf("api_table mentions (Table/pAPI_*.xml path) = %v", byKind["api_table"])
+	}
+	if !containsName(byKind["procedure"], "r8938_prc") {
+		t.Fatalf("lowercase .sql procedure = %v", byKind["procedure"])
+	}
+
+	// inline: отчёт вне бэктиков, событие вне бэктиков, pAPI в бэктиках
+	inline := "- **THEN** система формирует отчет на основании отчетной формы form651.tpr с данными портфеля\n" +
+		"- **AND** публикуется событие OnAfterPrtf_UpdateNorm, передающее нормы\n" +
+		"- **AND** внешняя система передает в `pAPI_Accrual_ObjDate` дату расчета\n" +
+		"- **AND** запись сохраняется в tRPPortfolio\n"
+	inlineMentions := ExtractMentionsInline(inline)
+	var foundReport, foundEvent, foundAPITable, foundTable bool
+	for _, m := range inlineMentions {
+		switch {
+		case m.Name == "form651" && m.Kind == "report":
+			foundReport = true
+		case m.Name == "OnAfterPrtf_UpdateNorm" && m.Kind == "event":
+			foundEvent = true
+		case m.Name == "pAPI_Accrual_ObjDate" && m.Kind == "api_table":
+			foundAPITable = true
+		case m.Name == "tRPPortfolio" && m.Kind == "table":
+			foundTable = true
+		}
+	}
+	if !foundReport {
+		t.Fatalf("inline report mention missing: %+v", inlineMentions)
+	}
+	if !foundEvent {
+		t.Fatalf("inline event mention missing: %+v", inlineMentions)
+	}
+	if !foundAPITable {
+		t.Fatalf("inline api_table mention missing: %+v", inlineMentions)
+	}
+	if !foundTable {
+		t.Fatalf("inline table regression missing: %+v", inlineMentions)
+	}
+}
+
 func containsName(names []string, want string) bool {
 	for _, n := range names {
 		if n == want {

@@ -34,6 +34,10 @@ func (idx *Indexer) postProcessSpecCodeMentions(ctx context.Context, collector *
 	smfNames := collectMentionNamesByKind(mentions, "smf")
 	methodNames := collectMentionNamesByKind(mentions, "method")
 	apiNames := collectMentionNamesByKind(mentions, "api")
+	reportNames := collectMentionNamesByKind(mentions, "report")
+	eventNames := collectMentionNamesByKind(mentions, "event")
+	apiTableNames := collectMentionNamesByKind(mentions, "api_table")
+	unknownNames := collectMentionNamesByKind(mentions, "unknown")
 
 	// 2. Batch-resolve имён в ID сущностей
 	lookup := &specMentionLookup{}
@@ -71,13 +75,51 @@ func (idx *Indexer) postProcessSpecCodeMentions(ctx context.Context, collector *
 			idx.logError("<post-processing>", "Error resolving method names for spec mentions: %v", err)
 		}
 		lookup.Methods = ids
+		// Фолбэк .pas-упоминаний: имена-промахи (юниты форм, не методы) ищем в dfm_forms
+		missedMethods := make([]string, 0)
+		for _, name := range methodNames {
+			if lookup.Methods[strings.ToLower(name)] == 0 {
+				missedMethods = append(missedMethods, name)
+			}
+		}
+		if len(missedMethods) > 0 {
+			formIDs, err := idx.db.FindDFMFormIDsByNames(ctx, missedMethods)
+			if err != nil {
+				idx.logError("<post-processing>", "Error resolving method fallback form names for spec mentions: %v", err)
+			} else {
+				lookup.MethodForms = formIDs
+			}
+		}
 	}
-	if len(apiNames) > 0 {
-		ids, err := idx.db.FindAPIContractIDsByNames(ctx, apiNames)
+	if len(apiNames) > 0 || len(eventNames) > 0 {
+		apiEventNames := append(append([]string{}, apiNames...), eventNames...)
+		ids, err := idx.db.FindAPIContractIDsByNames(ctx, apiEventNames)
 		if err != nil {
 			idx.logError("<post-processing>", "Error resolving API names for spec mentions: %v", err)
 		}
 		lookup.APIs = ids
+	}
+	if len(reportNames) > 0 {
+		ids, err := idx.db.FindReportFormIDsByNames(ctx, reportNames)
+		if err != nil {
+			idx.logError("<post-processing>", "Error resolving report names for spec mentions: %v", err)
+		}
+		lookup.Reports = ids
+	}
+	if len(apiTableNames) > 0 {
+		ids, err := idx.db.FindAPIContractIDsByTableNames(ctx, apiTableNames)
+		if err != nil {
+			idx.logError("<post-processing>", "Error resolving API table names for spec mentions: %v", err)
+		}
+		lookup.APITables = ids
+	}
+	if len(unknownNames) > 0 {
+		// Second-chance: unknown-имена, совпавшие с процедурами (строчные rpt_*_proc)
+		ids, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, unknownNames)
+		if err != nil {
+			idx.logError("<post-processing>", "Error second-chance resolving unknown names for spec mentions: %v", err)
+		}
+		lookup.UnknownProcs = ids
 	}
 
 	// 3. Строим relations
@@ -106,6 +148,14 @@ type specMentionLookup struct {
 	SMF        map[string]int64
 	Methods    map[string]int64
 	APIs       map[string]int64
+	// Reports — report_forms по lower(report_name) (kind report).
+	Reports map[string]int64
+	// APITables — контрактные таблицы: lower(table_name) → id контрактов-владельцев.
+	APITables map[string][]int64
+	// MethodForms — фолбэк .pas-упоминаний: lower(name) → dfm_forms.id.
+	MethodForms map[string]int64
+	// UnknownProcs — second-chance: unknown-имена → sql_procedures.id.
+	UnknownProcs map[string]int64
 }
 
 // collectMentionNamesByKind собирает уникальные имена упоминаний заданного kind.
@@ -134,42 +184,14 @@ func buildSpecMentionRelations(mentions []*model.SpecCodeMention, lookup *specMe
 	var relations []*model.Relation
 	seen := map[string]struct{}{}
 
-	for _, m := range mentions {
-		if m == nil {
-			continue
+	appendRelation := func(m *model.SpecCodeMention, targetType string, targetID int64) {
+		if m == nil || targetID == 0 {
+			return // нерезолвнутое упоминание остаётся в staging
 		}
-		var targetType string
-		var targetID int64
-
-		nameKey := strings.ToLower(m.MentionName)
-		switch m.MentionKind {
-		case "procedure":
-			targetType = "sql_procedure"
-			targetID = lookup.Procedures[nameKey]
-		case "table":
-			targetType = "sql_table"
-			targetID = lookup.Tables[nameKey]
-		case "form":
-			targetType = "dfm_form"
-			targetID = lookup.Forms[nameKey]
-		case "smf":
-			targetType = "smf_instrument"
-			targetID = lookup.SMF[nameKey]
-		case "method":
-			targetType = "pas_method"
-			targetID = lookup.Methods[nameKey]
-		case "api":
-			targetType = "api_contract"
-			targetID = lookup.APIs[nameKey]
-		}
-		if targetID == 0 {
-			continue // нерезолвнутое упоминание остаётся в staging
-		}
-
 		dedupKey := fmt.Sprintf("%s|%d|%s|%d|references_code|%d",
 			m.SourceType, m.SourceID, targetType, targetID, m.LineNumber)
 		if _, exists := seen[dedupKey]; exists {
-			continue
+			return
 		}
 		seen[dedupKey] = struct{}{}
 
@@ -182,6 +204,42 @@ func buildSpecMentionRelations(mentions []*model.SpecCodeMention, lookup *specMe
 			Confidence:   "spec_mention",
 			LineNumber:   m.LineNumber,
 		})
+	}
+
+	for _, m := range mentions {
+		if m == nil {
+			continue
+		}
+		nameKey := strings.ToLower(m.MentionName)
+		switch m.MentionKind {
+		case "procedure":
+			appendRelation(m, "sql_procedure", lookup.Procedures[nameKey])
+		case "table":
+			appendRelation(m, "sql_table", lookup.Tables[nameKey])
+		case "form":
+			appendRelation(m, "dfm_form", lookup.Forms[nameKey])
+		case "smf":
+			appendRelation(m, "smf_instrument", lookup.SMF[nameKey])
+		case "method":
+			if id := lookup.Methods[nameKey]; id != 0 {
+				appendRelation(m, "pas_method", id)
+				continue
+			}
+			// Фолбэк: упоминание формы через .pas-путь (имя юнита, не метода)
+			appendRelation(m, "dfm_form", lookup.MethodForms[nameKey])
+		case "api", "event":
+			appendRelation(m, "api_contract", lookup.APIs[nameKey])
+		case "report":
+			appendRelation(m, "report_form", lookup.Reports[nameKey])
+		case "api_table":
+			// Контрактная таблица → все DISTINCT контракты-владельцы
+			for _, contractID := range lookup.APITables[nameKey] {
+				appendRelation(m, "api_contract", contractID)
+			}
+		case "unknown":
+			// Second-chance: имя совпало с процедурой (строчные rpt_*_proc и т.п.)
+			appendRelation(m, "sql_procedure", lookup.UnknownProcs[nameKey])
+		}
 	}
 	return relations
 }

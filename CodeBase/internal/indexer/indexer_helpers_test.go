@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -217,5 +218,64 @@ func TestBuildSpecRelationsPreservesSourcesAndUsecaseTargets(t *testing.T) {
 	}, map[string]int64{specSlugKey(3, "cards/service"): 55, specSlugKey(4, "cards/service"): 66})
 	if len(usecaseRelations) != 2 || usecaseRelations[0].SourceID != 7 || usecaseRelations[0].TargetID != 55 || usecaseRelations[0].RelationType != "usecase_involves" || usecaseRelations[1].TargetID != 66 {
 		t.Fatalf("usecase relations = %+v", usecaseRelations)
+	}
+}
+
+func TestBuildSpecMentionRelations_NewKinds(t *testing.T) {
+	mentions := []*model.SpecCodeMention{
+		// report → report_form
+		{SourceType: "spec_capability", SourceID: 10, MentionName: "form651", MentionKind: "report", LineNumber: 5},
+		// event → api_contract
+		{SourceType: "spec_scenario", SourceID: 11, MentionName: "OnAfterPerson_Update", MentionKind: "event", LineNumber: 6},
+		// api_table → два контракта-владельца
+		{SourceType: "spec_scenario", SourceID: 12, MentionName: "pAPI_Accrual_ObjDate", MentionKind: "api_table", LineNumber: 7},
+		// method без хита в pas_methods → фолбэк dfm_forms
+		{SourceType: "spec_capability", SourceID: 13, MentionName: "RPPortfolio_f", MentionKind: "method", LineNumber: 8},
+		// method с хитом в pas_methods — без фолбэка
+		{SourceType: "spec_capability", SourceID: 14, MentionName: "RealMethod", MentionKind: "method", LineNumber: 9},
+		// unknown second-chance → sql_procedure
+		{SourceType: "spec_scenario", SourceID: 15, MentionName: "r8938_prc", MentionKind: "unknown", LineNumber: 10},
+		// unknown без цели — без ребра
+		{SourceType: "spec_scenario", SourceID: 16, MentionName: "f123_proc", MentionKind: "unknown", LineNumber: 11},
+		// api_table без владельцев — без рёбер
+		{SourceType: "spec_scenario", SourceID: 17, MentionName: "pAPI_Unknown", MentionKind: "api_table", LineNumber: 12},
+	}
+	lookup := &specMentionLookup{
+		Reports:       map[string]int64{"form651": 201},
+		APIs:          map[string]int64{"onafterperson_update": 202},
+		APITables:     map[string][]int64{"papi_accrual_objdate": {301, 302}},
+		Methods:       map[string]int64{"realmethod": 203},
+		MethodForms:   map[string]int64{"rpportfolio_f": 204},
+		UnknownProcs:  map[string]int64{"r8938_prc": 205},
+	}
+	relations := buildSpecMentionRelations(mentions, lookup)
+
+	byKey := map[string]*model.Relation{}
+	for _, r := range relations {
+		byKey[r.SourceType+"|"+fmt.Sprintf("%d", r.SourceID)+"|"+r.TargetType+"|"+fmt.Sprintf("%d", r.TargetID)] = r
+	}
+	if r := byKey["spec_capability|10|report_form|201"]; r == nil {
+		t.Fatalf("report relation missing: %+v", relations)
+	}
+	if r := byKey["spec_scenario|11|api_contract|202"]; r == nil {
+		t.Fatalf("event relation missing: %+v", relations)
+	}
+	if r := byKey["spec_scenario|12|api_contract|301"]; r == nil {
+		t.Fatalf("api_table owner 1 relation missing: %+v", relations)
+	}
+	if r := byKey["spec_scenario|12|api_contract|302"]; r == nil {
+		t.Fatalf("api_table owner 2 relation missing: %+v", relations)
+	}
+	if r := byKey["spec_capability|13|dfm_form|204"]; r == nil {
+		t.Fatalf("method fallback form relation missing: %+v", relations)
+	}
+	if r := byKey["spec_capability|14|pas_method|203"]; r == nil {
+		t.Fatalf("method relation missing: %+v", relations)
+	}
+	if r := byKey["spec_scenario|15|sql_procedure|205"]; r == nil {
+		t.Fatalf("unknown second-chance relation missing: %+v", relations)
+	}
+	if len(relations) != 7 {
+		t.Fatalf("expected 7 relations (f123_proc and pAPI_Unknown unresolved), got %d: %+v", len(relations), relations)
 	}
 }

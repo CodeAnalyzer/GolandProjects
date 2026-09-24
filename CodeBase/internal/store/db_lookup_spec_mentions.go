@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lib/pq"
+
 	"github.com/codebase/internal/model"
 )
 
@@ -208,6 +210,84 @@ func (db *DB) FindAPIContractIDsByNames(ctx context.Context, names []string) (ma
 			return nil, err
 		}
 		result[name] = id
+	}
+	return result, rows.Err()
+}
+
+// FindReportFormIDsByNames возвращает map[lower(report_name)]id для пакетного резолва.
+func (db *DB) FindReportFormIDsByNames(ctx context.Context, names []string) (map[string]int64, error) {
+	if len(names) == 0 {
+		return map[string]int64{}, nil
+	}
+	placeholders := make([]string, len(names))
+	args := make([]interface{}, len(names))
+	for i, name := range names {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = strings.ToLower(name)
+	}
+	query := fmt.Sprintf(`
+		SELECT LOWER(report_name), MAX(id) as id
+		FROM report_forms
+		WHERE LOWER(report_name) IN (%s)
+		GROUP BY LOWER(report_name)
+	`, strings.Join(placeholders, ","))
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("find report_forms by names: %w", err)
+	}
+	defer rows.Close()
+	result := map[string]int64{}
+	for rows.Next() {
+		var name string
+		var id int64
+		if err := rows.Scan(&name, &id); err != nil {
+			return nil, err
+		}
+		result[name] = id
+	}
+	return result, rows.Err()
+}
+
+// FindAPIContractIDsByTableNames возвращает мультикарту lower(table_name) →
+// id всех контрактов-владельцев (DISTINCT contract_id) из api_contract_tables.
+func (db *DB) FindAPIContractIDsByTableNames(ctx context.Context, tableNames []string) (map[string][]int64, error) {
+	if len(tableNames) == 0 {
+		return map[string][]int64{}, nil
+	}
+	normalized := make([]string, 0, len(tableNames))
+	seen := map[string]struct{}{}
+	for _, name := range tableNames {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, key)
+	}
+	if len(normalized) == 0 {
+		return map[string][]int64{}, nil
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT LOWER(table_name), array_agg(DISTINCT contract_id) AS contract_ids
+		FROM api_contract_tables
+		WHERE LOWER(table_name) = ANY($1)
+		GROUP BY LOWER(table_name)
+	`, pq.Array(normalized))
+	if err != nil {
+		return nil, fmt.Errorf("find api_contracts by table names: %w", err)
+	}
+	defer rows.Close()
+	result := map[string][]int64{}
+	for rows.Next() {
+		var name string
+		var ids pq.Int64Array
+		if err := rows.Scan(&name, &ids); err != nil {
+			return nil, err
+		}
+		result[name] = []int64(ids)
 	}
 	return result, rows.Err()
 }
