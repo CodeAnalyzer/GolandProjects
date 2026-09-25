@@ -55,40 +55,7 @@ func (q *Query) SearchRelationsByEntity(ctx context.Context, sourceType string, 
 		return []RelationResult{}, nil
 	}
 
-	queryText, queryArgs := buildRelationDetailsQueryByIDs(relationIDs)
-	rows, err := q.db.QueryContext(ctx, queryText, queryArgs...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	results := make([]RelationResult, 0)
-	for rows.Next() {
-		var r RelationResult
-		if err := rows.Scan(
-			&r.ID,
-			&r.RelationType,
-			&r.Confidence,
-			&r.LineNumber,
-			&r.Source.ID,
-			&r.Source.Type,
-			&r.Source.Name,
-			&r.Source.FileID,
-			&r.Source.File,
-			&r.Source.LineNumber,
-			&r.Target.ID,
-			&r.Target.Type,
-			&r.Target.Name,
-			&r.Target.FileID,
-			&r.Target.File,
-			&r.Target.LineNumber,
-		); err != nil {
-			return nil, err
-		}
-		results = append(results, r)
-	}
-
-	return results, rows.Err()
+	return q.loadRelationDetails(ctx, relationIDs)
 }
 
 func (q *Query) selectRelationIDs(ctx context.Context, conditions []string, args []interface{}, argPos int, limit int) ([]int64, error) {
@@ -98,25 +65,7 @@ func (q *Query) selectRelationIDs(ctx context.Context, conditions []string, args
 	queryArgs = append(queryArgs, args...)
 	queryArgs = append(queryArgs, limit)
 
-	rows, err := q.db.QueryContext(ctx, queryText, queryArgs...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	ids := make([]int64, 0, limit)
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	return ids, nil
+	return q.fetchRelationIDs(ctx, queryText, queryArgs)
 }
 
 func buildRelationDetailsQueryByIDs(ids []int64) (string, []interface{}) {
@@ -132,209 +81,7 @@ func buildRelationDetailsQueryByIDs(ids []int64) (string, []interface{}) {
 	return queryText, args
 }
 
-func buildRelationNameExistsCondition(side string, relationType string, argPos int) (string, bool) {
-	idColumn := "r.source_id"
-	if strings.EqualFold(side, "target") {
-		idColumn = "r.target_id"
-	}
-
-	var tableName string
-	var nameColumn string
-	switch strings.ToLower(strings.TrimSpace(relationType)) {
-	case "sql_procedure":
-		tableName = "sql_procedures"
-		nameColumn = "proc_name"
-	case "sql_table":
-		tableName = "sql_tables"
-		nameColumn = "table_name"
-	case "pas_method":
-		tableName = "pas_methods"
-		nameColumn = "method_name"
-	case "js_function":
-		tableName = "js_functions"
-		nameColumn = "function_name"
-	case "api_contract":
-		tableName = "api_contracts"
-		nameColumn = "contract_name"
-	case "report_form":
-		tableName = "report_forms"
-		nameColumn = "report_name"
-	case "report_field":
-		tableName = "report_fields"
-		nameColumn = "field_name"
-	case "report_param":
-		tableName = "report_params"
-		nameColumn = "param_name"
-	case "vb_function":
-		tableName = "vb_functions"
-		nameColumn = "function_name"
-	case "query_fragment":
-		tableName = "query_fragments"
-		nameColumn = "component_name"
-	case "smf_instrument":
-		tableName = "smf_instruments"
-		nameColumn = "instrument_name"
-	default:
-		return "", false
-	}
-
-	condition := fmt.Sprintf("EXISTS (SELECT 1 FROM %s n WHERE n.id = %s AND n.%s ILIKE $%d)", tableName, idColumn, nameColumn, argPos)
-	return condition, true
-}
-
-func buildRelationAnyNameExistsCondition(side string, argPos int) string {
-	idColumn := "r.source_id"
-	typeColumn := "r.source_type"
-	if strings.EqualFold(side, "target") {
-		idColumn = "r.target_id"
-		typeColumn = "r.target_type"
-	}
-
-	return fmt.Sprintf(`(
-		(%s = 'sql_procedure' AND EXISTS (SELECT 1 FROM sql_procedures n WHERE n.id = %s AND n.proc_name ILIKE $%d)) OR
-		(%s = 'sql_table' AND EXISTS (SELECT 1 FROM sql_tables n WHERE n.id = %s AND n.table_name ILIKE $%d)) OR
-		(%s = 'pas_method' AND EXISTS (SELECT 1 FROM pas_methods n WHERE n.id = %s AND n.method_name ILIKE $%d)) OR
-		(%s = 'js_function' AND EXISTS (SELECT 1 FROM js_functions n WHERE n.id = %s AND n.function_name ILIKE $%d)) OR
-		(%s = 'api_contract' AND EXISTS (SELECT 1 FROM api_contracts n WHERE n.id = %s AND n.contract_name ILIKE $%d)) OR
-		(%s = 'report_form' AND EXISTS (SELECT 1 FROM report_forms n WHERE n.id = %s AND n.report_name ILIKE $%d)) OR
-		(%s = 'report_field' AND EXISTS (SELECT 1 FROM report_fields n WHERE n.id = %s AND n.field_name ILIKE $%d)) OR
-		(%s = 'report_param' AND EXISTS (SELECT 1 FROM report_params n WHERE n.id = %s AND n.param_name ILIKE $%d)) OR
-		(%s = 'vb_function' AND EXISTS (SELECT 1 FROM vb_functions n WHERE n.id = %s AND n.function_name ILIKE $%d)) OR
-		(%s = 'query_fragment' AND EXISTS (SELECT 1 FROM query_fragments n WHERE n.id = %s AND n.component_name ILIKE $%d)) OR
-		(%s = 'smf_instrument' AND EXISTS (SELECT 1 FROM smf_instruments n WHERE n.id = %s AND n.instrument_name ILIKE $%d))
-	)`,
-		typeColumn, idColumn, argPos,
-		typeColumn, idColumn, argPos,
-		typeColumn, idColumn, argPos,
-		typeColumn, idColumn, argPos,
-		typeColumn, idColumn, argPos,
-		typeColumn, idColumn, argPos,
-		typeColumn, idColumn, argPos,
-		typeColumn, idColumn, argPos,
-		typeColumn, idColumn, argPos,
-		typeColumn, idColumn, argPos,
-		typeColumn, idColumn, argPos,
-	)
-}
-
-func (q *Query) SearchRelations(ctx context.Context, sourceType string, sourceName string, targetType string, targetName string, relationType string, limit int) ([]RelationResult, error) {
-	if sourceName != "" && sourceType == "" && targetName == "" {
-		return q.searchRelationsByNameMatches(ctx, "source", sourceName, targetType, relationType, limit)
-	}
-	if targetName != "" && targetType == "" && sourceName == "" {
-		return q.searchRelationsByNameMatches(ctx, "target", targetName, sourceType, relationType, limit)
-	}
-
-	conditions := make([]string, 0, 5)
-	args := make([]interface{}, 0, 6)
-	argPos := 1
-
-	if sourceType != "" {
-		conditions = append(conditions, fmt.Sprintf("r.source_type = $%d", argPos))
-		args = append(args, sourceType)
-		argPos++
-	}
-	if targetType != "" {
-		conditions = append(conditions, fmt.Sprintf("r.target_type = $%d", argPos))
-		args = append(args, targetType)
-		argPos++
-	}
-	if relationType != "" {
-		conditions = append(conditions, fmt.Sprintf("r.relation_type = $%d", argPos))
-		args = append(args, relationType)
-		argPos++
-	}
-	if sourceName != "" {
-		if sourceType != "" {
-			if existsCondition, ok := buildRelationNameExistsCondition("source", sourceType, argPos); ok {
-				conditions = append(conditions, existsCondition)
-			} else {
-				return nil, fmt.Errorf("unsupported source-type for --source-name filter: %s", sourceType)
-			}
-		} else {
-			conditions = append(conditions, buildRelationAnyNameExistsCondition("source", argPos))
-		}
-		args = append(args, "%"+sourceName+"%")
-		argPos++
-	}
-	if targetName != "" {
-		if targetType != "" {
-			if existsCondition, ok := buildRelationNameExistsCondition("target", targetType, argPos); ok {
-				conditions = append(conditions, existsCondition)
-			} else {
-				return nil, fmt.Errorf("unsupported target-type for --target-name filter: %s", targetType)
-			}
-		} else {
-			conditions = append(conditions, buildRelationAnyNameExistsCondition("target", argPos))
-		}
-		args = append(args, "%"+targetName+"%")
-		argPos++
-	}
-
-	if len(conditions) == 0 {
-		return nil, errs.ErrNoRelationFilters
-	}
-	relationIDs, err := q.selectRelationIDs(ctx, conditions, args, argPos, limit)
-	if err != nil {
-		return nil, err
-	}
-	if len(relationIDs) == 0 {
-		return []RelationResult{}, nil
-	}
-
-	queryText, queryArgs := buildRelationDetailsQueryByIDs(relationIDs)
-	rows, err := q.db.QueryContext(ctx, queryText, queryArgs...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	results := make([]RelationResult, 0)
-	for rows.Next() {
-		var r RelationResult
-		if err := rows.Scan(
-			&r.ID,
-			&r.RelationType,
-			&r.Confidence,
-			&r.LineNumber,
-			&r.Source.ID,
-			&r.Source.Type,
-			&r.Source.Name,
-			&r.Source.FileID,
-			&r.Source.File,
-			&r.Source.LineNumber,
-			&r.Target.ID,
-			&r.Target.Type,
-			&r.Target.Name,
-			&r.Target.FileID,
-			&r.Target.File,
-			&r.Target.LineNumber,
-		); err != nil {
-			return nil, err
-		}
-		results = append(results, r)
-	}
-
-	return results, rows.Err()
-}
-
-func (q *Query) searchRelationsByNameMatches(ctx context.Context, side string, name string, oppositeType string, relationType string, limit int) ([]RelationResult, error) {
-	matches, err := q.findRelationEntityMatches(ctx, name, "", relationEntityMatchLimit(limit))
-	if err != nil {
-		return nil, err
-	}
-	if len(matches) == 0 {
-		return []RelationResult{}, nil
-	}
-
-	relationIDs, err := q.selectRelationIDsByEntityMatches(ctx, side, matches, oppositeType, relationType, limit)
-	if err != nil {
-		return nil, err
-	}
-	if len(relationIDs) == 0 {
-		return []RelationResult{}, nil
-	}
-
+func (q *Query) loadRelationDetails(ctx context.Context, relationIDs []int64) ([]RelationResult, error) {
 	queryText, queryArgs := buildRelationDetailsQueryByIDs(relationIDs)
 	rows, err := q.db.QueryContext(ctx, queryText, queryArgs...)
 	if err != nil {
@@ -369,6 +116,142 @@ func (q *Query) searchRelationsByNameMatches(ctx context.Context, side string, n
 	}
 
 	return results, rows.Err()
+}
+
+// SearchRelations ищет связи по именам и/или типам сущностей.
+//
+// Используется единый двухпроходный алгоритм: имена резолвятся в пары
+// (entity_type, entity_id) через типизированные индексированные lookup'ы
+// (exact-first, затем подстрочный фолбэк), после чего relations выбираются
+// по составному ключу (source_type/source_id, target_type/target_id).
+// При двух именах результат — пересечение: source по первому имени AND
+// target по второму.
+func (q *Query) SearchRelations(ctx context.Context, sourceType string, sourceName string, targetType string, targetName string, relationType string, limit int) ([]RelationResult, error) {
+	sourceName = strings.TrimSpace(sourceName)
+	targetName = strings.TrimSpace(targetName)
+	if sourceType == "" && sourceName == "" && targetType == "" && targetName == "" && relationType == "" {
+		return nil, errs.ErrNoRelationFilters
+	}
+
+	matchLimit := relationEntityMatchLimit(limit)
+
+	var sourceMatches []relationEntityMatch
+	if sourceName != "" {
+		matches, err := q.findRelationEntityMatches(ctx, sourceName, sourceType, matchLimit)
+		if err != nil {
+			return nil, err
+		}
+		if len(matches) == 0 {
+			return []RelationResult{}, nil
+		}
+		sourceMatches = matches
+	}
+
+	var targetMatches []relationEntityMatch
+	if targetName != "" {
+		matches, err := q.findRelationEntityMatches(ctx, targetName, targetType, matchLimit)
+		if err != nil {
+			return nil, err
+		}
+		if len(matches) == 0 {
+			return []RelationResult{}, nil
+		}
+		targetMatches = matches
+	}
+
+	queryText, queryArgs := buildRelationIDsQuery(sourceMatches, targetMatches, sourceType, targetType, relationType, limit)
+	relationIDs, err := q.fetchRelationIDs(ctx, queryText, queryArgs)
+	if err != nil {
+		return nil, err
+	}
+	if len(relationIDs) == 0 {
+		return []RelationResult{}, nil
+	}
+
+	return q.loadRelationDetails(ctx, relationIDs)
+}
+
+// buildRelationIDsQuery собирает второй проход: выборку id связей по уже
+// найденным наборам совпадений. Если для стороны задано только имя — набор
+// приходит из первого прохода и накладывается JOIN'ом к VALUES; если задан
+// только тип — накладывается условие на колонку типа. relationType и limit
+// применяются в конце. Функция чистая и покрыта unit-тестами.
+func buildRelationIDsQuery(sourceMatches, targetMatches []relationEntityMatch, sourceType string, targetType string, relationType string, limit int) (string, []interface{}) {
+	args := make([]interface{}, 0, len(sourceMatches)*2+len(targetMatches)*2+4)
+	argPos := 1
+	clauses := make([]string, 0, 3)
+	joins := make([]string, 0, 2)
+
+	matchesValues := func(matches []relationEntityMatch) string {
+		values := make([]string, 0, len(matches))
+		for _, match := range matches {
+			values = append(values, fmt.Sprintf("($%d, $%d)", argPos, argPos+1))
+			args = append(args, match.Type, match.ID)
+			argPos += 2
+		}
+		return strings.Join(values, ",")
+	}
+
+	if len(sourceMatches) > 0 {
+		joins = append(joins, fmt.Sprintf(
+			"JOIN (VALUES %s) AS matched_source(entity_type, entity_id) ON r.source_type = matched_source.entity_type AND r.source_id = matched_source.entity_id::BIGINT",
+			matchesValues(sourceMatches),
+		))
+	} else if strings.TrimSpace(sourceType) != "" {
+		clauses = append(clauses, fmt.Sprintf("r.source_type = $%d", argPos))
+		args = append(args, sourceType)
+		argPos++
+	}
+
+	if len(targetMatches) > 0 {
+		joins = append(joins, fmt.Sprintf(
+			"JOIN (VALUES %s) AS matched_target(entity_type, entity_id) ON r.target_type = matched_target.entity_type AND r.target_id = matched_target.entity_id::BIGINT",
+			matchesValues(targetMatches),
+		))
+	} else if strings.TrimSpace(targetType) != "" {
+		clauses = append(clauses, fmt.Sprintf("r.target_type = $%d", argPos))
+		args = append(args, targetType)
+		argPos++
+	}
+
+	if strings.TrimSpace(relationType) != "" {
+		clauses = append(clauses, fmt.Sprintf("r.relation_type = $%d", argPos))
+		args = append(args, relationType)
+		argPos++
+	}
+
+	queryText := "SELECT r.id FROM relations r"
+	if len(joins) > 0 {
+		queryText += " " + strings.Join(joins, " ")
+	}
+	if len(clauses) > 0 {
+		queryText += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	queryText += fmt.Sprintf(" ORDER BY r.id DESC LIMIT $%d", argPos)
+	args = append(args, limit)
+	return queryText, args
+}
+
+func (q *Query) fetchRelationIDs(ctx context.Context, queryText string, queryArgs []interface{}) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, queryText, queryArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return ids, nil
 }
 
 func relationEntityMatchLimit(limit int) int {
@@ -454,67 +337,6 @@ func relationEntityMatchQueryParts(entityType string, exact bool) ([]string, boo
 		return nil, false
 	}
 	return parts, true
-}
-
-func (q *Query) selectRelationIDsByEntityMatches(ctx context.Context, side string, matches []relationEntityMatch, oppositeType string, relationType string, limit int) ([]int64, error) {
-	typeColumn := "r.source_type"
-	idColumn := "r.source_id"
-	oppositeTypeColumn := "r.target_type"
-	if strings.EqualFold(side, "target") {
-		typeColumn = "r.target_type"
-		idColumn = "r.target_id"
-		oppositeTypeColumn = "r.source_type"
-	}
-
-	values := make([]string, 0, len(matches))
-	args := make([]interface{}, 0, len(matches)*2+3)
-	argPos := 1
-	for _, match := range matches {
-		values = append(values, fmt.Sprintf("($%d, $%d)", argPos, argPos+1))
-		args = append(args, match.Type, match.ID)
-		argPos += 2
-	}
-
-	conditions := make([]string, 0, 2)
-	if oppositeType != "" {
-		conditions = append(conditions, fmt.Sprintf("%s = $%d", oppositeTypeColumn, argPos))
-		args = append(args, oppositeType)
-		argPos++
-	}
-	if relationType != "" {
-		conditions = append(conditions, fmt.Sprintf("r.relation_type = $%d", argPos))
-		args = append(args, relationType)
-		argPos++
-	}
-
-	queryText := fmt.Sprintf(`
-		SELECT r.id
-		FROM relations r
-		JOIN (VALUES %s) AS matched(entity_type, entity_id)
-		  ON %s = matched.entity_type
-		 AND %s = matched.entity_id::BIGINT
-	`, strings.Join(values, ","), typeColumn, idColumn)
-	if len(conditions) > 0 {
-		queryText += " WHERE " + strings.Join(conditions, " AND ")
-	}
-	queryText += fmt.Sprintf(" ORDER BY r.id DESC LIMIT $%d", argPos)
-	args = append(args, limit)
-
-	rows, err := q.db.QueryContext(ctx, queryText, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	ids := make([]int64, 0, limit)
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
 }
 
 func relationSearchBaseQuery() string {

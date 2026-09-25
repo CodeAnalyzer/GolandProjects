@@ -87,69 +87,75 @@ func TestBuildRelationDetailsQueryByIDs(t *testing.T) {
 	}
 }
 
-func TestBuildRelationNameExistsCondition(t *testing.T) {
-	tests := []struct {
-		name         string
-		side         string
-		relationType string
-		argPos       int
-		want         string
-	}{
-		{
-			name:         "source sql procedure",
-			side:         "source",
-			relationType: "sql_procedure",
-			argPos:       1,
-			want:         "EXISTS (SELECT 1 FROM sql_procedures n WHERE n.id = r.source_id AND n.proc_name ILIKE $1)",
-		},
-		{
-			name:         "target js function case insensitive",
-			side:         "TARGET",
-			relationType: " JS_FUNCTION ",
-			argPos:       4,
-			want:         "EXISTS (SELECT 1 FROM js_functions n WHERE n.id = r.target_id AND n.function_name ILIKE $4)",
-		},
-		{
-			name:         "api contract",
-			side:         "source",
-			relationType: "api_contract",
-			argPos:       2,
-			want:         "EXISTS (SELECT 1 FROM api_contracts n WHERE n.id = r.source_id AND n.contract_name ILIKE $2)",
-		},
-	}
+func TestBuildRelationIDsQuery_SourceAndTargetMatches(t *testing.T) {
+	sourceMatches := []relationEntityMatch{{Type: "sql_procedure", ID: 10}}
+	targetMatches := []relationEntityMatch{{Type: "sql_table", ID: 20}}
+	queryText, args := buildRelationIDsQuery(sourceMatches, targetMatches, "", "", "", 5)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := buildRelationNameExistsCondition(tt.side, tt.relationType, tt.argPos)
-			if !ok {
-				t.Fatalf("expected supported relation type")
-			}
-			if got != tt.want {
-				t.Fatalf("condition: got=%q want=%q", got, tt.want)
-			}
-		})
+	if !strings.Contains(queryText, "AS matched_source(entity_type, entity_id)") {
+		t.Fatalf("query must join source matches: %s", queryText)
 	}
-
-	if got, ok := buildRelationNameExistsCondition("source", "unknown", 1); ok || got != "" {
-		t.Fatalf("unsupported type = %q, %v; want empty, false", got, ok)
+	if !strings.Contains(queryText, "AS matched_target(entity_type, entity_id)") {
+		t.Fatalf("query must join target matches: %s", queryText)
+	}
+	if !strings.Contains(queryText, "r.source_id = matched_source.entity_id::BIGINT") ||
+		!strings.Contains(queryText, "r.target_id = matched_target.entity_id::BIGINT") {
+		t.Fatalf("query must match entity ids: %s", queryText)
+	}
+	if !strings.Contains(queryText, "ORDER BY r.id DESC LIMIT $5") {
+		t.Fatalf("query must order and limit: %s", queryText)
+	}
+	wantArgs := []interface{}{"sql_procedure", int64(10), "sql_table", int64(20), 5}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", args, wantArgs)
 	}
 }
 
-func TestBuildRelationAnyNameExistsCondition(t *testing.T) {
-	sourceCondition := buildRelationAnyNameExistsCondition("source", 5)
-	if !strings.Contains(sourceCondition, "r.source_type = 'sql_procedure'") ||
-		!strings.Contains(sourceCondition, "n.id = r.source_id") ||
-		!strings.Contains(sourceCondition, "n.proc_name ILIKE $5") ||
-		!strings.Contains(sourceCondition, "r.source_type = 'js_function'") {
-		t.Fatalf("unexpected source condition: %s", sourceCondition)
-	}
+func TestBuildRelationIDsQuery_TypeOnlyWithoutName(t *testing.T) {
+	queryText, args := buildRelationIDsQuery(nil, nil, "sql_procedure", "sql_table", "selects_from", 10)
 
-	targetCondition := buildRelationAnyNameExistsCondition("target", 6)
-	if !strings.Contains(targetCondition, "r.target_type = 'sql_procedure'") ||
-		!strings.Contains(targetCondition, "n.id = r.target_id") ||
-		!strings.Contains(targetCondition, "n.proc_name ILIKE $6") ||
-		!strings.Contains(targetCondition, "r.target_type = 'smf_instrument'") {
-		t.Fatalf("unexpected target condition: %s", targetCondition)
+	if strings.Contains(queryText, "matched_source") || strings.Contains(queryText, "matched_target") {
+		t.Fatalf("type-only query must not join matches: %s", queryText)
+	}
+	if !strings.Contains(queryText, "r.source_type = $1") ||
+		!strings.Contains(queryText, "r.target_type = $2") ||
+		!strings.Contains(queryText, "r.relation_type = $3") {
+		t.Fatalf("query must filter by types and relation type: %s", queryText)
+	}
+	if !strings.Contains(queryText, "ORDER BY r.id DESC LIMIT $4") {
+		t.Fatalf("query must limit: %s", queryText)
+	}
+	wantArgs := []interface{}{"sql_procedure", "sql_table", "selects_from", 10}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", args, wantArgs)
+	}
+}
+
+func TestBuildRelationIDsQuery_TypedNameUsesOnlyMatches(t *testing.T) {
+	// Типизированное имя приходит уже отфильтрованным первым проходом,
+	// поэтому второй проход не добавляет избыточное условие по типу.
+	matches := []relationEntityMatch{{Type: "sql_table", ID: 7}}
+	queryText, args := buildRelationIDsQuery(nil, matches, "", "sql_table", "", 3)
+
+	if !strings.Contains(queryText, "matched_target") {
+		t.Fatalf("query must join target matches: %s", queryText)
+	}
+	if strings.Contains(queryText, "r.target_type = $") {
+		t.Fatalf("typed name must not add redundant type clause: %s", queryText)
+	}
+	wantArgs := []interface{}{"sql_table", int64(7), 3}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", args, wantArgs)
+	}
+}
+
+func TestRelationEntityMatchQueryParts_EntityTypeFiltersToOneTable(t *testing.T) {
+	parts, ok := relationEntityMatchQueryParts("sql_table", false)
+	if !ok || len(parts) != 1 {
+		t.Fatalf("parts = %#v, ok=%v; want single part", parts, ok)
+	}
+	if !strings.Contains(parts[0], "FROM sql_tables") || !strings.Contains(parts[0], "table_name ILIKE $1") {
+		t.Fatalf("unexpected part: %s", parts[0])
 	}
 }
 
