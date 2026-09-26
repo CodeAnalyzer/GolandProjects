@@ -10,6 +10,7 @@ import (
 	"github.com/codebase/internal/config"
 	"github.com/codebase/internal/indexer"
 	"github.com/codebase/internal/store"
+	"github.com/codebase/internal/systemsvc"
 	"github.com/spf13/cobra"
 )
 
@@ -132,6 +133,10 @@ Uses file hashes to detect changes.`,
 		fmt.Printf("  Changes:        %d\n", stats.SpecChanges)
 		fmt.Printf("\n")
 		fmt.Printf("Errors:           %d\n", stats.Errors)
+
+		if err := systemsvc.RefreshStats(db); err != nil {
+			fmt.Fprintf(os.Stderr, "\nWarning: failed to refresh stats snapshot: %v\n", err)
+		}
 
 		return nil
 	},

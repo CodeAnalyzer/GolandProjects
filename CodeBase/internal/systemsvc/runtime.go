@@ -69,6 +69,19 @@ func ExecuteStats(db *store.DB) (*store.Stats, error) {
 	return stats, nil
 }
 
+// RefreshStats пересчитывает статистику живым подсчётом и перезаписывает снапшот.
+// Вызывается по завершении init/update, чтобы `stats` читал снапшот без пересчёта.
+func RefreshStats(db *store.DB) error {
+	cfg := config.Get()
+	if cfg == nil {
+		return errs.ErrConfigNotLoaded
+	}
+	if err := db.RefreshStatsSnapshot(context.Background(), lsaStateGeneration(config.SpecLSAStatePath())); err != nil {
+		return fmt.Errorf("%w: %w", errs.ErrStatsFailed, err)
+	}
+	return nil
+}
+
 // lsaStateGeneration возвращает активное поколение LSA из sidecar-state модели.
 // Отсутствующий, пустой или повреждённый state — "" (фолбэк на полный счёт).
 func lsaStateGeneration(modelPath string) string {

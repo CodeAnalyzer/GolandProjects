@@ -452,7 +452,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					return q.GetProcedureResult(ctx, name)
+					return querysvc.ProcedureResultItems(q.GetProcedureResult(ctx, name))
 				})
 			},
 		},

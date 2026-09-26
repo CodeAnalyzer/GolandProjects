@@ -3,14 +3,84 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 )
 
-// GetStats возвращает статистику индекса.
+// GetStats возвращает статистику индекса. Сначала читает сохранённый снапшот
+// (обновляется по завершении init/update); если снапшота нет — считает живым
+// подсчётом и сохраняет результат для последующих вызовов. Ошибка чтения
+// снапшота деградирует в живой подсчёт.
 // lsaGeneration — активное поколение LSA (из sidecar-state модели): при непустом
 // значении счётчики spec_vocab/spec_embeddings считаются по этому поколению,
 // при пустом — по всем поколениям (фолбэк при недоступном state).
 func (db *DB) GetStats(ctx context.Context, lsaGeneration string) (*Stats, error) {
+	snapshot, storedGeneration, ok, err := db.LoadStatsSnapshot(ctx)
+	if err == nil && ok && storedGeneration == lsaGeneration {
+		return snapshot, nil
+	}
+
+	stats, computeErr := db.computeStats(ctx, lsaGeneration)
+	if computeErr != nil {
+		return nil, computeErr
+	}
+	// best-effort: сохраняем снапшот, чтобы следующий вызов с тем же поколением
+	// читал его без пересчёта.
+	_ = db.SaveStatsSnapshot(ctx, stats, lsaGeneration)
+	return stats, nil
+}
+
+// RefreshStatsSnapshot пересчитывает статистику живым подсчётом и перезаписывает
+// снапшот. Вызывается по завершении init/update.
+func (db *DB) RefreshStatsSnapshot(ctx context.Context, lsaGeneration string) error {
+	stats, err := db.computeStats(ctx, lsaGeneration)
+	if err != nil {
+		return err
+	}
+	return db.SaveStatsSnapshot(ctx, stats, lsaGeneration)
+}
+
+// SaveStatsSnapshot перезаписывает единственную строку снапшота вместе с
+// поколением LSA, для которого он посчитан.
+func (db *DB) SaveStatsSnapshot(ctx context.Context, stats *Stats, lsaGeneration string) error {
+	payload, err := json.Marshal(stats)
+	if err != nil {
+		return fmt.Errorf("failed to marshal stats snapshot: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO stats_snapshot (id, payload, lsa_generation, created_at)
+		VALUES (1, $1, $2, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			payload = EXCLUDED.payload,
+			lsa_generation = EXCLUDED.lsa_generation,
+			created_at = NOW()
+	`, payload, lsaGeneration); err != nil {
+		return fmt.Errorf("failed to save stats snapshot: %w", err)
+	}
+	return nil
+}
+
+// LoadStatsSnapshot читает снапшот и поколение, для которого он посчитан.
+// ok=false означает, что снапшота нет.
+func (db *DB) LoadStatsSnapshot(ctx context.Context) (*Stats, string, bool, error) {
+	var payload []byte
+	var lsaGeneration string
+	err := db.QueryRowContext(ctx, `SELECT payload, lsa_generation FROM stats_snapshot WHERE id = 1`).Scan(&payload, &lsaGeneration)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, "", false, nil
+		}
+		return nil, "", false, fmt.Errorf("failed to load stats snapshot: %w", err)
+	}
+	var stats Stats
+	if err := json.Unmarshal(payload, &stats); err != nil {
+		return nil, "", false, fmt.Errorf("failed to decode stats snapshot: %w", err)
+	}
+	return &stats, lsaGeneration, true, nil
+}
+
+func (db *DB) computeStats(ctx context.Context, lsaGeneration string) (*Stats, error) {
 	stats := &Stats{}
 
 	if err := db.QueryRowContext(ctx, `

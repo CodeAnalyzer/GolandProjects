@@ -1,6 +1,8 @@
 package querysvc
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/codebase/internal/config"
@@ -18,6 +20,18 @@ func ExecuteWith(db *store.DB, run func(q *query.Query) (interface{}, error)) (i
 		return nil, fmt.Errorf("%w: %w", errs.ErrQueryFailed, err)
 	}
 	return results, nil
+}
+
+// ProcedureResultItems нормализует результат поиска процедуры для query-команд:
+// отсутствие процедуры (sql.ErrNoRows) — пустой результат, а не ошибка.
+func ProcedureResultItems(proc *query.SQLProcedureResult, err error) (interface{}, error) {
+	if errors.Is(err, sql.ErrNoRows) {
+		return []query.SQLProcedureResult{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []query.SQLProcedureResult{*proc}, nil
 }
 
 // Execute открывает БД, инициализирует схему и выполняет переданный query-runner.

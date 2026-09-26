@@ -23,6 +23,12 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			files_indexed INTEGER NOT NULL DEFAULT 0,
 			errors_count INTEGER NOT NULL DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS stats_snapshot (
+			id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+			payload JSONB NOT NULL,
+			lsa_generation TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 		`CREATE TABLE IF NOT EXISTS schema_migrations (
 			version TEXT PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

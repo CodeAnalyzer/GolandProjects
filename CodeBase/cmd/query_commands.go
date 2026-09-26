@@ -130,7 +130,7 @@ var queryProcedureCmd = &cobra.Command{
 				"name": procedureName,
 			},
 			run: func(q *query.Query) (interface{}, error) {
-				return q.GetProcedureResult(ctx, procedureName)
+				return querysvc.ProcedureResultItems(q.GetProcedureResult(ctx, procedureName))
 			},
 		})
 	},

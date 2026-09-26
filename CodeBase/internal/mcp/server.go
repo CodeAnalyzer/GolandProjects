@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -186,19 +187,50 @@ func logMCPToolCall(logger *log.Logger, profile string, toolName string, args ma
 	)
 }
 
+// maskedToolArgKeys — аргументы, значения которых не должны попадать в лог
+// (могут содержать приватные фрагменты SQL/текста).
+var maskedToolArgKeys = map[string]struct{}{
+	"text": {},
+	"sql":  {},
+}
+
+// formatToolArgs формирует детерминированное представление всех аргументов
+// вызова: ключи отсортированы, пары k:v соединены запятой, значения приватных
+// ключей заменены маской. Пустой набор — "-".
 func formatToolArgs(args map[string]interface{}) string {
 	if len(args) == 0 {
 		return "-"
 	}
-	for _, key := range []string{"name", "procedure", "text", "event", "table", "type"} {
-		if v, ok := args[key]; ok {
-			return fmt.Sprintf("%s=%q", key, fmt.Sprintf("%v", v))
+	keys := make([]string, 0, len(args))
+	for key := range args {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if _, masked := maskedToolArgKeys[strings.ToLower(key)]; masked {
+			parts = append(parts, key+":***")
+			continue
 		}
+		parts = append(parts, key+":"+formatToolArgValue(args[key]))
 	}
-	for k, v := range args {
-		return fmt.Sprintf("%s=%q", k, fmt.Sprintf("%v", v))
+	return strings.Join(parts, ",")
+}
+
+func formatToolArgValue(value interface{}) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return typed
+	case fmt.Stringer:
+		return typed.String()
 	}
-	return "-"
+	if encoded, err := json.Marshal(value); err == nil {
+		return string(encoded)
+	}
+	return fmt.Sprintf("%v", value)
 }
 
 func sdkToolErrorResult(err error) *mcpsdk.CallToolResult {
