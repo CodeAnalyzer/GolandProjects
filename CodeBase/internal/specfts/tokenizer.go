@@ -19,12 +19,24 @@ var (
 	reTechName = regexp.MustCompile(`\b[A-Z][A-Za-z0-9_]{2,}\b`)
 	// reRussianWord — русские слова (включая ё/Ё), длиной ≥ 2
 	reRussianWord = regexp.MustCompile(`[А-Яа-яЁё]{2,}`)
-	// reHybrid — гибридные токены: цифры + русские/латинские буквы + дефис
-	// \b не работает с русскими буквами, используем lookbehind-free паттерн
-	reHybrid = regexp.MustCompile(`(?:^|[\s])(\d+[-]?[А-Яа-яЁёA-Za-z]*)`)
+	// reHybridCandidate — широкий кандидат гибрида: цифра + буквы/цифры/_/-.
+	// Границы проверяются вручную: RE2 не поддерживает lookbehind, а \b не
+	// работает с кириллицей, поэтому кандидат ловится без привязки к пробелу.
+	reHybridCandidate = regexp.MustCompile(`[0-9][0-9A-Za-zА-Яа-яЁё_-]*`)
 	// reTechPrefix — префиксы техимён: API_, FCD_, t[A-Z], p[A-Z], CON_, SD_
 	reTechPrefix = regexp.MustCompile(`^(API_|FCD_|CON_|SD_|t[A-Z]|p[A-Z]|T[A-Z]|P[A-Z])`)
+	// reHyphenDigitLetter / reHyphenLetterDigit — дефис между цифровой частью и
+	// буквенным суффиксом нормализуется (6406-У и 6406U → один термин).
+	reHyphenDigitLetter = regexp.MustCompile(`([0-9])-([a-zа-я])`)
+	reHyphenLetterDigit = regexp.MustCompile(`([a-zа-я])-([0-9])`)
 )
+
+// identHomoglyphs — кириллические символы, совпадающие с латинскими визуально
+// или по транслитерации; используются при канонизации идентификаторов (У/U, П/P).
+var identHomoglyphs = map[rune]rune{
+	'а': 'a', 'в': 'b', 'е': 'e', 'к': 'k', 'м': 'm', 'н': 'h',
+	'о': 'o', 'р': 'p', 'с': 'c', 'т': 't', 'у': 'u', 'х': 'x', 'п': 'p',
+}
 
 // stopWords — стоп-словарь для русского и английского
 var stopWords = map[string]bool{
@@ -55,13 +67,20 @@ var stopWords = map[string]bool{
 	"must": true, "should": true, "may": true, "can": true,
 	"requirement": true, "scenario": true, "given": true, "when": true,
 	"system": true, "spec": true, "specification": true,
+	// частотные служебные слова (падежные формы покрываются stopStems)
+	"да": true, "еще": true, "уже": true, "ее": true,
+	"тот": true, "где": true, "всю": true, "вся": true,
+	"был": true, "была": true, "было": true, "были": true,
+	"им": true, "их": true, "его": true, "ему": true,
+	"нее": true, "него": true, "чем": true, "когда": true,
+	"тогда": true, "чтобы": true,
 }
 
 // Token — токен с категорией
 type Token struct {
-	Term      string
-	Category  TokenCategory
-	Stemmed   string // для русских — стем, для остальных = Term
+	Term     string
+	Category TokenCategory
+	Stemmed  string // для русских — стем, для остальных = Term
 }
 
 // TokenCategory — категория токена
@@ -81,37 +100,81 @@ func Tokenize(text string) []Token {
 	text = strings.ReplaceAll(text, "ё", "е")
 	text = strings.ReplaceAll(text, "Ё", "Е")
 
-	// 2. Техимена — извлекаем первыми, чтобы не разрезать русским стеммером
-	techSet := map[string]bool{}
-	for _, m := range reTechName.FindAllString(text, -1) {
-		if isTechName(m) {
-			term := m
-			techSet[term] = true
-			tokens = append(tokens, Token{
-				Term:     term,
-				Category: CatTech,
-				Stemmed:  term,
-			})
+	runes := []rune(text)
+	consumed := make([]bool, len(runes))
+
+	markConsumed := func(byteStart, byteEnd int) {
+		rs := utf8.RuneCountInString(text[:byteStart])
+		re := utf8.RuneCountInString(text[:byteEnd])
+		for i := rs; i < re && i < len(consumed); i++ {
+			consumed[i] = true
 		}
 	}
-
-	// 3. Гибриды — цифры + русские/латинские буквы + дефис
-	for _, m := range reHybrid.FindAllStringSubmatch(text, -1) {
-		hybrid := m[1]
-		if isHybrid(hybrid) {
-			term := hybrid
-			if !techSet[term] {
-				tokens = append(tokens, Token{
-					Term:     term,
-					Category: CatHybrid,
-					Stemmed:  term,
-				})
+	anyConsumed := func(runeStart, runeEnd int) bool {
+		for i := runeStart; i < runeEnd && i < len(consumed); i++ {
+			if consumed[i] {
+				return true
 			}
+		}
+		return false
+	}
+
+	// 2. Техимена — извлекаем первыми, чтобы не разрезать русским стеммером.
+	for _, loc := range reTechName.FindAllStringIndex(text, -1) {
+		m := text[loc[0]:loc[1]]
+		if !isTechName(m) {
+			continue
+		}
+		// Префикс семейства без имени (API_, FCD_, ADP_) — не идентификатор.
+		if strings.HasSuffix(m, "_") {
+			continue
+		}
+		term := canonicalIdent(m)
+		tokens = append(tokens, Token{
+			Term:     term,
+			Category: CatTech,
+			Stemmed:  term,
+		})
+		markConsumed(loc[0], loc[1])
+	}
+
+	// 3. Гибриды — цифры + буквенный суффикс (758П, 275-ФЗ, 1-4212U).
+	// Кандидат ловится без привязки к пробелу; границы валидируются вручную.
+	for _, loc := range reHybridCandidate.FindAllStringIndex(text, -1) {
+		cand := strings.TrimRight(text[loc[0]:loc[1]], "-_")
+		if cand == "" || !endsWithLetter(cand) {
+			continue
+		}
+		runeStart := utf8.RuneCountInString(text[:loc[0]])
+		runeEnd := runeStart + utf8.RuneCountInString(cand)
+		if anyConsumed(runeStart, runeEnd) {
+			continue
+		}
+		if runeStart > 0 && isWordRune(runes[runeStart-1]) {
+			continue
+		}
+		term := canonicalIdent(cand)
+		tokens = append(tokens, Token{
+			Term:     term,
+			Category: CatHybrid,
+			Stemmed:  term,
+		})
+		markConsumed(loc[0], loc[0]+len(cand))
+	}
+
+	// Замаскировать потреблённые спаны, чтобы буквенные хвосты гибридов и
+	// техимён не порождали отдельных русских токенов (нет «го» из «2-го»).
+	masked := make([]rune, len(runes))
+	for i, r := range runes {
+		if consumed[i] {
+			masked[i] = ' '
+		} else {
+			masked[i] = r
 		}
 	}
 
 	// 1. Русские слова — lowercase + стемминг
-	for _, m := range reRussianWord.FindAllString(text, -1) {
+	for _, m := range reRussianWord.FindAllString(string(masked), -1) {
 		// Пропускаем русские аббревиатуры (все заглавные, ≤ 4 символов) — они не стеммятся
 		// Длина считается в рунах: кириллица в UTF-8 — 2 байта на символ.
 		if runes := utf8.RuneCountInString(m); runes <= 4 && m == strings.ToUpper(m) && runes >= 2 {
@@ -189,19 +252,36 @@ func isTechName(s string) bool {
 	return false
 }
 
-// isHybrid проверяет, является ли строка гибридным токеном.
-func isHybrid(s string) bool {
-	hasDigit := false
-	hasLetter := false
-	for _, r := range s {
-		if unicode.IsDigit(r) {
-			hasDigit = true
+// canonicalIdent приводит технический или гибридный токен к канонической форме:
+// нижний регистр, складывание кириллических гомоглифов в латиницу, удаление
+// дефиса между цифровой частью и буквенным суффиксом. Варианты написания одного
+// идентификатора (6406-У/6406U, RPT_F711/Rpt_F711) дают один термин словаря.
+func canonicalIdent(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToLower(s) {
+		if mapped, ok := identHomoglyphs[r]; ok {
+			b.WriteRune(mapped)
+			continue
 		}
-		if unicode.IsLetter(r) {
-			hasLetter = true
-		}
+		b.WriteRune(r)
 	}
-	return hasDigit && hasLetter
+	out := b.String()
+	out = reHyphenDigitLetter.ReplaceAllString(out, "$1$2")
+	out = reHyphenLetterDigit.ReplaceAllString(out, "$1$2")
+	return out
+}
+
+// endsWithLetter сообщает, заканчивается ли строка буквой: гибрид — это
+// цифры/дефисы, оканчивающиеся буквенным суффиксом (отсекает даты и диапазоны).
+func endsWithLetter(s string) bool {
+	r, _ := utf8.DecodeLastRuneInString(s)
+	return unicode.IsLetter(r)
+}
+
+// isWordRune — символ, продолжающий токен (буква/цифра/подчёркивание).
+func isWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
 }
 
 // stemRussian — стемминг русского слова алгоритмом Snowball (Russian).

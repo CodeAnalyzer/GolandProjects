@@ -15,12 +15,15 @@ context: |
       h-report-parsing           — H + TPR + RPT: defines, report forms, fields, params, VB functions, include-директивы
       dsxml-parsing              — DSArchitect XML: API contracts, tables, params, BObjects
       api-macros-t01             — API-макросы из SQL + препроцессированные .t01 (generated subscriber calls)
+      openspec-parsing           — OpenSpec-артефакты (spec.md, usecase-слои, changes, config.yaml): capability-иерархия, требования, сценарии, spec_code_mentions, зависимости, dual-write в symbols
       relations-postprocessing   — граф связей между сущностями + постобработка (PAS↔DFM, SQL calls, retcode, callbacks)
 
     query/                       — запросы к индексу
       symbol-search              — unified symbols index — поиск сущностей по имени
       entity-queries             — запросы по типам: table, table-schema, table-index, method, form, report, js-function, smf
       api-relations-queries      — API queries (contracts, impl, publishers, consumers) + relations graph + inspect
+      spec-queries               — spec_* навигация: спеки по коду (by_code), граф зависимостей capability (deps), usecase-слой (spec_usecase), покрытие (spec_coverage), история (spec_history), config продукта
+      spec-search                — двухслойный поиск по спекам: лексический (tsvector 'russian' + pg_trgm) и семантический (TF-IDF + LSA) + управление LSA-моделью
 
     review/                      — статический анализ SQL перед деплоем
       deploy-stoppers            — severity 1: 25 правил, блокирующие деплой

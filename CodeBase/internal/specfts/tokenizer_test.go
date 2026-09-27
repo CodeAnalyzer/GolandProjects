@@ -31,16 +31,16 @@ func TestTokenize_RussianStemming(t *testing.T) {
 }
 
 func TestTokenize_TechName(t *testing.T) {
-	// CON_STP_MassAccrual → один токен
+	// CON_STP_MassAccrual → один токен в канонической форме (нижний регистр)
 	tokens := TokenizeToStems("Вызов CON_STP_MassAccrual в цикле")
 	found := false
 	for _, tok := range tokens {
-		if tok == "CON_STP_MassAccrual" {
+		if tok == "con_stp_massaccrual" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected tech token 'CON_STP_MassAccrual', got %v", tokens)
+		t.Errorf("expected tech token 'con_stp_massaccrual', got %v", tokens)
 	}
 }
 
@@ -48,34 +48,127 @@ func TestTokenize_APIPrefix(t *testing.T) {
 	tokens := TokenizeToStems("API_DepoAccount_MassInsert выполняется")
 	found := false
 	for _, tok := range tokens {
-		if tok == "API_DepoAccount_MassInsert" {
+		if tok == "api_depoaccount_massinsert" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected tech token 'API_DepoAccount_MassInsert', got %v", tokens)
+		t.Errorf("expected tech token 'api_depoaccount_massinsert', got %v", tokens)
 	}
 }
 
 func TestTokenize_Hybrid(t *testing.T) {
-	// 758П, 275-ФЗ — как есть
+	// 758П и 275-ФЗ — единые токены в канонической форме
 	tokens := TokenizeToStems("Согласно 758П и 275-ФЗ")
 	found758 := false
 	found275 := false
 	for _, tok := range tokens {
-		if tok == "758П" {
+		if tok == "758p" {
 			found758 = true
 		}
-		if tok == "275-ФЗ" || tok == "275" {
+		if tok == "275фз" {
 			found275 = true
 		}
 	}
 	if !found758 {
-		t.Errorf("expected hybrid '758П', got %v", tokens)
+		t.Errorf("expected hybrid '758p', got %v", tokens)
 	}
-	// 275-ФЗ может быть разбит на 275 и ФЗ — проверяем хотя бы 275
 	if !found275 {
-		t.Errorf("expected hybrid '275' or '275-ФЗ', got %v", tokens)
+		t.Errorf("expected hybrid '275фз', got %v", tokens)
+	}
+}
+
+// TestTokenize_HybridNumericTail — цифровой хвост сохраняется целиком
+// (1-4212U), а не отбрасывается и не режется на части.
+func TestTokenize_HybridNumericTail(t *testing.T) {
+	tokens := TokenizeToStems("см. 1-4212U и 2-4637U")
+	seen := map[string]bool{}
+	for _, tok := range tokens {
+		seen[tok] = true
+	}
+	for _, want := range []string{"1-4212u", "2-4637u"} {
+		if !seen[want] {
+			t.Errorf("expected hybrid %q, got %v", want, tokens)
+		}
+	}
+}
+
+// TestTokenize_HybridAfterPunctuation — гибрид распознаётся сразу после
+// скобки/кавычки/№ без пробела.
+func TestTokenize_HybridAfterPunctuation(t *testing.T) {
+	tokens := TokenizeToStems("ссылка (6406-У) и «7047-У» и № 542-П")
+	seen := map[string]bool{}
+	for _, tok := range tokens {
+		seen[tok] = true
+	}
+	for _, want := range []string{"6406u", "7047u", "542p"} {
+		if !seen[want] {
+			t.Errorf("expected hybrid %q, got %v", want, tokens)
+		}
+	}
+}
+
+// TestTokenize_NoHybridTailLeak — буквенный хвост гибрида не эмитится
+// повторно как самостоятельный токен.
+func TestTokenize_NoHybridTailLeak(t *testing.T) {
+	counts := TokenizeToStemCounts("см. 2-го и 275-ФЗ")
+	if counts["го"] != 0 {
+		t.Errorf("hybrid tail 'го' leaked as separate token: %v", counts)
+	}
+	if counts["фз"] != 0 {
+		t.Errorf("hybrid tail 'фз' leaked as separate token: %v", counts)
+	}
+}
+
+// TestTokenize_HomoglyphVariantsMerge — варианты написания одного
+// идентификатора (Cyrillic-гомоглиф + дефис vs Latin) дают один термин.
+func TestTokenize_HomoglyphVariantsMerge(t *testing.T) {
+	for _, pair := range [][2]string{
+		{"6406-У", "6406U"},
+		{"385-П", "385P"},
+		{"1417-У", "1417U"},
+	} {
+		a := TokenizeToStems(pair[0])
+		b := TokenizeToStems(pair[1])
+		if len(a) != 1 || len(b) != 1 || a[0] != b[0] {
+			t.Errorf("variants %q/%q did not merge: %v vs %v", pair[0], pair[1], a, b)
+		}
+	}
+}
+
+// TestTokenize_TechNameCaseMerge — регистро-варианты техимени дают один термин.
+func TestTokenize_TechNameCaseMerge(t *testing.T) {
+	a := TokenizeToStems("RPT_F711")
+	b := TokenizeToStems("Rpt_F711")
+	if len(a) != 1 || len(b) != 1 || a[0] != b[0] {
+		t.Errorf("case variants did not merge: %v vs %v", a, b)
+	}
+}
+
+// TestTokenize_WildcardPrefixDropped — префикс семейства без имени
+// (API_, FCD_, ADP_) в словарь не попадает.
+func TestTokenize_WildcardPrefixDropped(t *testing.T) {
+	counts := TokenizeToStemCounts("семейства API_* и FCD_* и ADP_*")
+	for _, bad := range []string{"api_", "fcd_", "adp_"} {
+		if counts[bad] != 0 {
+			t.Errorf("wildcard prefix %q must be dropped, got %v", bad, counts)
+		}
+	}
+}
+
+// TestTokenize_ExtendedStopWords — частотные служебные слова и их формы
+// отфильтрованы, а легитимные короткие аббревиатуры сохранены.
+func TestTokenize_ExtendedStopWords(t *testing.T) {
+	counts := TokenizeToStemCounts("уже её был где цб фл юл ип")
+	for _, bad := range []string{"уж", "ее", "был", "где"} {
+		if counts[bad] != 0 {
+			t.Errorf("stop word stem %q leaked: %v", bad, counts)
+		}
+	}
+	for _, keep := range []string{"цб", "фл", "юл", "ип"} {
+		if counts[keep] == 0 {
+			t.Errorf("legitimate abbreviation %q wrongly removed: %v", keep, counts)
+		}
 	}
 }
 

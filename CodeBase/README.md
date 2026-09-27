@@ -37,6 +37,8 @@
   - Поиск сущностей по имени через unified symbols index
   - Поиск использований таблиц с точным совпадением по умолчанию и опциональным нечётким режимом
   - Поиск вызовов процедур
+  - Детали SQL-процедуры (`query procedure`): файл, диапазон строк, параметры с типами и default-значениями, тело
+  - Поиск кодов возврата (`query retcode`) по справочнику `ds_return_codes`: по числовому коду или тексту сообщения
   - Поиск PAS-методов по имени и методов, работающих с таблицей
   - Поиск SQL/query fragments по тексту SQL
   - Поиск schema таблиц (определений колонок из CREATE TABLE и schema patches)
@@ -233,6 +235,17 @@ codebase query callers --procedure FCD_Cons_tConfigParam --limit 100 --json
 ```
 
 `query callers` показывает как обычные `calls_procedure`, так и generated subscriber calls (`dispatches_to_subscriber`) из препроцессированных `.t01`, если такие файлы были проиндексированы.
+
+#### Детали SQL-процедуры
+
+```bash
+codebase query procedure --name API_RuleDoc_MassCreateDocument
+codebase query procedure --name API_RuleDoc_MassCreateDocument --json
+```
+
+`query procedure` показывает детали SQL-процедуры по точному имени: путь к файлу, диапазон строк, список параметров с типами и default-значениями и полный текст тела. Для нечёткого поиска используйте `query symbol --name <name> --type procedure --like`.
+
+Если процедуры нет в индексе, команда возвращает пустой результат (`count = 0`), а не ошибку.
 
 #### Поиск PAS-методов по имени
 
@@ -436,6 +449,20 @@ codebase query api-consumers --name API_Account_FindIDByNumber
 codebase query api-consumers --name API_CCred_BindClassifier --json
 ```
 
+#### Поиск кодов возврата (retcode)
+
+```bash
+codebase query retcode --code -27
+codebase query retcode --message "не найден" --json
+```
+
+`query retcode` ищет в справочнике `ds_return_codes` двумя режимами:
+
+- `--code <N>` — точный поиск по числовому коду: возвращает message, proc_name, module_id;
+- `--message <text>` — регистронезависимый частичный поиск по тексту сообщения; возвращает все совпадения.
+
+Один из флагов `--code` или `--message` обязателен.
+
 #### Inspect сущности с graph context (контекстом графа)
 
 ```bash
@@ -469,6 +496,10 @@ codebase query spec coverage --product fa-cards --kind api_contract
 
 # История изменения capability по changes
 codebase query spec history --slug card-limits
+
+# Профиль продукта, статистика сущностей и иерархия capabilities
+codebase query spec config --product fa-cards
+codebase query spec config --product fa-cards --include-hierarchy true --depth 2
 ```
 
 Спеки индексируются из `openspec/` директорий финпродуктов: capabilities, requirements, scenarios, usecases, changes. Usecase-слой поддерживает четыре формата (`scenarios/`, `usecases/`, `business-processes/`, `specs/usecases/`) с извлечением inline-метаданных, шагов (`**Шаг N**.`, табличных, нумерованных), ветвлений WHEN/ELSE, Confluence pageId и ссылок на capabilities. Поиск поддерживает два слоя: лексический (tsvector 'russian' + pg_trgm) и семантический (TF-IDF + LSA). Фильтры: `--product`, `--level` (capability|requirement|scenario|usecase), `--layer` (exact|semantic|both).
@@ -510,6 +541,8 @@ codebase query spec history --slug card-limits
 codebase stats
 codebase stats --json
 ```
+
+`stats` (CLI и MCP `codebase_stats`) читает снапшот из таблицы `stats_snapshot`, который перезаписывается по завершении `init`/`update`. Снапшот привязан к активному поколению LSA (из sidecar-state модели `spec_lsa_state.json`): при несовпадении поколений или отсутствии снапшота статистика пересчитывается живым подсчётом и сохраняется (best-effort). Недоступный или повреждённый state — фолбэк на полный счёт spec-метрик по всем поколениям.
 
 ### Health checks (проверки готовности)
 
@@ -830,7 +863,7 @@ codebase mcp
 
 #### Профили инструментов (--profile)
 
-Флаг `--profile` позволяет зарегистрировать только подмножество инструментов, релевантное профилю. Без флага регистрируются все 61 инструмент (текущее поведение). Это решает проблему обрезки `tools/list` response некоторыми IDE MCP-клиентами при превышении лимита размера JSON-RPC сообщения.
+Флаг `--profile` позволяет зарегистрировать только подмножество инструментов, релевантное профилю. Без флага регистрируются все 64 инструмента (текущее поведение). Это решает проблему обрезки `tools/list` response некоторыми IDE MCP-клиентами при превышении лимита размера JSON-RPC сообщения.
 
 ```bash
 codebase mcp --profile=query
@@ -843,11 +876,11 @@ codebase mcp --profile=review
 
 | Профиль | Инструментов | Размер `tools/list` | Описание |
 |---------|-------------|---------------------|----------|
-| (без флага) | 61 | ~48 KB | Все инструменты |
-| `query` | ~36 | ~30 KB | Базовые + query инструменты (включая spec) |
-| `rti` | ~16 | ~13 KB | Базовые + RTI инструменты |
-| `trc` | ~14 | ~9 KB | Базовые + TRC инструменты |
-| `review` | ~5 | ~4 KB | Базовые + review инструмент |
+| (без флага) | 64 | ~42 KB | Все инструменты |
+| `query` | 39 | ~22 KB | Базовые + query инструменты (включая spec) |
+| `rti` | 16 | ~9 KB | Базовые + RTI инструменты |
+| `trc` | 16 | ~12 KB | Базовые + TRC инструменты |
+| `review` | 5 | ~3 KB | Базовые + review инструмент |
 
 Базовые инструменты (`codebase_ping`, `codebase_health`, `codebase_stats`, `codebase_read_more`) доступны во всех профилях.
 
@@ -870,6 +903,14 @@ IDE может подключить несколько MCP-серверов на
 
 В логировании tool-вызовов каждое сообщение содержит поле `profile=<name>` (при запуске без флага — `profile=all`), что позволяет отличить записи от разных MCP-серверов при одновременном запуске нескольких профилей.
 
+Формат записи tool-вызова (пишется в общий дневной лог `codebase_YYYYMMDD.log`):
+
+```
+profile=<name> tool=<name> args=<аргументы> duration=<d> duration_ms=<ms> status=<success|error> error="<текст>"
+```
+
+Все аргументы вызова логируются детерминированно: ключи отсортированы, пары `ключ:значение` соединены запятой, пустой набор аргументов — `-`. Значения приватных аргументов `text` и `sql` (могут содержать полнотекстовые SQL-запросы и фрагменты кода) маскируются как `key:***` и не попадают в лог.
+
 Ключевые MCP tools:
 
 - `codebase.ping` — проверка живости MCP-сервера
@@ -889,6 +930,7 @@ IDE может подключить несколько MCP-серверов на
 | `codebase_query_spec_usecase` | Usecase-слой с involved capabilities; список по продукту; поиск по pageId | опц. `name` или `product` (один) |
 | `codebase_query_spec_coverage` | Перечень покрытых код-сущностей по capability | `product`, опц. `name`/`kind` |
 | `codebase_query_spec_history` | История изменения capability по changes | `name` или `change` (один), опц. `product` |
+| `codebase_query_spec_config` | Профиль OpenSpec-продукта (layout, язык, cross-ref style, флаги traceability/changes/ADR, контекст), статистика сущностей, иерархия capabilities | `product`, опц. `include_hierarchy`/`depth` |
 
 **RTI tools:**
 
@@ -1013,9 +1055,11 @@ CodeBase/
 │   ├── query_commands.go          # Query-команды поиска по индексу
 │   ├── query_execution.go         # Выполнение query и форматирование вывода
 │   ├── query_api.go               # API query-команды
+│   ├── query_spec.go              # Спек query-команды: search/by-code/deps/usecase/coverage/history/config
+│   ├── query_spec_exec.go         # Выполнение и форматирование spec query
 │   ├── review.go                  # Review команда (проверка SQL перед деплоем)
 │   ├── rti.go                     # RTI-анализатор: parse/summary/tree/errors/slow/details/blog/client-tree/timeline/list/delete/prune
-│   ├── trc.go                     # TRC-анализатор: parse/summary/events/procedures/tree/errors/slow/list/delete/prune
+│   ├── trc.go                     # TRC-анализатор: parse/summary/events/procedures/compare-procedures/spids/tree/errors/slow/list/delete/prune
 │   ├── stats.go                   # Команда stats
 │   ├── health.go                  # Команда health
 │   └── mcp.go                     # Команда запуска MCP сервера (с флагом --profile)
@@ -1049,9 +1093,9 @@ CodeBase/
 │   │   ├── query_sql.go           # SQL/table/procedure query-сценарии
 │   │   ├── query_relations.go     # Запросы relation graph
 │   │   └── api_query.go           # Query API-контрактов и DSArchitect сущностей
-│   ├── querysvc/                  # Внутренний runtime и compose-логика query (CLI + MCP)
-│   ├── specsvc/                   # Спек-сервис: ExecuteSpecSearch (LSA), ExecuteSpecByCode, ExecuteSpecDeps, ExecuteSpecUsecase, ExecuteSpecCoverage, ExecuteSpecHistory
-│   ├── systemsvc/                 # Внутренний runtime для health/stats (CLI + MCP)
+│   ├── querysvc/                  # Внутренний runtime и compose-логика query (CLI + MCP): Execute/ExecuteWith, inspect, нормализация результата procedure (не найдено → пустой результат)
+│   ├── specsvc/                   # Спек-сервис: ExecuteSpecSearch (LSA), ExecuteSpecByCode, ExecuteSpecDeps, ExecuteSpecUsecase, ExecuteSpecCoverage, ExecuteSpecHistory, ExecuteSpecConfig
+│   ├── systemsvc/                 # Внутренний runtime для health/stats (CLI + MCP); stats читает снапшот с привязкой к поколению LSA
 │   ├── review/                    # Review rules engine и SQL checker
 │   │   ├── types.go               # Типы Finding, RuleID, Severity
 │   │   ├── catalog.go             # Каталог правил (ruleCatalog) — единый источник rule metadata
@@ -1105,6 +1149,7 @@ CodeBase/
 │       ├── db.go                  # Основной persistence layer, NewDB, DSN-экранирование
 │       ├── db_tx.go               # Транзакционная обёртка: WithBatchTxCtx, ExecContext, QueryContext
 │       ├── db_schema.go           # InitSchema — создание всех таблиц и индексов
+│       ├── db_schema_version.go   # CheckSchemaVersion — совместимость версии схемы (schema_migrations)
 │       ├── db_files.go            # CRUD для files, DeleteFilesByPath(s)
 │       ├── db_insert_sql.go       # BatchInsert для SQL procedures/tables/columns/indexes
 │       ├── db_insert_pas.go       # BatchInsert для PAS units/classes/methods/fields
@@ -1121,13 +1166,18 @@ CodeBase/
 │       ├── db_lookup_j.go         # Lookup для JS functions/constants
 │       ├── db_lookup_reports.go   # Lookup для report forms/fields/params
 │       ├── db_lookup_retcode.go   # Lookup для ds_return_codes
-│       ├── db_lookup_spec.go      # Lookup для spec-сущностей и code-mention resolution
+│       ├── db_lookup_spec.go      # Lookup для spec-сущностей
+│       ├── db_lookup_spec_deps.go # Lookup для deps/change_modifies/usecase-refs (capabilities, deltas, proposal-ссылки)
+│       ├── db_lookup_spec_mentions.go # Resolution code-mentions (references_code)
+│       ├── db_lookup_spec_profile.go  # Профиль продукта: загрузка/детект профиля, статистика конфига, иерархия capabilities
 │       ├── db_lookup_keys.go      # Lookup key builders (unified symbol index keys)
 │       ├── db_resolve_retcode.go  # ResolveRetCodeConstants — замена LOC_RETCODE_* на значения
 │       ├── db_scan_runs.go        # CreateScanRun, UpdateScanRun
-│       ├── db_stats.go            # Stats — агрегированная статистика индекса
+│       ├── db_stats.go            # Stats — статистика индекса: снапшот stats_snapshot + живой пересчёт
+│       ├── db_lsa.go              # LSA: загрузка spec-сущностей для обучения, публикация/ротация поколений LSA
 │       ├── db_nullable.go         # Nullable helpers (NullableString, NullableInt, NullableInt64)
 │       ├── db_products.go         # Продукты Diasoft (product catalog)
+│       ├── db_upsert_spec.go      # Upsert spec capabilities/changes, контейнеры capability (advisory lock)
 │       ├── api_store.go           # Persistence для API/DSArchitect сущностей
 │       └── testutil/              # Test utilities (Open, DSN для integration-тестов)
 ├── main.go                        # Точка входа приложения
@@ -1139,6 +1189,8 @@ CodeBase/
 Основные таблицы:
 
 - `scan_runs` - метадеанные запусков сканирования
+- `stats_snapshot` — снапшот статистики индекса (payload JSONB, `lsa_generation` активного поколения LSA)
+- `schema_migrations` - применённые версии схемы БД
 - `files` - индекс файлов
 - `sql_procedures` - SQL-процедуры
 - `sql_tables` - таблицы в SQL
@@ -1151,6 +1203,7 @@ CodeBase/
 - `pas_methods` - Pascal методы
 - `pas_fields` - Pascal поля с прямой ссылкой `dfm_component_id` на DFM компонент
 - `js_functions` - JavaScript функции
+- `js_constants` - JavaScript константы
 - `smf_instruments` - модели Ф.О. из SMF
 - `dfm_forms` - DFM формы с `caption`
 - `dfm_components` - DFM компоненты формы с `caption` и `parent_name`
@@ -1182,6 +1235,7 @@ CodeBase/
 - `trc_sessions` — сессии парсинга `.trc`/`.xml` файлов (file_path, file_size, total_events, provider/server/version metadata)
 - `trc_events` — декодированные события из `.trc`/`.xml` (event_class, event_name, text_data, procedure, spid, duration_ms, cpu, reads, writes, error, params JSONB, columns JSONB)
 - `ds_return_codes` — справочник кодов возврата процедур
+- `ds_products` — каталог продуктов Diasoft (product catalog)
 - `relations` - Связи между сущностями
 - `query_fragments` - SQL-фрагменты в коде, включая отдельные SQL statements из `.sql` и препроцессированных `.t01` procedures/scripts, пригодные для текстового поиска
 - `include_directives` - include-директивы и их разрешение
@@ -1193,7 +1247,7 @@ CodeBase/
 - `spec_usecases` — usecase-сценарии (actors, preconditions, postconditions, pageId)
 - `spec_usecase_steps` — шаги usecase (step_order, action, expected_result, involved capability)
 - `spec_changes` — changes (name, status, artifacts, skip_specs)
-- `spec_change_deltas` — delta-секции changes (section: ADDED/MODIFIED/REMOVED, requirement_name, body_text)
+- `spec_change_deltas` — delta-секции changes (таблица `spec_change_delta`; section: ADDED/MODIFIED/REMOVED, requirement_name, body_text)
 - `spec_code_mentions` — staging-таблица упоминаний кода в текстах спек (kind, target_name, source_entity)
 - `spec_vocab` — словарь терминов для LSA (term, doc_freq)
 - `spec_embeddings` — LSA-эмбеддинги спек (embed_level, vector)
@@ -1236,9 +1290,16 @@ CodeBase/
 - Упоминания кода извлекаются из Related code, inline-текстов требований/сценариев и delta-текстов; разрешаются в пост-обработке в relations `references_code`.
 - Строятся relations: `depends_on_capability` (5 маркеров: markdown-ссылки, «Связан с доменами», inline-упоминания, cci:-хвост, sibling-резолв), `change_modifies` (из delta и proposal-извлечений).
 - Dual-write: spec-сущности дублируются в `symbols` для unified `query symbol`.
-- Полнотекстовый поиск: лексический слой (tsvector 'russian' + pg_trgm) + семантический слой (TF-IDF + LSA через gonum, k=512 (настраивается)). Модель пересчитывается при достижении порога изменённых capability.
+- Полнотекстовый поиск: лексический слой (tsvector 'russian' + pg_trgm) + семантический слой (TF-IDF + LSA через gonum, k=512 (настраивается)). Модель пересчитывается при достижении порога изменённых capability и публикуется как новое поколение LSA (`lsa_generation`); предыдущее поколение удерживается для отката, устаревшие поколения удаляются. Активное поколение фиксируется в sidecar-state модели (`spec_lsa_state.json`).
 - Профиль продукта детектируется автоматически: usecase_layout, id_style, has_changes, has_adr, normative_lang, cross_ref_style.
 - Инкрементальность: `codebase update` переиндексирует только изменённые `.md`/`.yaml` файлы.
+
+### Снапшот статистики индекса
+
+- Таблица `stats_snapshot` (id=1) хранит последний снапшот статистики: `payload` (JSONB со всеми счётчиками) и `lsa_generation` — активное поколение LSA, по которому считались spec-метрики.
+- `codebase init` / `codebase update` по завершении пересчитывают статистику живым подсчётом и перезаписывают снапшот (`RefreshStatsSnapshot`).
+- `codebase stats` (и MCP `codebase_stats`) читает снапшот, если он есть и поколение LSA совпадает с активным (из sidecar-state модели); иначе — живой пересчёт с best-effort сохранением нового снапшота.
+- Несовпадение поколения (например, после переобучения LSA), отсутствие или ошибка чтения снапшота не являются ошибками: выполняется фолбэк на живой подсчёт.
 
 ### Логирование
 
@@ -1255,6 +1316,11 @@ CodeBase/
 - Формат имени: `indexer_errors_YYYYMMDD_HHMMSS.log`.
 - В каждой записи указывается путь файла, на котором произошла ошибка.
 - Это предотвращает смешивание ошибок от разных запусков `init`/`update`.
+
+#### MCP tool call logs (логи tool-вызовов MCP)
+
+- Вызовы MCP-инструментов пишутся в тот же дневной файл `codebase_YYYYMMDD.log` с полем `profile=<name>`.
+- Формат записи и маскирование приватных аргументов `text`/`sql` описаны в разделе «MCP режим».
 
 ## Integration-тесты store / indexer
 
@@ -1320,7 +1386,10 @@ $env:CODEBASE_TEST_DSN = "postgres://postgres:123456@localhost:5435/postgres?ssl
 - [x] MCP parse timeout: отдельные `parse_timeout_sec` для RTI и TRC парсинга (по умолчанию 300 сек), маршрутизация таймаута через switch по имени инструмента
 - [x] OpenSpec-индексация: парсер `openspecmd` (capabilities, requirements, scenarios, usecases, changes, delta, code mentions), MD/YAML в walker, авто-детект кодировки MD, dual-write в symbols, spec-постпроцессор (references_code, depends_on_capability, change_modifies), профиль продукта
 - [x] Спек-полнотекстовый поиск: лексический (tsvector 'russian' + pg_trgm) и семантический (TF-IDF + LSA через gonum), пересчёт модели по порогу
-- [x] Spec query CLI и MCP tools: `spec search`, `spec by-code`, `spec deps`, `spec usecase`, `spec coverage`, `spec history`
+- [x] Spec query CLI и MCP tools: `spec search`, `spec by-code`, `spec deps`, `spec usecase`, `spec coverage`, `spec history`, `spec config`
+- [x] Снапшот статистики индекса: `stats` читает `stats_snapshot` с привязкой к поколению LSA, перезапись снапшота по завершении init/update, фолбэк на живой подсчёт
+- [x] Логирование MCP tool-вызовов: все аргументы в детерминированном `k:v`-формате с маскированием приватных `text`/`sql` и полем `profile`
+- [x] `query procedure`: отсутствие процедуры в индексе — пустой результат (`count = 0`) вместо ошибки (CLI и MCP)
 
 ## Лицензия
 

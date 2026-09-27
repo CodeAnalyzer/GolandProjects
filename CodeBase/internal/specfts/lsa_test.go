@@ -54,10 +54,10 @@ func TestTokenize_YoNormalization(t *testing.T) {
 	tech := TokenizeToStems("вызов CON_STP_MassAccrual и API_Test")
 	foundTech, foundAPI := false, false
 	for _, s := range tech {
-		if s == "CON_STP_MassAccrual" {
+		if s == "con_stp_massaccrual" {
 			foundTech = true
 		}
-		if s == "API_Test" {
+		if s == "api_test" {
 			foundAPI = true
 		}
 	}
@@ -102,6 +102,19 @@ func TestCorpusFingerprint_SensitiveToText(t *testing.T) {
 	fp2 := CorpusFingerprint([]Document{{ID: 1, Text: "a"}, {ID: 2, Text: "bc"}}, params)
 	if fp1 == fp2 {
 		t.Error("concatenation collision: NUL separators must prevent it")
+	}
+}
+
+// TestCorpusFingerprint_PinnedToVersions — фиксирует fingerprint для неизменного
+// корпуса и параметров. Любой bump CompositionVersion/TokenizerVersion/
+// AlgorithmVersion обязан изменить это значение: тест падает, требуя осознанного
+// обновления константы и переобучения модели.
+func TestCorpusFingerprint_PinnedToVersions(t *testing.T) {
+	docs := []Document{{ID: 1, Text: "арест счёта"}, {ID: 2, Text: "блокировка счёта"}}
+	params := LSAParams{MinDF: 3, MaxDF: 0.3, K: 128}
+	const want = "32668942f75560ccf992342675e965d230313ccd2517014c9c0210f14f1990d6"
+	if got := CorpusFingerprint(docs, params); got != want {
+		t.Fatalf("fingerprint = %s, want %s (update if versions/corpus changed intentionally)", got, want)
 	}
 }
 

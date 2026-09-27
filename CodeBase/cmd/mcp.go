@@ -13,9 +13,9 @@ var mcpCmd = &cobra.Command{
 	Long: `Starts CodeBase as MCP JSON-RPC server over stdin/stdout transport.
 
 Use --profile to register only a subset of tools (reduces tools/list response size):
-  --profile=query   - base + query tools (~30)
-  --profile=rti     - base + RTI tools (~17)
-  --profile=trc     - base + TRC tools (~14)
+  --profile=query   - base + query tools (~39)
+  --profile=rti     - base + RTI tools (~16)
+  --profile=trc     - base + TRC tools (~16)
   --profile=review  - base + review tools (~5)
 Without --profile, all tools are registered (default behavior).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
