@@ -170,18 +170,26 @@ func (db *DB) FindLatestSQLTableIDsByNames(ctx context.Context, tableNames []str
 	return result, rows.Err()
 }
 
-func (db *DB) FindLatestSQLColumnDefinitionType(ctx context.Context, tableName string, columnName string) (string, error) {
+// FindLatestSQLColumnDefinitionType возвращает тип колонки таблицы. При
+// ненулевых fileID/productID определение выбирается по трёхуровневому приоритету:
+// определение из указанного файла, затем из указанного продукта, затем самое
+// свежее глобальное (id DESC). Нулевой контекст сохраняет прежнее поведение —
+// глобальный latest-wins.
+func (db *DB) FindLatestSQLColumnDefinitionType(ctx context.Context, tableName string, columnName string, fileID, productID int64) (string, error) {
 	var dataType string
 	err := db.QueryRowContext(ctx, `
-		SELECT data_type
-		FROM sql_column_definitions
-		WHERE LOWER(table_name) = LOWER($1)
-		  AND LOWER(column_name) = LOWER($2)
-		  AND TRIM(COALESCE(data_type, '')) <> ''
-		  AND data_type <> 'DSUNKNOWN'
-		ORDER BY id DESC
+		SELECT scd.data_type
+		FROM sql_column_definitions scd
+		JOIN files f ON f.id = scd.file_id
+		WHERE LOWER(scd.table_name) = LOWER($1)
+		  AND LOWER(scd.column_name) = LOWER($2)
+		  AND TRIM(COALESCE(scd.data_type, '')) <> ''
+		  AND scd.data_type <> 'DSUNKNOWN'
+		ORDER BY (scd.file_id = $3) DESC,
+		         (COALESCE(f.ds_product_id = $4, FALSE)) DESC,
+		         scd.id DESC
 		LIMIT 1
-	`, strings.TrimSpace(tableName), strings.TrimSpace(columnName)).Scan(&dataType)
+	`, strings.TrimSpace(tableName), strings.TrimSpace(columnName), fileID, productID).Scan(&dataType)
 	if err != nil {
 		return "", err
 	}
@@ -190,27 +198,32 @@ func (db *DB) FindLatestSQLColumnDefinitionType(ctx context.Context, tableName s
 
 // FindAPIColumnDefinitionType ищет тип колонки в API-контрактах и business objects.
 // Используется как fallback, когда тип не найден в sql_column_definitions (например, для ptable).
-func (db *DB) FindAPIColumnDefinitionType(ctx context.Context, tableName string, columnName string) (string, error) {
+// При ненулевом productID определения из указанного продукта приоритетнее глобальных;
+// нулевой productID сохраняет прежнее поведение — глобальный latest-wins.
+func (db *DB) FindAPIColumnDefinitionType(ctx context.Context, tableName string, columnName string, productID int64) (string, error) {
 	var dataType string
 	err := db.QueryRowContext(ctx, `
 		SELECT type_name FROM (
-			SELECT f.type_name AS type_name, f.id AS id
+			SELECT f.type_name AS type_name, f.id AS id, COALESCE(fl.ds_product_id = $3, FALSE) AS product_match
 			FROM api_contract_table_fields f
 			JOIN api_contract_tables t ON t.id = f.contract_table_id
+			JOIN api_contracts c ON c.id = t.contract_id
+			JOIN files fl ON fl.id = c.file_id
 			WHERE LOWER(t.table_name) = LOWER($1)
 			  AND LOWER(f.field_name) = LOWER($2)
 			  AND TRIM(COALESCE(f.type_name, '')) <> ''
 			UNION ALL
-			SELECT f.type_name AS type_name, f.id AS id
+			SELECT f.type_name AS type_name, f.id AS id, COALESCE(fl.ds_product_id = $3, FALSE) AS product_match
 			FROM api_business_object_table_fields f
 			JOIN api_business_object_tables t ON t.id = f.business_table_id
+			JOIN files fl ON fl.id = t.file_id
 			WHERE LOWER(t.table_name) = LOWER($1)
 			  AND LOWER(f.field_name) = LOWER($2)
 			  AND TRIM(COALESCE(f.type_name, '')) <> ''
 		) combined
-		ORDER BY id DESC
+		ORDER BY product_match DESC, id DESC
 		LIMIT 1
-	`, strings.TrimSpace(tableName), strings.TrimSpace(columnName)).Scan(&dataType)
+	`, strings.TrimSpace(tableName), strings.TrimSpace(columnName), productID).Scan(&dataType)
 	if err != nil {
 		return "", err
 	}
@@ -220,7 +233,10 @@ func (db *DB) FindAPIColumnDefinitionType(ctx context.Context, tableName string,
 // BatchFindColumnDefinitionTypes возвращает карту "table|col" -> data_type для всех
 // колонок указанных таблиц одним запросом. Используется для предзагрузки кэша типов
 // перед запуском правил review, чтобы избежать тысяч отдельных DB-запросов.
-func (db *DB) BatchFindColumnDefinitionTypes(ctx context.Context, tableNames []string) (map[string]string, error) {
+// При ненулевых fileID/productID применяется трёхуровневый приоритет, как в
+// FindLatestSQLColumnDefinitionType: определение из указанного файла, затем из
+// указанного продукта, затем самое свежее глобальное.
+func (db *DB) BatchFindColumnDefinitionTypes(ctx context.Context, tableNames []string, fileID, productID int64) (map[string]string, error) {
 	if len(tableNames) == 0 {
 		return map[string]string{}, nil
 	}
@@ -229,13 +245,16 @@ func (db *DB) BatchFindColumnDefinitionTypes(ctx context.Context, tableNames []s
 		lowerNames[i] = strings.ToLower(strings.TrimSpace(t))
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT LOWER(table_name), LOWER(column_name), data_type
-		FROM sql_column_definitions
-		WHERE LOWER(table_name) = ANY($1)
-		  AND TRIM(COALESCE(data_type, '')) <> ''
-		  AND data_type <> 'DSUNKNOWN'
-		ORDER BY id DESC
-	`, pq.Array(lowerNames))
+		SELECT LOWER(scd.table_name), LOWER(scd.column_name), scd.data_type
+		FROM sql_column_definitions scd
+		JOIN files f ON f.id = scd.file_id
+		WHERE LOWER(scd.table_name) = ANY($1)
+		  AND TRIM(COALESCE(scd.data_type, '')) <> ''
+		  AND scd.data_type <> 'DSUNKNOWN'
+		ORDER BY (scd.file_id = $2) DESC,
+		         (COALESCE(f.ds_product_id = $3, FALSE)) DESC,
+		         scd.id DESC
+	`, pq.Array(lowerNames), fileID, productID)
 	if err != nil {
 		return nil, err
 	}

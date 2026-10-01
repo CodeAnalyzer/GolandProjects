@@ -40,6 +40,9 @@ type reviewExecContext struct {
 	content     []byte
 	macroResult macroReplaceResult
 	lines       []string
+	// Контекст запуска для продуктового скопирования lookup'ов типов колонок
+	fileID    int64
+	productID int64
 }
 
 type ruleTask struct {
@@ -115,6 +118,8 @@ func (r *Runner) RunSQLFileCtx(ctx context.Context, path string, opts Options) (
 		content:     []byte(macroResult.Content),
 		macroResult: macroResult,
 		lines:       strings.Split(macroResult.Content, "\n"),
+		fileID:      file.ID,
+		productID:   file.DsProductID,
 	}
 	defer func() {
 		r.exec = nil
@@ -376,7 +381,8 @@ func (r *Runner) prewarmColTypeCache(ctx context.Context, parsed *sqlparser.Pars
 		names = append(names, t)
 	}
 
-	batch, err := r.db.BatchFindColumnDefinitionTypes(ctx, names)
+	ctxFileID, ctxProductID := r.execContextIDs()
+	batch, err := r.db.BatchFindColumnDefinitionTypes(ctx, names, ctxFileID, ctxProductID)
 	if err != nil {
 		return err
 	}
@@ -389,6 +395,15 @@ func (r *Runner) prewarmColTypeCache(ctx context.Context, parsed *sqlparser.Pars
 	return nil
 }
 
+// execContextIDs возвращает контекст запуска (fileID, productID) для продуктового
+// скопирования lookup'ов; вне активного запуска — нули (глобальное поведение).
+func (r *Runner) execContextIDs() (int64, int64) {
+	if r.exec == nil {
+		return 0, 0
+	}
+	return r.exec.fileID, r.exec.productID
+}
+
 func (r *Runner) cachedFindColumnDefinitionType(ctx context.Context, tableName, columnName string) (string, error) {
 	key := strings.ToLower(strings.TrimSpace(tableName)) + "|" + strings.ToLower(strings.TrimSpace(columnName))
 	r.colTypeMu.Lock()
@@ -397,11 +412,12 @@ func (r *Runner) cachedFindColumnDefinitionType(ctx context.Context, tableName, 
 		return v, nil
 	}
 	r.colTypeMu.Unlock()
-	typeName, err := r.db.FindLatestSQLColumnDefinitionType(ctx, tableName, columnName)
+	fileID, productID := r.execContextIDs()
+	typeName, err := r.db.FindLatestSQLColumnDefinitionType(ctx, tableName, columnName, fileID, productID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// Fallback: ищем тип в API-контрактах и business objects
-			apiType, apiErr := r.db.FindAPIColumnDefinitionType(ctx, tableName, columnName)
+			apiType, apiErr := r.db.FindAPIColumnDefinitionType(ctx, tableName, columnName, productID)
 			if apiErr == nil && apiType != "" {
 				r.colTypeMu.Lock()
 				r.colTypeCache[key] = apiType

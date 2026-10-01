@@ -476,7 +476,7 @@ func (idx *Indexer) enrichSelectIntoDataTypes(ctx context.Context, result *sqlpa
 			}
 			continue
 		}
-		resolvedType, err := idx.db.FindLatestSQLColumnDefinitionType(ctx, resolvedTable, sourceColumn)
+		resolvedType, err := idx.db.FindLatestSQLColumnDefinitionType(ctx, resolvedTable, sourceColumn, 0, 0)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				typeCache[typeKey] = ""
