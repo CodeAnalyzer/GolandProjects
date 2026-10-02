@@ -47,7 +47,7 @@ func TestBatchInsertSQLProceduresAndLookup(t *testing.T) {
 		t.Fatalf("BatchInsertSQLProcedures: %v", err)
 	}
 
-	ids, err := db.FindLatestSQLProcedureIDsByNames(context.Background(), []string{"callera", "CalleeB"})
+	ids, err := db.FindLatestSQLProcedureIDsByNames(context.Background(), []string{"callera", "CalleeB"}, 0)
 	if err != nil {
 		t.Fatalf("FindLatestSQLProcedureIDsByNames: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestWithBatchTx_SeesUncommittedInsert(t *testing.T) {
 		}, 100); err != nil {
 			return err
 		}
-		ids, err := txdb.FindLatestSQLProcedureIDsByNames(context.Background(), []string{"InTxProc"})
+		ids, err := txdb.FindLatestSQLProcedureIDsByNames(context.Background(), []string{"InTxProc"}, 0)
 		if err != nil {
 			return err
 		}

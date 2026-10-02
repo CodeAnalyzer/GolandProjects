@@ -206,7 +206,7 @@ func TestBuildSpecRelationsPreservesSourcesAndUsecaseTargets(t *testing.T) {
 		{SourceType: "spec_scenario", SourceID: 42, MentionName: "API_A", MentionKind: "api", LineNumber: 18},
 	}
 	lookup := &specMentionLookup{Procedures: map[string]int64{"proca": 101}, APIs: map[string]int64{"api_a": 102}}
-	relations := buildSpecMentionRelations(mentions, lookup)
+	relations := buildSpecMentionRelations(mentions, map[int64]*specMentionLookup{0: lookup})
 	if len(relations) != 2 || relations[0].SourceID != 41 || relations[1].SourceID != 42 {
 		t.Fatalf("spec mention relations = %+v", relations)
 	}
@@ -241,14 +241,14 @@ func TestBuildSpecMentionRelations_NewKinds(t *testing.T) {
 		{SourceType: "spec_scenario", SourceID: 17, MentionName: "pAPI_Unknown", MentionKind: "api_table", LineNumber: 12},
 	}
 	lookup := &specMentionLookup{
-		Reports:       map[string]int64{"form651": 201},
-		APIs:          map[string]int64{"onafterperson_update": 202},
-		APITables:     map[string][]int64{"papi_accrual_objdate": {301, 302}},
-		Methods:       map[string]int64{"realmethod": 203},
-		MethodForms:   map[string]int64{"rpportfolio_f": 204},
-		UnknownProcs:  map[string]int64{"r8938_prc": 205},
+		Reports:      map[string]int64{"form651": 201},
+		APIs:         map[string]int64{"onafterperson_update": 202},
+		APITables:    map[string][]int64{"papi_accrual_objdate": {301, 302}},
+		Methods:      map[string]int64{"realmethod": 203},
+		MethodForms:  map[string]int64{"rpportfolio_f": 204},
+		UnknownProcs: map[string]int64{"r8938_prc": 205},
 	}
-	relations := buildSpecMentionRelations(mentions, lookup)
+	relations := buildSpecMentionRelations(mentions, map[int64]*specMentionLookup{0: lookup})
 
 	byKey := map[string]*model.Relation{}
 	for _, r := range relations {

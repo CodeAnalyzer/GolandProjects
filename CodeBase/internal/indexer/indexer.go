@@ -1594,8 +1594,8 @@ func (idx *Indexer) saveFileCtx(ctx context.Context, file fswalk.FileInfo, scanR
 
 	var id int64
 	err := idx.db.QueryRowContext(ctx, `
-		INSERT INTO files (scan_run_id, ds_product_id, path, rel_path, extension, size_bytes, hash_sha256, modified_at, encoding, language)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO files (scan_run_id, ds_product_id, path, rel_path, extension, size_bytes, hash_sha256, modified_at, encoding, language, is_generated)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id
 	`,
 		scanRunID,
@@ -1608,6 +1608,7 @@ func (idx *Indexer) saveFileCtx(ctx context.Context, file fswalk.FileInfo, scanR
 		file.ModifiedAt,
 		file.Encoding,
 		file.Language,
+		file.IsGenerated,
 	).Scan(&id)
 	if err != nil {
 		return 0, err

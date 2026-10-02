@@ -767,6 +767,9 @@ type SpecCodeMention struct {
 	MentionName string
 	MentionKind string // procedure | api | table | form | smf | method | unknown
 	LineNumber  int
+	// ProductID — продукт файла спеки (files.ds_product_id), 0 если не определён;
+	// контекст приоритетного резолва упоминаний (свой продукт важнее чужого).
+	ProductID int64
 }
 
 // SpecVocabTerm — термин словаря полнотекстового слоя (LSA)

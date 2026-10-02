@@ -27,103 +27,25 @@ func (idx *Indexer) postProcessSpecCodeMentions(ctx context.Context, collector *
 		return
 	}
 
-	// 1. Собираем уникальные имена для batch-lookup
-	procNames := collectMentionNamesByKind(mentions, "procedure")
-	tableNames := collectMentionNamesByKind(mentions, "table")
-	formNames := collectMentionNamesByKind(mentions, "form")
-	smfNames := collectMentionNamesByKind(mentions, "smf")
-	methodNames := collectMentionNamesByKind(mentions, "method")
-	apiNames := collectMentionNamesByKind(mentions, "api")
-	reportNames := collectMentionNamesByKind(mentions, "report")
-	eventNames := collectMentionNamesByKind(mentions, "event")
-	apiTableNames := collectMentionNamesByKind(mentions, "api_table")
-	unknownNames := collectMentionNamesByKind(mentions, "unknown")
+	// 1. Группируем упоминания по продукту файла спеки (0 = продукт не определён):
+	// одно имя может резолвиться по-разному для спек разных продуктов.
+	groups := make(map[int64][]*model.SpecCodeMention)
+	for _, m := range mentions {
+		if m == nil {
+			continue
+		}
+		groups[m.ProductID] = append(groups[m.ProductID], m)
+	}
 
-	// 2. Batch-resolve имён в ID сущностей
-	lookup := &specMentionLookup{}
-	if len(procNames) > 0 {
-		ids, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, procNames)
-		if err != nil {
-			idx.logError("<post-processing>", "Error resolving procedure names for spec mentions: %v", err)
-		}
-		lookup.Procedures = ids
-	}
-	if len(tableNames) > 0 {
-		ids, err := idx.db.FindLatestSQLTableIDsByNames(ctx, tableNames)
-		if err != nil {
-			idx.logError("<post-processing>", "Error resolving table names for spec mentions: %v", err)
-		}
-		lookup.Tables = ids
-	}
-	if len(formNames) > 0 {
-		ids, err := idx.db.FindDFMFormIDsByNames(ctx, formNames)
-		if err != nil {
-			idx.logError("<post-processing>", "Error resolving form names for spec mentions: %v", err)
-		}
-		lookup.Forms = ids
-	}
-	if len(smfNames) > 0 {
-		ids, err := idx.db.FindSMFInstrumentIDsByNames(ctx, smfNames)
-		if err != nil {
-			idx.logError("<post-processing>", "Error resolving SMF names for spec mentions: %v", err)
-		}
-		lookup.SMF = ids
-	}
-	if len(methodNames) > 0 {
-		ids, err := idx.db.FindPASMethodIDsByNames(ctx, methodNames)
-		if err != nil {
-			idx.logError("<post-processing>", "Error resolving method names for spec mentions: %v", err)
-		}
-		lookup.Methods = ids
-		// Фолбэк .pas-упоминаний: имена-промахи (юниты форм, не методы) ищем в dfm_forms
-		missedMethods := make([]string, 0)
-		for _, name := range methodNames {
-			if lookup.Methods[strings.ToLower(name)] == 0 {
-				missedMethods = append(missedMethods, name)
-			}
-		}
-		if len(missedMethods) > 0 {
-			formIDs, err := idx.db.FindDFMFormIDsByNames(ctx, missedMethods)
-			if err != nil {
-				idx.logError("<post-processing>", "Error resolving method fallback form names for spec mentions: %v", err)
-			} else {
-				lookup.MethodForms = formIDs
-			}
-		}
-	}
-	if len(apiNames) > 0 || len(eventNames) > 0 {
-		apiEventNames := append(append([]string{}, apiNames...), eventNames...)
-		ids, err := idx.db.FindAPIContractIDsByNames(ctx, apiEventNames)
-		if err != nil {
-			idx.logError("<post-processing>", "Error resolving API names for spec mentions: %v", err)
-		}
-		lookup.APIs = ids
-	}
-	if len(reportNames) > 0 {
-		ids, err := idx.db.FindReportFormIDsByNames(ctx, reportNames)
-		if err != nil {
-			idx.logError("<post-processing>", "Error resolving report names for spec mentions: %v", err)
-		}
-		lookup.Reports = ids
-	}
-	if len(apiTableNames) > 0 {
-		ids, err := idx.db.FindAPIContractIDsByTableNames(ctx, apiTableNames)
-		if err != nil {
-			idx.logError("<post-processing>", "Error resolving API table names for spec mentions: %v", err)
-		}
-		lookup.APITables = ids
-	}
-	if len(unknownNames) > 0 {
-		// Second-chance: unknown-имена, совпавшие с процедурами (строчные rpt_*_proc)
-		ids, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, unknownNames)
-		if err != nil {
-			idx.logError("<post-processing>", "Error second-chance resolving unknown names for spec mentions: %v", err)
-		}
-		lookup.UnknownProcs = ids
+	// 2. Для каждой группы — batch-resolve имён в ID сущностей
+	// с приоритетом: не-генерируемый источник → свой продукт → свежий по id.
+	lookups := make(map[int64]*specMentionLookup, len(groups))
+	for productID, group := range groups {
+		lookups[productID] = idx.resolveSpecMentionGroup(ctx, productID, group)
 	}
 
 	// 3. Строим relations
-	relations := buildSpecMentionRelations(mentions, lookup)
+	relations := buildSpecMentionRelations(mentions, lookups)
 
 	// 4. Удаляем старые references_code relations от spec-сущностей
 	if err := idx.db.DeleteSpecReferenceRelations(ctx); err != nil {
@@ -138,6 +60,107 @@ func (idx *Indexer) postProcessSpecCodeMentions(ctx context.Context, collector *
 		return
 	}
 	collector.Add(func(stats *model.ScanStats) { mergeScanStats(stats, localStats) })
+}
+
+// resolveSpecMentionGroup выполняет batch-lookup всех kind одной продуктовой
+// группы упоминаний. productID — продукт файлов спек группы (0 = без
+// продуктового предпочтения).
+func (idx *Indexer) resolveSpecMentionGroup(ctx context.Context, productID int64, mentions []*model.SpecCodeMention) *specMentionLookup {
+	lookup := &specMentionLookup{}
+
+	procNames := collectMentionNamesByKind(mentions, "procedure")
+	tableNames := collectMentionNamesByKind(mentions, "table")
+	formNames := collectMentionNamesByKind(mentions, "form")
+	smfNames := collectMentionNamesByKind(mentions, "smf")
+	methodNames := collectMentionNamesByKind(mentions, "method")
+	apiNames := collectMentionNamesByKind(mentions, "api")
+	reportNames := collectMentionNamesByKind(mentions, "report")
+	eventNames := collectMentionNamesByKind(mentions, "event")
+	apiTableNames := collectMentionNamesByKind(mentions, "api_table")
+	unknownNames := collectMentionNamesByKind(mentions, "unknown")
+
+	if len(procNames) > 0 {
+		ids, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, procNames, productID)
+		if err != nil {
+			idx.logError("<post-processing>", "Error resolving procedure names for spec mentions: %v", err)
+		}
+		lookup.Procedures = ids
+	}
+	if len(tableNames) > 0 {
+		ids, err := idx.db.FindLatestSQLTableIDsByNames(ctx, tableNames, productID)
+		if err != nil {
+			idx.logError("<post-processing>", "Error resolving table names for spec mentions: %v", err)
+		}
+		lookup.Tables = ids
+	}
+	if len(formNames) > 0 {
+		ids, err := idx.db.FindDFMFormIDsByNames(ctx, formNames, productID)
+		if err != nil {
+			idx.logError("<post-processing>", "Error resolving form names for spec mentions: %v", err)
+		}
+		lookup.Forms = ids
+	}
+	if len(smfNames) > 0 {
+		ids, err := idx.db.FindSMFInstrumentIDsByNames(ctx, smfNames, productID)
+		if err != nil {
+			idx.logError("<post-processing>", "Error resolving SMF names for spec mentions: %v", err)
+		}
+		lookup.SMF = ids
+	}
+	if len(methodNames) > 0 {
+		ids, err := idx.db.FindPASMethodIDsByNames(ctx, methodNames, productID)
+		if err != nil {
+			idx.logError("<post-processing>", "Error resolving method names for spec mentions: %v", err)
+		}
+		lookup.Methods = ids
+		// Фолбэк .pas-упоминаний: имена-промахи (юниты форм, не методы) ищем в dfm_forms
+		missedMethods := make([]string, 0)
+		for _, name := range methodNames {
+			if lookup.Methods[strings.ToLower(name)] == 0 {
+				missedMethods = append(missedMethods, name)
+			}
+		}
+		if len(missedMethods) > 0 {
+			formIDs, err := idx.db.FindDFMFormIDsByNames(ctx, missedMethods, productID)
+			if err != nil {
+				idx.logError("<post-processing>", "Error resolving method fallback form names for spec mentions: %v", err)
+			} else {
+				lookup.MethodForms = formIDs
+			}
+		}
+	}
+	if len(apiNames) > 0 || len(eventNames) > 0 {
+		apiEventNames := append(append([]string{}, apiNames...), eventNames...)
+		ids, err := idx.db.FindAPIContractIDsByNames(ctx, apiEventNames, productID)
+		if err != nil {
+			idx.logError("<post-processing>", "Error resolving API names for spec mentions: %v", err)
+		}
+		lookup.APIs = ids
+	}
+	if len(reportNames) > 0 {
+		ids, err := idx.db.FindReportFormIDsByNames(ctx, reportNames, productID)
+		if err != nil {
+			idx.logError("<post-processing>", "Error resolving report names for spec mentions: %v", err)
+		}
+		lookup.Reports = ids
+	}
+	if len(apiTableNames) > 0 {
+		ids, err := idx.db.FindAPIContractIDsByTableNames(ctx, apiTableNames)
+		if err != nil {
+			idx.logError("<post-processing>", "Error resolving API table names for spec mentions: %v", err)
+		}
+		lookup.APITables = ids
+	}
+	if len(unknownNames) > 0 {
+		// Second-chance: unknown-имена, совпавшие с процедурами (строчные rpt_*_proc)
+		ids, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, unknownNames, productID)
+		if err != nil {
+			idx.logError("<post-processing>", "Error second-chance resolving unknown names for spec mentions: %v", err)
+		}
+		lookup.UnknownProcs = ids
+	}
+
+	return lookup
 }
 
 // specMentionLookup — batch-resolved ID для каждого kind.
@@ -180,7 +203,8 @@ func collectMentionNamesByKind(mentions []*model.SpecCodeMention, kind string) [
 }
 
 // buildSpecMentionRelations строит relations (references_code) из mentions.
-func buildSpecMentionRelations(mentions []*model.SpecCodeMention, lookup *specMentionLookup) []*model.Relation {
+// Резолв выполняется в lookup-карте своей продуктовой группы.
+func buildSpecMentionRelations(mentions []*model.SpecCodeMention, lookups map[int64]*specMentionLookup) []*model.Relation {
 	var relations []*model.Relation
 	seen := map[string]struct{}{}
 
@@ -208,6 +232,10 @@ func buildSpecMentionRelations(mentions []*model.SpecCodeMention, lookup *specMe
 
 	for _, m := range mentions {
 		if m == nil {
+			continue
+		}
+		lookup := lookups[m.ProductID]
+		if lookup == nil {
 			continue
 		}
 		nameKey := strings.ToLower(m.MentionName)

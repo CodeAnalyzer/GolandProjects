@@ -26,9 +26,33 @@ type FileInfo struct {
 	ModifiedAt time.Time
 	Encoding   string
 	Language   string
+	// IsGenerated — признак генерируемой копии (каталог UPLOAD в пути или
+	// расширение t01). Файл индексируется как обычно, но депriorитизируется
+	// в name-based lookup'ах и может фильтроваться в отчётах.
+	IsGenerated bool
 	// Content — сырые байты файла, прочитанные один раз при обходе.
 	// Используются и для хэша, и для парсинга, чтобы не читать файл повторно.
 	Content []byte
+}
+
+// isGeneratedFile сообщает, является ли файл генерируемой копией:
+// сегмент каталога UPLOAD в относительном пути (регистр не значим)
+// или расширение t01. Конвенции Diasoft захардкожены намеренно.
+func isGeneratedFile(relPath, ext string) bool {
+	if containsPathSegment(relPath, "UPLOAD") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(ext), "t01")
+}
+
+// containsPathSegment сообщает, содержит ли путь сегмент seg (регистр не значим).
+func containsPathSegment(path string, seg string) bool {
+	for _, s := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if strings.EqualFold(s, seg) {
+			return true
+		}
+	}
+	return false
 }
 
 // FileFingerprint — метаданные файла для pre-filter (Update only).
@@ -81,7 +105,7 @@ func patternToRegexp(pattern string) *regexp.Regexp {
 	// Заменяем glob-символы на regexp
 	re = strings.ReplaceAll(re, `\*`, `.*`)
 	re = strings.ReplaceAll(re, `\?`, `.`)
-	
+
 	// Добавляем якоря
 	if !strings.HasPrefix(re, "^") {
 		re = "^" + re
@@ -90,7 +114,7 @@ func patternToRegexp(pattern string) *regexp.Regexp {
 		re = re + "$"
 	}
 	re = "(?i)" + re
-	
+
 	r, err := regexp.Compile(re)
 	if err != nil {
 		return nil
@@ -202,14 +226,15 @@ func (w *Walker) WalkParallelCtx(ctx context.Context, workers int) (<-chan FileI
 						encoding, language := getEncodingAndLanguage(ext)
 						select {
 						case filesChan <- FileInfo{
-							Path:       normalizedPath,
-							RelPath:    relPath,
-							Extension:  ext,
-							Size:       info.Size(),
-							Hash:       "", // маркер: файл не читался
-							ModifiedAt: info.ModTime(),
-							Encoding:   encoding,
-							Language:   language,
+							Path:        normalizedPath,
+							RelPath:     relPath,
+							Extension:   ext,
+							Size:        info.Size(),
+							Hash:        "", // маркер: файл не читался
+							ModifiedAt:  info.ModTime(),
+							Encoding:    encoding,
+							Language:    language,
+							IsGenerated: isGeneratedFile(relPath, ext),
 						}:
 						case <-ctx.Done():
 							return ctx.Err()
@@ -265,15 +290,16 @@ func (w *Walker) WalkParallelCtx(ctx context.Context, workers int) (<-chan FileI
 					}
 					select {
 					case filesChan <- FileInfo{
-						Path:       filepath.ToSlash(task.path),
-						RelPath:    task.relPath,
-						Extension:  task.ext,
-						Size:       task.info.Size(),
-						Hash:       hash,
-						ModifiedAt: task.info.ModTime(),
-						Encoding:   encoding,
-						Language:   language,
-						Content:    content,
+						Path:        filepath.ToSlash(task.path),
+						RelPath:     task.relPath,
+						Extension:   task.ext,
+						Size:        task.info.Size(),
+						Hash:        hash,
+						ModifiedAt:  task.info.ModTime(),
+						Encoding:    encoding,
+						Language:    language,
+						IsGenerated: isGeneratedFile(task.relPath, task.ext),
+						Content:     content,
 					}:
 					case <-ctx.Done():
 						return

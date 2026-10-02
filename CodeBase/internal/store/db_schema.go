@@ -54,6 +54,14 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		// Признак генерируемой копии (*/UPLOAD/*, *.t01): файлы индексируются
+		// как обычно, но депriorитизируются в name-based lookup'ах.
+		`ALTER TABLE files ADD COLUMN IF NOT EXISTS is_generated BOOLEAN NOT NULL DEFAULT FALSE`,
+		// Backfill для уже проиндексированных файлов: pre-filter по mtime+size
+		// пропускает неизменённые файлы, поэтому флаг заполняется миграцией.
+		// Идемпотентно: фильтр NOT is_generated ограничивает повторный запуск пустым множеством.
+		`UPDATE files SET is_generated = TRUE
+		 WHERE (rel_path ~* '/UPLOAD/' OR extension = 't01') AND NOT is_generated`,
 		`CREATE TABLE IF NOT EXISTS symbols (
 			id BIGSERIAL PRIMARY KEY,
 			file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -859,9 +867,9 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`DROP INDEX IF EXISTS idx_rti_calls_procedure`,
 		`DROP INDEX IF EXISTS idx_rti_calls_elapsed_ms`,
 		`DROP INDEX IF EXISTS idx_rti_calls_parent_id`,
-	`CREATE INDEX IF NOT EXISTS idx_trc_sessions_parsed_at ON trc_sessions(parsed_at DESC)`,
-	`CREATE INDEX IF NOT EXISTS idx_trc_events_session_spid_id ON trc_events(session_id, spid, id)`,
-	`CREATE INDEX IF NOT EXISTS idx_trc_events_session_proc ON trc_events(session_id, procedure)`,
+		`CREATE INDEX IF NOT EXISTS idx_trc_sessions_parsed_at ON trc_sessions(parsed_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_spid_id ON trc_events(session_id, spid, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_proc ON trc_events(session_id, procedure)`,
 		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_duration ON trc_events(session_id, duration_ms DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_parent ON trc_events(session_id, parent_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_trc_events_session_error ON trc_events(session_id) WHERE error IS NOT NULL AND error <> 0`,
@@ -896,15 +904,15 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_spec_scenarios_text_trgm ON spec_scenarios USING GIN ((scenario_name || ' ' || COALESCE(given_text, '') || ' ' || COALESCE(when_text, '') || ' ' || COALESCE(then_text, '')) gin_trgm_ops)`,
 		`CREATE INDEX IF NOT EXISTS idx_spec_usecases_text_trgm ON spec_usecases USING GIN ((usecase_name || ' ' || title || ' ' || COALESCE(description, '') || ' ' || COALESCE(actors, '') || ' ' || COALESCE(preconditions, '') || ' ' || COALESCE(postconditions, '') || ' ' || COALESCE(business_value, '') || ' ' || COALESCE(architecture, '') || ' ' || COALESCE(data_schema, '')) gin_trgm_ops)`,
 		`CREATE INDEX IF NOT EXISTS idx_spec_code_mentions_name_trgm ON spec_code_mentions USING GIN (mention_name gin_trgm_ops)`,
-	// Удаление избыточных standalone-индексов, дублируемых составными с session_id
-	`DROP INDEX IF EXISTS idx_trc_events_session_id`,
-	`DROP INDEX IF EXISTS idx_trc_events_procedure`,
-	`DROP INDEX IF EXISTS idx_trc_events_duration_ms`,
-	`DROP INDEX IF EXISTS idx_trc_events_spid`,
-	`DROP INDEX IF EXISTS idx_trc_events_event_sequence`,
-	// idx_trc_events_session_spid заменён составным idx_trc_events_session_spid_id
-	// (session_id, spid, id) для keyset-пагинации по SPID — старый является его префиксом
-	`DROP INDEX IF EXISTS idx_trc_events_session_spid`,
+		// Удаление избыточных standalone-индексов, дублируемых составными с session_id
+		`DROP INDEX IF EXISTS idx_trc_events_session_id`,
+		`DROP INDEX IF EXISTS idx_trc_events_procedure`,
+		`DROP INDEX IF EXISTS idx_trc_events_duration_ms`,
+		`DROP INDEX IF EXISTS idx_trc_events_spid`,
+		`DROP INDEX IF EXISTS idx_trc_events_event_sequence`,
+		// idx_trc_events_session_spid заменён составным idx_trc_events_session_spid_id
+		// (session_id, spid, id) для keyset-пагинации по SPID — старый является его префиксом
+		`DROP INDEX IF EXISTS idx_trc_events_session_spid`,
 		// Удаление избыточных standalone-индексов, дублируемых составными (leftmost-prefix)
 		`DROP INDEX IF EXISTS idx_symbols_symbol_name_lower`,
 		`DROP INDEX IF EXISTS idx_query_fragments_file_id`,

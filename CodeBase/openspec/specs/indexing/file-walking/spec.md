@@ -162,6 +162,35 @@
 - **THEN** обходчик и воркеры прекращают обработку (выход через `ctx.Done()` без зависания на отправке в каналы)
 - **AND** `scan_run` финализируется со статусом `canceled` через свежий контекст
 
+### Requirement: Маркировка генерируемых копий файлов
+
+Система SHALL при сохранении файла в индекс вычислять и сохранять признак генерируемой копии `is_generated`: файл помечается как генерируемая копия, если его относительный путь содержит сегмент каталога `UPLOAD` (регистр символов сегмента не значим) или расширение файла равно `t01`. Признак не влияет на включение файла в индекс и на его парсинг — файлы-копии индексируются как обычно, но несут метку для приоритезации в name-based lookup'ах и для последующей фильтрации в отчётах. Канонические исходники (в том числе расположенные в каталогах `SERVER`/`Server`) MUST NOT помечаться как генерируемые копии.
+
+#### Scenario: Файл в каталоге UPLOAD помечается копией
+
+- **GIVEN** дерево проекта содержит `fa-contracts/LoanBureau/Server/UPLOAD/BaseAlg_ConsMinRest.sql`
+- **WHEN** выполняется индексация файла
+- **THEN** запись файла в индексе имеет `is_generated = true`
+
+#### Scenario: Препроцессированный t01 помечается копией
+
+- **GIVEN** дерево проекта содержит `fa-contracts/API_Credit/Server/UPLOAD/BaseAlgAmrtCostSinglePmnt.t01`
+- **WHEN** выполняется индексация файла
+- **THEN** запись файла в индексе имеет `is_generated = true`
+
+#### Scenario: Канонический исходник не помечается
+
+- **GIVEN** дерево проекта содержит `fa-contracts/Consumer/SERVER/Accrual/BaseAlg_ConsMinRest.sql`
+- **WHEN** выполняется индексация файла
+- **THEN** запись файла в индексе имеет `is_generated = false`
+- **AND** файл проиндексирован и распарсен как обычно
+
+#### Scenario: Регистр сегмента UPLOAD не значим
+
+- **GIVEN** дерево проекта содержит файлы в каталогах `Server/UPLOAD` и `Server/upload`
+- **WHEN** выполняется индексация обоих файлов
+- **THEN** обе записи имеют `is_generated = true`
+
 ## Related code
 
 - `internal/fswalk/fswalk.go` — `Walker`, `Walk` (однопоточный), `WalkParallel`, `WalkParallelCtx` (параллельный с context), `computeHashBytes`, `FileFingerprint`, `SetPreFilter`, `modTimeMatch`, `getEncodingAndLanguage`

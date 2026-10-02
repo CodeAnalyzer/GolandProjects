@@ -500,3 +500,27 @@ func TestWalkPreFilterSkipsUnchangedMarkdown(t *testing.T) {
 		t.Fatalf("pre-filtered spec.md language = %q, want MD", files[0].Language)
 	}
 }
+
+func TestIsGeneratedFile(t *testing.T) {
+	tests := []struct {
+		name string
+		rel  string
+		ext  string
+		want bool
+	}{
+		{name: "upload dir upper", rel: "fa-contracts/LoanBureau/Server/UPLOAD/BaseAlg_ConsMinRest.sql", ext: "sql", want: true},
+		{name: "upload dir lower", rel: "fa-contracts/API_Credit/Server/upload/BaseAlgAmrtCostSinglePmnt.t01", ext: "t01", want: true},
+		{name: "t01 outside upload", rel: "fa-contracts/Consumer/SERVER/Accrual/Preproc.t01", ext: "t01", want: true},
+		{name: "canonical source", rel: "fa-contracts/Consumer/SERVER/Accrual/BaseAlg_ConsMinRest.sql", ext: "sql", want: false},
+		{name: "uppercase-looking name without segment", rel: "fa-contracts/Consumer/SERVER/UPLOADLIKE_Proc.sql", ext: "sql", want: false},
+		{name: "ext case insensitive", rel: "fa-contracts/x/Proc.SQL", ext: "T01", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isGeneratedFile(tt.rel, tt.ext); got != tt.want {
+				t.Fatalf("isGeneratedFile(%q, %q) = %v, want %v", tt.rel, tt.ext, got, tt.want)
+			}
+		})
+	}
+}

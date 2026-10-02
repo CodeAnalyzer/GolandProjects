@@ -46,13 +46,13 @@ func (idx *Indexer) postProcessFragmentRelations(ctx context.Context, collector 
 		}
 	}
 
-	tableIDMap, err := idx.db.FindLatestSQLTableIDsByNames(ctx, tableNames)
+	tableIDMap, err := idx.db.FindLatestSQLTableIDsByNames(ctx, tableNames, 0)
 	if err != nil {
 		idx.logError("<post-processing>", "Error resolving fragment table refs: %v", err)
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		return
 	}
-	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, procNames)
+	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, procNames, 0)
 	if err != nil {
 		idx.logError("<post-processing>", "Error resolving fragment proc refs: %v", err)
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
@@ -146,7 +146,7 @@ func (idx *Indexer) postProcessJSCallRelations(ctx context.Context, collector *s
 		}
 	}
 
-	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, procNames)
+	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, procNames, 0)
 	if err != nil {
 		idx.logError("<post-processing>", "Error resolving JS call targets: %v", err)
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
@@ -218,7 +218,7 @@ func (idx *Indexer) postProcessT01SubscriberRelations(ctx context.Context, colle
 		}
 	}
 
-	calleeIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, calleeNames)
+	calleeIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, calleeNames, 0)
 	if err != nil {
 		idx.logError("<post-processing>", "Error resolving T01 subscriber targets: %v", err)
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
@@ -310,7 +310,7 @@ func (idx *Indexer) postProcessAPIMacroRelations(ctx context.Context, collector 
 			procNames = append(procNames, name)
 		}
 	}
-	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, procNames)
+	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, procNames, 0)
 	if err != nil {
 		procIDMap = map[string]int64{}
 	}

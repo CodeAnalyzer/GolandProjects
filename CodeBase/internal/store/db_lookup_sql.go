@@ -9,24 +9,12 @@ import (
 	"github.com/lib/pq"
 )
 
-// FindLatestSQLProcedureIDByName возвращает последний id SQL процедуры по имени.
-func (db *DB) FindLatestSQLProcedureIDByName(ctx context.Context, procName string) (int64, error) {
-	var id int64
-	err := db.QueryRowContext(ctx, `
-		SELECT id
-		FROM sql_procedures
-		WHERE LOWER(proc_name) = LOWER($1)
-		ORDER BY id DESC
-		LIMIT 1
-	`, strings.TrimSpace(procName)).Scan(&id)
-	if err != nil {
-		return 0, err
-	}
-
-	return id, nil
-}
-
-func (db *DB) FindLatestSQLProcedureIDsByNames(ctx context.Context, procNames []string) (map[string]int64, error) {
+// FindLatestSQLProcedureIDsByNames возвращает map нижнего имени процедуры -> id.
+// При ненулевом productID кандидат выбирается по приоритету: не-генерируемый
+// источник (не UPLOAD/.t01), затем источник указанного продукта, затем самый
+// свежий по id. Нулевой productID валиден — продуктовое предпочтение не
+// применяется, приоритет не-копий сохраняется.
+func (db *DB) FindLatestSQLProcedureIDsByNames(ctx context.Context, procNames []string, productID int64) (map[string]int64, error) {
 	normalized := make([]string, 0, len(procNames))
 	seen := make(map[string]struct{}, len(procNames))
 	for _, procName := range procNames {
@@ -48,12 +36,15 @@ func (db *DB) FindLatestSQLProcedureIDsByNames(ctx context.Context, procNames []
 	rows, err := db.QueryContext(ctx, `
 		SELECT DISTINCT ON (proc_key) proc_key, id
 		FROM (
-			SELECT LOWER(proc_name) AS proc_key, id
-			FROM sql_procedures
-			WHERE LOWER(proc_name) = ANY($1)
+			SELECT LOWER(p.proc_name) AS proc_key, p.id AS id,
+			       (NOT f.is_generated) AS not_generated,
+			       COALESCE(f.ds_product_id = $2, FALSE) AS product_match
+			FROM sql_procedures p
+			JOIN files f ON f.id = p.file_id
+			WHERE LOWER(p.proc_name) = ANY($1)
 		) AS procedures
-		ORDER BY proc_key, id DESC
-	`, pq.Array(normalized))
+		ORDER BY proc_key, not_generated DESC, product_match DESC, id DESC
+	`, pq.Array(normalized), productID)
 	if err != nil {
 		return nil, err
 	}
@@ -109,26 +100,11 @@ func (db *DB) FindSQLProcedureIDsByFile(ctx context.Context, fileID int64) (map[
 	return result, nil
 }
 
-// FindLatestSQLTableIDByName возвращает последний id SQL таблицы по имени.
-func (db *DB) FindLatestSQLTableIDByName(ctx context.Context, tableName string) (int64, error) {
-	var id int64
-	err := db.QueryRowContext(ctx, `
-		SELECT id
-		FROM sql_tables
-		WHERE LOWER(table_name) = LOWER($1)
-		ORDER BY id DESC
-		LIMIT 1
-	`, strings.TrimSpace(tableName)).Scan(&id)
-	if err != nil {
-		return 0, err
-	}
-
-	return id, nil
-}
-
 // FindLatestSQLTableIDsByNames возвращает map нижнего имени таблицы -> последний id.
-// Один SQL-запрос вместо N вызовов FindLatestSQLTableIDByName.
-func (db *DB) FindLatestSQLTableIDsByNames(ctx context.Context, tableNames []string) (map[string]int64, error) {
+// Один SQL-запрос вместо N вызовов скалярного lookup.
+// Приоритет кандидатов как в FindLatestSQLProcedureIDsByNames:
+// не-генерируемый источник → указанный продукт → самый свежий по id.
+func (db *DB) FindLatestSQLTableIDsByNames(ctx context.Context, tableNames []string, productID int64) (map[string]int64, error) {
 	normalized := make([]string, 0, len(tableNames))
 	seen := make(map[string]struct{})
 	for _, name := range tableNames {
@@ -149,12 +125,15 @@ func (db *DB) FindLatestSQLTableIDsByNames(ctx context.Context, tableNames []str
 	rows, err := db.QueryContext(ctx, `
 		SELECT DISTINCT ON (table_key) table_key, id
 		FROM (
-			SELECT LOWER(table_name) AS table_key, id
-			FROM sql_tables
-			WHERE LOWER(table_name) = ANY($1)
+			SELECT LOWER(t.table_name) AS table_key, t.id AS id,
+			       (NOT f.is_generated) AS not_generated,
+			       COALESCE(f.ds_product_id = $2, FALSE) AS product_match
+			FROM sql_tables t
+			JOIN files f ON f.id = t.file_id
+			WHERE LOWER(t.table_name) = ANY($1)
 		) AS tables
-		ORDER BY table_key, id DESC
-	`, pq.Array(normalized))
+		ORDER BY table_key, not_generated DESC, product_match DESC, id DESC
+	`, pq.Array(normalized), productID)
 	if err != nil {
 		return nil, err
 	}
@@ -403,8 +382,8 @@ func (db *DB) FindQueryFragmentIDsByFileAndHash(ctx context.Context, fileID int6
 }
 
 // BatchLookupProcedureParams возвращает map: LOWER(proc_name) -> []SQLParam
-// для всех указанных имён процедур одним запросом. Берётся последняя по id запись
-// для каждого имени (аналог ORDER BY id DESC LIMIT 1 в скалярной версии).
+// для всех указанных имён процедур одним запросом. Приоритет кандидата:
+// не-генерируемый источник (не UPLOAD/.t01), затем самый свежий по id.
 func (db *DB) BatchLookupProcedureParams(ctx context.Context, names []string) (map[string][]model.SQLParam, error) {
 	normalized := make([]string, 0, len(names))
 	seen := make(map[string]struct{}, len(names))
@@ -427,11 +406,13 @@ func (db *DB) BatchLookupProcedureParams(ctx context.Context, names []string) (m
 	rows, err := db.QueryContext(ctx, `
 		SELECT DISTINCT ON (proc_key) proc_key, parameters
 		FROM (
-			SELECT LOWER(proc_name) AS proc_key, id, parameters
-			FROM sql_procedures
-			WHERE LOWER(proc_name) = ANY($1)
+			SELECT LOWER(p.proc_name) AS proc_key, p.parameters, p.id AS id,
+			       (NOT f.is_generated) AS not_generated
+			FROM sql_procedures p
+			JOIN files f ON f.id = p.file_id
+			WHERE LOWER(p.proc_name) = ANY($1)
 		) AS procedures
-		ORDER BY proc_key, id DESC
+		ORDER BY proc_key, not_generated DESC, id DESC
 	`, pq.Array(normalized))
 	if err != nil {
 		return nil, err
@@ -458,7 +439,9 @@ func (db *DB) BatchLookupProcedureParams(ctx context.Context, names []string) (m
 }
 
 // BatchLookupProcedureProductIDs возвращает map: LOWER(proc_name) -> ds_product_id
-// для всех указанных имён процедур одним запросом.
+// для всех указанных имён процедур одним запросом. Приоритет кандидата:
+// не-генерируемый источник (не UPLOAD/.t01), затем самый свежий по id —
+// продукт не берётся от копии, если есть канонический источник.
 func (db *DB) BatchLookupProcedureProductIDs(ctx context.Context, names []string) (map[string]int64, error) {
 	normalized := make([]string, 0, len(names))
 	seen := make(map[string]struct{}, len(names))
@@ -481,13 +464,14 @@ func (db *DB) BatchLookupProcedureProductIDs(ctx context.Context, names []string
 	rows, err := db.QueryContext(ctx, `
 		SELECT DISTINCT ON (proc_key) proc_key, product_id
 		FROM (
-			SELECT LOWER(p.proc_name) AS proc_key, f.ds_product_id AS product_id, p.id
+			SELECT LOWER(p.proc_name) AS proc_key, f.ds_product_id AS product_id,
+			       p.id AS id, (NOT f.is_generated) AS not_generated
 			FROM sql_procedures p
 			JOIN files f ON f.id = p.file_id
 			WHERE LOWER(p.proc_name) = ANY($1)
 			  AND f.ds_product_id IS NOT NULL
 		) AS procedures
-		ORDER BY proc_key, id DESC
+		ORDER BY proc_key, not_generated DESC, id DESC
 	`, pq.Array(normalized))
 	if err != nil {
 		return nil, err
