@@ -58,6 +58,17 @@ var (
 	// helperRegexes используются при извлечении имен столбцов и SET-колонок UPDATE.
 	asAliasRe   = regexp.MustCompile(`(?i)\bas\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*$`)
 	setClauseRe = regexp.MustCompile(`(?i)^\s*update\s+[A-Za-z_#][A-Za-z0-9_#]*\s+set\s+(.+)`)
+	// Аккумуляция SET-части UPDATE-стейтмента: колонки присваиваний → sql_columns
+	updateSetTargetRe = regexp.MustCompile(`(?i)^\s*update\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
+	setKeywordRe      = regexp.MustCompile(`(?i)\bset\b`)
+	setClausePrefixRe = regexp.MustCompile(`(?i)^\s*set\b\s*(.*)$`)
+	stmtStartRe       = regexp.MustCompile(`(?i)^\s*(select|insert|delete|if|while|begin|exec|execute|declare|return)\b`)
+	// Хинт-макросы Diasoft — ВСЕ ВЕРХНИМ РЕГИСТРОМ (M_FORCEORDER, M_KEEPPLAN,
+	// M_ISOLAT, ...); регистр-независимость не используем: lowercase m_table —
+	// легитимная мем-таблица FA (design D3)
+	hintMacroRe = regexp.MustCompile(`^#?M_[A-Z0-9_]+$`)
+	// LHS-идентификатор присваивания SET (без квалификации и @-переменных)
+	sqlColumnIdentRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 // Parser SQL-парсер
@@ -210,6 +221,82 @@ func splitSQLByTopLevelComma(text string) []string {
 		parts = append(parts, last)
 	}
 	return parts
+}
+
+// cutAtTopLevelFromWhere ищет в тексте первое ключевое слово from/where на
+// верхнем уровне (вне скобок и строковых литералов) и возвращает текст до него.
+// Второе возвращаемое значение — найдено ли ключевое слово.
+func cutAtTopLevelFromWhere(text string) (string, bool) {
+	runes := []rune(text)
+	parenDepth := 0
+	inSingleQuote := false
+	isWordRune := func(r rune) bool {
+		return r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+	}
+	matchKeywordAt := func(i int, kw string) bool {
+		kws := []rune(kw)
+		if i+len(kws) > len(runes) {
+			return false
+		}
+		for j, kr := range kws {
+			rr := runes[i+j]
+			if rr >= 'A' && rr <= 'Z' {
+				rr += 'a' - 'A'
+			}
+			if rr != kr {
+				return false
+			}
+		}
+		if i > 0 && isWordRune(runes[i-1]) {
+			return false
+		}
+		if i+len(kws) < len(runes) && isWordRune(runes[i+len(kws)]) {
+			return false
+		}
+		return true
+	}
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if r == '\'' {
+			if inSingleQuote && i+1 < len(runes) && runes[i+1] == '\'' {
+				i++
+				continue
+			}
+			inSingleQuote = !inSingleQuote
+			continue
+		}
+		if inSingleQuote {
+			continue
+		}
+		if r == '-' && i+1 < len(runes) && runes[i+1] == '-' {
+			// Хвост строки — комментарий, дальше ключевых слов нет
+			break
+		}
+		switch r {
+		case '(':
+			parenDepth++
+			continue
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+			continue
+		}
+		if parenDepth > 0 {
+			continue
+		}
+		if r == 'f' || r == 'F' {
+			if matchKeywordAt(i, "from") {
+				return strings.TrimRight(string(runes[:i]), " \t,"), true
+			}
+		}
+		if r == 'w' || r == 'W' {
+			if matchKeywordAt(i, "where") {
+				return strings.TrimRight(string(runes[:i]), " \t,"), true
+			}
+		}
+	}
+	return text, false
 }
 
 func inferSelectColumnName(expr string) string {
@@ -427,6 +514,14 @@ type pendingSQLColumn struct {
 	ColNumber  int
 }
 
+// updateSetPart — фрагмент SET-части UPDATE-стейтмента, накопленный при
+// построчном разборе (для извлечения колонок многострочного SET)
+type updateSetPart struct {
+	text    string // текст присваиваний (без ключевого слова SET и хвоста FROM/WHERE)
+	rawLine string // исходная строка файла (для вычисления позиции колонки)
+	lineNum int    // номер строки файла
+}
+
 // NewParser создаёт новый SQL-парсер
 func NewParser() *Parser {
 	return &Parser{
@@ -515,6 +610,10 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		currentCreateTableName  string
 		currentCreateTableOrder int
 		inFromTableList         bool
+		updateSetTarget         string
+		updateSetPending        bool
+		inUpdateSet             bool
+		updateSetParts          []updateSetPart
 		pendingColumns          []pendingSQLColumn
 		collectingSelectInto    bool
 		selectIntoProjection    strings.Builder
@@ -749,6 +848,50 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		return true
 	}
 
+	// Аккумуляция SET-части UPDATE-стейтмента (design D5): колонки присваиваний
+	// сохраняются в result.Columns (sql_columns), а не в sql_tables
+	flushUpdateSetColumns := func() {
+		target := updateSetTarget
+		parts := updateSetParts
+		updateSetTarget = ""
+		updateSetParts = nil
+		updateSetPending = false
+		inUpdateSet = false
+		if target == "" || len(parts) == 0 {
+			return
+		}
+		for _, part := range parts {
+			for _, assignment := range splitSQLByTopLevelComma(part.text) {
+				eq := strings.Index(assignment, "=")
+				if eq <= 0 {
+					continue
+				}
+				field := strings.TrimSpace(assignment[:eq])
+				if !sqlColumnIdentRe.MatchString(field) {
+					continue
+				}
+				colNumber := 0
+				if idx := strings.Index(strings.ToLower(part.rawLine), strings.ToLower(field)); idx >= 0 {
+					colNumber = idx + 1
+				}
+				result.Columns = append(result.Columns, &model.SQLColumn{
+					TableName:  target,
+					ColumnName: field,
+					LineNumber: part.lineNum,
+					ColNumber:  colNumber,
+				})
+			}
+		}
+	}
+
+	appendUpdateSetPart := func(text, rawLine string) bool {
+		before, cut := cutAtTopLevelFromWhere(text)
+		if t := strings.TrimSpace(before); t != "" {
+			updateSetParts = append(updateSetParts, updateSetPart{text: t, rawLine: rawLine, lineNum: lineNum})
+		}
+		return !cut
+	}
+
 	resetStatementState := func() {
 		flushPendingColumns()
 		inFromTableList = false
@@ -821,6 +964,41 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 				inMultiStatement = false
 			}
 			continue
+		}
+
+		// Аккумуляция SET-части UPDATE-стейтмента: LHS-идентификаторы присваиваний
+		// попадают в result.Columns (sql_columns), а не в sql_tables (design D5)
+		if m := updateSetTargetRe.FindStringSubmatch(trimmed); m != nil {
+			flushUpdateSetColumns()
+			updateSetTarget = m[1]
+			updateSetParts = nil
+			if loc := setKeywordRe.FindStringIndex(trimmed); loc != nil {
+				inUpdateSet = appendUpdateSetPart(trimmed[loc[1]:], trimmed)
+				if !inUpdateSet {
+					flushUpdateSetColumns()
+				}
+			} else {
+				updateSetPending = true
+			}
+		} else if updateSetPending && setClausePrefixRe.MatchString(trimmed) {
+			updateSetPending = false
+			inUpdateSet = appendUpdateSetPart(setClausePrefixRe.FindStringSubmatch(trimmed)[1], trimmed)
+			if !inUpdateSet {
+				flushUpdateSetColumns()
+			}
+		} else if inUpdateSet {
+			if stmtStartRe.MatchString(trimmed) {
+				// Начался новый стейтмент — SET-часть завершена
+				flushUpdateSetColumns()
+			} else {
+				inUpdateSet = appendUpdateSetPart(trimmed, trimmed)
+				if !inUpdateSet {
+					flushUpdateSetColumns()
+				}
+			}
+		}
+		if inUpdateSet && endOfStatement {
+			flushUpdateSetColumns()
 		}
 
 		if p.selectRe.MatchString(trimmed) {
@@ -1166,7 +1344,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 
 		if matches := p.createTableRe.FindStringSubmatch(line); matches != nil {
 			tableName := matches[1]
-			if !p.isKeyword(tableName) {
+			if !p.isKeyword(tableName) && !p.isIgnoredTableName(tableName) {
 				colNumber := 0
 				if matchIndexes := p.createTableRe.FindStringSubmatchIndex(line); len(matchIndexes) >= 4 {
 					colNumber = matchIndexes[2] + 1
@@ -1203,7 +1381,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		}
 		if matches := p.insertTableRe.FindStringSubmatch(line); matches != nil {
 			tableName := matches[1]
-			if !p.isKeyword(tableName) && isNewContext(tableName, "insert") {
+			if !p.isKeyword(tableName) && !p.isIgnoredTableName(tableName) && isNewContext(tableName, "insert") {
 				colNumber := 0
 				if matchIndexes := p.insertTableRe.FindStringSubmatchIndex(line); len(matchIndexes) >= 4 {
 					colNumber = matchIndexes[2] + 1
@@ -1272,7 +1450,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		}
 		if matches := p.deleteTableRe.FindStringSubmatch(line); matches != nil {
 			tableName := matches[1]
-			if !p.isKeyword(tableName) && isNewContext(tableName, "delete") {
+			if !p.isKeyword(tableName) && !p.isIgnoredTableName(tableName) && isNewContext(tableName, "delete") {
 				colNumber := 0
 				if matchIndexes := p.deleteTableRe.FindStringSubmatchIndex(line); len(matchIndexes) >= 4 {
 					colNumber = matchIndexes[2] + 1
@@ -1392,34 +1570,11 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 					ColNumber:   colNumber,
 				})
 				lineSeenTables[strings.ToLower(tableName)] = true
-
-				// Извлекаем поля из UPDATE table SET field1 = value1, field2 = value2
-				if realContext == "update" {
-					if updateColsMatches := p.updateColumnsRe.FindStringSubmatch(line); updateColsMatches != nil {
-						// Находим часть после SET
-						if setMatch := setClauseRe.FindStringSubmatch(line); setMatch != nil {
-							setClause := setMatch[1]
-							// Разделяем по запятым, но учитываем что значения могут содержать запятые
-							assignments := strings.Split(setClause, ",")
-							for _, assignment := range assignments {
-								assignment = strings.TrimSpace(assignment)
-								if eqIndex := strings.Index(assignment, "="); eqIndex > 0 {
-									field := strings.TrimSpace(assignment[:eqIndex])
-									if field != "" {
-										result.Columns = append(result.Columns, &model.SQLColumn{
-											TableName:  tableName,
-											ColumnName: field,
-											LineNumber: lineNum,
-											ColNumber:  colNumber,
-										})
-									}
-								}
-							}
-						}
-					}
-				}
 			}
-			inFromTableList = true
+			// После UPDATE идёт SET, а не список таблиц через запятую (список за
+			// FROM матчится своей строкой FROM) — list-режим не включаем, иначе
+			// LHS-идентификаторы SET попадают в sql_tables как таблицы (design D1)
+			inFromTableList = !p.updateRe.MatchString(line)
 		} else if inFromTableList {
 			context := tableContexts["current"]
 			if context != "" {
@@ -1449,10 +1604,12 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 					strings.HasPrefix(trimmedLower, "else") ||
 					strings.HasPrefix(trimmedLower, "end") ||
 					strings.HasPrefix(trimmedLower, "exec ") ||
-					strings.HasPrefix(trimmedLower, "where ") ||
+					strings.HasPrefix(trimmedLower, "where") ||
 					strings.HasPrefix(trimmedLower, "group ") ||
 					strings.HasPrefix(trimmedLower, "order ") ||
-					strings.HasPrefix(trimmedLower, "union ") {
+					strings.HasPrefix(trimmedLower, "union ") ||
+					strings.HasPrefix(trimmedLower, "set ") || trimmedLower == "set" ||
+					strings.HasPrefix(trimmedLower, "values ") || trimmedLower == "values" {
 					inFromTableList = false
 					continue
 				}
@@ -1671,6 +1828,9 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		appendMultilineCreateIndex(lineNum)
 	}
 
+	// Незакрытая SET-часть UPDATE в конце файла
+	flushUpdateSetColumns()
+
 	if inProcedure && currentProc != nil && currentProc.LineEnd == 0 {
 		currentProc.LineEnd = len(lines)
 		currentProc.BodyHash = computeBodyHash(lines, currentProc.LineStart, currentProc.LineEnd)
@@ -1803,7 +1963,20 @@ func (p *Parser) isIgnoredTableName(tableName string) bool {
 	ignored := map[string]bool{
 		"TBL": true,
 	}
-	return ignored[strings.ToUpper(strings.TrimSpace(tableName))]
+	if ignored[strings.ToUpper(strings.TrimSpace(tableName))] {
+		return true
+	}
+	// Хинт-макросы Diasoft (M_FORCEORDER, M_KEEPPLAN, M_ISOLAT, ...) — не таблицы;
+	// верифицировано по индексу FA: в context='create' таких имён нет (design D3)
+	if hintMacroRe.MatchString(tableName) {
+		return true
+	}
+	// Макро-плейсхолдеры шаблонов DDL (##M_TABNAME##, ##OUT_COMMIS_TABLE, ...) —
+	// не таблицы; все ##-имена в индексе FA — плейсхолдеры (design D4)
+	if strings.HasPrefix(tableName, "##") {
+		return true
+	}
+	return false
 }
 
 func (p *Parser) hasProcedureParam(proc *model.SQLProcedure, paramName string) bool {

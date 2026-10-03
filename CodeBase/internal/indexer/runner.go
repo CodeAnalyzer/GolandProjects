@@ -154,11 +154,17 @@ func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified
 	walker := fswalk.NewWalker(rootPath, includePatterns, excludePatterns)
 
 	// Pre-filter: пропускаем чтение файлов, у которых mtime+size не изменились.
-	fingerprints := make(map[string]fswalk.FileFingerprint, len(existing))
-	for path, f := range existing {
-		fingerprints[path] = fswalk.FileFingerprint{Size: f.SizeBytes, ModTime: f.ModifiedAt}
+	// Применяется только при инкрементальном режиме (--modified=true, дефолт);
+	// при --modified=false pre-filter не устанавливается — walker читает и
+	// хеширует все файлы, обеспечивая полный перепрох (design D6 change
+	// fix-sql-tables-update-pollution)
+	if onlyModified {
+		fingerprints := make(map[string]fswalk.FileFingerprint, len(existing))
+		for path, f := range existing {
+			fingerprints[path] = fswalk.FileFingerprint{Size: f.SizeBytes, ModTime: f.ModifiedAt}
+		}
+		walker.SetPreFilter(fingerprints)
 	}
-	walker.SetPreFilter(fingerprints)
 
 	filesCh, errsCh := walker.WalkParallelCtx(ctx, parallel)
 	jobs := make(chan indexedFileJob, 128)
