@@ -143,7 +143,7 @@ Uses file hashes to detect changes.`,
 }
 
 func init() {
-	updateCmd.Flags().BoolVar(&onlyModified, "modified", true, "scan only modified files")
+	updateCmd.Flags().BoolVar(&onlyModified, "modified", true, "true = scan only modified files; false = full rebuild of codebase index (TRUNCATE codebase tables; RTI/TRC sessions and scan history are kept)")
 	updateCmd.Flags().StringVarP(&updatePath, "path", "p", "", "override root_path from config; scan only this directory")
 	updateCmd.Flags().IntVarP(&parallel, "parallel", "j", 4, "number of parallel workers")
 	rootCmd.AddCommand(updateCmd)

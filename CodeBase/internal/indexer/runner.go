@@ -3,12 +3,14 @@ package indexer
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/codebase/internal/config"
 	"github.com/codebase/internal/fswalk"
 	"github.com/codebase/internal/model"
 )
@@ -59,6 +61,14 @@ func (idx *Indexer) walkerPatterns() ([]string, []string) {
 }
 
 func (idx *Indexer) InitCtx(ctx context.Context, rootPath string, parallel int) (*model.ScanStats, error) {
+	return idx.runInitPipeline(ctx, rootPath, parallel, "init")
+}
+
+// runInitPipeline — штатный init-пайплайн: walk без pre-filter → парсинг →
+// batch insert → пост-обработка → LSA. progressLabel — метка в строке
+// прогресс-репортера ("init" при первичной индексации, "rebuild" при полной
+// пересборке из update --modified=false).
+func (idx *Indexer) runInitPipeline(ctx context.Context, rootPath string, parallel int, progressLabel string) (*model.ScanStats, error) {
 	startedAt := time.Now()
 	scanRunID, err := idx.db.CreateScanRun(ctx, rootPath)
 	if err != nil {
@@ -66,7 +76,7 @@ func (idx *Indexer) InitCtx(ctx context.Context, rootPath string, parallel int) 
 	}
 
 	collector := &statsCollector{}
-	stopProgress := startProgressReporter("init", collector.Snapshot)
+	stopProgress := startProgressReporter(progressLabel, collector.Snapshot)
 	defer stopProgress()
 
 	includePatterns, excludePatterns := idx.walkerPatterns()
@@ -135,6 +145,14 @@ func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error
 }
 
 func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified bool, parallel int) (*model.ScanStats, error) {
+	// --modified=false = полная пересборка индекса кодовой базы: сброс таблиц
+	// (RTI/TRC-сессии, история scan_runs и schema_migrations сохраняются),
+	// удаление LSA-sidecar и делегация в init-пайплайн. Update-ветка ниже —
+	// только для инкрементального режима (--modified=true).
+	if !onlyModified {
+		return idx.fullRebuildCtx(ctx, rootPath, parallel)
+	}
+
 	startedAt := time.Now()
 	scanRunID, err := idx.db.CreateScanRun(ctx, rootPath)
 	if err != nil {
@@ -314,6 +332,39 @@ errorLoopUpdate:
 
 func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*model.ScanStats, error) {
 	return idx.UpdateCtx(context.Background(), rootPath, onlyModified, parallel)
+}
+
+// fullRebuildCtx — полная пересборка индекса кодовой базы (update --modified=false):
+// усечение таблиц кодовой базы одним TRUNCATE ... CASCADE, удаление LSA-sidecar
+// (модель переобучится с нуля по опустевшему словарю) и делегация в init-пайплайн
+// с меткой прогресса "rebuild". Таблицы анализаторов (rti_*/trc_*), история
+// scan_runs и schema_migrations не затрагиваются. Прерванная пересборка
+// возобновляется повторным запуском --modified=false (полный рестарт):
+// инкрементальный run восстанавливает сущности файлов, но не relations-граф
+// (pending-ссылки постпроцессоров живут в памяти и не переживают перезапуск).
+func (idx *Indexer) fullRebuildCtx(ctx context.Context, rootPath string, parallel int) (*model.ScanStats, error) {
+	reset, err := idx.db.ResetCodebaseTables(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reset codebase tables: %w", err)
+	}
+	fmt.Printf("Full rebuild: reset %d codebase tables (RTI/TRC sessions and scan history kept)\n", reset)
+	idx.removeLSASidecars()
+	stats, err := idx.runInitPipeline(ctx, rootPath, parallel, "rebuild")
+	if ctx.Err() != nil {
+		fmt.Fprint(os.Stderr, "\nRebuild interrupted. Run 'codebase update --modified=false' again to finish the rebuild (incremental update does not restore relations).\n")
+	}
+	return stats, err
+}
+
+// removeLSASidecars удаляет sidecar-файлы LSA-модели (spec_lsa_model.bin,
+// spec_lsa_state.json). После усечения spec_vocab/spec_embeddings загруженное
+// устаревшее состояние могло бы привести к пропуску ретрейна по fingerprint.
+func (idx *Indexer) removeLSASidecars() {
+	for _, path := range []string{config.SpecLSAModelPath(), config.SpecLSAStatePath()} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			idx.logError(path, "spec-lsa: sidecar remove error: %v", err)
+		}
+	}
 }
 
 // runPostProcessingParallel запускает все независимые пост-обработки параллельно.
