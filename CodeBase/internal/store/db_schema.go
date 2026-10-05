@@ -81,6 +81,11 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			line_end INTEGER NOT NULL DEFAULT 0,
 			body_hash TEXT
 		)`,
+		// FTS-описания: header-описание процедуры и полнотекстовый вектор
+		// (имя = вес A, описание = вес B). Вектор вычисляется после вставки
+		// файла (EnsureDescriptionSearchVectors).
+		`ALTER TABLE sql_procedures ADD COLUMN IF NOT EXISTS description TEXT`,
+		`ALTER TABLE sql_procedures ADD COLUMN IF NOT EXISTS search_vector TSVECTOR`,
 		`CREATE TABLE IF NOT EXISTS sql_tables (
 			id BIGSERIAL PRIMARY KEY,
 			file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -318,6 +323,8 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			line_start INTEGER NOT NULL DEFAULT 0,
 			line_end INTEGER NOT NULL DEFAULT 0
 		)`,
+		// FTS-вектор контракта: имя = вес A, short/full_description = вес B
+		`ALTER TABLE api_contracts ADD COLUMN IF NOT EXISTS search_vector TSVECTOR`,
 		`CREATE TABLE IF NOT EXISTS api_contract_params (
 			id BIGSERIAL PRIMARY KEY,
 			contract_id BIGINT NOT NULL REFERENCES api_contracts(id) ON DELETE CASCADE,
@@ -767,6 +774,27 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`ALTER TABLE spec_embeddings ADD COLUMN IF NOT EXISTS generation TEXT NOT NULL DEFAULT 'legacy'`,
 		`ALTER TABLE spec_vocab DROP CONSTRAINT IF EXISTS spec_vocab_term_key`,
 		`DROP INDEX IF EXISTS idx_spec_vocab_term`,
+		// LSA-публикации корпуса описаний (процедуры + контракты): без FK —
+		// две родительские таблицы; согласованность через TRUNCATE при полной
+		// пересборке и ротацию поколений
+		`CREATE TABLE IF NOT EXISTS desc_vocab (
+			id         SERIAL PRIMARY KEY,
+			generation TEXT NOT NULL DEFAULT 'legacy',
+			term       TEXT NOT NULL,
+			doc_freq   INTEGER NOT NULL,
+			idf        DOUBLE PRECISION
+		)`,
+		`CREATE TABLE IF NOT EXISTS desc_embeddings (
+			id           SERIAL PRIMARY KEY,
+			generation   TEXT NOT NULL DEFAULT 'legacy',
+			entity_type  TEXT NOT NULL,
+			entity_id    BIGINT NOT NULL,
+			embed_text   TEXT NOT NULL,
+			embedding    DOUBLE PRECISION[],
+			embed_method TEXT NOT NULL DEFAULT 'tfidf-lsa',
+			embed_dim    INTEGER NOT NULL DEFAULT 128,
+			updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ds_products_product_name ON ds_products(product_name)`,
 		`CREATE INDEX IF NOT EXISTS idx_files_scan_run_id ON files(scan_run_id)`,
@@ -895,10 +923,17 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_spec_vocab_term ON spec_vocab(generation, term)`,
 		`DROP INDEX IF EXISTS idx_spec_embeddings_spec`,
 		`CREATE INDEX IF NOT EXISTS idx_spec_embeddings_spec ON spec_embeddings(generation, spec_id, embed_level)`,
+		// Индексы desc-LSA публикаций
+		`CREATE INDEX IF NOT EXISTS idx_desc_vocab_term ON desc_vocab(generation, term)`,
+		`CREATE INDEX IF NOT EXISTS idx_desc_embeddings_entity ON desc_embeddings(generation, entity_type, entity_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_spec_capabilities_fts ON spec_capabilities USING GIN (search_vector)`,
 		`CREATE INDEX IF NOT EXISTS idx_spec_requirements_fts ON spec_requirements USING GIN (search_vector)`,
 		`CREATE INDEX IF NOT EXISTS idx_spec_scenarios_fts ON spec_scenarios USING GIN (search_vector)`,
 		`CREATE INDEX IF NOT EXISTS idx_spec_usecases_fts ON spec_usecases USING GIN (search_vector)`,
+		// FTS-векторы описаний процедур и API-контрактов + trgm по описанию
+		`CREATE INDEX IF NOT EXISTS idx_sql_procedures_fts ON sql_procedures USING GIN (search_vector)`,
+		`CREATE INDEX IF NOT EXISTS idx_api_contracts_fts ON api_contracts USING GIN (search_vector)`,
+		`CREATE INDEX IF NOT EXISTS idx_sql_procedures_description_trgm ON sql_procedures USING GIN (description gin_trgm_ops)`,
 		`CREATE INDEX IF NOT EXISTS idx_spec_capabilities_related_code_trgm ON spec_capabilities USING GIN (related_code gin_trgm_ops)`,
 		`CREATE INDEX IF NOT EXISTS idx_spec_requirements_body_trgm ON spec_requirements USING GIN (body_text gin_trgm_ops)`,
 		`CREATE INDEX IF NOT EXISTS idx_spec_scenarios_text_trgm ON spec_scenarios USING GIN ((scenario_name || ' ' || COALESCE(given_text, '') || ' ' || COALESCE(when_text, '') || ' ' || COALESCE(then_text, '')) gin_trgm_ops)`,

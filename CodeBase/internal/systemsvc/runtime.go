@@ -59,10 +59,12 @@ func ExecuteStats(db *store.DB) (*store.Stats, error) {
 		return nil, errs.ErrConfigNotLoaded
 	}
 
-	// Активное поколение LSA — из sidecar-state модели: метрики полнотекстового
-	// слоя спек считаются по активному поколению, а не по сумме удерживаемых.
-	// Недоступный или повреждённый state — фолбэк на полный счёт.
-	stats, err := db.GetStats(context.Background(), lsaStateGeneration(config.SpecLSAStatePath()))
+	// Активные поколения LSA — из sidecar-state спек- и desc-моделей: метрики
+	// полнотекстовых слоёв считаются по активным поколениям, а не по сумме
+	// удерживаемых. Недоступный или повреждённый state — фолбэк на полный счёт.
+	stats, err := db.GetStats(context.Background(),
+		lsaStateGeneration(config.SpecLSAStatePath()),
+		lsaStateGeneration(config.DescLSAStatePath()))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errs.ErrStatsFailed, err)
 	}
@@ -76,7 +78,9 @@ func RefreshStats(db *store.DB) error {
 	if cfg == nil {
 		return errs.ErrConfigNotLoaded
 	}
-	if err := db.RefreshStatsSnapshot(context.Background(), lsaStateGeneration(config.SpecLSAStatePath())); err != nil {
+	if err := db.RefreshStatsSnapshot(context.Background(),
+		lsaStateGeneration(config.SpecLSAStatePath()),
+		lsaStateGeneration(config.DescLSAStatePath())); err != nil {
 		return fmt.Errorf("%w: %w", errs.ErrStatsFailed, err)
 	}
 	return nil

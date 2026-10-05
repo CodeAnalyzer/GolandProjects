@@ -32,6 +32,7 @@ type queryResponseMeta struct {
 	Limit   int               `json:"limit"`
 	Filters map[string]string `json:"filters,omitempty"`
 	Output  string            `json:"output,omitempty"`
+	HasMore bool              `json:"has_more,omitempty"`
 }
 
 type querySuccessResponse struct {

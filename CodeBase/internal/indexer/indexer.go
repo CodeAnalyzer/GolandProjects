@@ -496,6 +496,9 @@ func (idx *Indexer) parseHFile(ctx context.Context, file fswalk.FileInfo, fileID
 				return err
 			}
 			stats.Procedures += len(procBatch)
+			if err := idx.db.EnsureDescriptionSearchVectors(ctx, fileID); err != nil {
+				return fmt.Errorf("failed to ensure description search vectors: %w", err)
+			}
 			if err := idx.db.BatchInsertSymbols(ctx, procSymbols, idx.config.Indexer.BatchSize); err != nil {
 				idx.logError(path, "Error batch inserting H-file procedure symbols: %v", err)
 				return err
@@ -1261,6 +1264,10 @@ func (idx *Indexer) parseXMLFile(ctx context.Context, file fswalk.FileInfo, file
 	}
 	if err := idx.db.BatchInsertAPIContracts(ctx, result.Contracts, idx.config.Indexer.BatchSize); err != nil {
 		return err
+	}
+	// Вектор поиска контрактов по имени + описаниям (после вставки файла)
+	if err := idx.db.EnsureDescriptionSearchVectors(ctx, fileID); err != nil {
+		return fmt.Errorf("failed to ensure description search vectors: %w", err)
 	}
 	contractIDs, err := idx.db.FindAPIContractIDsByFile(ctx, fileID)
 	if err != nil {

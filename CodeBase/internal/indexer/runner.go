@@ -75,6 +75,13 @@ func (idx *Indexer) runInitPipeline(ctx context.Context, rootPath string, parall
 		return nil, fmt.Errorf("failed to create scan run: %w", err)
 	}
 
+	// Идемпотентный бэкфилл FTS-векторов API-контрактов: описания уже в БД,
+	// поиск по ним работает без переиндексации (процедуры получают вектор
+	// per-file при парсинге)
+	if err := idx.db.BackfillAPIContractSearchVectors(ctx); err != nil {
+		return nil, fmt.Errorf("failed to backfill api_contracts search vectors: %w", err)
+	}
+
 	collector := &statsCollector{}
 	stopProgress := startProgressReporter(progressLabel, collector.Snapshot)
 	defer stopProgress()
@@ -157,6 +164,11 @@ func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified
 	scanRunID, err := idx.db.CreateScanRun(ctx, rootPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create scan run: %w", err)
+	}
+
+	// Идемпотентный бэкфилл FTS-векторов API-контрактов (описания уже в БД)
+	if err := idx.db.BackfillAPIContractSearchVectors(ctx); err != nil {
+		return nil, fmt.Errorf("failed to backfill api_contracts search vectors: %w", err)
 	}
 
 	existing, err := idx.db.GetLatestFilesByRootPath(ctx, rootPath)
@@ -416,4 +428,9 @@ func (idx *Indexer) runPostProcessingParallel(ctx context.Context, collector *st
 	// т.к. зависит от финального состояния spec_capabilities.
 	// (postProcessSpecLSA выставляет собственные стадии spec-lsa: ...)
 	idx.postProcessSpecLSA(ctx, collector)
+
+	// LSA корпуса описаний — отдельная модель (desc_lsa_model.bin),
+	// зависит от финального состояния sql_procedures/api_contracts.
+	// (postProcessDescLSA выставляет собственные стадии desc-lsa: ...)
+	idx.postProcessDescLSA(ctx, collector)
 }

@@ -466,21 +466,22 @@ type SQLParamResult struct {
 }
 
 type SQLProcedureResult struct {
-	ID        int64            `json:"id"`
-	FileID    int64            `json:"file_id"`
-	ProcName  string           `json:"proc_name"`
-	Params    []SQLParamResult `json:"params"`
-	File      string           `json:"file,omitempty"`
-	LineStart int              `json:"line_start"`
-	LineEnd   int              `json:"line_end"`
-	BodyHash  string           `json:"body_hash,omitempty"`
+	ID          int64            `json:"id"`
+	FileID      int64            `json:"file_id"`
+	ProcName    string           `json:"proc_name"`
+	Params      []SQLParamResult `json:"params"`
+	File        string           `json:"file,omitempty"`
+	LineStart   int              `json:"line_start"`
+	LineEnd     int              `json:"line_end"`
+	BodyHash    string           `json:"body_hash,omitempty"`
+	Description string           `json:"description,omitempty"`
 }
 
 func (q *Query) GetProcedureDetails(ctx context.Context, name string) (*model.SQLProcedure, error) {
 	query := `
-		SELECT 
+		SELECT
 			sp.id, sp.file_id, sp.proc_name,
-			sp.parameters, sp.line_start, sp.line_end, sp.body_hash
+			sp.parameters, sp.line_start, sp.line_end, sp.body_hash, sp.description
 		FROM sql_procedures sp
 		WHERE sp.proc_name = $1
 	`
@@ -489,11 +490,15 @@ func (q *Query) GetProcedureDetails(ctx context.Context, name string) (*model.SQ
 
 	var proc model.SQLProcedure
 	var paramsJSON sql.NullString
+	var description sql.NullString
 
 	err := row.Scan(&proc.ID, &proc.FileID, &proc.ProcName,
-		&paramsJSON, &proc.LineStart, &proc.LineEnd, &proc.BodyHash)
+		&paramsJSON, &proc.LineStart, &proc.LineEnd, &proc.BodyHash, &description)
 	if err != nil {
 		return nil, err
+	}
+	if description.Valid {
+		proc.Description = description.String
 	}
 
 	if paramsJSON.Valid {
@@ -507,9 +512,9 @@ func (q *Query) GetProcedureDetails(ctx context.Context, name string) (*model.SQ
 
 func (q *Query) GetProcedureResult(ctx context.Context, name string) (*SQLProcedureResult, error) {
 	query := `
-		SELECT 
+		SELECT
 			sp.id, sp.file_id, sp.proc_name,
-			sp.parameters, f.rel_path, sp.line_start, sp.line_end, sp.body_hash
+			sp.parameters, f.rel_path, sp.line_start, sp.line_end, sp.body_hash, sp.description
 		FROM sql_procedures sp
 		LEFT JOIN files f ON sp.file_id = f.id
 		WHERE sp.proc_name = $1
@@ -521,9 +526,10 @@ func (q *Query) GetProcedureResult(ctx context.Context, name string) (*SQLProced
 	var paramsJSON sql.NullString
 	var file sql.NullString
 	var bodyHash sql.NullString
+	var description sql.NullString
 
 	err := row.Scan(&proc.ID, &proc.FileID, &proc.ProcName,
-		&paramsJSON, &file, &proc.LineStart, &proc.LineEnd, &bodyHash)
+		&paramsJSON, &file, &proc.LineStart, &proc.LineEnd, &bodyHash, &description)
 	if err != nil {
 		return nil, err
 	}

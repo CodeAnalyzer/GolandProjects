@@ -38,6 +38,8 @@ var codebaseResetTables = []string{
 	"spec_configs", "spec_capabilities", "spec_requirements", "spec_scenarios",
 	"spec_usecases", "spec_usecase_steps", "spec_changes", "spec_change_delta",
 	"spec_code_mentions", "spec_vocab", "spec_embeddings",
+	// LSA корпуса описаний (процедуры + контракты)
+	"desc_vocab", "desc_embeddings",
 }
 
 // ResetCodebaseTables усекает все таблицы кодовой базы одним statement

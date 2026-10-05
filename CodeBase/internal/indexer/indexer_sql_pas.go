@@ -158,6 +158,10 @@ func (idx *Indexer) parseSQLLikeFile(ctx context.Context, file fswalk.FileInfo, 
 			return err
 		}
 		stats.Procedures += len(proceduresBatch)
+		// Вектор поиска по имени + header-описанию (после вставки файла)
+		if err := idx.db.EnsureDescriptionSearchVectors(ctx, fileID); err != nil {
+			return fmt.Errorf("failed to ensure description search vectors: %w", err)
+		}
 	}
 
 	// Выполняем batch-вставку таблиц

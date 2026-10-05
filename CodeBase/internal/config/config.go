@@ -33,6 +33,7 @@ type Config struct {
 	Logging  LoggingConfig `toml:"logging"`
 	MCP      MCPConfig     `toml:"mcp"`
 	Spec     SpecConfig    `toml:"spec"`
+	DescLSA  DescLSAConfig `toml:"desc_lsa"`
 }
 
 // IndexerConfig конфигурация индексатора
@@ -90,6 +91,53 @@ type SpecConfig struct {
 	LSAModelPath        string   `toml:"lsa_model_path"`        // путь к файлу модели (default: рядом с БД)
 	LSAMinCosine        *float64 `toml:"lsa_min_cosine"`        // минимальный cosine для semantic-хита; nil = 0.15, 0 = без абсолютного фильтра
 	LSARelativeCutoff   *float64 `toml:"lsa_relative_cutoff"`   // относительный cutoff: доля от maxRank; nil = 0.5, 0 = без relative cutoff
+}
+
+// DescLSAConfig конфигурация LSA-модели корпуса описаний (процедуры + контракты).
+// Корпус независим от спекового (D8 change add-description-search): собственные
+// sidecar-файлы, публикации поколений и параметры.
+type DescLSAConfig struct {
+	LSAEnabled          *bool    `toml:"lsa_enabled"`           // включить desc-LSA постпроцессинг; nil = true (включено по умолчанию)
+	LSAK                int      `toml:"lsa_k"`                 // размерность LSA (default: 512)
+	LSAMinDF            int      `toml:"lsa_min_df"`            // минимальная document frequency (default: 10)
+	LSAMaxDF            float64  `toml:"lsa_max_df"`            // максимальная доля документов (default: 0.3)
+	LSAMinCorpus        int      `toml:"lsa_min_corpus"`        // минимальный размер корпуса (default: 100)
+	LSARetrainThreshold *int     `toml:"lsa_retrain_threshold"` // порог амортизации переобучения; nil = 100
+	LSAModelPath        string   `toml:"lsa_model_path"`        // путь к файлу модели (default: desc_lsa_model.bin рядом с конфигом)
+	LSAMinCosine        *float64 `toml:"lsa_min_cosine"`        // минимальный cosine semantic-хита; nil = 0.15
+	LSARelativeCutoff   *float64 `toml:"lsa_relative_cutoff"`   // относительный cutoff; nil = 0.5
+}
+
+// Enabled возвращает эффективное состояние desc-LSA: nil = включено.
+func (c DescLSAConfig) Enabled() bool {
+	if c.LSAEnabled == nil {
+		return true
+	}
+	return *c.LSAEnabled
+}
+
+// RetrainThreshold возвращает эффективный порог накопленных изменений.
+func (c DescLSAConfig) RetrainThreshold() int {
+	if c.LSARetrainThreshold == nil {
+		return 100
+	}
+	return *c.LSARetrainThreshold
+}
+
+// MinCosine возвращает эффективное значение абсолютного порога cosine.
+func (c DescLSAConfig) MinCosine() float64 {
+	if c.LSAMinCosine == nil {
+		return 0.15
+	}
+	return *c.LSAMinCosine
+}
+
+// RelativeCutoff возвращает эффективное значение относительного cutoff.
+func (c DescLSAConfig) RelativeCutoff() float64 {
+	if c.LSARelativeCutoff == nil {
+		return 0.5
+	}
+	return *c.LSARelativeCutoff
 }
 
 // RetrainThreshold возвращает эффективный порог накопленных изменений.
@@ -159,6 +207,36 @@ func SpecLSAModelPath() string {
 
 func SpecLSAStatePath() string {
 	return filepath.Join(filepath.Dir(SpecLSAModelPath()), "spec_lsa_state.json")
+}
+
+// DescLSAModelPath возвращает путь к файлу desc-LSA-модели (корпус описаний).
+func DescLSAModelPath() string {
+	modelPath := ""
+	if cfg != nil {
+		modelPath = cfg.DescLSA.LSAModelPath
+	}
+	if modelPath == "" {
+		modelPath = "desc_lsa_model.bin"
+	}
+	if filepath.IsAbs(modelPath) {
+		return filepath.Clean(modelPath)
+	}
+
+	base := "."
+	if configFile != "" {
+		base = filepath.Dir(configFile)
+	}
+	if absBase, err := filepath.Abs(base); err == nil {
+		base = absBase
+	} else {
+		base = filepath.Clean(base)
+	}
+	return filepath.Clean(filepath.Join(base, modelPath))
+}
+
+// DescLSAStatePath возвращает путь к state-файлу desc-LSA-модели.
+func DescLSAStatePath() string {
+	return filepath.Join(filepath.Dir(DescLSAModelPath()), "desc_lsa_state.json")
 }
 
 // Load загружает конфигурацию из файла
@@ -313,6 +391,31 @@ func Load() error {
 		return fmt.Errorf("spec.lsa_relative_cutoff must be in [0, 1], got %v", *cfg.Spec.LSARelativeCutoff)
 	}
 
+	// DescLSA defaults: nil-поля получают включённое состояние (Enabled() = true),
+	// числовые — те же дефолты, что и у спек-слоя. LSAEnabled — *bool (nil = true):
+	// отсутствие секции [desc_lsa] в toml не должно отключать desc-поиск.
+	if cfg.DescLSA.LSAK <= 0 {
+		cfg.DescLSA.LSAK = 512
+	}
+	if cfg.DescLSA.LSAMinDF <= 0 {
+		cfg.DescLSA.LSAMinDF = 10
+	}
+	if cfg.DescLSA.LSAMaxDF <= 0 {
+		cfg.DescLSA.LSAMaxDF = 0.3
+	}
+	if cfg.DescLSA.LSAMinCorpus <= 0 {
+		cfg.DescLSA.LSAMinCorpus = 100
+	}
+	if cfg.DescLSA.LSARetrainThreshold != nil && *cfg.DescLSA.LSARetrainThreshold < 0 {
+		return fmt.Errorf("desc_lsa.lsa_retrain_threshold must be >= 0, got %d", *cfg.DescLSA.LSARetrainThreshold)
+	}
+	if cfg.DescLSA.LSAMinCosine != nil && (*cfg.DescLSA.LSAMinCosine < 0 || *cfg.DescLSA.LSAMinCosine > 1) {
+		return fmt.Errorf("desc_lsa.lsa_min_cosine must be in [0, 1], got %v", *cfg.DescLSA.LSAMinCosine)
+	}
+	if cfg.DescLSA.LSARelativeCutoff != nil && (*cfg.DescLSA.LSARelativeCutoff < 0 || *cfg.DescLSA.LSARelativeCutoff > 1) {
+		return fmt.Errorf("desc_lsa.lsa_relative_cutoff must be in [0, 1], got %v", *cfg.DescLSA.LSARelativeCutoff)
+	}
+
 	return nil
 }
 
@@ -404,6 +507,16 @@ func CreateDefault(rootPath string) *Config {
 		},
 		Spec: SpecConfig{
 			LSAEnabled:          true,
+			LSAK:                512,
+			LSAMinDF:            3,
+			LSAMaxDF:            0.3,
+			LSAMinCorpus:        100,
+			LSARetrainThreshold: intPtr(100),
+			LSAMinCosine:        float64Ptr(0.15),
+			LSARelativeCutoff:   float64Ptr(0.5),
+		},
+		DescLSA: DescLSAConfig{
+			LSAEnabled:          boolPtr(true),
 			LSAK:                512,
 			LSAMinDF:            3,
 			LSAMaxDF:            0.3,

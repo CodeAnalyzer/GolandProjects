@@ -12,33 +12,45 @@ import (
 // (обновляется по завершении init/update); если снапшота нет — считает живым
 // подсчётом и сохраняет результат для последующих вызовов. Ошибка чтения
 // снапшота деградирует в живой подсчёт.
-// lsaGeneration — активное поколение LSA (из sidecar-state модели): при непустом
-// значении счётчики spec_vocab/spec_embeddings считаются по этому поколению,
-// при пустом — по всем поколениям (фолбэк при недоступном state).
-func (db *DB) GetStats(ctx context.Context, lsaGeneration string) (*Stats, error) {
+// lsaGeneration / descGeneration — активные поколения LSA (из sidecar-state
+// спек- и desc-моделей): при непустом значении соответствующие счётчики
+// vocab/embeddings считаются по этому поколению, при пустом — по всем
+// поколениям (фолбэк при недоступном state). Снапшот кэшируется по паре
+// поколений: переобучение одной из моделей инвалидирует кэш.
+func (db *DB) GetStats(ctx context.Context, lsaGeneration, descGeneration string) (*Stats, error) {
+	// Разделитель "|": PostgreSQL TEXT не хранит NUL-байты; поколения — hex-строки.
+	// Оба поколения пусты → ключ "" (совместим со снапшотами, сохранёнными напрямую).
+	snapshotKey := ""
+	if lsaGeneration != "" || descGeneration != "" {
+		snapshotKey = lsaGeneration + "|" + descGeneration
+	}
 	snapshot, storedGeneration, ok, err := db.LoadStatsSnapshot(ctx)
-	if err == nil && ok && storedGeneration == lsaGeneration {
+	if err == nil && ok && storedGeneration == snapshotKey {
 		return snapshot, nil
 	}
 
-	stats, computeErr := db.computeStats(ctx, lsaGeneration)
+	stats, computeErr := db.computeStats(ctx, lsaGeneration, descGeneration)
 	if computeErr != nil {
 		return nil, computeErr
 	}
-	// best-effort: сохраняем снапшот, чтобы следующий вызов с тем же поколением
+	// best-effort: сохраняем снапшот, чтобы следующий вызов с теми же поколениями
 	// читал его без пересчёта.
-	_ = db.SaveStatsSnapshot(ctx, stats, lsaGeneration)
+	_ = db.SaveStatsSnapshot(ctx, stats, snapshotKey)
 	return stats, nil
 }
 
 // RefreshStatsSnapshot пересчитывает статистику живым подсчётом и перезаписывает
 // снапшот. Вызывается по завершении init/update.
-func (db *DB) RefreshStatsSnapshot(ctx context.Context, lsaGeneration string) error {
-	stats, err := db.computeStats(ctx, lsaGeneration)
+func (db *DB) RefreshStatsSnapshot(ctx context.Context, lsaGeneration, descGeneration string) error {
+	snapshotKey := ""
+	if lsaGeneration != "" || descGeneration != "" {
+		snapshotKey = lsaGeneration + "|" + descGeneration
+	}
+	stats, err := db.computeStats(ctx, lsaGeneration, descGeneration)
 	if err != nil {
 		return err
 	}
-	return db.SaveStatsSnapshot(ctx, stats, lsaGeneration)
+	return db.SaveStatsSnapshot(ctx, stats, snapshotKey)
 }
 
 // SaveStatsSnapshot перезаписывает единственную строку снапшота вместе с
@@ -80,7 +92,7 @@ func (db *DB) LoadStatsSnapshot(ctx context.Context) (*Stats, string, bool, erro
 	return &stats, lsaGeneration, true, nil
 }
 
-func (db *DB) computeStats(ctx context.Context, lsaGeneration string) (*Stats, error) {
+func (db *DB) computeStats(ctx context.Context, lsaGeneration, descGeneration string) (*Stats, error) {
 	stats := &Stats{}
 
 	if err := db.QueryRowContext(ctx, `
@@ -195,6 +207,36 @@ func (db *DB) computeStats(ctx context.Context, lsaGeneration string) (*Stats, e
 		`SELECT COUNT(DISTINCT generation) FROM spec_vocab`,
 	).Scan(&stats.SpecLSAGenerations); err != nil {
 		return nil, fmt.Errorf("failed to get spec lsa generations count: %w", err)
+	}
+
+	// LSA корпуса описаний (desc-модель): те же правила generation-скоупа.
+	if descGeneration != "" {
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM desc_vocab WHERE generation = $1`, descGeneration,
+		).Scan(&stats.DescVocabTerms); err != nil {
+			return nil, fmt.Errorf("failed to get desc vocab terms count: %w", err)
+		}
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM desc_embeddings WHERE generation = $1`, descGeneration,
+		).Scan(&stats.DescEmbeddings); err != nil {
+			return nil, fmt.Errorf("failed to get desc embeddings count: %w", err)
+		}
+	} else {
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM desc_vocab`,
+		).Scan(&stats.DescVocabTerms); err != nil {
+			return nil, fmt.Errorf("failed to get desc vocab terms count: %w", err)
+		}
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM desc_embeddings`,
+		).Scan(&stats.DescEmbeddings); err != nil {
+			return nil, fmt.Errorf("failed to get desc embeddings count: %w", err)
+		}
+	}
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT generation) FROM desc_vocab`,
+	).Scan(&stats.DescLSAGenerations); err != nil {
+		return nil, fmt.Errorf("failed to get desc lsa generations count: %w", err)
 	}
 
 	var finishedAt sql.NullTime

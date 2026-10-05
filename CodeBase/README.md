@@ -17,6 +17,8 @@
   - DSArchitect XML и `.t01` поддерживаются парсерами и индексатором. `.t01` **не входит в дефолтные** `include_patterns` и для индексации требует явного добавления в конфиг; `*.xml` может уже присутствовать в вашем `codebase.toml`, но если его нет, добавьте явно
   - DSArchitect XML: `service` (сервисные контракты), `event` (событийные контракты), `used_service` (используемые сервисы), `callback_event` (callback-события), `api_table` (табличные структуры), `api_table_index` (индексы standalone API-таблиц), `api_param` (параметры BObject)
   - API macros (макросы API) из SQL: `API_CREATE_PROC`, `API_INIT_EVENT`, `API_EXEC`
+  - Header-описания SQL-процедур (блок-комментарий после декларации, до 8 КБ) — `query procedure` выводит `description`
+  - Полнотекстовый и семантический (LSA) поиск по описаниям процедур и API-контрактов: `query desc-search` / MCP `codebase_query_desc_search`
   - `.t01`: препроцессированный SQL (процедуры, таблицы, поля, SQL statements/query fragments, вызовы процедур) и generated subscriber calls/dispatch-вызовы из раскрытых `API_INIT_EVENT`
   - OpenSpec-артефакты (markdown/yaml из `openspec/` директорий финпродуктов): capabilities, requirements, scenarios, usecases (+steps), changes (+delta), code mentions, профиль продукта. Usecase-слой поддерживает четыре формата: `scenarios/`, `usecases/`, `business-processes/` и `specs/usecases/` (внутри `specs/`); парсер извлекает inline-метаданные `**Ключ**: Значение`, шаги `**Шаг N**. текст`, табличные шаги, ветвления WHEN/ELSE (alternative flow), Confluence pageId (из строки и URL) и ссылки на capabilities из секции «Спеки-компоненты (запчасти)»
 - **Граф связей**:
@@ -462,6 +464,35 @@ codebase query retcode --message "не найден" --json
 - `--message <text>` — регистронезависимый частичный поиск по тексту сообщения; возвращает все совпадения.
 
 Один из флагов `--code` или `--message` обязателен.
+
+#### Поиск по описаниям процедур и API-контрактов (desc-search)
+
+```bash
+# Точка входа для вопросов на естественном языке
+codebase query desc-search --text "привязка кредитных договоров к классификатору"
+codebase query desc-search --text "возврат сумм из банка-партнера" --kind procedure
+codebase query desc-search --text "массовые операции" --kind service --kind event --json
+```
+
+Поиск ведёт по человеческим описаниям: header-комментарии SQL-процедур и
+`ShortDescription`/`FullDescription` API-контрактов (гибрид exact FTS + семантика LSA).
+Совпадение по имени ранжируется выше совпадения по описанию (веса A/B, конфигурация
+`'russian'`). Процедура, реализующая контракт с непустым описанием, представляется
+в выдаче контрактом (`kind=service`); при пустом описании контракта — процедурой
+(fallback). Каждый хит помечен источником (`exact` / `semantic`); без обученной
+desc-LSA-модели поиск возвращает только exact-хиты. MCP-инструмент —
+`codebase_query_desc_search` (`text`, `kind`, `limit`).
+
+Миграция (важно):
+
+- `api_contracts` доступны для поиска **сразу после бэкфилла** векторов — переиндексация
+  не требуется (бэкфилл выполняется при каждом `init`/`update` идемпотентно);
+- `sql_procedures.description` заполняется **только при перепарсинге файлов** —
+  полная пересборка (`codebase update --modified=false`) или инкрементальный `update`
+  изменённых файлов;
+- desc-LSA-модель (`desc_lsa_model.bin`) обучается при полной пересборке; до её
+  обучения работает exact-слой. Модель настраивается секцией `[desc_lsa]` в
+  `codebase.toml` и не зависит от спековой LSA-модели.
 
 #### Inspect сущности с graph context (контекстом графа)
 

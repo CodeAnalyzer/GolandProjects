@@ -40,7 +40,7 @@ func (db *DB) insertSQLProceduresBatch(ctx context.Context, procedures []*model.
 	}
 
 	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
-		stmt, err := tx.Prepare(pq.CopyIn("sql_procedures", "file_id", "proc_name", "parameters", "line_start", "line_end", "body_hash"))
+		stmt, err := tx.Prepare(pq.CopyIn("sql_procedures", "file_id", "proc_name", "parameters", "line_start", "line_end", "body_hash", "description"))
 		if err != nil {
 			return err
 		}
@@ -63,6 +63,7 @@ func (db *DB) insertSQLProceduresBatch(ctx context.Context, procedures []*model.
 				proc.LineStart,
 				proc.LineEnd,
 				NullableString(proc.BodyHash),
+				NullableString(proc.Description),
 			)
 			if err != nil {
 				return err

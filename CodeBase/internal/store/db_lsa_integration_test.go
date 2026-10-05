@@ -1,4 +1,4 @@
-//go:build integration
+﻿//go:build integration
 
 package store_test
 
@@ -169,7 +169,7 @@ func TestGetStats_LSAGenerationCounts(t *testing.T) {
 		t.Fatalf("publish previous: %v", err)
 	}
 
-	stats, err := db.GetStats(ctx, "gen-active")
+	stats, err := db.GetStats(ctx, "gen-active", "")
 	if err != nil {
 		t.Fatalf("GetStats(active): %v", err)
 	}
@@ -184,7 +184,7 @@ func TestGetStats_LSAGenerationCounts(t *testing.T) {
 	}
 
 	// Фолбэк: пустое поколение — полный счёт
-	stats, err = db.GetStats(ctx, "")
+	stats, err = db.GetStats(ctx, "", "")
 	if err != nil {
 		t.Fatalf("GetStats(fallback): %v", err)
 	}

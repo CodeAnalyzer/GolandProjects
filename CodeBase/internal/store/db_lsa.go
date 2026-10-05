@@ -189,3 +189,110 @@ func (db *DB) DeleteSpecLSAGenerationsExcept(ctx context.Context, current, previ
 	}
 	return nil
 }
+
+// PublishDescLSAGeneration транзакционно публикует поколение desc-LSA
+// (корпус описаний процедур и контрактов): удаление поколения + вставка
+// vocab/embeddings атомарны.
+func (db *DB) PublishDescLSAGeneration(ctx context.Context, generation string, terms []model.SpecVocabTerm, embeddings []model.DescEmbedding) error {
+	generation = strings.TrimSpace(generation)
+	if generation == "" {
+		return fmt.Errorf("PublishDescLSAGeneration: generation must not be empty")
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("PublishDescLSAGeneration begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM desc_vocab WHERE generation = $1`, generation); err != nil {
+		return fmt.Errorf("PublishDescLSAGeneration delete vocab: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM desc_embeddings WHERE generation = $1`, generation); err != nil {
+		return fmt.Errorf("PublishDescLSAGeneration delete embeddings: %w", err)
+	}
+
+	vocabStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO desc_vocab (generation, term, doc_freq, idf)
+		VALUES ($1, $2, $3, $4)`)
+	if err != nil {
+		return fmt.Errorf("PublishDescLSAGeneration prepare vocab: %w", err)
+	}
+	for _, term := range terms {
+		if _, err := vocabStmt.ExecContext(ctx, generation, term.Term, term.DocFreq, term.IDF); err != nil {
+			_ = vocabStmt.Close()
+			return fmt.Errorf("PublishDescLSAGeneration insert vocab: %w", err)
+		}
+	}
+	if err := vocabStmt.Close(); err != nil {
+		return fmt.Errorf("PublishDescLSAGeneration close vocab: %w", err)
+	}
+
+	embeddingStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO desc_embeddings (generation, entity_type, entity_id, embed_text, embedding, embed_method, embed_dim)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`)
+	if err != nil {
+		return fmt.Errorf("PublishDescLSAGeneration prepare embeddings: %w", err)
+	}
+	for _, embedding := range embeddings {
+		if _, err := embeddingStmt.ExecContext(ctx, generation, embedding.EntityType, embedding.EntityID,
+			embedding.EmbedText, pq.Array(embedding.Embedding), embedding.EmbedMethod, embedding.EmbedDim); err != nil {
+			_ = embeddingStmt.Close()
+			return fmt.Errorf("PublishDescLSAGeneration insert embeddings: %w", err)
+		}
+	}
+	if err := embeddingStmt.Close(); err != nil {
+		return fmt.Errorf("PublishDescLSAGeneration close embeddings: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("PublishDescLSAGeneration commit: %w", err)
+	}
+	return nil
+}
+
+// HasDescLSAGeneration проверяет наличие опубликованных эмбеддингов поколения.
+func (db *DB) HasDescLSAGeneration(ctx context.Context, generation string) (bool, error) {
+	generation = strings.TrimSpace(generation)
+	if generation == "" {
+		return false, fmt.Errorf("HasDescLSAGeneration: generation must not be empty")
+	}
+	var exists bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM desc_embeddings WHERE generation = $1)`, generation).Scan(&exists); err != nil {
+		return false, fmt.Errorf("HasDescLSAGeneration: %w", err)
+	}
+	return exists, nil
+}
+
+// DeleteDescLSAGenerationsExcept удаляет все поколения, кроме текущего и
+// (опционально) предыдущего — ротация после успешной публикации.
+func (db *DB) DeleteDescLSAGenerationsExcept(ctx context.Context, current, previous string) error {
+	current = strings.TrimSpace(current)
+	previous = strings.TrimSpace(previous)
+	if current == "" {
+		return fmt.Errorf("DeleteDescLSAGenerationsExcept: current generation must not be empty")
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("DeleteDescLSAGenerationsExcept begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	keepPrevious := previous != ""
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM desc_vocab
+		WHERE generation <> $1 AND ($2 = FALSE OR generation <> $3)`, current, keepPrevious, previous); err != nil {
+		return fmt.Errorf("DeleteDescLSAGenerationsExcept delete vocab: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM desc_embeddings
+		WHERE generation <> $1 AND ($2 = FALSE OR generation <> $3)`, current, keepPrevious, previous); err != nil {
+		return fmt.Errorf("DeleteDescLSAGenerationsExcept delete embeddings: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("DeleteDescLSAGenerationsExcept commit: %w", err)
+	}
+	return nil
+}

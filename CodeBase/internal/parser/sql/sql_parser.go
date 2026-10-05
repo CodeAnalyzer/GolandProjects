@@ -1,4 +1,4 @@
-package sql
+﻿package sql
 
 import (
 	"bufio"
@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/codebase/internal/encoding"
 	"github.com/codebase/internal/model"
@@ -56,8 +57,7 @@ var (
 	tempTableRe        = regexp.MustCompile(`(?i)\b#[A-Za-z_][A-Za-z0-9_]*`)
 
 	// helperRegexes используются при извлечении имен столбцов и SET-колонок UPDATE.
-	asAliasRe   = regexp.MustCompile(`(?i)\bas\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*$`)
-	setClauseRe = regexp.MustCompile(`(?i)^\s*update\s+[A-Za-z_#][A-Za-z0-9_#]*\s+set\s+(.+)`)
+	asAliasRe = regexp.MustCompile(`(?i)\bas\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*$`)
 	// Аккумуляция SET-части UPDATE-стейтмента: колонки присваиваний → sql_columns
 	updateSetTargetRe = regexp.MustCompile(`(?i)^\s*update\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
 	setKeywordRe      = regexp.MustCompile(`(?i)\bset\b`)
@@ -627,7 +627,51 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		statementStart          int
 		statementLines          []string
 		inBlockComment          bool
+		descWindow              bool     // окно захвата описания: от декларации процедуры до первой кодовой строки
+		descWindowProc          string   // имя процедуры, которой принадлежит окно (защита от межпроцедурной утечки)
+		descCapturing           bool     // идёт накопление строк блок-комментария описания
+		descLines               []string // накопленные строки описания (без ограждений /* */)
 	)
+
+	// attachDescription прикрепляет накопленное описание к процедуре (если она
+	// уже создана) и закрывает окно захвата. Для API-стиля (API_CREATE_PROC)
+	// описание накапливается до регистрации процедуры на __BEGIN_PROCEDURE__ —
+	// строки остаются в descLines до вызова при создании currentProc.
+	// Описание прикрепляется только процедуре, которой принадлежит окно
+	// (descWindowProc): комментарий-разделитель между процедурами или хвост
+	// незарегистрированного API-стиля не должен утекать в чужое описание.
+	attachDescription := func(proc *model.SQLProcedure) {
+		match := proc != nil && (descWindowProc == "" || descWindowProc == proc.ProcName)
+		defer func() {
+			descWindow = false
+			descCapturing = false
+			descLines = nil
+			descWindowProc = ""
+		}()
+		if !match || proc.Description != "" || descCapturing || len(descLines) == 0 {
+			return
+		}
+		proc.Description = cleanProcedureDescription(descLines)
+	}
+
+	// resetDescriptionWindow закрывает окно без прикрепления (конец процедуры,
+	// начало тела, регистрационная строка __BEGIN_PROCEDURE__).
+	resetDescriptionWindow := func() {
+		descWindow = false
+		descCapturing = false
+		descLines = nil
+		descWindowProc = ""
+	}
+
+	// finishDescriptionCapture завершает накопление блок-комментария: если
+	// процедура уже создана (DCL_PROC_BEGIN / create proc) — прикрепляет сразу,
+	// иначе оставляет строки для отложенного прикрепления (API-стиль).
+	finishDescriptionCapture := func() {
+		descCapturing = false
+		if currentProc != nil {
+			attachDescription(currentProc)
+		}
+	}
 
 	appendColumnDefinition := func(tableName, definition, definitionKind string, currentLine int, columnOrder int) {
 		columnName, dataType, ok := p.parseColumnDefinition(definition)
@@ -908,14 +952,39 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		lineNum++
 		line := scanner.Text()
 
+		trimmedLine := strings.TrimSpace(line)
+
+		// Однострочный блок-комментарий целиком в окне описания
+		if !inBlockComment && descWindow && !descCapturing && strings.HasPrefix(trimmedLine, "/*") && strings.Contains(trimmedLine, "*/") {
+			inner := strings.TrimPrefix(trimmedLine, "/*")
+			if idx := strings.Index(inner, "*/"); idx >= 0 {
+				inner = inner[:idx]
+			}
+			descLines = append(descLines, strings.TrimSpace(inner))
+			finishDescriptionCapture()
+			continue
+		}
+
 		// Отслеживаем многострочные блочные комментарии /* */
 		if inBlockComment {
 			if strings.Contains(line, "*/") {
+				if descCapturing {
+					if idx := strings.Index(line, "*/"); idx >= 0 {
+						descLines = append(descLines, line[:idx])
+					}
+					finishDescriptionCapture()
+				}
 				inBlockComment = false
+			} else if descCapturing {
+				descLines = append(descLines, line)
 			}
 			continue
 		}
 		if strings.Contains(line, "/*") && !strings.Contains(line, "*/") {
+			if descWindow && !descCapturing && strings.HasPrefix(trimmedLine, "/*") {
+				descCapturing = true
+				descLines = append(descLines, strings.TrimPrefix(trimmedLine, "/*"))
+			}
 			inBlockComment = true
 			continue
 		}
@@ -1124,6 +1193,11 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 
 		if matches := p.procCreateRe.FindStringSubmatch(trimmed); matches != nil {
 			flushStatement(lineNum - 1)
+			// API-стиль: окно описания открывается на декларации, комментарий
+			// накапливается до регистрации процедуры на __BEGIN_PROCEDURE__
+			descWindow = true
+			descWindowProc = matches[1]
+			descLines = nil
 			continue
 		}
 
@@ -1132,6 +1206,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		// чтобы later relation builder (построитель связей) мог привязать найденные сущности к процедуре.
 		if matches := p.procBeginRe.FindStringSubmatch(trimmed); matches != nil {
 			if inProcedure && strings.Contains(strings.ToUpper(trimmed), "__BEGIN_PROCEDURE__") {
+				resetDescriptionWindow()
 				continue
 			}
 			flushStatement(lineNum - 1)
@@ -1144,6 +1219,11 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 				LineStart: procLineStart,
 				Params:    make([]model.SQLParam, 0),
 			}
+			attachDescription(currentProc)
+			// Окно описания: DCL_PROC_BEGIN открывает ожидание комментария;
+			// __BEGIN_PROCEDURE__ (API-стиль) — отложенное описание уже прикреплено
+			descWindow = inProcSignature
+			descWindowProc = procName
 			continue
 		}
 
@@ -1180,8 +1260,18 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 			}
 		}
 
+		// Закрытие окна описания: первая кодовая строка после конца сигнатуры
+		// (пустые строки и комментарии до этой точки окно не закрывают)
+		if descWindow && !descCapturing && trimmed != "" && !inProcSignature && !strings.EqualFold(trimmed, "as") {
+			resetDescriptionWindow()
+		}
+
 		// Проверяем конец процедуры
 		if matches := p.procEndRe.FindStringSubmatch(trimmed); matches != nil {
+			// Окно описания не должно переживать конец процедуры: комментарий-
+			// разделитель между процедурами принадлежит файлу, а не следующей
+			// процедуре (межпроцедурная утечка)
+			resetDescriptionWindow()
 			flushPendingColumns()
 			flushStatement(lineNum)
 			if inProcedure && currentProc != nil {
@@ -1206,8 +1296,11 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 				LineStart: procLineStart,
 				Params:    make([]model.SQLParam, 0),
 			}
+			attachDescription(currentProc)
 			inProcedure = true
 			inProcSignature = true
+			descWindow = true
+			descWindowProc = procName
 			continue
 		}
 
@@ -1986,6 +2079,76 @@ func (p *Parser) hasProcedureParam(proc *model.SQLProcedure, paramName string) b
 		}
 	}
 	return false
+}
+
+// maxProcedureDescriptionBytes — лимит размера описания процедуры (8 КБ) с
+// обрезкой по границе руны.
+const maxProcedureDescriptionBytes = 8 * 1024
+
+// procDescFilenameRe — первая строка описания-имя исходного файла
+// (наследие разбиения больших скриптов): дублирует files.rel_path.
+var procDescFilenameRe = regexp.MustCompile(`(?i)^\w+\.(sql|h)$`)
+
+// isDecorativeDescriptionLine — декоративная линия из одних `-`/`=`.
+func isDecorativeDescriptionLine(trimmed string) bool {
+	if trimmed == "" {
+		return false
+	}
+	for _, r := range trimmed {
+		if r != '-' && r != '=' {
+			return false
+		}
+	}
+	return true
+}
+
+// cleanProcedureDescription очищает накопленные строки header-описания:
+// удаляет декоративные линии, ведущее имя файла и пустые края, обрезает до 8 КБ.
+func cleanProcedureDescription(lines []string) string {
+	cleaned := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if isDecorativeDescriptionLine(trimmed) {
+			continue
+		}
+		if trimmed == "" {
+			if len(cleaned) > 0 {
+				cleaned = append(cleaned, "")
+			}
+			continue
+		}
+		cleaned = append(cleaned, strings.TrimRight(line, " \t\r"))
+	}
+	// Ведущее имя файла (и пустые строки перед ним)
+	for len(cleaned) > 0 {
+		trimmed := strings.TrimSpace(cleaned[0])
+		if trimmed == "" {
+			cleaned = cleaned[1:]
+			continue
+		}
+		if procDescFilenameRe.MatchString(trimmed) {
+			cleaned = cleaned[1:]
+			continue
+		}
+		break
+	}
+	// Хвостовые пустые строки
+	for len(cleaned) > 0 && strings.TrimSpace(cleaned[len(cleaned)-1]) == "" {
+		cleaned = cleaned[:len(cleaned)-1]
+	}
+	out := strings.Join(cleaned, "\n")
+	if len(out) > maxProcedureDescriptionBytes {
+		cut := maxProcedureDescriptionBytes
+		for cut > 0 && !utf8.RuneStart(out[cut]) {
+			cut--
+		}
+		out = out[:cut]
+		// Последняя руна может быть неполной (начальный байт без продолжения)
+		if r, size := utf8.DecodeLastRuneInString(out); r == utf8.RuneError && size <= 1 {
+			out = out[:len(out)-size]
+		}
+	}
+	return out
 }
 
 func (p *Parser) parseColumnDefinition(definition string) (string, string, bool) {

@@ -1,4 +1,4 @@
-//go:build integration
+﻿//go:build integration
 
 package store_test
 
@@ -59,7 +59,7 @@ func TestGetStats_UsesSnapshotAndFallbackPersists(t *testing.T) {
 		t.Fatalf("expected no snapshot initially, ok=%v err=%v", ok, err)
 	}
 
-	stats, err := db.GetStats(ctx, "")
+	stats, err := db.GetStats(ctx, "", "")
 	if err != nil {
 		t.Fatalf("GetStats fallback: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestGetStats_UsesSnapshotAndFallbackPersists(t *testing.T) {
 	if err := db.SaveStatsSnapshot(ctx, &store.Stats{TotalFiles: 999}, ""); err != nil {
 		t.Fatalf("SaveStatsSnapshot: %v", err)
 	}
-	got, err := db.GetStats(ctx, "")
+	got, err := db.GetStats(ctx, "", "")
 	if err != nil {
 		t.Fatalf("GetStats snapshot: %v", err)
 	}

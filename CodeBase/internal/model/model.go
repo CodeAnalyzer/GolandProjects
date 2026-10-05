@@ -76,13 +76,14 @@ type VBFunction struct {
 
 // SQLProcedure SQL-процедура или скрипт
 type SQLProcedure struct {
-	ID        int64
-	FileID    int64
-	ProcName  string
-	Params    []SQLParam
-	LineStart int
-	LineEnd   int
-	BodyHash  string
+	ID          int64
+	FileID      int64
+	ProcName    string
+	Params      []SQLParam
+	LineStart   int
+	LineEnd     int
+	BodyHash    string
+	Description string // header-описание из блок-комментария после декларации (очищенное, ≤ 8 КБ)
 }
 
 // SQLParam параметр SQL-процедуры
@@ -787,6 +788,18 @@ type SpecEmbedding struct {
 	Generation  string
 	SpecID      int64
 	EmbedLevel  string
+	EmbedText   string
+	Embedding   []float64
+	EmbedMethod string
+	EmbedDim    int
+}
+
+// DescEmbedding — LSA-вектор документа корпуса описаний (процедуры/контракты)
+type DescEmbedding struct {
+	ID          int
+	Generation  string
+	EntityType  string // procedure | contract
+	EntityID    int64
 	EmbedText   string
 	Embedding   []float64
 	EmbedMethod string

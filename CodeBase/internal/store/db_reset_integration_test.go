@@ -12,7 +12,7 @@ import (
 	"github.com/codebase/internal/store/testutil"
 )
 
-// resetTables — эталонный список усекаемых таблиц (52), синхронизирован с
+// resetTables — эталонный список усекаемых таблиц (54), синхронизирован с
 // store-списком усечения; тест-сторож сверяет его с фактической схемой БД.
 var resetTables = []string{
 	"files", "symbols", "ds_products", "stats_snapshot",
@@ -31,6 +31,7 @@ var resetTables = []string{
 	"spec_configs", "spec_capabilities", "spec_requirements", "spec_scenarios",
 	"spec_usecases", "spec_usecase_steps", "spec_changes", "spec_change_delta",
 	"spec_code_mentions", "spec_vocab", "spec_embeddings",
+	"desc_vocab", "desc_embeddings",
 }
 
 // keptTables — таблицы, сохраняемые при пересборке: анализаторы (RTI/TRC)

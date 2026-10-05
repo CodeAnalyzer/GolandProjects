@@ -38,6 +38,7 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		"schema_migrations", "spec_configs", "spec_capabilities", "spec_requirements", "spec_scenarios",
 		"spec_usecases", "spec_usecase_steps", "spec_changes", "spec_change_delta",
 		"spec_code_mentions", "spec_vocab", "spec_embeddings",
+		"desc_vocab", "desc_embeddings",
 	}
 	for _, table := range requiredTables {
 		var exists bool

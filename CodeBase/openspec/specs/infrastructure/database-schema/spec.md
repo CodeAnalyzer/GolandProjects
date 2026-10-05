@@ -338,7 +338,7 @@
 
 ### Requirement: Сброс таблиц кодовой базы (ResetCodebaseTables)
 
-Store SHALL предоставлять метод `ResetCodebaseTables(ctx)`, очищающий одним statement `TRUNCATE TABLE ... CASCADE` все таблицы, заполняемые парсерами кодовой базы: файлы и символы (`files`, `symbols`, `ds_products`, `stats_snapshot`); SQL (`sql_procedures`, `sql_tables`, `sql_columns`, `sql_column_definitions`, `sql_index_definitions`, `sql_index_definition_fields`); PAS/H/JS/SMF/DFM (`pas_units`, `pas_classes`, `pas_methods`, `pas_fields`, `h_files_defines`, `js_functions`, `js_constants`, `smf_instruments`, `dfm_forms`, `dfm_components`); отчёты (`report_forms`, `report_fields`, `report_params`, `vb_functions`); фрагменты/include (`query_fragments`, `include_directives`); API XML (`api_business_objects`, `api_contracts`, `api_contract_params`, `api_contract_tables`, `api_contract_table_fields`, `api_business_object_params`, `api_business_object_tables`, `api_business_object_table_fields`, `api_business_object_table_indexes`, `api_business_object_table_index_fields`, `api_contract_return_values`, `api_contract_contexts`, `api_macro_invocations`); связи и retcode (`relations`, `ds_return_codes`); спеки (`spec_configs`, `spec_capabilities`, `spec_requirements`, `spec_scenarios`, `spec_usecases`, `spec_usecase_steps`, `spec_changes`, `spec_change_delta`, `spec_code_mentions`, `spec_vocab`, `spec_embeddings`). Метод SHALL сохранять таблицы анализаторов и служебные: `rti_sessions`, `rti_calls`, `rti_params`, `rti_checkpoints`, `rti_blog_blocks`, `rti_blog_tables`, `rti_client_events`, `trc_sessions`, `trc_events`, `schema_migrations`, `scan_runs`. Полный список усекаемых таблиц фиксируется тестом; если у сохраняемых таблиц появятся FK на усекаемые, тест SHALL это обнаружить. Метод идемпотентен и безопасен для пустых таблиц.
+Store SHALL предоставлять метод `ResetCodebaseTables(ctx)`, очищающий одним statement `TRUNCATE TABLE ... CASCADE` все таблицы, заполняемые парсерами кодовой базы: файлы и символы (`files`, `symbols`, `ds_products`, `stats_snapshot`); SQL (`sql_procedures`, `sql_tables`, `sql_columns`, `sql_column_definitions`, `sql_index_definitions`, `sql_index_definition_fields`); PAS/H/JS/SMF/DFM (`pas_units`, `pas_classes`, `pas_methods`, `pas_fields`, `h_files_defines`, `js_functions`, `js_constants`, `smf_instruments`, `dfm_forms`, `dfm_components`); отчёты (`report_forms`, `report_fields`, `report_params`, `vb_functions`); фрагменты/include (`query_fragments`, `include_directives`); API XML (`api_business_objects`, `api_contracts`, `api_contract_params`, `api_contract_tables`, `api_contract_table_fields`, `api_business_object_params`, `api_business_object_tables`, `api_business_object_table_fields`, `api_business_object_table_indexes`, `api_business_object_table_index_fields`, `api_contract_return_values`, `api_contract_contexts`, `api_macro_invocations`); связи и retcode (`relations`, `ds_return_codes`); LSA корпуса описаний (`desc_vocab`, `desc_embeddings`); спеки (`spec_configs`, `spec_capabilities`, `spec_requirements`, `spec_scenarios`, `spec_usecases`, `spec_usecase_steps`, `spec_changes`, `spec_change_delta`, `spec_code_mentions`, `spec_vocab`, `spec_embeddings`). Метод SHALL сохранять таблицы анализаторов и служебные: `rti_sessions`, `rti_calls`, `rti_params`, `rti_checkpoints`, `rti_blog_blocks`, `rti_blog_tables`, `rti_client_events`, `trc_sessions`, `trc_events`, `schema_migrations`, `scan_runs`. Полный список усекаемых таблиц фиксируется тестом; если у сохраняемых таблиц появятся FK на усекаемые, тест SHALL это обнаружить. Метод идемпотентен и безопасен для пустых таблиц.
 
 #### Scenario: После сброса таблицы кодовой базы пусты, анализаторы не тронуты
 
@@ -361,6 +361,62 @@ Store SHALL предоставлять метод `ResetCodebaseTables(ctx)`, о
 - **WHEN** выполняется `ResetCodebaseTables`
 - **THEN** метод завершается без ошибок
 - **AND** повторный вызов также завершается без ошибок
+
+### Requirement: FTS-индексация описаний процедур и контрактов
+
+Схема SHALL хранить описание SQL-процедуры в колонке `sql_procedures.description`
+типа `TEXT`, добавляемой идемпотентной миграцией (`ADD COLUMN IF NOT EXISTS`).
+Схема SHALL поддерживать полнотекстовые векторы:
+`sql_procedures.search_vector` (имя процедуры — вес A, описание — вес B,
+конфигурация `'russian'`) и `api_contracts.search_vector` (имя контракта — вес A,
+краткое и полное описание — вес B). На оба вектора SHALL существовать GIN-индексы;
+на `sql_procedures.description` SHALL существовать trgm-GIN-индекс для частичных
+совпадений. Бэкфилл векторов SHALL быть идемпотентным SQL-обновлением без
+переиндексации файлов (по образцу `EnsureSpecSearchVectors`).
+
+#### Scenario: Миграция на существующей БД
+
+- **GIVEN** проиндексированная БД предыдущей версии схемы
+- **WHEN** выполняется `InitSchema`
+- **THEN** колонка `sql_procedures.description` и FTS-индексы созданы,
+  существующие данные не повреждены
+
+#### Scenario: Бэкфилл вектора контрактов без переиндексации
+
+- **GIVEN** проиндексированная БД с заполненными `api_contracts.full_description`
+- **WHEN** выполняется бэкфилл `search_vector`
+- **THEN** векторы контрактов заполнены и поиск по описаниям контрактов работает
+  без переиндексации файлов
+
+#### Scenario: Описание появляется после перепарсинга
+
+- **GIVEN** БД после миграции, где `sql_procedures.description` пуст
+- **WHEN** файл с процедурой перепарсивается (полная пересборка или инкрементальный
+  update изменённого файла)
+- **THEN** колонка `description` заполнена и вектор процедуры учитывает её
+
+### Requirement: Хранение LSA-публикаций корпуса описаний
+
+Схема SHALL хранить публикации LSA-поколений корпуса описаний в таблицах
+`desc_vocab` (generation, term, doc_freq, idf) и `desc_embeddings` (generation,
+entity_type, entity_id, embed_text, embedding, embed_method, embed_dim),
+ключённых по generation, — по образцу `spec_vocab`/`spec_embeddings`.
+Публикация нового поколения SHALL быть транзакционной (удаление поколения +
+вставка атомарно); при смене поколения SHALL сохраняться текущее и предыдущее
+поколение, остальные удаляться.
+
+#### Scenario: Публикация поколения desc-модели
+
+- **GIVEN** обученная desc-LSA-модель с набором терминов и эмбеддингов
+- **WHEN** выполняется публикация поколения
+- **THEN** `desc_vocab` и `desc_embeddings` содержат строки нового generation,
+  записи атомарно заменены
+
+#### Scenario: Удержание предыдущего поколения
+
+- **GIVEN** опубликованы поколения G1, G2, G3 последовательно
+- **WHEN** публикуется G4
+- **THEN** остаются только G3 (текущее) и G2 (предыдущее), G1 удалена
 
 ## Related code
 

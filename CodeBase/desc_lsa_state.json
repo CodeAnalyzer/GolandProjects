@@ -1,0 +1,13 @@
+{
+  "fingerprint": "5af9d29eff8c1001173b88a6391ed02eaad26f65341c1d688aa8be85a68b2509",
+  "pending": 0,
+  "params": {
+    "min_df": 10,
+    "max_df": 0.3,
+    "k": 512
+  },
+  "algorithm": 2,
+  "num_docs": 54334,
+  "generation": "5af9d29eff8c1001173b88a6391ed02eaad26f65341c1d688aa8be85a68b2509",
+  "trained_at": "2026-10-05T13:43:35.1570375+03:00"
+}

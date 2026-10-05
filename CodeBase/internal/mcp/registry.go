@@ -200,6 +200,7 @@ var queryTools = map[string]bool{
 	"codebase_query_api_impl":        true,
 	"codebase_query_api_publishers":  true,
 	"codebase_query_api_consumers":   true,
+	"codebase_query_desc_search":     true,
 	"codebase_query_retcode":         true,
 }
 
@@ -754,6 +755,27 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
 					return q.SearchAPIConsumers(ctx, name, limit)
+				})
+			},
+		},
+		"codebase_query_desc_search": {
+			Definition: toolDefinition{Name: "codebase_query_desc_search", Description: "Full-text search over human-readable descriptions: SQL procedure header comments and API contract ShortDescription/FullDescription. Name matches rank above description matches (weights A/B, russian config). A procedure implementing a contract with a non-empty description is represented by the contract row (kind=service). Use as the entry point for domain questions in natural language ('how is X implemented', 'where is the entry point').", InputSchema: querySchema("text", stringProp("Search text (natural language, Russian)"), map[string]interface{}{"kind": stringSliceProp("Filter by kind: procedure, service, event, callback_event, used_service (repeatable)"), "limit": intProp("Max results")})},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				text, err := requiredString(args, "text")
+				if err != nil {
+					return nil, err
+				}
+				kinds, err := optionalStringSlice(args, "kind")
+				if err != nil {
+					return nil, err
+				}
+				limit := optionalLimit(args)
+				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+					items, _, err := q.SearchDescriptions(ctx, text, kinds, limit)
+					if err != nil {
+						return nil, err
+					}
+					return items, nil
 				})
 			},
 		},
