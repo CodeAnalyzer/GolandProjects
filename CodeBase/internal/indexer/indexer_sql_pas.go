@@ -863,6 +863,7 @@ func (idx *Indexer) parsePASFile(ctx context.Context, file fswalk.FileInfo, file
 	classesBatch := make([]*model.PASClass, 0, len(result.Classes))
 	for _, class := range result.Classes {
 		class.UnitID = unitID
+		class.FileID = fileID
 		classesBatch = append(classesBatch, class)
 	}
 	if err := idx.db.BatchInsertPASClasses(ctx, classesBatch, idx.config.Indexer.BatchSize); err != nil {
@@ -901,6 +902,7 @@ func (idx *Indexer) parsePASFile(ctx context.Context, file fswalk.FileInfo, file
 	methodsBatch := make([]*model.PASMethod, 0, len(result.Methods))
 	for _, method := range result.Methods {
 		method.UnitID = unitID
+		method.FileID = fileID
 		if method.ClassName != "" {
 			method.ClassID = classIDs[strings.ToLower(strings.TrimSpace(method.ClassName))]
 		}
@@ -947,6 +949,7 @@ func (idx *Indexer) parsePASFile(ctx context.Context, file fswalk.FileInfo, file
 
 	fieldsBatch := make([]*model.PASField, 0, len(result.Fields))
 	for _, field := range result.Fields {
+		field.FileID = fileID
 		if field.ClassName != "" {
 			field.ClassID = classIDs[strings.ToLower(strings.TrimSpace(field.ClassName))]
 		}

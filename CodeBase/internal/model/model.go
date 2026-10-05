@@ -171,6 +171,7 @@ type PASUnit struct {
 // PASClass класс Pascal/Delphi
 type PASClass struct {
 	ID          int64
+	FileID      int64
 	UnitID      int64
 	ClassName   string
 	ParentClass string
@@ -182,6 +183,7 @@ type PASClass struct {
 // PASMethod метод класса
 type PASMethod struct {
 	ID         int64
+	FileID     int64
 	ClassID    int64
 	ClassName  string // имя класса для привязки после сохранения
 	UnitID     int64
@@ -194,6 +196,7 @@ type PASMethod struct {
 // PASField поле класса
 type PASField struct {
 	ID             int64
+	FileID         int64
 	ClassID        int64
 	ClassName      string // имя класса для привязки после сохранения
 	FieldName      string

@@ -122,6 +122,13 @@ func TestSpecMentionPostProcessing_NewKinds(t *testing.T) {
 	).Scan(&formID); err != nil {
 		t.Fatalf("insert dfm_form: %v", err)
 	}
+	var pasMethodID int64
+	if err := idx.db.QueryRow(
+		`INSERT INTO pas_methods (file_id, method_name) VALUES ($1, 'RealMethod') RETURNING id`,
+		fileID,
+	).Scan(&pasMethodID); err != nil {
+		t.Fatalf("insert pas_method: %v", err)
+	}
 
 	// Упоминания пяти видов + заведомо без цели
 	const capID int64 = 777
@@ -129,8 +136,9 @@ func TestSpecMentionPostProcessing_NewKinds(t *testing.T) {
 	insertMention(t, idx, fileID, capID, "OnAfterPerson_Update", "event", 11)
 	insertMention(t, idx, fileID, capID, "pAPI_Accrual_ObjDate", "api_table", 12)
 	insertMention(t, idx, fileID, capID, "RPPortfolio_f", "method", 13) // промах в pas_methods → dfm_forms
-	insertMention(t, idx, fileID, capID, "r8938_prc", "unknown", 14)   // second-chance
-	insertMention(t, idx, fileID, capID, "f123_proc", "unknown", 15)   // без цели
+	insertMention(t, idx, fileID, capID, "RealMethod", "method", 14)   // хит в pas_methods
+	insertMention(t, idx, fileID, capID, "r8938_prc", "unknown", 15)   // second-chance
+	insertMention(t, idx, fileID, capID, "f123_proc", "unknown", 16)   // без цели
 
 	run := func() {
 		collector := &statsCollector{}
@@ -152,6 +160,9 @@ func TestSpecMentionPostProcessing_NewKinds(t *testing.T) {
 	if got := countMentionRelations(t, idx, "dfm_form", formID); got != 1 {
 		t.Fatalf("method fallback form relations = %d, want 1", got)
 	}
+	if got := countMentionRelations(t, idx, "pas_method", pasMethodID); got != 1 {
+		t.Fatalf("method hit relations = %d, want 1", got)
+	}
 	if got := countMentionRelations(t, idx, "sql_procedure", procID); got != 1 {
 		t.Fatalf("unknown second-chance relations = %d, want 1", got)
 	}
@@ -162,8 +173,8 @@ func TestSpecMentionPostProcessing_NewKinds(t *testing.T) {
 	).Scan(&total); err != nil {
 		t.Fatalf("count total: %v", err)
 	}
-	if total != 6 {
-		t.Fatalf("total spec_capability references_code = %d, want 6 (f123_proc без цели)", total)
+	if total != 7 {
+		t.Fatalf("total spec_capability references_code = %d, want 7 (f123_proc без цели)", total)
 	}
 
 	// Идемпотентность: повторный запуск не дублирует рёбра
@@ -173,8 +184,8 @@ func TestSpecMentionPostProcessing_NewKinds(t *testing.T) {
 	).Scan(&total); err != nil {
 		t.Fatalf("count total after rerun: %v", err)
 	}
-	if total != 6 {
-		t.Fatalf("total after rerun = %d, want 6 (идемпотентность)", total)
+	if total != 7 {
+		t.Fatalf("total after rerun = %d, want 7 (идемпотентность)", total)
 	}
 }
 

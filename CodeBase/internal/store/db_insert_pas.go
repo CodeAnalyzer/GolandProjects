@@ -112,7 +112,7 @@ func (db *DB) insertPASClassesBatch(ctx context.Context, classes []*model.PASCla
 	}
 
 	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
-		stmt, err := tx.Prepare(pq.CopyIn("pas_classes", "unit_id", "class_name", "parent_class", "dfm_form_id", "line_start", "line_end"))
+		stmt, err := tx.Prepare(pq.CopyIn("pas_classes", "file_id", "unit_id", "class_name", "parent_class", "dfm_form_id", "line_start", "line_end"))
 		if err != nil {
 			return err
 		}
@@ -120,6 +120,7 @@ func (db *DB) insertPASClassesBatch(ctx context.Context, classes []*model.PASCla
 
 		for _, class := range classes {
 			_, err := stmt.Exec(
+				class.FileID,
 				NullableInt64(class.UnitID),
 				sanitizeUTF8String(class.ClassName),
 				NullableString(class.ParentClass),
@@ -167,7 +168,7 @@ func (db *DB) insertPASMethodsBatch(ctx context.Context, methods []*model.PASMet
 	}
 
 	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
-		stmt, err := tx.Prepare(pq.CopyIn("pas_methods", "class_id", "unit_id", "method_name", "signature", "visibility", "line_number"))
+		stmt, err := tx.Prepare(pq.CopyIn("pas_methods", "file_id", "class_id", "unit_id", "method_name", "signature", "visibility", "line_number"))
 		if err != nil {
 			return err
 		}
@@ -175,6 +176,7 @@ func (db *DB) insertPASMethodsBatch(ctx context.Context, methods []*model.PASMet
 
 		for _, method := range methods {
 			_, err := stmt.Exec(
+				method.FileID,
 				NullableInt64(method.ClassID),
 				NullableInt64(method.UnitID),
 				sanitizeUTF8String(method.MethodName),
@@ -222,7 +224,7 @@ func (db *DB) insertPASFieldsBatch(ctx context.Context, fields []*model.PASField
 	}
 
 	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
-		stmt, err := tx.Prepare(pq.CopyIn("pas_fields", "class_id", "field_name", "field_type", "dfm_component_id", "visibility", "line_number"))
+		stmt, err := tx.Prepare(pq.CopyIn("pas_fields", "file_id", "class_id", "field_name", "field_type", "dfm_component_id", "visibility", "line_number"))
 		if err != nil {
 			return err
 		}
@@ -230,6 +232,7 @@ func (db *DB) insertPASFieldsBatch(ctx context.Context, fields []*model.PASField
 
 		for _, field := range fields {
 			_, err := stmt.Exec(
+				field.FileID,
 				NullableInt64(field.ClassID),
 				sanitizeUTF8String(field.FieldName),
 				NullableString(field.FieldType),

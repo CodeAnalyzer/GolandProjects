@@ -1,0 +1,14 @@
+{
+  "fingerprint": "",
+  "pending": 0,
+  "params": {
+    "min_df": 1,
+    "max_df": 1,
+    "k": 2
+  },
+  "algorithm": 2,
+  "num_docs": 4,
+  "generation": "legacy",
+  "retry_fingerprint": "09793cee6c07e8323eeecf5357398e158eaa0ab56e950eec5fcaebaffef8069f",
+  "trained_at": "0001-01-01T00:00:00Z"
+}

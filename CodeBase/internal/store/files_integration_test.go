@@ -74,6 +74,61 @@ func TestDeleteFilesByPathsExcept_KeepsNewIDAndCascades(t *testing.T) {
 	}
 }
 
+// TestDeleteFilesByPaths_CascadesPASEntities — удаление файла уводит
+// каскадом pas_units/pas_classes/pas_methods/pas_fields (FileID batch insert).
+func TestDeleteFilesByPaths_CascadesPASEntities(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+	scanID, err := db.CreateScanRun(ctx, "/repo")
+	if err != nil {
+		t.Fatalf("CreateScanRun: %v", err)
+	}
+	fileID := insertNamedFile(t, db, scanID, "/repo/unit1.pas", "h")
+
+	if err := db.BatchInsertPASUnits(ctx, []*model.PASUnit{
+		{FileID: fileID, UnitName: "Unit1"},
+	}, 100); err != nil {
+		t.Fatalf("insert unit: %v", err)
+	}
+	var unitID int64
+	if err := db.QueryRow(`SELECT id FROM pas_units WHERE file_id = $1`, fileID).Scan(&unitID); err != nil {
+		t.Fatalf("resolve unit id: %v", err)
+	}
+	if err := db.BatchInsertPASClasses(ctx, []*model.PASClass{
+		{FileID: fileID, UnitID: unitID, ClassName: "TFoo"},
+	}, 100); err != nil {
+		t.Fatalf("insert class: %v", err)
+	}
+	var classID int64
+	if err := db.QueryRow(`SELECT id FROM pas_classes WHERE file_id = $1`, fileID).Scan(&classID); err != nil {
+		t.Fatalf("resolve class id: %v", err)
+	}
+	if err := db.BatchInsertPASMethods(ctx, []*model.PASMethod{
+		{FileID: fileID, ClassID: classID, UnitID: unitID, MethodName: "Bar"},
+	}, 100); err != nil {
+		t.Fatalf("insert method: %v", err)
+	}
+	if err := db.BatchInsertPASFields(ctx, []*model.PASField{
+		{FileID: fileID, ClassID: classID, FieldName: "Baz"},
+	}, 100); err != nil {
+		t.Fatalf("insert field: %v", err)
+	}
+
+	if err := db.DeleteFilesByPaths(ctx, []string{"/repo/unit1.pas"}); err != nil {
+		t.Fatalf("DeleteFilesByPaths: %v", err)
+	}
+
+	for _, table := range []string{"pas_units", "pas_classes", "pas_methods", "pas_fields"} {
+		var n int
+		if err := db.QueryRow(`SELECT count(*) FROM ` + table + ` WHERE file_id = $1`, fileID).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if n != 0 {
+			t.Fatalf("%s rows of deleted file = %d, want 0", table, n)
+		}
+	}
+}
+
 func TestGetLatestFilesByRootPath_PicksLatestID(t *testing.T) {
 	db := testutil.Open(t)
 	scanID, err := db.CreateScanRun(context.Background(), "/repo")

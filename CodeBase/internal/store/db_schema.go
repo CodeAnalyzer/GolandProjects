@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const CurrentSchemaVersion = "codebase_schema_v1"
+const CurrentSchemaVersion = "codebase_schema_v2"
 
 const schemaInitLockKey = "codebase/schema-init"
 
@@ -267,6 +267,7 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS pas_classes (
 			id BIGSERIAL PRIMARY KEY,
+			file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
 			unit_id BIGINT,
 			class_name TEXT NOT NULL,
 			parent_class TEXT,
@@ -276,6 +277,7 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS pas_methods (
 			id BIGSERIAL PRIMARY KEY,
+			file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
 			class_id BIGINT,
 			unit_id BIGINT,
 			method_name TEXT NOT NULL,
@@ -285,6 +287,7 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS pas_fields (
 			id BIGSERIAL PRIMARY KEY,
+			file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
 			class_id BIGINT,
 			field_name TEXT NOT NULL,
 			field_type TEXT,
@@ -292,6 +295,70 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			visibility TEXT,
 			line_number INTEGER NOT NULL DEFAULT 0
 		)`,
+		// Денормализация file_id на PAS-сущностях (ранее файл достигался только
+		// через цепочку unit_id → pas_units → files): чинит generic-lookup
+		// спек-упоминаний (JOIN files f ON f.id = e.file_id) и каскадное
+		// удаление — до миграции классы/методы/поля оставались сиротами.
+		// Каждое statement идемпотентно (образец — spec_usecase_steps.file_id).
+		`ALTER TABLE pas_classes ADD COLUMN IF NOT EXISTS file_id BIGINT`,
+		`ALTER TABLE pas_methods ADD COLUMN IF NOT EXISTS file_id BIGINT`,
+		`ALTER TABLE pas_fields ADD COLUMN IF NOT EXISTS file_id BIGINT`,
+		// Сироты с разрушенной цепочкой привязки (несуществующий/NULL unit_id
+		// или class_id) недостижимы ни одним читающим запросом — удаляются до
+		// backfill, иначе SET NOT NULL падает на незаполненных строках
+		`DELETE FROM pas_classes WHERE NOT EXISTS (SELECT 1 FROM pas_units u WHERE u.id = pas_classes.unit_id)`,
+		`DELETE FROM pas_methods WHERE NOT EXISTS (SELECT 1 FROM pas_units u WHERE u.id = pas_methods.unit_id)`,
+		`DELETE FROM pas_fields WHERE NOT EXISTS (SELECT 1 FROM pas_classes c WHERE c.id = pas_fields.class_id)`,
+		// Backfill без переиндексации: file_id стабилен (юнит не меняет файл)
+		`UPDATE pas_classes SET file_id = u.file_id
+		 FROM pas_units u
+		 WHERE pas_classes.unit_id = u.id AND pas_classes.file_id IS NULL`,
+		`UPDATE pas_methods SET file_id = u.file_id
+		 FROM pas_units u
+		 WHERE pas_methods.unit_id = u.id AND pas_methods.file_id IS NULL`,
+		`UPDATE pas_fields SET file_id = u.file_id
+		 FROM pas_classes c
+		 JOIN pas_units u ON u.id = c.unit_id
+		 WHERE pas_fields.class_id = c.id AND pas_fields.file_id IS NULL`,
+		`ALTER TABLE pas_classes ALTER COLUMN file_id SET NOT NULL`,
+		`ALTER TABLE pas_methods ALTER COLUMN file_id SET NOT NULL`,
+		`ALTER TABLE pas_fields ALTER COLUMN file_id SET NOT NULL`,
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conrelid = 'pas_classes'::regclass
+				  AND conname = 'pas_classes_file_id_fkey'
+			) THEN
+				ALTER TABLE pas_classes
+					ADD CONSTRAINT pas_classes_file_id_fkey
+					FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE;
+			END IF;
+		END $$`,
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conrelid = 'pas_methods'::regclass
+				  AND conname = 'pas_methods_file_id_fkey'
+			) THEN
+				ALTER TABLE pas_methods
+					ADD CONSTRAINT pas_methods_file_id_fkey
+					FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE;
+			END IF;
+		END $$`,
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conrelid = 'pas_fields'::regclass
+				  AND conname = 'pas_fields_file_id_fkey'
+			) THEN
+				ALTER TABLE pas_fields
+					ADD CONSTRAINT pas_fields_file_id_fkey
+					FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE;
+			END IF;
+		END $$`,
 		`CREATE TABLE IF NOT EXISTS api_business_objects (
 			id BIGSERIAL PRIMARY KEY,
 			file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -822,6 +889,9 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_sql_index_definitions_name ON sql_index_definitions(index_name)`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_index_definition_fields_index_id ON sql_index_definition_fields(table_index_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_pas_units_file_id ON pas_units(file_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_pas_classes_file_id ON pas_classes(file_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_pas_methods_file_id ON pas_methods(file_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_pas_fields_file_id ON pas_fields(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_pas_methods_unit_id ON pas_methods(unit_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_pas_methods_class_id ON pas_methods(class_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_pas_methods_method_name_lower ON pas_methods(LOWER(method_name))`,
@@ -980,6 +1050,12 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 	}
 	if err := applyMigrationTx(ctx, tx, "spec_search_vectors_weighted_v1", specSearchVectorUpdateStatements("")); err != nil {
 		return fmt.Errorf("failed to apply migration spec_search_vectors_weighted_v1: %w", err)
+	}
+	// pas_entities_file_id_v1: маркер трассировки применения денормализации
+	// file_id на pas_classes/pas_methods/pas_fields — сами statements
+	// идемпотентны и выполняются в общем списке выше при каждом InitSchema
+	if err := applyMigrationTx(ctx, tx, "pas_entities_file_id_v1", nil); err != nil {
+		return fmt.Errorf("failed to record migration pas_entities_file_id_v1: %w", err)
 	}
 	if err := applyMigrationTx(ctx, tx, CurrentSchemaVersion, nil); err != nil {
 		return fmt.Errorf("failed to record schema version: %w", err)
