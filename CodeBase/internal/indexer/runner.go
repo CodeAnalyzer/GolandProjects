@@ -372,10 +372,10 @@ func (idx *Indexer) fullRebuildCtx(ctx context.Context, rootPath string, paralle
 }
 
 // removeLSASidecars удаляет sidecar-файлы LSA-модели (spec_lsa_model.bin,
-// spec_lsa_state.json). После усечения spec_vocab/spec_embeddings загруженное
+// spec_lsa_state.json, spec_lsa_embeddings.bin). После усечения spec_vocab/spec_embeddings загруженное
 // устаревшее состояние могло бы привести к пропуску ретрейна по fingerprint.
 func (idx *Indexer) removeLSASidecars() {
-	for _, path := range []string{config.SpecLSAModelPath(), config.SpecLSAStatePath()} {
+	for _, path := range []string{config.SpecLSAModelPath(), config.SpecLSAStatePath(), config.SpecLSAEmbeddingsPath()} {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			idx.logError(path, "spec-lsa: sidecar remove error: %v", err)
 		}

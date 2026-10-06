@@ -209,6 +209,12 @@ func SpecLSAStatePath() string {
 	return filepath.Join(filepath.Dir(SpecLSAModelPath()), "spec_lsa_state.json")
 }
 
+// SpecLSAEmbeddingsPath возвращает путь к бинарному кэшу эмбеддингов spec-LSA
+// (sidecar-артефакт, инвалидация по поколению в заголовке файла).
+func SpecLSAEmbeddingsPath() string {
+	return filepath.Join(filepath.Dir(SpecLSAModelPath()), "spec_lsa_embeddings.bin")
+}
+
 // DescLSAModelPath возвращает путь к файлу desc-LSA-модели (корпус описаний).
 func DescLSAModelPath() string {
 	modelPath := ""

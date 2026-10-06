@@ -2,9 +2,7 @@ package query
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -215,33 +213,16 @@ func (q *Query) searchDescriptionsSemantic(ctx context.Context, text string, kin
 		relativeCutoff = cfg.DescLSA.RelativeCutoff()
 	}
 
-	model, err := specfts.LoadLSAModel(config.DescLSAModelPath())
+	model, rows, err := descSemanticCache.get(ctx, q)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil // модель не обучена — exact-only
-		}
-		return nil, fmt.Errorf("load desc LSA model: %w", err)
+		return nil, err
 	}
-	if model.Vocab == nil || model.VT == nil || model.Generation == "" || model.K <= 0 {
-		return nil, fmt.Errorf("invalid desc LSA model")
-	}
-	hasGeneration, err := q.db.HasDescLSAGeneration(ctx, model.Generation)
-	if err != nil {
-		return nil, fmt.Errorf("check desc LSA generation: %w", err)
-	}
-	if !hasGeneration {
-		return nil, nil
+	if model == nil {
+		return nil, nil // модель не обучена — exact-only
 	}
 	queryVec := model.Vocab.ProjectQuery(text, model.VT)
 	if len(queryVec) == 0 {
 		return nil, nil
-	}
-
-	// Эмбеддинги — из бинарного кэша (фолбэк: БД); 54k × 512 через pq-текст
-	// занимает ~6 c, кэш — ~0.2 c.
-	rows, err := q.loadDescEmbeddingsCached(ctx, model.Generation)
-	if err != nil {
-		return nil, err
 	}
 
 	// Дедуп «контракт вытесняет процедуру» для semantic-стороны: процедуры,
@@ -277,7 +258,7 @@ func (q *Query) searchDescriptionsSemantic(ctx context.Context, text string, kin
 
 	hits := make([]DescriptionSearchResult, 0, len(rows))
 	for i := range rows {
-		row := &rows[i]
+		row := rows[i]
 		if displaced[row.EntityID] {
 			continue
 		}

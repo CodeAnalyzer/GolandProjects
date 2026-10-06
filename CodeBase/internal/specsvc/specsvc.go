@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"runtime"
 	"sort"
 	"strconv"
@@ -1300,63 +1299,42 @@ func searchSpecSemantic(ctx context.Context, db *store.DB, query, product string
 		relativeCutoff = cfg.Spec.RelativeCutoff()
 	}
 
-	modelPath := config.SpecLSAModelPath()
-	model, err := specfts.LoadLSAModel(modelPath)
+	model, rows, err := specSemanticCache.get(ctx, db)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil, errs.ErrSpecModelNotFound
-		}
-		return nil, nil, fmt.Errorf("load spec LSA model: %w", err)
-	}
-	if model.Vocab == nil || model.VT == nil || model.Generation == "" || model.K <= 0 {
-		return nil, nil, fmt.Errorf("invalid spec LSA model")
-	}
-	hasGeneration, err := db.HasSpecLSAGeneration(ctx, model.Generation)
-	if err != nil {
-		return nil, nil, fmt.Errorf("check spec LSA generation: %w", err)
-	}
-	if !hasGeneration {
-		return nil, nil, fmt.Errorf("spec LSA generation %q has no embeddings", model.Generation)
+		return nil, nil, err
 	}
 	queryVec := model.Vocab.ProjectQuery(query, model.VT)
 	if len(queryVec) == 0 {
 		return nil, nil, fmt.Errorf("invalid spec LSA query projection")
 	}
 
-	rows, err := db.QueryContext(ctx, `
-		SELECT se.spec_id, se.embedding, sc.capability_name, sc.title,
-		       COALESCE(sc.purpose, ''), sc.line_start, sc.line_end, se.embed_text,
-		       COALESCE(dp.product_name, '')
-		FROM spec_embeddings se
-		JOIN spec_capabilities sc ON se.spec_id = sc.id
-		LEFT JOIN ds_products dp ON dp.id = sc.ds_product_id
-		WHERE se.generation = $2 AND se.embed_level = 'spec' AND ($1 = '' OR dp.product_name = $1)
-		ORDER BY se.spec_id`, product, model.Generation)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer rows.Close()
-
 	hits := make([]SpecSearchHit, 0)
-	for rows.Next() {
-		var hit SpecSearchHit
-		var embArr string
-		if err := rows.Scan(&hit.CapabilityID, &embArr, &hit.CapabilityName, &hit.Title,
-			&hit.Purpose, &hit.LineStart, &hit.LineEnd, &hit.Snippet, &hit.Product); err != nil {
-			return nil, nil, err
-		}
-		emb := parsePGFloatArray(embArr)
-		if len(emb) != len(queryVec) {
+	for _, row := range rows {
+		// фильтр по продукту — в памяти, по метаданным кэша
+		if product != "" && row.Product != product {
 			continue
 		}
-		hit.Rank = specfts.CosineSimilarity(queryVec, emb)
-		hit.EntityID = hit.CapabilityID
-		hit.Level = "capability"
-		hit.Source = "lsa"
-		hits = append(hits, hit)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, err
+		if len(row.FloatsLE) != len(queryVec) {
+			continue
+		}
+		vec := make([]float64, len(row.FloatsLE))
+		for j, v := range row.FloatsLE {
+			vec[j] = float64(v)
+		}
+		hits = append(hits, SpecSearchHit{
+			CapabilityID:   row.CapabilityID,
+			CapabilityName: row.CapabilityName,
+			Title:          row.Title,
+			Purpose:        row.Purpose,
+			LineStart:      row.LineStart,
+			LineEnd:        row.LineEnd,
+			Snippet:        row.Snippet,
+			Product:        row.Product,
+			Rank:           specfts.CosineSimilarity(queryVec, vec),
+			EntityID:       row.CapabilityID,
+			Level:          "capability",
+			Source:         "lsa",
+		})
 	}
 
 	total := len(hits)
