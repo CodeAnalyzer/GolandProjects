@@ -225,10 +225,13 @@ func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified
 				}
 				normalizedPath := filepath.ToSlash(strings.TrimSpace(file.Path))
 				seen[normalizedPath] = struct{}{}
-				collector.Add(func(stats *model.ScanStats) {
-					stats.FilesScanned++
-				})
-				prev := existing[normalizedPath]
+			collector.Add(func(stats *model.ScanStats) {
+				stats.FilesScanned++
+			})
+			if file.EncodingRefined {
+				collector.Add(func(stats *model.ScanStats) { stats.EncodingRefined++ })
+			}
+			prev := existing[normalizedPath]
 				// Pre-filtered файл (Hash пустой — не читался, mtime+size совпадают)
 				if file.Hash == "" && prev != nil {
 					collector.Add(func(stats *model.ScanStats) { stats.PreFilteredFiles++ })

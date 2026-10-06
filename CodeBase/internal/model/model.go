@@ -412,6 +412,7 @@ type ScanStats struct {
 	Errors           int
 	PostProcessed    int
 	PreFilteredFiles int // файлы, пропущенные по mtime+size pre-filter (Update only)
+	EncodingRefined  int // файлы, у которых детекция по содержимому изменила кодировку относительно карты расширений
 	XMLFiles         int
 	APIContracts     int
 	APIParams        int

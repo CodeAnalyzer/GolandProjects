@@ -226,12 +226,67 @@ Pre-filter устанавливается в walker только при `--modif
 - **WHEN** выполняется индексация обоих файлов
 - **THEN** обе записи имеют `is_generated = true`
 
+### Requirement: Детекция кодировки по содержимому в walk-воркере
+
+Система SHALL определять кодировку single-byte legacy-форматов (`.sql`, `.h`, `.tpr`, `.pas`, `.inc`, `.js`, `.smf`, `.dfm`, `.rpt`) по содержимому файла в walk-воркере — после чтения файла и вычисления SHA-256, по уже прочитанному буферу (прецедент — `.md`). Карта расширений используется как prior (см. `infrastructure/encoding-cli`, требование «Детекция кодировок»). Детекция выполняется одним линейным проходом счётчиков по сырым байтам; декодирование выполняется ровно один раз с детектированной кодировкой (без decode-repair-redecode). Файл без байт `> 0x7F` пропускает детекцию (ASCII fast-path, кодировка — prior, декод — identity). Детектированная кодировка записывается в `FileInfo.Encoding` и сохраняется в `files.encoding` БД. Число файлов, у которых детектированная кодировка отличается от prior карты, отражается в метрике `EncodingRefined` `ScanStats` и печатается в сводке прогона. SHA-256 вычисляется по сырым байтам — детекция не влияет на hash и pre-filter. Pre-filtered файлы (mtime+size совпали, содержимое не читается) не проходят детекцию и не декодируются — их кодировка в БД остаётся с предыдущего прогона. Форматы `.md`, `.xml`, `.yaml`, `.t01` обрабатываются прежними правилами (DetectMarkdownEncoding / DetectXMLEncoding / UTF-8 / CP866).
+
+#### Scenario: CP1251 SQL-файл детектируется и декодируется корректно
+
+- **GIVEN** дерево проекта содержит `fa-administrator/.../Proc.SQL` в кодировке CP1251 (карта даёт prior CP866)
+- **WHEN** walk-воркер читает файл
+- **THEN** детекция по содержимому возвращает WIN1251
+- **AND** `FileInfo.Encoding` = WIN1251, значение сохранено в `files.encoding`
+- **AND** метрика `EncodingRefined` увеличена на 1
+- **AND** header-описание процедуры декодировано читаемо, без mojibake
+
+#### Scenario: CP866 SQL-файл с рамками в комментариях остаётся CP866
+
+- **GIVEN** CP866 SQL-файл, комментарии которого содержат псевдографику (байты 0xC0–0xDF) и кириллицу (0x80–0x9F, 0xA0–0xAF)
+- **WHEN** walk-воркер читает файл
+- **THEN** cp866Score перевешивает, кодировка остаётся CP866
+- **AND** метрика `EncodingRefined` не увеличивается
+
+#### Scenario: ASCII-файл пропускает детекцию
+
+- **GIVEN** SQL-файл, содержащий только байты `≤ 0x7F`
+- **WHEN** walk-воркер читает файл
+- **THEN** детекция по содержимому не выполняется (fast-path), кодировка — prior (CP866)
+- **AND** декодирование — identity, содержимое не изменяется
+
+#### Scenario: PAS-файл в CP866 детектируется
+
+- **GIVEN** PAS-файл в кодировке CP866 (карта даёт prior WIN1251)
+- **WHEN** walk-воркер читает файл
+- **THEN** детекция определяет CP866, файл декодирован корректно
+- **AND** метрика `EncodingRefined` увеличена
+
+#### Scenario: Pre-filtered файл не проходит детекцию
+
+- **GIVEN** ранее проиндексированный файл с совпадающими size и mtime
+- **WHEN** выполняется `codebase update` с pre-filter
+- **THEN** файл не читается, детекция не выполняется, файл не декодируется
+- **AND** кодировка в БД остаётся с предыдущего прогона
+
+#### Scenario: Сводка прогона показывает масштаб перекодировок
+
+- **GIVEN** прогон `codebase init`, в котором 100 файлов получили кодировку, отличную от prior карты
+- **WHEN** прогон завершается
+- **THEN** в сводке прогона напечатана метрика EncodingRefined: 100
+
+#### Scenario: Производительность детекции не деградирует индексацию
+
+- **GIVEN** полное дерево FA
+- **WHEN** выполняется индексация с детекцией по содержимому
+- **THEN** детекция добавляет один линейный проход счётчиков по горячему буферу на файл (без дополнительного декодирования)
+- **AND** выполняется параллельно в существующих walk-воркерах
+- **AND** суммарное время прогона в пределах шума относительно прогона без детекции
+
 ## Related code
 
-- `internal/fswalk/fswalk.go` — `Walker`, `Walk` (однопоточный), `WalkParallel`, `WalkParallelCtx` (параллельный с context), `computeHashBytes`, `FileFingerprint`, `SetPreFilter`, `modTimeMatch`, `getEncodingAndLanguage`
+- `internal/fswalk/fswalk.go` — `Walker`, `Walk` (однопоточный), `WalkParallel`, `WalkParallelCtx` (параллельный с context), `computeHashBytes`, `FileFingerprint`, `SetPreFilter`, `modTimeMatch`, `getEncodingAndLanguage`, `isContentDetectedExt` (single-byte расширения для детекции по содержимому через `encoding.DetectFromBytesWithPrior`)
 - `internal/indexer/runner.go` — `InitCtx`, `UpdateCtx`, `runInitPipeline` (init-пайплайн с меткой прогресса), `fullRebuildCtx` (пересборка: reset → удаление LSA-sidecar → init-пайплайн), `removeLSASidecars`, worker pool pipeline, `runPostProcessingParallel`, загрузка fingerprint-ов и `walker.SetPreFilter`
-- `internal/indexer/indexer.go` — `processFilesWorkerPoolInit`, `processFilesWorkerPool`, `mergeScanStats` (суммирует `PreFilteredFiles`)
-- `internal/model/model.go` — `ScanStats.PreFilteredFiles`
+- `internal/indexer/indexer.go` — `processFilesWorkerPoolInit`, `processFilesWorkerPool`, `mergeScanStats` (суммирует `PreFilteredFiles`, `EncodingRefined`)
+- `internal/model/model.go` — `ScanStats.PreFilteredFiles`, `ScanStats.EncodingRefined`
 - `cmd/update.go` — печать `Pre-filtered: N` в сводке
 - `internal/store/db_files.go` — `DeleteFilesByPath`, `DeleteFilesByPaths`, `DeleteFilesByPathsExcept`, `GetLatestFilesByRootPath`
 - `internal/store/db_reset.go` — `ResetCodebaseTables` (усечение таблиц кодовой базы для пересборки), `codebaseResetTables`

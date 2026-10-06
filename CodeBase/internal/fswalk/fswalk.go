@@ -30,6 +30,11 @@ type FileInfo struct {
 	// расширение t01). Файл индексируется как обычно, но депriorитизируется
 	// в name-based lookup'ах и может фильтроваться в отчётах.
 	IsGenerated bool
+	// EncodingRefined — детекция по содержимому изменила кодировку
+	// относительно prior карты расширений (детекция — см. requirement
+	// «Детекция кодировки по содержимому в walk-воркере», indexing/file-walking).
+	// Индексатор суммирует в ScanStats.EncodingRefined.
+	EncodingRefined bool
 	// Content — сырые байты файла, прочитанные один раз при обходе.
 	// Используются и для хэша, и для парсинга, чтобы не читать файл повторно.
 	Content []byte
@@ -273,37 +278,48 @@ func (w *Walker) WalkParallelCtx(ctx context.Context, workers int) (<-chan FileI
 					if !ok {
 						return
 					}
-					content, err := os.ReadFile(task.path)
-					if err != nil {
-						select {
-						case errorsChan <- fmt.Errorf("failed to read %s: %w", task.path, err):
-						case <-ctx.Done():
-							return
-						}
-						continue
-					}
-					hash := computeHashBytes(content)
-					encoding, language := getEncodingAndLanguage(task.ext)
-					if task.ext == "md" {
-						// Markdown: кодировка определяется по содержимому (UTF-8 приоритет, CP1251 fallback)
-						encoding = string(encpkg.DetectMarkdownEncoding(content))
-					}
+				content, err := os.ReadFile(task.path)
+				if err != nil {
 					select {
-					case filesChan <- FileInfo{
-						Path:        filepath.ToSlash(task.path),
-						RelPath:     task.relPath,
-						Extension:   task.ext,
-						Size:        task.info.Size(),
-						Hash:        hash,
-						ModifiedAt:  task.info.ModTime(),
-						Encoding:    encoding,
-						Language:    language,
-						IsGenerated: isGeneratedFile(task.relPath, task.ext),
-						Content:     content,
-					}:
+					case errorsChan <- fmt.Errorf("failed to read %s: %w", task.path, err):
 					case <-ctx.Done():
 						return
 					}
+					continue
+				}
+				hash := computeHashBytes(content)
+				encoding, language := getEncodingAndLanguage(task.ext)
+				encodingRefined := false
+				if task.ext == "md" {
+					// Markdown: кодировка определяется по содержимому (UTF-8 приоритет, CP1251 fallback)
+					encoding = string(encpkg.DetectMarkdownEncoding(content))
+				} else if isContentDetectedExt(task.ext) {
+					// Single-byte legacy-форматы: детекция по содержимому,
+					// карта расширений служит prior (ASCII → prior, tie → prior).
+					prior := encpkg.Encoding(encoding)
+					detected := encpkg.DetectFromBytesWithPrior(content, prior)
+					if detected != prior {
+						encoding = string(detected)
+						encodingRefined = true
+					}
+				}
+				select {
+				case filesChan <- FileInfo{
+					Path:            filepath.ToSlash(task.path),
+					RelPath:         task.relPath,
+					Extension:       task.ext,
+					Size:            task.info.Size(),
+					Hash:            hash,
+					ModifiedAt:      task.info.ModTime(),
+					Encoding:        encoding,
+					Language:        language,
+					IsGenerated:     isGeneratedFile(task.relPath, task.ext),
+					EncodingRefined: encodingRefined,
+					Content:         content,
+				}:
+				case <-ctx.Done():
+					return
+				}
 				}
 			}
 		}()
@@ -404,6 +420,19 @@ func getEncodingAndLanguage(ext string) (string, string) {
 	default:
 		return "UTF8", "UNKNOWN"
 	}
+}
+
+// isContentDetectedExt сообщает, для каких single-byte legacy-форматов
+// кодировка детектируется по содержимому в walk-воркере (карта расширений
+// из getEncodingAndLanguage служит prior — предположением по умолчанию).
+// t01 исключён: генерируемые препроцессором копии по определению в CP866.
+// md/xml/yaml обрабатываются собственными детекторами/картой.
+func isContentDetectedExt(ext string) bool {
+	switch ext {
+	case "sql", "h", "tpr", "pas", "inc", "js", "smf", "dfm", "rpt":
+		return true
+	}
+	return false
 }
 
 // GetSupportedExtensions возвращает список поддерживаемых расширений

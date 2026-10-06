@@ -84,6 +84,7 @@ Uses file hashes to detect changes.`,
 		fmt.Printf("  Files added:    %d\n", stats.FilesAdded)
 		fmt.Printf("  Files deleted:  %d\n", stats.FilesDeleted)
 		fmt.Printf("  Pre-filtered:   %d\n", stats.PreFilteredFiles)
+		fmt.Printf("  Encoding refined: %d\n", stats.EncodingRefined)
 		fmt.Printf("  SQL files:      %d\n", stats.SQLFiles)
 		fmt.Printf("  PAS files:      %d\n", stats.PASFiles)
 		fmt.Printf("  JS files:       %d\n", stats.JSFiles)

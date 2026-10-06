@@ -186,6 +186,7 @@ func mergeScanStats(dst *model.ScanStats, src *model.ScanStats) {
 	dst.Errors += src.Errors
 	dst.PostProcessed += src.PostProcessed
 	dst.PreFilteredFiles += src.PreFilteredFiles
+	dst.EncodingRefined += src.EncodingRefined
 	dst.SaveMs += src.SaveMs
 	dst.ParseMs += src.ParseMs
 }
@@ -213,10 +214,13 @@ func (idx *Indexer) processFilesWorkerPoolInit(ctx context.Context, parallel int
 					if !ok {
 						return
 					}
-					collector.Add(func(stats *model.ScanStats) { stats.FilesScanned++ })
+				collector.Add(func(stats *model.ScanStats) { stats.FilesScanned++ })
+				if file.EncodingRefined {
+					collector.Add(func(stats *model.ScanStats) { stats.EncodingRefined++ })
+				}
 
-					saveStart := time.Now()
-					fileID, err := idx.saveFileCtx(ctx, file, scanRunID)
+				saveStart := time.Now()
+				fileID, err := idx.saveFileCtx(ctx, file, scanRunID)
 					saveElapsed := time.Since(saveStart).Milliseconds()
 					collector.Add(func(stats *model.ScanStats) { stats.SaveMs += saveElapsed })
 					if err != nil {
@@ -1708,6 +1712,11 @@ func startProgressReporter(mode string, snapshot func() model.ScanStats) func() 
 	frames := []rune{'|', '/', '-', '\\'}
 	lastLen := 0 // длина предыдущей строки: новая дополняется пробелами,
 	// чтобы затирать более длинный предыдущий кадр (артефакты \r)
+	// currentStage — текущая длинная стадия (spec-lsa/desc-lsa). Переход
+	// между «счётчики» и «стадия» фиксирует предыдущую строку переводом
+	// строки: стадия живёт на собственной строке и не удлиняет строку
+	// счётчиков (иначе кадр шире консоли переносится и \r-тики множат хвосты).
+	currentStage := ""
 
 	go func() {
 		ticker := time.NewTicker(progressInterval)
@@ -1726,19 +1735,34 @@ func startProgressReporter(mode string, snapshot func() model.ScanStats) func() 
 			case <-ticker.C:
 				stats := snapshot()
 				frame := frames[frameIndex%len(frames)]
-				line := fmt.Sprintf(
-					"%s %c scanned=%d indexed=%d post-processed=%d errors=%d",
-					mode,
-					frame,
-					stats.FilesScanned,
-					stats.FilesIndexed,
-					stats.PostProcessed,
-					stats.Errors,
-				)
-				if stats.Stage != "" {
-					// Длинная стадия (например, LSA SVD ~1-2 мин) — показываем,
-					// чтобы прогресс не выглядел зависшим.
-					line += " | " + stats.Stage
+				if stats.Stage != currentStage {
+					// Смена режима (счётчики↔стадия или новая стадия):
+					// фиксируем предыдущую строку и начинаем новую.
+					fmt.Print("\n")
+					currentStage = stats.Stage
+					lastLen = 0
+				}
+				var line string
+				if currentStage == "" {
+					line = fmt.Sprintf(
+						"%s %c scanned=%d indexed=%d post-processed=%d errors=%d",
+						mode,
+						frame,
+						stats.FilesScanned,
+						stats.FilesIndexed,
+						stats.PostProcessed,
+						stats.Errors,
+					)
+				} else {
+					// Длинная стадия (например, LSA SVD ~1-2 мин) — собственный
+					// спиннер на отдельной строке, чтобы прогресс не выглядел
+					// зависшим и не удлинял строку счётчиков. Формат однотипен
+					// строке счётчиков: «desc-lsa / svd (...)» как «rebuild \ scanned=...».
+					prefix, detail, found := strings.Cut(currentStage, ": ")
+					if !found {
+						prefix, detail = "", currentStage
+					}
+					line = fmt.Sprintf("%s %c %s", prefix, frame, detail)
 				}
 				if len(line) < lastLen {
 					line += strings.Repeat(" ", lastLen-len(line))

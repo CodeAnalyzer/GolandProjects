@@ -524,3 +524,145 @@ func TestIsGeneratedFile(t *testing.T) {
 		})
 	}
 }
+
+func TestWalkParallelContentEncodingDetection(t *testing.T) {
+	root := t.TempDir()
+
+	// CP1251 SQL (fa-administrator-стиль): header-описание с кириллицей.
+	cp1251Header := "Процедура: Начисление процентов по договору\ncreate procedure CalcPercent\nas\nbegin\n  select 1\nend\n"
+	cp1251Bytes, err := charmap.Windows1251.NewEncoder().Bytes([]byte(cp1251Header))
+	if err != nil {
+		t.Fatalf("encode CP1251: %v", err)
+	}
+	writeTestFileBytes(t, filepath.Join(root, "admin", "CalcPercent.sql"), cp1251Bytes)
+
+	// CP866 SQL: кириллический комментарий (заглавные А-Я → байты 0x80-0x9F).
+	cp866Comment, err := charmap.CodePage866.NewEncoder().Bytes([]byte("-- НАЧИСЛЕНИЕ ПРОЦЕНТОВ по договору\nselect 1"))
+	if err != nil {
+		t.Fatalf("encode CP866: %v", err)
+	}
+	writeTestFileBytes(t, filepath.Join(root, "server", "Accrual.sql"), cp866Comment)
+
+	// ASCII SQL: prior без детекции, декод identity.
+	writeTestFile(t, filepath.Join(root, "plain.sql"), "select 1 -- plain")
+
+	// PAS в CP866 (отклонение от prior WIN1251): строчные+заглавные кириллица.
+	cp866Pas, err := charmap.CodePage866.NewEncoder().Bytes([]byte("// МОДУЛЬ НАЧИСЛЕНИЯ\nunit Accrual;"))
+	if err != nil {
+		t.Fatalf("encode CP866 PAS: %v", err)
+	}
+	writeTestFileBytes(t, filepath.Join(root, "unit.pas"), cp866Pas)
+
+	w := NewWalker(root, []string{"*.sql", "*.pas"}, nil)
+	filesChan, errorsChan := w.WalkParallel(4)
+
+	var files []FileInfo
+	for file := range filesChan {
+		files = append(files, file)
+	}
+	for err := range errorsChan {
+		if err != nil {
+			t.Fatalf("Walk returned error: %v", err)
+		}
+	}
+
+	byRelPath := map[string]FileInfo{}
+	for _, f := range files {
+		byRelPath[f.RelPath] = f
+	}
+
+	// CP1251 .sql → детекция WIN1251, refined=true.
+	admin := byRelPath[filepath.ToSlash(filepath.Join("admin", "CalcPercent.sql"))]
+	if admin.Encoding != "WIN1251" {
+		t.Fatalf("admin/CalcPercent.sql encoding = %q, want WIN1251", admin.Encoding)
+	}
+	if !admin.EncodingRefined {
+		t.Fatalf("admin/CalcPercent.sql EncodingRefined = false, want true")
+	}
+
+	// CP866 .sql → остаётся CP866, refined=false.
+	accrual := byRelPath[filepath.ToSlash(filepath.Join("server", "Accrual.sql"))]
+	if accrual.Encoding != "CP866" {
+		t.Fatalf("server/Accrual.sql encoding = %q, want CP866", accrual.Encoding)
+	}
+	if accrual.EncodingRefined {
+		t.Fatalf("server/Accrual.sql EncodingRefined = true, want false")
+	}
+
+	// ASCII .sql → prior CP866, refined=false.
+	plain := byRelPath["plain.sql"]
+	if plain.Encoding != "CP866" || plain.EncodingRefined {
+		t.Fatalf("plain.sql encoding = %q refined = %v, want CP866/false", plain.Encoding, plain.EncodingRefined)
+	}
+
+	// CP866 .pas → детекция CP866 (отклонение от prior WIN1251), refined=true.
+	unit := byRelPath["unit.pas"]
+	if unit.Encoding != "CP866" {
+		t.Fatalf("unit.pas encoding = %q, want CP866", unit.Encoding)
+	}
+	if !unit.EncodingRefined {
+		t.Fatalf("unit.pas EncodingRefined = false, want true")
+	}
+}
+
+func TestWalkParallelPreFilterNoEncodingRefined(t *testing.T) {
+	// Pre-filtered файл (mtime+size совпали) не читается: детекция не
+	// выполняется, EncodingRefined = false, кодировка — из карты.
+	root := t.TempDir()
+	cp1251Bytes, err := charmap.Windows1251.NewEncoder().Bytes([]byte("Процедура расчёта тип тура"))
+	if err != nil {
+		t.Fatalf("encode CP1251: %v", err)
+	}
+	path := filepath.Join(root, "unchanged.sql")
+	writeTestFileBytes(t, path, cp1251Bytes)
+
+	info, _ := os.Stat(path)
+	w := NewWalker(root, []string{"*.sql"}, nil)
+	w.SetPreFilter(map[string]FileFingerprint{
+		filepath.ToSlash(path): {Size: info.Size(), ModTime: info.ModTime()},
+	})
+
+	filesChan, errorsChan := w.WalkParallel(2)
+	var files []FileInfo
+	for file := range filesChan {
+		files = append(files, file)
+	}
+	for err := range errorsChan {
+		if err != nil {
+			t.Fatalf("Walk returned error: %v", err)
+		}
+	}
+
+	if len(files) != 1 {
+		t.Fatalf("files = %d, want 1", len(files))
+	}
+	if files[0].Encoding != "CP866" {
+		t.Fatalf("pre-filtered encoding = %q, want CP866 (map value, no detection)", files[0].Encoding)
+	}
+	if files[0].EncodingRefined {
+		t.Fatalf("pre-filtered EncodingRefined = true, want false (content not read)")
+	}
+}
+
+func TestIsContentDetectedExt(t *testing.T) {
+	for _, ext := range []string{"sql", "h", "tpr", "pas", "inc", "js", "smf", "dfm", "rpt"} {
+		if !isContentDetectedExt(ext) {
+			t.Fatalf("isContentDetectedExt(%q) = false, want true", ext)
+		}
+	}
+	for _, ext := range []string{"md", "xml", "yaml", "t01", "txt"} {
+		if isContentDetectedExt(ext) {
+			t.Fatalf("isContentDetectedExt(%q) = true, want false", ext)
+		}
+	}
+}
+
+func writeTestFileBytes(t *testing.T, path string, content []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("create dir: %v", err)
+	}
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+}

@@ -59,7 +59,7 @@
 - **Review (проверка SQL перед деплоем)**: статический анализ SQL-файлов с детекцией deploy stoppers (использование внешних таблиц/процедур, небезопасные конструкции IF/EXISTS, отсутствие required hints, и т.д.)
 - **RTI-анализатор** (`codebase rti`): парсинг и анализ RTI-трейс логов Diasoft 5NT; извлечение вызовов процедур, параметров, контрольных точек, кодов ошибок, бизнес-лог блоков (`M_BUSINESSLOG_BLOCK_BEGIN/END`), checkpoint-временных меток, дампов таблиц (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`), клиентских событий (thick client d5nt: SQL blocks, recordset open, connection, BPL load, errors, memory); enrichment из индекса (PAS-файлы, DFM-формы, SQL-фрагменты); сохранение в БД для повторного анализа
 - **TRC-анализатор** (`codebase trc`): парсинг и анализ файлов SQL Server Profiler — бинарных `.trc`, XML-экспортов `.xml` и Extended Events `.xel`; декодирование событий (RPC:Completed, SQL:BatchCompleted, SP:StmtCompleted и др.), извлечение вызовов процедур и параметров из TextData, агрегация только завершённых вызовов `SP:Completed` (count/min/max/avg/total duration), список событий с раздельными matched/returned counts и limit, дерево вызовов по SPID с восстановлением вложенности через Starting/Completed пары, enrichment из индекса (путь к файлу и строки); сохранение в БД для повторного анализа
-- **Кодировки**: CP866/WIN1251/UTF8 с эвристическим выбором для legacy-форматов, включая TPR и препроцессированные `.t01`; MD — авто-детекция (UTF-8 приоритет, CP1251 fallback), YAML — UTF-8
+- **Кодировки**: детекция по содержимому для single-byte legacy-форматов (SQL, H, TPR, PAS, INC, JS, SMF, DFM, RPT) — CP866/WIN1251/UTF8: валидный/«почти валидный» UTF-8 определяется первым, иначе счёт маркерных диапазонов (включая артефакт-набор mojibake CP1251-кириллицы); карта расширений служит prior (ASCII-файлы и ничья счёта → prior). Детектированная кодировка сохраняется в `files.encoding`, число перекодировок печатается в сводке прогона (`Encoding refined: N`). `.t01` читается в CP866 по карте (генерируемые копии); MD — авто-детекция (UTF-8 приоритет, CP1251 fallback); XML — по declaration/валидности UTF-8; YAML — UTF-8
 
 ## Требования
 
@@ -181,8 +181,16 @@ codebase update
 ```
 
 Опции:
-- `--modified` - сканировать только изменённые файлы (по умолчанию true)
+- `--modified` - сканировать только изменённые файлы (по умолчанию true; pre-filter по mtime+size, затем сравнение hash)
 - `-j, --parallel` - количество параллельных workers
+
+Полная пересборка индекса (например, после смены правил декодирования или парсинга):
+
+```bash
+codebase update --modified=false
+```
+
+`--modified=false` выполняет полную пересборку индекса кодовой базы: TRUNCATE таблиц кодовой базы → штатный init-пайплайн (walk без pre-filter → парсинг → batch insert → постобработка → пересчёт LSA). RTI/TRC-сессии, история `scan_runs` и `schema_migrations` сохраняются; LSA-sidecar файлы удаляются и модель переобучается. Прогресс-строка помечается меткой `rebuild`. Прерванная пересборка возобновляется повторным запуском той же команды (полный рестарт пересборки).
 
 ### Запросы к индексу
 
@@ -851,7 +859,7 @@ codebase review <путь_к_файлу.sql> --rules foreignTablesUsing,execNotE
 - `foreignTablesUsing` — использование таблиц из других продуктов
 - `foreignPTablesUsing` — использование p-таблиц из других продуктов
 - `foreignProcedureUsing` — вызов процедур из других продуктов
-- `datatype` — потенциальная потеря точности при assignment/conversion
+- `datatype` — потенциальная потеря точности при assignment/conversion; тип колонки-приёмника разрешается с приоритетом: определение из того же файла → из того же продукта → глобальное latest-wins (исключает ложные срабатывания на кросс-продуктовых дубликатах DDL)
 
 Опции:
 - `--rules` — список проверяемых правил (по умолчанию все deploy stoppers)
@@ -1222,16 +1230,16 @@ CodeBase/
 - `scan_runs` - метадеанные запусков сканирования
 - `stats_snapshot` — снапшот статистики индекса (payload JSONB, `lsa_generation` активного поколения LSA)
 - `schema_migrations` - применённые версии схемы БД
-- `files` - индекс файлов
+- `files` - индекс файлов: `encoding` — кодировка по детекции содержимого, `is_generated` — признак генерируемой копии (сегмент `UPLOAD` в пути или расширение `.t01`)
 - `sql_procedures` - SQL-процедуры
 - `sql_tables` - таблицы в SQL
 - `sql_columns` - поля таблиц
 - `sql_column_definitions` - определения колонок таблиц из `CREATE TABLE` и schema patches (`ALTER TABLE ... ADD`, `M_ADD_FIELD`)
 - `sql_index_definitions` - определения индексов обычных SQL-таблиц из `CREATE INDEX` и `M_CRT_INDEX`
 - `sql_index_definition_fields` - поля индексов обычных SQL-таблиц
-- `pas_units` - Pascal юниты
+- `pas_units` - Pascal юниты (прямая привязка `file_id` к файлу)
 - `pas_classes` - Pascal классы с прямой ссылкой `dfm_form_id` на DFM форму
-- `pas_methods` - Pascal методы
+- `pas_methods` - Pascal методы (прямая привязка `file_id`)
 - `pas_fields` - Pascal поля с прямой ссылкой `dfm_component_id` на DFM компонент
 - `js_functions` - JavaScript функции
 - `js_constants` - JavaScript константы
@@ -1306,6 +1314,11 @@ CodeBase/
 - Для `api_contracts.owner_module` используется то же path-based rule (правило на основе пути).
 - Для XML с declared encoding (заявленной кодировкой) `windows-1251` поддерживается корректное decoding (декодирование) через `CharsetReader`.
 
+### Качество данных SQL-парсера
+
+- Имена колонок из многострочного `UPDATE ... SET` не попадают в `sql_tables` как ложные таблицы (ранее — до ~31 тыс. мусорных строк на корпусе FA); колонки `SET`-присваиваний извлекаются в `sql_columns`.
+- Хинт-макросы Diasoft (`M_FORCEORDER`, `M_KEEPPLAN`, `#M_*`, ...) и макро-плейсхолдеры (`##NAME##`, `##_TABLENAME_##`) не индексируются как таблицы.
+
 ### Препроцессированные `.t01`
 
 - `.t01` индексируются как SQL-like layer: из них извлекаются процедуры, вызовы процедур, query fragments и table usage.
@@ -1318,7 +1331,7 @@ CodeBase/
 
 - Поддерживается индексация markdown- и YAML-файлов из `openspec/` директорий финпродуктов.
 - Парсер `openspecmd` извлекает: capabilities (из `spec.md`), requirements (`### Requirement:`), scenarios (`#### Scenario:`), usecases (3 формата: `scenarios/`, `usecases/`, `business-processes/`), changes (активные + `archive/`), delta-секций (`## ADDED/MODIFIED/REMOVED Requirements`).
-- Упоминания кода извлекаются из Related code, inline-текстов требований/сценариев и delta-текстов; разрешаются в пост-обработке в relations `references_code`.
+- Упоминания кода извлекаются из Related code, inline-текстов требований/сценариев и delta-текстов; разрешаются в пост-обработке в relations `references_code` с приоритетом: не-генерируемый источник → тот же продукт, что и спека → стабильный tie-break (`id DESC`) — генерируемые копии (`UPLOAD`/`.t01`) не перехватывают покрытие канонических файлов.
 - Строятся relations: `depends_on_capability` (5 маркеров: markdown-ссылки, «Связан с доменами», inline-упоминания, cci:-хвост, sibling-резолв), `change_modifies` (из delta и proposal-извлечений).
 - Dual-write: spec-сущности дублируются в `symbols` для unified `query symbol`.
 - Полнотекстовый поиск: лексический слой (tsvector 'russian' + pg_trgm) + семантический слой (TF-IDF + LSA через gonum, k=512 (настраивается)). Модель пересчитывается при достижении порога изменённых capability и публикуется как новое поколение LSA (`lsa_generation`); предыдущее поколение удерживается для отката, устаревшие поколения удаляются. Активное поколение фиксируется в sidecar-state модели (`spec_lsa_state.json`).
@@ -1421,6 +1434,13 @@ $env:CODEBASE_TEST_DSN = "postgres://postgres:123456@localhost:5435/postgres?ssl
 - [x] Снапшот статистики индекса: `stats` читает `stats_snapshot` с привязкой к поколению LSA, перезапись снапшота по завершении init/update, фолбэк на живой подсчёт
 - [x] Логирование MCP tool-вызовов: все аргументы в детерминированном `k:v`-формате с маскированием приватных `text`/`sql` и полем `profile`
 - [x] `query procedure`: отсутствие процедуры в индексе — пустой результат (`count = 0`) вместо ошибки (CLI и MCP)
+- [x] Скоупированный резолв типов колонок в review-правиле `datatype`: определение из того же файла → из того же продукта → глобальное (fix ложных срабатываний на кросс-продуктовых дубликатах DDL)
+- [x] Маркировка генерируемых копий `files.is_generated` (UPLOAD/`.t01`) + приоритетный резолв упоминаний спек (не-копия → свой продукт → tie-break): канонические файлы не теряют покрытие
+- [x] Фикс загрязнения `sql_tables`: SET-колонки многострочного UPDATE, хинт-макросы `M_*` и плейсхолдеры `##NAME##` не индексируются как таблицы; колонки `SET` извлекаются в `sql_columns`
+- [x] Полная пересборка `update --modified=false`: TRUNCATE таблиц кодовой базы + init-пайплайн (RTI/TRC-сессии и история `scan_runs` сохраняются, метка прогресса `rebuild`)
+- [x] Полнотекстовый и семантический поиск по описаниям процедур и API-контрактов (`query desc-search` / MCP `codebase_query_desc_search`, desc-LSA-модель с ротацией поколений)
+- [x] Прямая привязка PAS-сущностей к файлу (`pas_units`/`pas_classes`/`pas_methods`/`pas_fields`.`file_id`)
+- [x] Детекция кодировки по содержимому для single-byte legacy-форматов (карта расширений → prior, `Encoding refined` в сводке) — устраняет mojibake CP1251-файлов и корректно читает UTF-8 исходники
 
 ## Лицензия
 

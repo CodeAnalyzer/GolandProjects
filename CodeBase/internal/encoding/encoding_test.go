@@ -3,6 +3,7 @@ package encoding
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -82,20 +83,6 @@ func TestGetDecoder(t *testing.T) {
 	}
 }
 
-func TestDetectEncodingFromContent(t *testing.T) {
-	cp866Data, err := charmap.CodePage866.NewEncoder().Bytes([]byte("Тест"))
-	if err != nil {
-		t.Fatalf("encode CP866: %v", err)
-	}
-
-	if got := DetectEncodingFromContent(cp866Data); got != CP866 {
-		t.Fatalf("DetectEncodingFromContent(CP866 data) = %q, want %q", got, CP866)
-	}
-	if got := DetectEncodingFromContent([]byte("plain ascii")); got != UTF8 {
-		t.Fatalf("DetectEncodingFromContent(ascii) = %q, want %q", got, UTF8)
-	}
-}
-
 func TestConvertToUTF8(t *testing.T) {
 	if got, err := ConvertToUTF8("plain", UTF8); err != nil || got != "plain" {
 		t.Fatalf("ConvertToUTF8 UTF8 = %q, %v", got, err)
@@ -135,21 +122,98 @@ func TestNormalizeMojibake(t *testing.T) {
 	}
 }
 
-func TestHasCyrillic(t *testing.T) {
-	if !hasCyrillic([]byte("Привет")) {
-		t.Fatalf("hasCyrillic(Привет) = false, want true")
+func TestDetectFromBytesWithPrior(t *testing.T) {
+	// ASCII → prior (декод identity), для обоих кандидатов prior.
+	ascii := []byte("select 1 -- plain ascii comment")
+	if got := DetectFromBytesWithPrior(ascii, CP866); got != CP866 {
+		t.Fatalf("ASCII with CP866 prior = %q, want CP866", got)
 	}
-	if !hasCyrillic([]byte{0x80}) {
-		t.Fatalf("hasCyrillic(0x80) = false, want true")
+	if got := DetectFromBytesWithPrior(ascii, WIN1251); got != WIN1251 {
+		t.Fatalf("ASCII with WIN1251 prior = %q, want WIN1251", got)
 	}
-	if hasCyrillic([]byte("Hello World")) {
-		t.Fatalf("hasCyrillic(ascii) = true, want false")
+
+	// Валидный UTF-8 с кириллицей → UTF8 независимо от prior.
+	utf8Cyr := []byte("Процедура начисления")
+	if got := DetectFromBytesWithPrior(utf8Cyr, CP866); got != UTF8 {
+		t.Fatalf("UTF-8 Cyrillic = %q, want UTF8", got)
 	}
-	if hasCyrillic([]byte("")) {
-		t.Fatalf("hasCyrillic(empty) = true, want false")
+
+	// Равенство счёта → prior: 2 байта 0x80-0x9F против 2 байт 0xC0-0xDF.
+	tie := []byte{0x80, 0x81, 0xC0, 0xC1}
+	if got := DetectFromBytesWithPrior(tie, WIN1251); got != WIN1251 {
+		t.Fatalf("tie with WIN1251 prior = %q, want WIN1251", got)
 	}
-	if hasCyrillic(nil) {
-		t.Fatalf("hasCyrillic(nil) = true, want false")
+	if got := DetectFromBytesWithPrior(tie, CP866); got != CP866 {
+		t.Fatalf("tie with CP866 prior = %q, want CP866", got)
+	}
+
+	// DetectFromBytes без prior эквивалентен prior CP866 (регрессия RTI/review).
+	if got := DetectFromBytes(tie); got != CP866 {
+		t.Fatalf("DetectFromBytes(tie) = %q, want CP866", got)
+	}
+}
+
+func TestDetectFromBytesWithPriorCP1251LowercaseArtifactSet(t *testing.T) {
+	// Сточный русский текст в CP1251 без единой заглавной: байты 0xF2-0xFF
+	// (строчные р-я в CP1251, украинские буквы/спецруны в CP866) перевешивают.
+	// "процедура расчёта процентов" — только строчные.
+	cp1251Bytes, err := charmap.Windows1251.NewEncoder().Bytes([]byte("процедура расчёта -- тип тура яч"))
+	if err != nil {
+		t.Fatalf("encode CP1251: %v", err)
+	}
+	if got := DetectFromBytesWithPrior(cp1251Bytes, CP866); got != WIN1251 {
+		t.Fatalf("CP1251 lowercase-only = %q, want WIN1251", got)
+	}
+}
+
+func TestDetectFromBytesWithPriorCP866FramesStay(t *testing.T) {
+	// Легитимный CP866-файл: рамка комментария (байты 0xC4 ─, 0xB3 │, углы
+	// 0xC0/0xDA/0xD9) плюс кириллица в 0x80-0x9F (заглавные) и 0xA0-0xAF.
+	// Кириллические заглавные должны перевесить рамку.
+	enc := charmap.CodePage866.NewEncoder()
+	frame, err := enc.Bytes([]byte("┌────────┐\n│ НАЧИСЛЕНИЕ ПРОЦЕНТОВ по договору │\n└────────┘\n-- строчный комментарий о расчёте"))
+	if err != nil {
+		t.Fatalf("encode CP866: %v", err)
+	}
+	if got := DetectFromBytesWithPrior(frame, CP866); got != CP866 {
+		t.Fatalf("CP866 with frames = %q, want CP866", got)
+	}
+}
+
+func TestDetectFromBytesWithPriorInvalidByteFallback(t *testing.T) {
+	// Байт 0x98 не мапится ни в UTF-8, ни в CP1251 (в CP866 — з) — детекция
+	// обязана вернуть детерминированный результат, а не упасть.
+	data := []byte("select 'x' -- \x98\x80\x81 comment")
+	if got := DetectFromBytesWithPrior(data, CP866); got != CP866 {
+		t.Fatalf("invalid-byte file = %q, want CP866 (2 cp866 votes vs 0 cp1251)", got)
+	}
+}
+
+func TestDetectFromBytesFixtureGoldenDecode(t *testing.T) {
+	// Fixture в стиле fa-administrator: CP1251 SQL с header-описанием процедуры.
+	// До детекции такой файл декодировался CP866 в mojibake «╧ЁюЎхфєЁр…».
+	header := "Процедура: Начисление процентов по договору\n-- параметры расчёта тип тура\ncreate procedure CalcPercent\nas\nbegin\n  select 1\nend\n"
+	cp1251Bytes, err := charmap.Windows1251.NewEncoder().Bytes([]byte(header))
+	if err != nil {
+		t.Fatalf("encode CP1251: %v", err)
+	}
+
+	if got := DetectFromBytesWithPrior(cp1251Bytes, CP866); got != WIN1251 {
+		t.Fatalf("fa-administrator fixture detection = %q, want WIN1251", got)
+	}
+
+	decoded, err := DecodeBytes(cp1251Bytes, WIN1251)
+	if err != nil {
+		t.Fatalf("decode WIN1251: %v", err)
+	}
+	if !strings.Contains(decoded, "Процедура: Начисление процентов") {
+		t.Fatalf("decoded header lost Russian text: %q", decoded)
+	}
+	// Golden: в корректном декоде нет рун U+2500–U+259F (псевдографика mojibake).
+	for _, r := range decoded {
+		if r >= 0x2500 && r <= 0x259F {
+			t.Fatalf("decoded text contains box-drawing rune U+%04X (mojibake artifact)", r)
+		}
 	}
 }
 
@@ -281,7 +345,7 @@ func TestDetectFromBytes_Empty(t *testing.T) {
 func TestDetectFromBytes_MostlyUTF8WithFewInvalidBytes(t *testing.T) {
 	// RTI-лог: преимущественно ASCII + UTF-8 кириллица в RetValContext,
 	// но с единичными невалидными байтами (0x98 — CP866 Ш, 0xC2 0xE8 — некорректная
-	// UTF-8 пара для "ё"). utf8.Valid вернёт false, но isLikelyUTF8 должна вернуть true.
+	// UTF-8 пара для "ё"). utf8.Valid вернёт false, но эвристика «почти UTF-8» (scanUTF8AndScore) должна вернуть UTF8.
 	utf8Text := []byte("Отбор объектов старт")                 // валидный UTF-8
 	invalidByte := []byte{0x98}                                // CP866 Ш, невалидный UTF-8
 	invalidPair := []byte{0xC2, 0xE8}                          // C2+non-continuation, невалидный UTF-8
