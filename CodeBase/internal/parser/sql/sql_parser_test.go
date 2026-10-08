@@ -10,6 +10,68 @@ import (
 
 // Дополнительные юнит-тесты для чистых функций SQL parser
 
+// Потребление continuation-строк многострочных #define-макросов:
+// строки с завершающим "\" не должны попадать в основной цикл парсинга
+// и порождать джанк-сущности (процедуры, таблицы, фрагменты).
+func TestParseContent_MultiLineDefineContinuations(t *testing.T) {
+	parser := NewParser()
+	content := `#define DIAG_PROCNAME \
+	DCL_PROC_BEGIN(proc_name) \
+	as \
+	select 1
+#define SINGLE_LINE 100
+select * from tAccount
+`
+
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if len(result.Defines) != 2 {
+		t.Fatalf("unexpected define count: got=%d want=2", len(result.Defines))
+	}
+	if result.Defines[0].DefineName != "DIAG_PROCNAME" || result.Defines[0].LineNumber != 1 {
+		t.Fatalf("unexpected first define: %+v", result.Defines[0])
+	}
+	if result.Defines[1].DefineName != "SINGLE_LINE" || result.Defines[1].DefineValue != "100" {
+		t.Fatalf("unexpected second define: %+v", result.Defines[1])
+	}
+
+	// DCL_PROC_BEGIN внутри тела макроса не должен дать процедуру
+	for _, proc := range result.Procedures {
+		if proc.ProcName == "proc_name" {
+			t.Fatalf("junk procedure from macro body: %+v", proc)
+		}
+	}
+
+	// Continuation-строки макроса не должны дать фрагменты из тела макроса;
+	// легитимный select после однострочного define — должен
+	var hasLegitSelect bool
+	for _, frag := range result.Fragments {
+		if strings.Contains(strings.ToLower(frag.QueryText), "select 1") {
+			t.Fatalf("junk fragment from macro body: %+v", frag)
+		}
+		if strings.Contains(strings.ToLower(frag.QueryText), "select * from taccount") {
+			hasLegitSelect = true
+		}
+	}
+	if !hasLegitSelect {
+		t.Fatalf("legit select after single-line define not extracted, fragments: %+v", result.Fragments)
+	}
+
+	// Таблица из легитимного select извлечена
+	var hasAccount bool
+	for _, table := range result.Tables {
+		if table.TableName == "tAccount" {
+			hasAccount = true
+		}
+	}
+	if !hasAccount {
+		t.Fatalf("table tAccount not extracted: %+v", result.Tables)
+	}
+}
+
 func TestParseContent_SQLDefines(t *testing.T) {
 	parser := NewParser()
 	content := `#include <macros.h>

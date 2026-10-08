@@ -948,9 +948,23 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		tableAliases = make(map[string]string)
 	}
 
+	// Потребление continuation-строк многострочных #define-макросов:
+	// строки, следующие за #define с завершающим "\", не попадают
+	// в основной цикл и не порождают сущностей (процедуры/таблицы/фрагменты).
+	var inDefineContinuation bool
+
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Text()
+
+		// Пропуск continuation-строк: пока предыдущая строка макроса
+		// заканчивалась "\", текущая строка — часть того же #define
+		if inDefineContinuation {
+			if !strings.HasSuffix(strings.TrimRight(line, " \t\r"), "\\") {
+				inDefineContinuation = false
+			}
+			continue
+		}
 
 		trimmedLine := strings.TrimSpace(line)
 
@@ -1147,6 +1161,9 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 				DefineType:  "macro",
 				LineNumber:  lineNum,
 			})
+			if strings.HasSuffix(strings.TrimRight(trimmed, " \t\r"), "\\") {
+				inDefineContinuation = true
+			}
 			continue
 		}
 		if matches := p.emptyMacroDefineRe.FindStringSubmatch(trimmed); matches != nil {
@@ -1178,6 +1195,9 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 				DefineType:  defineType,
 				LineNumber:  lineNum,
 			})
+			if strings.HasSuffix(strings.TrimRight(trimmed, " \t\r"), "\\") {
+				inDefineContinuation = true
+			}
 			continue
 		}
 		if matches := p.emptyDefineRe.FindStringSubmatch(trimmed); matches != nil {

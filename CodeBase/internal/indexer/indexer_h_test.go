@@ -2,6 +2,28 @@ package indexer
 
 import "testing"
 
+func TestHasHFileSQLProcedureMarkers(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{name: "no markers", content: "#define MAX_ROWS 1000\nselect 1\n", want: false},
+		{name: "DCL_PROC_BEGIN marker", content: "DCL_PROC_BEGIN(MyProc)\nas\nselect 1\n", want: true},
+		{name: "__BEGIN_PROCEDURE__ marker", content: "  __BEGIN_PROCEDURE__(MyProc)\nselect 1\n", want: true},
+		// Маркер внутри #define-тела: pre-check пере-включителен (парсер запустится),
+		// но джанк гасится парсером (continuation-строки) и isLineInsideMacroDefinition
+		{name: "marker inside macro body — still true (over-inclusive by design)", content: "#define ARC_PROC_BEGIN(p) \\\n  DCL_PROC_BEGIN(p) \\\n  as\n", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasHFileSQLProcedureMarkers(tt.content); got != tt.want {
+				t.Fatalf("hasHFileSQLProcedureMarkers() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsLineInsideMacroDefinition(t *testing.T) {
 	tests := []struct {
 		name    string

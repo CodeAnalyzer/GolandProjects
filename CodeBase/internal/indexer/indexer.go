@@ -471,45 +471,195 @@ func (idx *Indexer) parseHFile(ctx context.Context, file fswalk.FileInfo, fileID
 	// H-файлы в Diasoft 5NT часто содержат определения SQL-процедур через DCL_PROC_BEGIN.
 	// Парсим их SQL-парсером, но отбрасываем процедуры, попавшие внутрь #define-макросов
 	// (например, #define DCL_PROC_BEGIN(NAME) ... или #define ARC_PROC_BEGIN(p) DCL_PROC_BEGIN(p)).
-	sqlParser := sqlparser.NewParser()
-	sqlResult, err := sqlParser.ParseContent(content)
-	if err != nil {
-		idx.logError(path, "Error parsing H file as SQL for procedures: %v", err)
-	} else if len(sqlResult.Procedures) > 0 {
-		procBatch := make([]*model.SQLProcedure, 0, len(sqlResult.Procedures))
-		procSymbols := make([]*model.Symbol, 0, len(sqlResult.Procedures))
-		for _, proc := range sqlResult.Procedures {
-			if isLineInsideMacroDefinition(lines, proc.LineStart) {
-				continue
+	// Pre-check: SQL-парсер запускается только при наличии маркеров процедур
+	// (~5% .h-файлов по FA); файлы без маркеров не дают ни процедур, ни вызовов.
+	if hasHFileSQLProcedureMarkers(content) {
+		sqlParser := sqlparser.NewParser()
+		sqlResult, err := sqlParser.ParseContent(content)
+		if err != nil {
+			idx.logError(path, "Error parsing H file as SQL for procedures: %v", err)
+		} else {
+			// Схема .sql-пайплайна (indexer_sql_pas.go): из результата SQL-разбора
+			// .h используются процедуры, таблицы, колонки и фрагменты; Defines
+			// игнорируются — их извлекает H-парсер (иначе дубли в h_files_defines).
+			procBatch := make([]*model.SQLProcedure, 0, len(sqlResult.Procedures))
+			symbolsBatch := make([]*model.Symbol, 0, len(sqlResult.Procedures)+len(sqlResult.Tables))
+			tablesBatch := make([]*model.SQLTable, 0, len(sqlResult.Tables))
+			columnsBatch := make([]*model.SQLColumn, 0, len(sqlResult.Columns))
+			fragmentsBatch := make([]*model.QueryFragment, 0, len(sqlResult.Fragments))
+
+			for _, proc := range sqlResult.Procedures {
+				if isLineInsideMacroDefinition(lines, proc.LineStart) {
+					continue
+				}
+				proc.FileID = fileID
+				procBatch = append(procBatch, proc)
+				symbolsBatch = append(symbolsBatch, &model.Symbol{
+					FileID:     fileID,
+					SymbolName: proc.ProcName,
+					SymbolType: "procedure",
+					EntityType: "sql",
+					LineNumber: proc.LineStart,
+					Signature:  proc.ProcName,
+				})
 			}
-			proc.FileID = fileID
-			procBatch = append(procBatch, proc)
-			procSymbols = append(procSymbols, &model.Symbol{
-				FileID:     fileID,
-				SymbolName: proc.ProcName,
-				SymbolType: "procedure",
-				EntityType: "sql",
-				LineNumber: proc.LineStart,
-				Signature:  proc.ProcName,
-			})
-		}
-		if len(procBatch) > 0 {
-			if err := idx.db.BatchInsertSQLProcedures(ctx, procBatch, idx.config.Indexer.BatchSize); err != nil {
-				idx.logError(path, "Error batch inserting H-file procedures: %v", err)
-				stats.Errors += len(procBatch)
-				return err
+
+			for _, table := range sqlResult.Tables {
+				if table == nil {
+					continue
+				}
+				table.FileID = fileID
+				tablesBatch = append(tablesBatch, table)
+				symbolsBatch = append(symbolsBatch, &model.Symbol{
+					FileID:     fileID,
+					SymbolName: table.TableName,
+					SymbolType: "table",
+					EntityType: "sql",
+					LineNumber: table.LineNumber,
+					SQLContext: table.Context,
+					Signature:  table.TableName,
+				})
 			}
-			stats.Procedures += len(procBatch)
-			if err := idx.db.EnsureDescriptionSearchVectors(ctx, fileID); err != nil {
-				return fmt.Errorf("failed to ensure description search vectors: %w", err)
+
+			for _, column := range sqlResult.Columns {
+				if column == nil {
+					continue
+				}
+				column.FileID = fileID
+				columnsBatch = append(columnsBatch, column)
 			}
-			if err := idx.db.BatchInsertSymbols(ctx, procSymbols, idx.config.Indexer.BatchSize); err != nil {
-				idx.logError(path, "Error batch inserting H-file procedure symbols: %v", err)
+
+			for _, fragment := range sqlResult.Fragments {
+				if fragment == nil {
+					continue
+				}
+				fragment.FileID = fileID
+				fragment.QueryHash = computeQueryHash(fragment.QueryText)
+				fragment.ParentType = "sql_file"
+				fragment.ParentID = 0
+				tablesReferenced := make([]string, 0)
+				for _, table := range sqlResult.Tables {
+					if table == nil {
+						continue
+					}
+					if table.LineNumber < fragment.LineNumber {
+						continue
+					}
+					if fragment.LineEnd > 0 && table.LineNumber > fragment.LineEnd {
+						continue
+					}
+					tablesReferenced = append(tablesReferenced, table.TableName)
+				}
+				fragment.TablesReferenced = uniqueStrings(tablesReferenced)
+				fragmentsBatch = append(fragmentsBatch, fragment)
+			}
+
+			if len(procBatch) > 0 {
+				if err := idx.db.BatchInsertSQLProcedures(ctx, procBatch, idx.config.Indexer.BatchSize); err != nil {
+					idx.logError(path, "Error batch inserting H-file procedures: %v", err)
+					stats.Errors += len(procBatch)
+					return err
+				}
+				stats.Procedures += len(procBatch)
+				if err := idx.db.EnsureDescriptionSearchVectors(ctx, fileID); err != nil {
+					return fmt.Errorf("failed to ensure description search vectors: %w", err)
+				}
+			}
+
+			if len(tablesBatch) > 0 {
+				if err := idx.db.BatchInsertSQLTables(ctx, tablesBatch, idx.config.Indexer.BatchSize); err != nil {
+					idx.logError(path, "Error batch inserting H-file tables: %v", err)
+					stats.Errors += len(tablesBatch)
+					return err
+				}
+				stats.Tables += len(tablesBatch)
+			}
+
+			if len(columnsBatch) > 0 {
+				if err := idx.db.BatchInsertSQLColumns(ctx, columnsBatch, idx.config.Indexer.BatchSize); err != nil {
+					idx.logError(path, "Error batch inserting H-file columns: %v", err)
+					stats.Errors += len(columnsBatch)
+					return err
+				}
+				stats.Columns += len(columnsBatch)
+			}
+
+			procedureIDs, err := idx.db.FindSQLProcedureIDsByFile(ctx, fileID)
+			if err != nil {
+				return fmt.Errorf("failed to resolve H-file SQL procedure ids for symbols: %w", err)
+			}
+			tableIDs, err := idx.db.FindSQLTableIDsByFileAndLine(ctx, fileID)
+			if err != nil {
+				return fmt.Errorf("failed to resolve H-file SQL table ids for symbols: %w", err)
+			}
+			for _, symbol := range symbolsBatch {
+				switch symbol.SymbolType {
+				case "procedure":
+					symbol.EntityID = procedureIDs[strings.ToLower(strings.TrimSpace(symbol.SymbolName))]
+				case "table":
+					key := store.BuildSQLTableLookupKey(symbol.SymbolName, symbol.SQLContext, symbol.LineNumber)
+					symbol.EntityID = tableIDs[key]
+				}
+			}
+			// Parent-binding фрагментов к содержащим их процедурам
+			for _, fragment := range fragmentsBatch {
+				if fragment == nil {
+					continue
+				}
+				for _, proc := range procBatch {
+					if proc == nil {
+						continue
+					}
+					if fragment.LineNumber < proc.LineStart || (proc.LineEnd > 0 && fragment.LineNumber > proc.LineEnd) {
+						continue
+					}
+					fragment.ParentType = "sql_procedure"
+					fragment.ParentID = procedureIDs[strings.ToLower(strings.TrimSpace(proc.ProcName))]
+					fragment.ComponentName = proc.ProcName
+					fragment.ComponentType = "sql_procedure"
+					break
+				}
+				if fragment.ParentID == 0 && strings.TrimSpace(fragment.ComponentName) == "" {
+					fragment.ComponentName = "sql_script"
+				}
+				if fragment.ParentID == 0 && strings.TrimSpace(fragment.ComponentType) == "" {
+					fragment.ComponentType = "sql_script"
+				}
+			}
+
+			if len(symbolsBatch) > 0 {
+				if err := idx.db.BatchInsertSymbols(ctx, symbolsBatch, idx.config.Indexer.BatchSize); err != nil {
+					idx.logError(path, "Error batch inserting H-file SQL symbols: %v", err)
+					stats.Errors += len(symbolsBatch)
+					return err
+				}
+			}
+			if len(fragmentsBatch) > 0 {
+				if err := idx.db.BatchInsertQueryFragments(ctx, fragmentsBatch, idx.config.Indexer.BatchSize); err != nil {
+					idx.logError(path, "Error batch inserting H-file SQL query fragments: %v", err)
+					stats.Errors += len(fragmentsBatch)
+					return err
+				}
+				stats.QueryFragments += len(fragmentsBatch)
+			}
+
+			// Исходящие вызовы процедур (резолвятся глобальной пост-обработкой)
+			idx.addPendingSQLCalls(fileID, path, procBatch, procedureIDs, sqlResult.Calls)
+
+			relations, err := buildSQLProcedureTableRelations(procedureIDs, tableIDs, procBatch, tablesBatch)
+			if err != nil {
+				return fmt.Errorf("failed to build H-file SQL relations: %w", err)
+			}
+			queryRelations, err := idx.buildQueryFragmentRelations(ctx, fileID, fragmentsBatch)
+			if err != nil {
+				return fmt.Errorf("failed to build H-file SQL query relations: %w", err)
+			}
+			relations = append(relations, queryRelations...)
+			if err := idx.saveRelations(ctx, relations, path, stats); err != nil {
 				return err
 			}
 		}
 	}
-
 	for _, inc := range result.Includes {
 		if err := idx.saveIncludeDirective(ctx, fileID, path, inc.IncludePath, inc.LineNumber); err != nil {
 			return fmt.Errorf("failed to save include directive %s: %w", inc.IncludePath, err)
@@ -517,6 +667,14 @@ func (idx *Indexer) parseHFile(ctx context.Context, file fswalk.FileInfo, fileID
 	}
 
 	return nil
+}
+
+// hasHFileSQLProcedureMarkers возвращает true, если контент H-файла содержит
+// маркеры SQL-процедур. Пере-включителен: маркер внутри #define-макроса тоже
+// даёт true (лишний парс ~5% файлов), но не влияет на корректность — джанк
+// из тел макросов гасится парсером и isLineInsideMacroDefinition.
+func hasHFileSQLProcedureMarkers(content string) bool {
+	return strings.Contains(content, "DCL_PROC_BEGIN(") || strings.Contains(content, "__BEGIN_PROCEDURE__(")
 }
 
 // isLineInsideMacroDefinition возвращает true, если строка lineNum (1-индексированная)
