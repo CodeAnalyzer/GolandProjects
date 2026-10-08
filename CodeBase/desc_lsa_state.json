@@ -1,5 +1,5 @@
 {
-  "fingerprint": "3aecfaa79cfd1cc6e55680cf3f3ab1d07677a327fd3afa614ec2adb904600834",
+  "fingerprint": "2e51a821ddb6e7ed00c9cf736bb8ee80c390e53142692429a9dc164e238f3385",
   "pending": 0,
   "params": {
     "min_df": 10,
@@ -7,7 +7,7 @@
     "k": 512
   },
   "algorithm": 2,
-  "num_docs": 54556,
-  "generation": "3aecfaa79cfd1cc6e55680cf3f3ab1d07677a327fd3afa614ec2adb904600834",
-  "trained_at": "2026-10-06T10:16:11.1921726+03:00"
+  "num_docs": 54575,
+  "generation": "2e51a821ddb6e7ed00c9cf736bb8ee80c390e53142692429a9dc164e238f3385",
+  "trained_at": "2026-10-08T09:56:10.2082667+03:00"
 }

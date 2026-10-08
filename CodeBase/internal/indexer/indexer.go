@@ -1712,11 +1712,13 @@ func startProgressReporter(mode string, snapshot func() model.ScanStats) func() 
 	frames := []rune{'|', '/', '-', '\\'}
 	lastLen := 0 // длина предыдущей строки: новая дополняется пробелами,
 	// чтобы затирать более длинный предыдущий кадр (артефакты \r)
-	// currentStage — текущая длинная стадия (spec-lsa/desc-lsa). Переход
-	// между «счётчики» и «стадия» фиксирует предыдущую строку переводом
-	// строки: стадия живёт на собственной строке и не удлиняет строку
-	// счётчиков (иначе кадр шире консоли переносится и \r-тики множат хвосты).
-	currentStage := ""
+	// currentPhase — режим строки прогресса: mode (счётчики) или префикс
+	// стадии (spec-lsa/desc-lsa). Переход между фазами фиксирует предыдущую
+	// строку переводом строки: фаза живёт на собственной строке и не
+	// удлиняет строку другой фазы (иначе кадр шире консоли переносится и
+	// \r-тики множат хвосты). Смена под-стадии внутри фазы (spec-lsa:
+	// tf-idf matrix → svd) обновляет деталь на той же строке.
+	currentPhase := mode
 
 	go func() {
 		ticker := time.NewTicker(progressInterval)
@@ -1735,15 +1737,30 @@ func startProgressReporter(mode string, snapshot func() model.ScanStats) func() 
 			case <-ticker.C:
 				stats := snapshot()
 				frame := frames[frameIndex%len(frames)]
-				if stats.Stage != currentStage {
-					// Смена режима (счётчики↔стадия или новая стадия):
+
+				// Фаза: mode для счётчиков, префикс стадии до «: » — для
+				// длинных стадий («spec-lsa: svd» → «spec-lsa»). Стадия без
+				// «: » целиком считается фазой.
+				phase := mode
+				prefix, detail := "", ""
+				if stats.Stage != "" {
+					var found bool
+					prefix, detail, found = strings.Cut(stats.Stage, ": ")
+					if found {
+						phase = prefix
+					} else {
+						prefix, detail, phase = "", stats.Stage, stats.Stage
+					}
+				}
+				if phase != currentPhase {
+					// Смена фазы (счётчики↔spec-lsa↔desc-lsa):
 					// фиксируем предыдущую строку и начинаем новую.
 					fmt.Print("\n")
-					currentStage = stats.Stage
+					currentPhase = phase
 					lastLen = 0
 				}
 				var line string
-				if currentStage == "" {
+				if stats.Stage == "" {
 					line = fmt.Sprintf(
 						"%s %c scanned=%d indexed=%d post-processed=%d errors=%d",
 						mode,
@@ -1755,13 +1772,9 @@ func startProgressReporter(mode string, snapshot func() model.ScanStats) func() 
 					)
 				} else {
 					// Длинная стадия (например, LSA SVD ~1-2 мин) — собственный
-					// спиннер на отдельной строке, чтобы прогресс не выглядел
-					// зависшим и не удлинял строку счётчиков. Формат однотипен
-					// строке счётчиков: «desc-lsa / svd (...)» как «rebuild \ scanned=...».
-					prefix, detail, found := strings.Cut(currentStage, ": ")
-					if !found {
-						prefix, detail = "", currentStage
-					}
+					// спиннер на строке фазы, смена под-стадии перезаписывает
+					// деталь на месте. Формат однотипен строке счётчиков:
+					// «desc-lsa / svd (...)» как «rebuild \ scanned=...».
 					line = fmt.Sprintf("%s %c %s", prefix, frame, detail)
 				}
 				if len(line) < lastLen {

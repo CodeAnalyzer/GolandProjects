@@ -31,6 +31,16 @@ func (idx *Indexer) postProcessDescLSA(ctx context.Context, collector *statsColl
 	modelPath := config.DescLSAModelPath()
 	statePath := config.DescLSAStatePath()
 
+	// Стадия выставляется до загрузки state/модели: загрузка большой модели
+	// может занять больше тика репортера, и пока Stage пуст, в паузе между
+	// spec-lsa и desc-lsa репортер вернёт строку счётчиков и продублирует её.
+	setStage := func(stage string) {
+		collector.Add(func(stats *model.ScanStats) { stats.Stage = stage })
+	}
+	defer setStage("") // сброс стадии для прогресс-репортера при любом выходе
+
+	setStage("desc-lsa: load corpus")
+
 	// Изменённые за прогон сущности корпуса описаний: процедуры + контракты.
 	stats := collector.Snapshot()
 	corpusDelta := stats.Procedures + stats.APIContracts
@@ -59,12 +69,6 @@ func (idx *Indexer) postProcessDescLSA(ctx context.Context, collector *statsColl
 	}
 	state, previousGeneration := selectLSADecisionState(loadedState, loadedModel, hasGeneration)
 
-	setStage := func(stage string) {
-		collector.Add(func(stats *model.ScanStats) { stats.Stage = stage })
-	}
-	defer setStage("") // сброс стадии для прогресс-репортера при любом выходе
-
-	setStage("desc-lsa: load corpus")
 	rows, err := idx.db.LoadDescriptionsForLSA(ctx)
 	if err != nil {
 		idx.logError("<post-processing>", "desc-lsa: error loading corpus: %v", err)
