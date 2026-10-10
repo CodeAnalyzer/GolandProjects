@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/codebase/internal/errs"
+	"github.com/codebase/internal/model"
 	"github.com/codebase/internal/query"
 )
 
@@ -19,6 +20,9 @@ type InspectResult struct {
 }
 
 func RunInspectQuery(ctx context.Context, q *query.Query, name string, symbolType string, limit int) ([]InspectResult, error) {
+	// Проверка и трансляция алиасов происходит внутри SearchSymbol;
+	// для приоритизации точных совпадений нормализуем тип первым каноническим значением.
+	scoringType := normalizeInspectScoringType(symbolType)
 	symbols, err := q.SearchSymbol(ctx, name, symbolType, false, limit)
 	if err != nil {
 		return nil, err
@@ -29,7 +33,7 @@ func RunInspectQuery(ctx context.Context, q *query.Query, name string, symbolTyp
 			return nil, err
 		}
 	}
-	ordered := PrioritizeExactSymbolMatches(symbols, name, symbolType)
+	ordered := PrioritizeExactSymbolMatches(symbols, name, scoringType)
 	ordered = LimitInspectSymbols(ordered, limit)
 	results := make([]InspectResult, 0, len(ordered))
 	for _, symbol := range ordered {
@@ -64,27 +68,21 @@ func LimitInspectSymbols(symbols []query.SymbolResult, limit int) []query.Symbol
 	return symbols[:maxInspectSymbols]
 }
 
+// InspectRelationType переводит тип символа в тип сущности словаря relations
+// (полный мост symbols→relations через model.RelationTypeForSymbol).
 func InspectRelationType(symbol query.SymbolResult) string {
-	if strings.TrimSpace(symbol.Type) == "" {
-		return strings.TrimSpace(symbol.EntityType)
+	return model.RelationTypeForSymbol(symbol.Type, symbol.EntityType)
+}
+
+// normalizeInspectScoringType нормализует тип фильтра для приоритизации:
+// алиас (sql_procedure, api_contract и т.п.) заменяется первым каноническим
+// типом, чтобы скоринг точных совпадений продолжал работать.
+func normalizeInspectScoringType(symbolType string) string {
+	canonical, ok := model.ResolveSymbolTypeAlias(symbolType)
+	if !ok || len(canonical) == 0 {
+		return symbolType
 	}
-	switch strings.ToLower(strings.TrimSpace(symbol.EntityType)) {
-	case "sql":
-		if strings.EqualFold(symbol.Type, "procedure") {
-			return "sql_procedure"
-		}
-		if strings.EqualFold(symbol.Type, "table") {
-			return "sql_table"
-		}
-	case "dfm":
-		if strings.EqualFold(symbol.Type, "form") {
-			return "dfm_form"
-		}
-		if strings.EqualFold(symbol.Type, "component") {
-			return "dfm_component"
-		}
-	}
-	return strings.TrimSpace(symbol.Type)
+	return canonical[0]
 }
 
 func PrioritizeExactSymbolMatches(symbols []query.SymbolResult, name string, symbolType string) []query.SymbolResult {

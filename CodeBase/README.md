@@ -207,6 +207,9 @@ codebase query symbol --name XIE0SomeIndex --type index
 codebase query symbol --name SomeComponent --type component
 codebase query symbol --name SOME_CONST --type constant
 codebase query symbol --name SomeBObject --type api_business_object
+codebase query symbol --name MassAccrual_Start --type sql_procedure
+codebase query symbol --name API --type api_contract --like
+codebase query symbol --name OnClick --type js_function
 codebase query symbol --name API --summary
 codebase query symbol --name API --ndjson
 ```
@@ -214,6 +217,8 @@ codebase query symbol --name API --ndjson
 `query symbol` по умолчанию выполняет **точный поиск** по `name`.
 
 Для поиска по подстроке используйте флаг `--like`.
+
+Фильтр `--type` использует канонический словарь `symbols.symbol_type`: `procedure`, `table`, `index`, `column_definition`, `define`, `unit`, `class`, `method`, `function`, `constant`, `form`, `component`, `report_form`, `report_param`, `vb_function`, `smf_instrument`, `api_business_object`, `api_table`, `api_table_index`, `api_param`, `spec_capability`, `spec_change`, `spec_requirement`, `spec_usecase`, kind-типы API-контрактов (`service`, `event`, `callback_event`, `used_service`) и fallback-тип `xml`. Сравнение регистронезависимо, пробелы обрезаются. Дополнительно принимаются алиасы relations-стиля: `sql_procedure`, `sql_table`, `pas_method`, `js_function`, `dfm_form`, `dfm_component`, `api_contract` — последний разворачивается во все четыре kind-типа контрактов. Неизвестное значение `--type` возвращает **ошибку со списком допустимых типов и алиасов**, а не пустой результат.
 
 В `symbols` индексируются основные name-based сущности: SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects, SMF instruments и XML/API symbols. Сущности начинают появляться в `query symbol` после переиндексации соответствующих файлов.
 
@@ -508,7 +513,11 @@ desc-LSA-модели поиск возвращает только exact-хит�
 codebase query inspect --name Cons_Check_Restr_API
 codebase query inspect --name Cons_Check_Restr_API --json
 codebase query inspect --name MassAccrual_Start --type procedure --json
+codebase query inspect --name DeleteLinkToPolicy --type method --json
+codebase query inspect --name API_OCvr_MassInsertAssessment --type api_contract --json
 ```
+
+`query inspect` находит символ по имени и возвращает все входящие и исходящие связи графа (`incoming`/`outgoing`) и соседние символы (`neighbors`). Тип символа транслируется в словарь relations, поэтому inspect работает для всех типов unified index: SQL-процедуры/таблицы, PAS-методы/юниты/классы (включая `builds_query`-фрагменты), JS-функции, DFM-формы/компоненты, API-контракты всех kind-типов (включая `implements_contract`), SMF-инструменты, отчётные формы и spec-сущности. Параметр `--type` принимает тот же словарь и алиасы, что и `query symbol --type`; неизвестное значение — ошибка со списком допустимых.
 
 #### Спеки: поиск и навигация
 
@@ -1441,6 +1450,7 @@ $env:CODEBASE_TEST_DSN = "postgres://postgres:123456@localhost:5435/postgres?ssl
 - [x] Полнотекстовый и семантический поиск по описаниям процедур и API-контрактов (`query desc-search` / MCP `codebase_query_desc_search`, desc-LSA-модель с ротацией поколений)
 - [x] Прямая привязка PAS-сущностей к файлу (`pas_units`/`pas_classes`/`pas_methods`/`pas_fields`.`file_id`)
 - [x] Детекция кодировки по содержимому для single-byte legacy-форматов (карта расширений → prior, `Encoding refined` в сводке) — устраняет mojibake CP1251-файлов и корректно читает UTF-8 исходники
+- [x] Единый словарь типов символов (`internal/model/symbol_types.go`): алиасы relations-стиля (`sql_procedure`, `sql_table`, `pas_method`, `js_function`, `dfm_form`, `dfm_component`, `api_contract`) в `query symbol`/`query inspect`, strict-валидация неизвестного типа (ошибка со списком допустимых вместо пустого результата), полный мост symbols→relations для inspect (PAS-методы/юниты/классы, JS-функции, API-контракты всех kind-типов)
 
 ## Лицензия
 

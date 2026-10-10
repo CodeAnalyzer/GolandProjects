@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/codebase/internal/errs"
 	"github.com/codebase/internal/model"
 	"github.com/codebase/internal/store"
+	"github.com/lib/pq"
 )
 
 // Query API для запросов к индексу
@@ -272,10 +274,37 @@ func buildSymbolLookupCondition(symbolType string, like bool, argPosition int) s
 	return nameCondition + " OR (s.symbol_type = 'form' AND " + formClassCondition + ")"
 }
 
+// normalizeSymbolTypeFilter нормализует значение фильтра типа символа в набор
+// канонических типов: пустое значение — без фильтра, алиасы relations-стиля
+// транслируются через model.ResolveSymbolTypeAlias, неизвестное значение —
+// ошибка со списком допустимых типов и алиасов.
+func normalizeSymbolTypeFilter(symbolType string) ([]string, error) {
+	trimmed := strings.TrimSpace(symbolType)
+	if trimmed == "" {
+		return nil, nil
+	}
+	canonical, ok := model.ResolveSymbolTypeAlias(trimmed)
+	if !ok {
+		return nil, fmt.Errorf("%w %q, valid types: %s; aliases: %s",
+			errs.ErrUnknownSymbolType, trimmed,
+			strings.Join(model.SymbolTypes, ", "),
+			strings.Join(model.SymbolTypeAliasesList(), ", "))
+	}
+	return canonical, nil
+}
+
 // SearchSymbol ищет сущность по имени
 func (q *Query) SearchSymbol(ctx context.Context, name string, symbolType string, like bool, limit int) ([]SymbolResult, error) {
+	canonicalTypes, err := normalizeSymbolTypeFilter(symbolType)
+	if err != nil {
+		return nil, err
+	}
+	primaryType := ""
+	if len(canonicalTypes) > 0 {
+		primaryType = canonicalTypes[0]
+	}
 	lookupValue := buildLookupValue(name, like)
-	lookupCondition := buildSymbolLookupCondition(symbolType, like, 1)
+	lookupCondition := buildSymbolLookupCondition(primaryType, like, 1)
 	// symbols — это unified index (унифицированный индекс), поэтому этот метод
 	// является самым общим способом найти сущность без знания конкретной таблицы-хранилища.
 	query := `
@@ -295,10 +324,11 @@ func (q *Query) SearchSymbol(ctx context.Context, name string, symbolType string
 	`
 	args := []interface{}{lookupValue}
 
-	if symbolType != "" {
+	if len(canonicalTypes) > 0 {
 		// Фильтр по типу добавляется динамически, чтобы не плодить отдельные SQL-шаблоны.
-		query += " AND s.symbol_type = $2"
-		args = append(args, symbolType)
+		// Один алиас (api_contract) разворачивается в несколько канонических типов.
+		query += " AND s.symbol_type = ANY($2)"
+		args = append(args, pq.Array(canonicalTypes))
 	}
 
 	query += fmt.Sprintf(" ORDER BY s.symbol_name LIMIT %d", limit)

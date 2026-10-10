@@ -11,7 +11,7 @@ func init() {
 	queryCmd.PersistentFlags().IntVar(&limit, "limit", 100, "max results to return")
 
 	querySymbolCmd.Flags().StringVar(&symbolName, "name", "", "symbol name to search (exact by default)")
-	querySymbolCmd.Flags().StringVar(&symbolType, "type", "", "symbol type (procedure, function, class, etc.)")
+	querySymbolCmd.Flags().StringVar(&symbolType, "type", "", "symbol type: canonical (procedure, table, method, function, form, component, ...) or alias (sql_procedure, pas_method, api_contract, ...); unknown type is an error")
 	querySymbolCmd.Flags().BoolVar(&symbolLikeSearch, "like", false, "use partial match search for symbol name")
 	cobra.CheckErr(querySymbolCmd.MarkFlagRequired("name"))
 
@@ -57,7 +57,7 @@ func init() {
 	queryRelationsCmd.Flags().StringVar(&relationType, "relation-type", "", "relation type")
 
 	queryInspectCmd.Flags().StringVar(&inspectName, "name", "", "entity name to inspect")
-	queryInspectCmd.Flags().StringVar(&inspectType, "type", "", "symbol type to inspect")
+	queryInspectCmd.Flags().StringVar(&inspectType, "type", "", "symbol type: canonical (procedure, method, form, ...) or alias (sql_procedure, api_contract, ...); same vocabulary as 'query symbol --type'")
 	cobra.CheckErr(queryInspectCmd.MarkFlagRequired("name"))
 
 	queryJSFunctionCmd.Flags().StringVar(&jsFuncName, "name", "", "JS function name to search (exact by default)")

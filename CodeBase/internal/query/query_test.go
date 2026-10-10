@@ -1,9 +1,12 @@
 package query
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/codebase/internal/errs"
 )
 
 func TestBuildLookupValue(t *testing.T) {
@@ -221,6 +224,65 @@ func TestRelationSearchBaseQuery(t *testing.T) {
 	for _, fragment := range required {
 		if !strings.Contains(queryText, fragment) {
 			t.Fatalf("base query does not contain %q", fragment)
+		}
+	}
+}
+
+func TestNormalizeSymbolTypeFilter(t *testing.T) {
+	cases := []struct {
+		raw    string
+		want   []string
+		errMsg string
+	}{
+		{raw: "", want: nil},
+		{raw: "   ", want: nil},
+		{raw: "procedure", want: []string{"procedure"}},
+		{raw: "  Method ", want: []string{"method"}},
+		{raw: "sql_procedure", want: []string{"procedure"}},
+		{raw: "SQL_TABLE", want: []string{"table"}},
+		{raw: "js_function", want: []string{"function"}},
+		{raw: "api_contract", want: []string{"service", "event", "callback_event", "used_service"}},
+		{raw: "proc", errMsg: "unknown symbol type"},
+		{raw: "pas_class", errMsg: "unknown symbol type"},
+	}
+	for _, tc := range cases {
+		got, err := normalizeSymbolTypeFilter(tc.raw)
+		if tc.errMsg != "" {
+			if err == nil {
+				t.Errorf("normalizeSymbolTypeFilter(%q) expected error %q, got nil (result %v)", tc.raw, tc.errMsg, got)
+				continue
+			}
+			if !strings.Contains(err.Error(), tc.errMsg) {
+				t.Errorf("normalizeSymbolTypeFilter(%q) error = %q, want contains %q", tc.raw, err.Error(), tc.errMsg)
+			}
+			if !errors.Is(err, errs.ErrUnknownSymbolType) {
+				t.Errorf("normalizeSymbolTypeFilter(%q) error must wrap errs.ErrUnknownSymbolType", tc.raw)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("normalizeSymbolTypeFilter(%q) unexpected error: %v", tc.raw, err)
+			continue
+		}
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("normalizeSymbolTypeFilter(%q) = %v, want %v", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestNormalizeSymbolTypeFilter_UnknownListsValidValues(t *testing.T) {
+	_, err := normalizeSymbolTypeFilter("js")
+	if err == nil {
+		t.Fatal("expected error for unknown type")
+	}
+	for _, valid := range []string{"procedure", "method", "function", "smf_instrument", "spec_usecase"} {
+		if !strings.Contains(err.Error(), valid) {
+			t.Errorf("error must list valid type %q: %v", valid, err)
+		}
+	}
+	for _, alias := range []string{"sql_procedure", "pas_method", "api_contract"} {
+		if !strings.Contains(err.Error(), alias) {
+			t.Errorf("error must list alias %q: %v", alias, err)
 		}
 	}
 }

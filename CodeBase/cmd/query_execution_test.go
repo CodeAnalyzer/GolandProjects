@@ -129,6 +129,7 @@ func TestClassifyQueryError(t *testing.T) {
 		{err: fmt.Errorf("%w: %w", errs.ErrSchemaInit, errors.New("boom")), want: "schema_init_failed"},
 		{err: fmt.Errorf("%w: %w", errs.ErrQueryFailed, errors.New("bad sql")), want: "query_failed"},
 		{err: errs.ErrNoRelationFilters, want: "invalid_arguments"},
+		{err: fmt.Errorf("%w 'js', valid types: procedure", errs.ErrUnknownSymbolType), want: "invalid_arguments"},
 		{err: errors.New("other"), want: "internal_error"},
 	}
 	for _, tt := range tests {
