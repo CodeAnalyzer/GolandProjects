@@ -109,7 +109,7 @@
 
 ### Requirement: Справочник Module ID → Product Name
 
-Система SHALL содержать полный справочник Module ID → Product Name (94 записи, `internal/rti/symbols.go`, `moduleIDMap`) и предоставлять функцию `ModuleNameByID(moduleID)` для разрешения числового module_id в имя продукта Diasoft в enrichment и сводках.
+Система SHALL содержать полный справочник Module ID → Product Name (`internal/rti/symbols.go`, `moduleIDMap`) и предоставлять функцию `ModuleNameByID(moduleID)` для разрешения числового module_id в имя продукта Diasoft в enrichment и сводках. Справочник пополняется вместе с набором модулей Diasoft 5NT; количество записей в требовании сознательно не фиксируется (фактический объём — см. `symbols.go`).
 
 #### Scenario: Разрешение module_id
 
@@ -148,7 +148,7 @@
 - `internal/rti/parser.go` — `ParseFile`, `parseContent` (regex state machine, CP866/UTF8), авто-детект HRTI, прескрининг по первому байту, пропуск plain `M_LOG`, `SetSlowThresholdMs`/`GetSlowThresholdMs`/`SetTopSlowCount`
 - `internal/rti/hrti.go` — `decodeHRTIString`, `isHRTIContent`, `DecodeHRTIResult`, TDsHash decoder
 - `internal/rti/model.go` — `RTICall`, `RTIParam`, `RTICheckpoint`, `RTIBLogBlock`, `RTIBLogTable`, `RTISummary`
-- `internal/rti/symbols.go` — `moduleIDMap` (94 записи), `ModuleNameByID`
+- `internal/rti/symbols.go` — `moduleIDMap`, `ModuleNameByID`
 - `internal/rti/enrich.go` — `EnrichCalls`, `ProcedureLookup` interface
 - `internal/parser/retcode/retcode.go` — `HasReturnCodes`, `Parse` (retcode-прескрининг)
 
@@ -160,4 +160,4 @@
 - Разрешение коллизии ASCII↔Русский в TDsHash: prefer Russian для букв, ASCII для пробела и знаков
 - Execution-слой `internal/rtisvc/runtime.go` — общая точка входа для CLI (`cmd/rti.go`) и MCP-инструментов `codebase_rti_*`; устраняет дублирование оркестрации. Парсинг/анализ специфицированы здесь; сохранение сессий и fallback при недоступной БД — в `rti-analysis/rti-storage`; транспорт MCP — в `mcp-server/mcp-transport-tools`.
 - Прескрининг по первому байту — основная оптимизация парсинга (85–95% прироста скорости на типичных RTI); без неё парсер упирался бы в regex на каждой строке
-- Справочник `moduleIDMap` (94 записи) зашит в коде (`symbols.go`), а не в БД — соответствует набору продуктов Diasoft 5NT
+- Справочник `moduleIDMap` зашит в коде (`symbols.go`), а не в БД — соответствует набору продуктов Diasoft 5NT

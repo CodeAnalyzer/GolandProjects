@@ -52,7 +52,7 @@
 
 ### Requirement: Relations из API-макросов (implements_contract, publishes_event, executes_contract)
 
-Система SHALL при индексации API-макросов (`indexAPIMacros`, `indexer_sql_pas.go`) строить следующие relations: `implements_contract` (от `API_CREATE_PROC` к service/callback_event-контракту), `publishes_event` (от `API_INIT_EVENT` к event-контракту), `executes_contract` (от `API_EXEC` к used_service/service-контракту). Глобальный резолв ссылок выполняется в постобработке `PostProcessAPIMacroRelations` (см. `relations-postprocessing`) батчами через `FindLatestAPIContractIDsByNamesAndKinds` и `FindLatestSQLProcedureIDsByNames`.
+Система SHALL при индексации API-макросов (`indexAPIMacros` — определена в `internal/indexer/indexer.go`, вызывается из пайплайна `indexer_sql_pas.go`) строить следующие relations: `implements_contract` (от `API_CREATE_PROC` к service/callback_event-контракту), `publishes_event` (от `API_INIT_EVENT` к event-контракту), `executes_contract` (от `API_EXEC` к used_service/service-контракту). Глобальный резолв ссылок выполняется в постобработке `PostProcessAPIMacroRelations` (см. `relations-postprocessing`) батчами через `FindLatestAPIContractIDsByNamesAndKinds` и `FindLatestSQLProcedureIDsByNames`.
 
 #### Scenario: API_CREATE_PROC → implements_contract
 
@@ -106,3 +106,4 @@
 - `.t01` не входит в дефолтные `include_patterns` — требует явного добавления
 - `.sql` остаётся первичным дистрибутивным источником, `.t01` — опциональный временный артефакт
 - Generated subscriber calls создают relation `dispatches_to_subscriber` (не `calls_procedure`)
+- Значения `macro_type` в БД хранятся в lowercase (`create_proc`/`init_event`/`exec_contract`); имена `API_CREATE_PROC` и т.п. — текст вызова макроса в исходнике, а не значение столбца

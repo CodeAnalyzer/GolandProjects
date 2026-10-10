@@ -81,12 +81,12 @@
 
 ### Requirement: Динамическое применение TTL из конфига
 
-Система SHALL применять TTL из секции `[mcp] pagination_ttl` конфигурации при старте MCP-сервера через `SetPaginationTTL(d)`. Значение `<= 0` игнорируется (остаётся прежний TTL). `SetPaginationTTL` меняет пакетную переменную `paginationTTL`, которую используют и фоновый GC (интервал пересчитывается как `TTL / 2`), и `gc()` (cutoff = now − TTL).
+Система SHALL применять TTL из секции `[mcp] pagination_ttl` конфигурации: bootstrap CLI (`cmd/root.go`) вызывает `SetPaginationTTL(d)` при загрузке конфигурации, до входа в `RunStdio` (который затем инициализирует `globalPages` и запускает фоновый GC). Значение `<= 0` игнорируется (остаётся прежний TTL). `SetPaginationTTL` меняет пакетную переменную `paginationTTL`, которую используют и фоновый GC (интервал пересчитывается как `TTL / 2`), и `gc()` (cutoff = now − TTL).
 
 #### Scenario: Кастомный TTL из конфига
 
 - **GIVEN** конфигурация с `[mcp] pagination_ttl = "5m"`
-- **WHEN** `RunStdio` инициализирует `globalPages` и вызывает `SetPaginationTTL(5 * time.Minute)`
+- **WHEN** bootstrap CLI (`cmd/root.go`) вызывает `SetPaginationTTL(5 * time.Minute)` при загрузке конфигурации, затем `RunStdio` инициализирует `globalPages` и запускает фоновый GC
 - **THEN** фоновый GC запускается с интервалом 2.5 минуты
 - **AND** записи старше 5 минут считаются просроченными
 
@@ -120,6 +120,7 @@
 
 - `internal/mcp/pagination.go` — `pageStore`, `rawMCPText`, `maybePaginate`, `readChunk`, `splitChunks`, `gc`, `newEntryID`, `SetPaginationTTL`, `startGCLoop`/`gcTick`/`stopGCLoop`
 - `internal/mcp/server.go` — `sdkToolPagedResult`, инициализация `globalPages` из конфига, `startGCLoop`/`stopGCLoop` в `RunStdio`
+- `cmd/root.go` — вызов `SetPaginationTTL` при загрузке конфигурации (bootstrap, до входа в `RunStdio`)
 - `internal/mcp/registry.go` — инструмент `codebase_read_more`
 - `internal/config/config.go` — `MCPConfig.PaginationChunkSize`, `MCPConfig.PaginationTTL`
 
@@ -130,4 +131,4 @@
 - Последний чанк помечается `✅ FINAL CHUNK: chunk N/N` и удаляет запись из store (нет смысла хранить завершённую сессию до TTL)
 - Конфигурация: `[mcp] pagination_chunk_size = 8000` и `pagination_ttl = "15m"` в `codebase.toml`
 - GC двухуровневый: фоновый таймер (`time.AfterFunc` с интервалом `TTL/2`) + проактивный `gc()` в `readChunk`/`maybePaginate`. Это компенсирует сценарии, когда между тиками таймера накапливается много просроченных записей
-- `pageStore` — пакетный синглтон `globalPages`, переинициализируется из `RunStdio` по конфигу; `SetPaginationTTL` меняет TTL для уже созданного store
+- `pageStore` — пакетный синглтон `globalPages`, переинициализируется из `RunStdio` по конфигу; `SetPaginationTTL` вызывается bootstrap CLI (`cmd/root.go`) при загрузке конфига — до создания store в `RunStdio`

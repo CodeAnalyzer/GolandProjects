@@ -102,7 +102,7 @@
 ## Related code
 
 - `internal/trc/store.go` — `SaveSession`, `LoadEvents`, `ListSessions`, `DeleteSession`, `PruneSessions`
-- `internal/trc/parse_to_db.go` — `ParseToDB`, связка парсинг + сохранение в БД (используется при доступной БД)
+- `internal/trc/parse_to_db.go` — `ParseFileToDB`, связка парсинг + сохранение в БД (используется при доступной БД)
 - `internal/trcsvc/runtime.go` — execution-слой для CLI (`cmd/trc.go`) и MCP: `ExecuteParse` (с веткой fallback при `db == nil`), `ExecuteList`/`ExecuteDelete`/`ExecutePrune` (требуют БД), `ExecuteSummary`/`ExecuteEvents`/`ExecuteProcedures`/`ExecuteTree`/`ExecuteErrors`/`ExecuteSlow` (работают из файла при недоступной БД через `resolveSession`)
 - `internal/store/db_schema.go` — таблицы `trc_sessions`, `trc_events`
 - `cmd/trc.go` — CLI commands `trc parse`, `trc list`, `trc delete`, `trc prune`

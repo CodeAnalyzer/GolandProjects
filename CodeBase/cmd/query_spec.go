@@ -67,7 +67,7 @@ var querySpecByCodeCmd = &cobra.Command{
 }
 
 var querySpecDepsCmd = &cobra.Command{
-	Use:   "deps --name <capability> [--direction outgoing|incoming] [--max-depth N]",
+	Use:   "deps --name <capability> [--direction depends_on|depended_by] [--max-depth N]",
 	Short: "Capability dependency tree (depends_on_capability)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
