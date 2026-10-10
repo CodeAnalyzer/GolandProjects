@@ -106,16 +106,25 @@ func registerSDKCoreTools(server *mcpsdk.Server, registry map[string]registeredT
 }
 
 func timeoutForTool(toolName string, cfg *config.Config) time.Duration {
-	timeout := time.Duration(cfg.MCP.QueryTimeoutSec) * time.Second
+	timeout := secOrDefault(cfg.MCP.QueryTimeoutSec, 30)
 	switch toolName {
 	case "codebase_review_sql":
-		timeout = time.Duration(cfg.MCP.ReviewTimeoutSec) * time.Second
+		timeout = secOrDefault(cfg.MCP.ReviewTimeoutSec, 120)
 	case "codebase_trc_parse":
-		timeout = time.Duration(cfg.TRC.ParseTimeoutSec) * time.Second
+		timeout = secOrDefault(cfg.TRC.ParseTimeoutSec, 300)
 	case "codebase_rti_parse":
-		timeout = time.Duration(cfg.RTI.ParseTimeoutSec) * time.Second
+		timeout = secOrDefault(cfg.RTI.ParseTimeoutSec, 300)
 	}
-	return timeout
+	return time.Duration(timeout) * time.Second
+}
+
+// secOrDefault разрешает опциональный таймаут-параметр конфигурации:
+// nil → дефолт, явный 0 → 0 («без таймаута»).
+func secOrDefault(v *int, def int) int {
+	if v == nil {
+		return def
+	}
+	return *v
 }
 
 func registerSDKEmptyFeatures(server *mcpsdk.Server) {

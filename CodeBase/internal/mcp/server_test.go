@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -675,9 +676,9 @@ func TestSDKCallTool_ErrorPath_TextOnly(t *testing.T) {
 
 func TestTimeoutForTool_ParseTRC(t *testing.T) {
 	cfg := &config.Config{
-		MCP: config.MCPConfig{QueryTimeoutSec: 30, ReviewTimeoutSec: 120},
-		TRC: config.TRCConfig{ParseTimeoutSec: 300},
-		RTI: config.RTIConfig{ParseTimeoutSec: 300},
+		MCP: config.MCPConfig{QueryTimeoutSec: intSec(30), ReviewTimeoutSec: intSec(120)},
+		TRC: config.TRCConfig{ParseTimeoutSec: intSec(300)},
+		RTI: config.RTIConfig{ParseTimeoutSec: intSec(300)},
 	}
 	got := timeoutForTool("codebase_trc_parse", cfg)
 	want := 300 * time.Second
@@ -688,9 +689,9 @@ func TestTimeoutForTool_ParseTRC(t *testing.T) {
 
 func TestTimeoutForTool_ParseRTI(t *testing.T) {
 	cfg := &config.Config{
-		MCP: config.MCPConfig{QueryTimeoutSec: 30, ReviewTimeoutSec: 120},
-		TRC: config.TRCConfig{ParseTimeoutSec: 300},
-		RTI: config.RTIConfig{ParseTimeoutSec: 300},
+		MCP: config.MCPConfig{QueryTimeoutSec: intSec(30), ReviewTimeoutSec: intSec(120)},
+		TRC: config.TRCConfig{ParseTimeoutSec: intSec(300)},
+		RTI: config.RTIConfig{ParseTimeoutSec: intSec(300)},
 	}
 	got := timeoutForTool("codebase_rti_parse", cfg)
 	want := 300 * time.Second
@@ -701,9 +702,9 @@ func TestTimeoutForTool_ParseRTI(t *testing.T) {
 
 func TestTimeoutForTool_ReviewSQL(t *testing.T) {
 	cfg := &config.Config{
-		MCP: config.MCPConfig{QueryTimeoutSec: 30, ReviewTimeoutSec: 120},
-		TRC: config.TRCConfig{ParseTimeoutSec: 300},
-		RTI: config.RTIConfig{ParseTimeoutSec: 300},
+		MCP: config.MCPConfig{QueryTimeoutSec: intSec(30), ReviewTimeoutSec: intSec(120)},
+		TRC: config.TRCConfig{ParseTimeoutSec: intSec(300)},
+		RTI: config.RTIConfig{ParseTimeoutSec: intSec(300)},
 	}
 	got := timeoutForTool("codebase_review_sql", cfg)
 	want := 120 * time.Second
@@ -714,9 +715,9 @@ func TestTimeoutForTool_ReviewSQL(t *testing.T) {
 
 func TestTimeoutForTool_DefaultQuery(t *testing.T) {
 	cfg := &config.Config{
-		MCP: config.MCPConfig{QueryTimeoutSec: 30, ReviewTimeoutSec: 120},
-		TRC: config.TRCConfig{ParseTimeoutSec: 300},
-		RTI: config.RTIConfig{ParseTimeoutSec: 300},
+		MCP: config.MCPConfig{QueryTimeoutSec: intSec(30), ReviewTimeoutSec: intSec(120)},
+		TRC: config.TRCConfig{ParseTimeoutSec: intSec(300)},
+		RTI: config.RTIConfig{ParseTimeoutSec: intSec(300)},
 	}
 	for _, name := range []string{
 		"codebase_query_symbol",
@@ -734,9 +735,9 @@ func TestTimeoutForTool_DefaultQuery(t *testing.T) {
 
 func TestTimeoutForTool_ZeroDisablesTimeout(t *testing.T) {
 	cfg := &config.Config{
-		MCP: config.MCPConfig{QueryTimeoutSec: 0, ReviewTimeoutSec: 0},
-		TRC: config.TRCConfig{ParseTimeoutSec: 0},
-		RTI: config.RTIConfig{ParseTimeoutSec: 0},
+		MCP: config.MCPConfig{QueryTimeoutSec: intSec(0), ReviewTimeoutSec: intSec(0)},
+		TRC: config.TRCConfig{ParseTimeoutSec: intSec(0)},
+		RTI: config.RTIConfig{ParseTimeoutSec: intSec(0)},
 	}
 	for _, name := range []string{
 		"codebase_query_symbol",
@@ -747,6 +748,82 @@ func TestTimeoutForTool_ZeroDisablesTimeout(t *testing.T) {
 		got := timeoutForTool(name, cfg)
 		if got != 0 {
 			t.Fatalf("%s: got %v, want 0", name, got)
+		}
+	}
+}
+
+// intSec возвращает указатель на n — литералы тестов для *int полей конфигурации.
+func intSec(n int) *int {
+	return &n
+}
+
+// writeMCPTimeoutTestConfig пишет временный TOML-конфиг и загружает его через
+// config.Load (контракт конфиг-файла, а не литерала структуры). configFile
+// восстанавливается в cleanup.
+func writeMCPTimeoutTestConfig(t *testing.T, sections string) (*config.Config, error) {
+	t.Helper()
+	oldConfigFile := config.GetConfigFile()
+	t.Cleanup(func() { config.SetConfigFile(oldConfigFile) })
+
+	path := filepath.Join(t.TempDir(), "codebase.toml")
+	content := "root_path = \"D:/repo\"\n\n[database]\npassword = \"secret\"\n" + sections
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	config.SetConfigFile(path)
+	if err := config.Load(); err != nil {
+		return nil, err
+	}
+	return config.Get(), nil
+}
+
+// TestTimeoutForTool_AbsentParamsResolveDefaultsViaLoad — TOML без таймаут-ключей
+// → Load() оставляет nil → timeoutForTool разрешает дефолты 300/300/120/30
+// (сценарий «Дефолтный parse-таймаут при отсутствии параметра»).
+func TestTimeoutForTool_AbsentParamsResolveDefaultsViaLoad(t *testing.T) {
+	cfg, err := writeMCPTimeoutTestConfig(t, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.TRC.ParseTimeoutSec != nil || cfg.RTI.ParseTimeoutSec != nil ||
+		cfg.MCP.QueryTimeoutSec != nil || cfg.MCP.ReviewTimeoutSec != nil {
+		t.Fatalf("Load must leave timeout fields nil when keys are absent")
+	}
+
+	cases := []struct {
+		tool string
+		want time.Duration
+	}{
+		{"codebase_trc_parse", 300 * time.Second},
+		{"codebase_rti_parse", 300 * time.Second},
+		{"codebase_review_sql", 120 * time.Second},
+		{"codebase_query_symbol", 30 * time.Second},
+	}
+	for _, c := range cases {
+		if got := timeoutForTool(c.tool, cfg); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.tool, got, c.want)
+		}
+	}
+}
+
+// TestTimeoutForTool_ExplicitZeroDisablesViaLoad — явный 0 в TOML проходит
+// через Load() и отключает таймаут в timeoutForTool (сценарий «Таймаут
+// отключён»: воспроизведение бага «0 недостижим через codebase.toml»).
+func TestTimeoutForTool_ExplicitZeroDisablesViaLoad(t *testing.T) {
+	sections := "\n[rti]\nparse_timeout_sec = 0\n\n[trc]\nparse_timeout_sec = 0\n\n[mcp]\nquery_timeout_sec = 0\nreview_timeout_sec = 0\n"
+	cfg, err := writeMCPTimeoutTestConfig(t, sections)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, name := range []string{
+		"codebase_query_symbol",
+		"codebase_trc_parse",
+		"codebase_rti_parse",
+		"codebase_review_sql",
+	} {
+		if got := timeoutForTool(name, cfg); got != 0 {
+			t.Errorf("%s: got %v, want 0 (timeout disabled)", name, got)
 		}
 	}
 }

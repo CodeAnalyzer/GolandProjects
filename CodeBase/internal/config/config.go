@@ -56,7 +56,7 @@ type QueryConfig struct {
 type RTIConfig struct {
 	SlowThresholdMs int `toml:"slow_threshold_ms"`
 	TopSlowCount    int `toml:"top_slow_count"`
-	ParseTimeoutSec int `toml:"parse_timeout_sec"` // таймаут MCP codebase_rti_parse (0 = без таймаута)
+	ParseTimeoutSec *int `toml:"parse_timeout_sec"` // таймаут MCP codebase_rti_parse; nil = 300, явный 0 = без таймаута
 }
 
 // TRCConfig настройки TRC-анализатора
@@ -64,7 +64,7 @@ type TRCConfig struct {
 	SlowThresholdMs           int `toml:"slow_threshold_ms"`
 	MaxEnrichWorkers          int `toml:"max_enrich_workers"`
 	MinProcsForParallelEnrich int `toml:"min_procs_for_parallel_enrich"`
-	ParseTimeoutSec           int `toml:"parse_timeout_sec"` // таймаут MCP codebase_trc_parse (0 = без таймаута)
+	ParseTimeoutSec           *int `toml:"parse_timeout_sec"` // таймаут MCP codebase_trc_parse; nil = 300, явный 0 = без таймаута
 }
 
 type LoggingConfig struct {
@@ -74,9 +74,9 @@ type LoggingConfig struct {
 // MCPConfig конфигурация MCP-сервера
 type MCPConfig struct {
 	PaginationChunkSize   int    `toml:"pagination_chunk_size"`
-	PaginationTTL         string `toml:"pagination_ttl"`     // Go duration: "15m", "30m"
-	QueryTimeoutSec       int    `toml:"query_timeout_sec"`  // default 30
-	ReviewTimeoutSec      int    `toml:"review_timeout_sec"` // default 120
+	PaginationTTL         string `toml:"pagination_ttl"`        // Go duration: "15m", "30m"
+	QueryTimeoutSec       *int   `toml:"query_timeout_sec"`     // nil = 30, явный 0 = без таймаута
+	ReviewTimeoutSec      *int   `toml:"review_timeout_sec"`    // nil = 120, явный 0 = без таймаута
 	RegexpCacheMaxEntries int    `toml:"regexp_cache_max_entries"`
 }
 
@@ -325,8 +325,10 @@ func Load() error {
 	if cfg.RTI.TopSlowCount <= 0 {
 		cfg.RTI.TopSlowCount = 10
 	}
-	if cfg.RTI.ParseTimeoutSec <= 0 {
-		cfg.RTI.ParseTimeoutSec = 300
+	// ParseTimeoutSec: nil → дефолт 300 применяется потребителем (timeoutForTool);
+	// явный 0 легален («без таймаута»), отрицательные значения — ошибка.
+	if cfg.RTI.ParseTimeoutSec != nil && *cfg.RTI.ParseTimeoutSec < 0 {
+		return fmt.Errorf("rti.parse_timeout_sec must be >= 0, got %d", *cfg.RTI.ParseTimeoutSec)
 	}
 	if cfg.TRC.SlowThresholdMs <= 0 {
 		cfg.TRC.SlowThresholdMs = 100
@@ -337,8 +339,8 @@ func Load() error {
 	if cfg.TRC.MinProcsForParallelEnrich <= 0 {
 		cfg.TRC.MinProcsForParallelEnrich = 16
 	}
-	if cfg.TRC.ParseTimeoutSec <= 0 {
-		cfg.TRC.ParseTimeoutSec = 300
+	if cfg.TRC.ParseTimeoutSec != nil && *cfg.TRC.ParseTimeoutSec < 0 {
+		return fmt.Errorf("trc.parse_timeout_sec must be >= 0, got %d", *cfg.TRC.ParseTimeoutSec)
 	}
 	if len(cfg.Indexer.IncludePatterns) == 0 {
 		cfg.Indexer.IncludePatterns = []string{
@@ -363,11 +365,13 @@ func Load() error {
 	if cfg.MCP.PaginationTTL == "" {
 		cfg.MCP.PaginationTTL = "15m"
 	}
-	if cfg.MCP.QueryTimeoutSec <= 0 {
-		cfg.MCP.QueryTimeoutSec = 30
+	// Таймауты MCP: nil → дефолты (30/120) применяются потребителем (timeoutForTool);
+	// явный 0 легален («без таймаута»), отрицательные значения — ошибка.
+	if cfg.MCP.QueryTimeoutSec != nil && *cfg.MCP.QueryTimeoutSec < 0 {
+		return fmt.Errorf("mcp.query_timeout_sec must be >= 0, got %d", *cfg.MCP.QueryTimeoutSec)
 	}
-	if cfg.MCP.ReviewTimeoutSec <= 0 {
-		cfg.MCP.ReviewTimeoutSec = 120
+	if cfg.MCP.ReviewTimeoutSec != nil && *cfg.MCP.ReviewTimeoutSec < 0 {
+		return fmt.Errorf("mcp.review_timeout_sec must be >= 0, got %d", *cfg.MCP.ReviewTimeoutSec)
 	}
 
 	// Spec defaults
@@ -493,13 +497,13 @@ func CreateDefault(rootPath string) *Config {
 		RTI: RTIConfig{
 			SlowThresholdMs: 100,
 			TopSlowCount:    10,
-			ParseTimeoutSec: 300,
+			ParseTimeoutSec: intPtr(300),
 		},
 		TRC: TRCConfig{
 			SlowThresholdMs:           100,
 			MaxEnrichWorkers:          16,
 			MinProcsForParallelEnrich: 16,
-			ParseTimeoutSec:           300,
+			ParseTimeoutSec:           intPtr(300),
 		},
 		Logging: LoggingConfig{
 			CommandEnabled: boolPtr(true),
@@ -507,8 +511,8 @@ func CreateDefault(rootPath string) *Config {
 		MCP: MCPConfig{
 			PaginationChunkSize:   8_000,
 			PaginationTTL:         "15m",
-			QueryTimeoutSec:       30,
-			ReviewTimeoutSec:      120,
+			QueryTimeoutSec:       intPtr(30),
+			ReviewTimeoutSec:      intPtr(120),
 			RegexpCacheMaxEntries: 2048,
 		},
 		Spec: SpecConfig{
