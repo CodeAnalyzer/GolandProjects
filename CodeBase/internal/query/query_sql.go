@@ -376,7 +376,7 @@ func (q *Query) FindCallers(ctx context.Context, procedureName string, limit int
 
 func (q *Query) FindMethodsByTable(ctx context.Context, tableName string, limit int) ([]MethodResult, error) {
 	query := `
-		SELECT 
+		SELECT DISTINCT
 			pm.id,
 			pm.unit_id,
 			pm.method_name,
