@@ -439,9 +439,16 @@ codebase query smf-type --type mass_operation --json
 #### Поиск relations (связей)
 
 ```bash
-codebase query relations --source-type procedure --source-name API_ --limit 100
-codebase query relations --target-type table --target-name tContract --relation-type uses_table --json
+codebase query relations --source-type sql_procedure --source-name API_ --limit 100
+codebase query relations --target-type sql_table --target-name tContract --relation-type selects_from --json
+codebase query relations --relation-type depends_on_capability --limit 10 --json
 ```
+
+`query relations` ищет связи графа по именам и/или типам сущностей (хотя бы один фильтр обязателен).
+
+- `--source-type`/`--target-type` принимают словарь entity-типов графа (17 значений): `sql_procedure`, `sql_table`, `query_fragment`, `pas_method`, `dfm_form`, `js_function`, `smf_instrument`, `api_contract`, `report_form`, `report_field`, `report_param`, `vb_function`, `spec_capability`, `spec_change`, `spec_requirement`, `spec_scenario`, `spec_usecase`.
+- `--relation-type` принимает словарь типов связей (21 значение): `builds_query`, `calls_procedure`, `change_modifies`, `deletes_from`, `depends_on_capability`, `dispatches_to`, `dispatches_to_subscriber`, `executes_contract`, `executes_query`, `has_field`, `has_param`, `implements_contract`, `inserts_into`, `publishes_event`, `references_code`, `references_table`, `selects_from`, `subscribes_to_event`, `updates`, `usecase_involves`, `uses_param`.
+- Неизвестное значение любого из фильтров возвращает **ошибку со списком допустимых значений** (валидация выполняется до обращения к БД), а не пустой результат.
 
 #### Поиск SQL implementations (реализаций SQL) API contracts
 
@@ -1451,6 +1458,7 @@ $env:CODEBASE_TEST_DSN = "postgres://postgres:123456@localhost:5435/postgres?ssl
 - [x] Прямая привязка PAS-сущностей к файлу (`pas_units`/`pas_classes`/`pas_methods`/`pas_fields`.`file_id`)
 - [x] Детекция кодировки по содержимому для single-byte legacy-форматов (карта расширений → prior, `Encoding refined` в сводке) — устраняет mojibake CP1251-файлов и корректно читает UTF-8 исходники
 - [x] Единый словарь типов символов (`internal/model/symbol_types.go`): алиасы relations-стиля (`sql_procedure`, `sql_table`, `pas_method`, `js_function`, `dfm_form`, `dfm_component`, `api_contract`) в `query symbol`/`query inspect`, strict-валидация неизвестного типа (ошибка со списком допустимых вместо пустого результата), полный мост symbols→relations для inspect (PAS-методы/юниты/классы, JS-функции, API-контракты всех kind-типов)
+- [x] Строгая валидация фильтров `query relations`: словарь entity-типов (17) и типов связей (21) в `internal/model/relation_types.go`; неизвестное значение — ошибка `invalid_arguments` со списком допустимых **до** обращения к БД (устранён seq-scan/таймаут на неизвестном `relation_type`); два индекса `relations` — `(relation_type, id DESC)` и `(source_type, relation_type, id DESC)`
 
 ## Лицензия
 

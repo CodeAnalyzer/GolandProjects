@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/codebase/internal/errs"
+	"github.com/codebase/internal/model"
 )
 
 type relationEntityMatch struct {
@@ -132,6 +133,9 @@ func (q *Query) SearchRelations(ctx context.Context, sourceType string, sourceNa
 	if sourceType == "" && sourceName == "" && targetType == "" && targetName == "" && relationType == "" {
 		return nil, errs.ErrNoRelationFilters
 	}
+	if err := validateRelationFilters(sourceType, targetType, relationType); err != nil {
+		return nil, err
+	}
 
 	matchLimit := relationEntityMatchLimit(limit)
 
@@ -169,6 +173,26 @@ func (q *Query) SearchRelations(ctx context.Context, sourceType string, sourceNa
 	}
 
 	return q.loadRelationDetails(ctx, relationIDs)
+}
+
+// validateRelationFilters проверяет значения фильтров графа связей по
+// каноническим словарям типов (model.RelationTypes / RelationEntityTypes).
+// Пустое значение означает отсутствие фильтра; неизвестное — ошибку со
+// списком валидных значений (до обращения к БД).
+func validateRelationFilters(sourceType string, targetType string, relationType string) error {
+	if v := strings.TrimSpace(relationType); v != "" && !model.IsKnownRelationType(v) {
+		return fmt.Errorf("%w %q, valid relation types: %s",
+			errs.ErrUnknownRelationType, v, strings.Join(model.RelationTypes, ", "))
+	}
+	if v := strings.TrimSpace(sourceType); v != "" && !model.IsKnownRelationEntityType(v) {
+		return fmt.Errorf("%w %q, valid entity types: %s",
+			errs.ErrUnknownRelationType, v, strings.Join(model.RelationEntityTypes, ", "))
+	}
+	if v := strings.TrimSpace(targetType); v != "" && !model.IsKnownRelationEntityType(v) {
+		return fmt.Errorf("%w %q, valid entity types: %s",
+			errs.ErrUnknownRelationType, v, strings.Join(model.RelationEntityTypes, ", "))
+	}
+	return nil
 }
 
 // buildRelationIDsQuery собирает второй проход: выборку id связей по уже

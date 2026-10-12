@@ -290,3 +290,19 @@ func TestSearchRelations_IndexedLookupPlan(t *testing.T) {
 		t.Fatalf("plan must include relations:\n%s", joined)
 	}
 }
+
+// TestSearchRelationsByEntity_SkipsTypeValidation проверяет, что inspect-путь
+// (SearchRelationsByEntity) не валидирует entity-типы: типы вне словаря связей
+// (напр. pas_class из моста symbol→relation) не приводят к ошибке валидации.
+func TestSearchRelationsByEntity_SkipsTypeValidation(t *testing.T) {
+	fx := seedRelationsFixture(t)
+	q := New(fx.db)
+
+	relations, err := q.SearchRelationsByEntity(context.Background(), "pas_class", 1, "", 0, "", 10)
+	if err != nil {
+		t.Fatalf("SearchRelationsByEntity must not validate entity types: %v", err)
+	}
+	if len(relations) != 0 {
+		t.Fatalf("relations count = %d, want 0", len(relations))
+	}
+}

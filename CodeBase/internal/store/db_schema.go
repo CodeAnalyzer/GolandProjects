@@ -945,6 +945,8 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_relations_target_type_id ON relations(target_type, target_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_relations_source_type_relation ON relations(source_type, relation_type, source_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_relations_target_type_relation ON relations(target_type, relation_type, target_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_relations_relation_type_id ON relations(relation_type, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_relations_source_type_relation_id ON relations(source_type, relation_type, id DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ds_return_codes_code ON ds_return_codes(ret_code)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_sessions_parsed_at ON rti_sessions(parsed_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_calls_session_proc ON rti_calls(session_id, procedure)`,

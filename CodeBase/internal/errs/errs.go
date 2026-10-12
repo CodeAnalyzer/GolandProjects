@@ -15,4 +15,5 @@ var (
 	ErrSpecSearchEmpty   = errors.New("spec search query is empty")
 	ErrSpecModelNotFound = errors.New("lsa model not found or not trained")
 	ErrUnknownSymbolType = errors.New("unknown symbol type")
+	ErrUnknownRelationType = errors.New("unknown relation type")
 )

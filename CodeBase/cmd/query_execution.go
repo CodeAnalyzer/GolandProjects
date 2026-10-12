@@ -304,6 +304,8 @@ func classifyQueryError(err error) string {
 		return "invalid_arguments"
 	case errors.Is(err, errs.ErrUnknownSymbolType):
 		return "invalid_arguments"
+	case errors.Is(err, errs.ErrUnknownRelationType):
+		return "invalid_arguments"
 	case errors.Is(err, errs.ErrDBConnect):
 		return "database_unavailable"
 	case errors.Is(err, errs.ErrSchemaInit):

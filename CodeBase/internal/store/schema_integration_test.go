@@ -79,6 +79,8 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		"idx_spec_scenarios_text_trgm",
 		"idx_spec_usecases_text_trgm",
 		"idx_spec_code_mentions_name_trgm",
+		"idx_relations_relation_type_id",
+		"idx_relations_source_type_relation_id",
 	}
 	for _, idx := range requiredIndexes {
 		var exists bool

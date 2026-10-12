@@ -134,6 +134,8 @@
 
 Для TRC-событий система SHALL создавать составной индекс `idx_trc_events_session_spid_id` на `trc_events(session_id, spid, id)`, поддерживающий keyset-пагинацию и фильтрацию событий по одному или нескольким SPID. `InitSchema` SHALL удалять устаревший индекс `idx_trc_events_session_spid (session_id, spid)` как префикс нового индекса по существующему паттерну legacy-drop.
 
+Для графа связей система SHALL создавать два индекса на `relations`: `idx_relations_relation_type_id` на `(relation_type, id DESC)` для запросов с фильтром только по типу связи и `idx_relations_source_type_relation_id` на `(source_type, relation_type, id DESC)` для комбинированного фильтра `source_type + relation_type` с сортировкой `ORDER BY id DESC`. Существующие составные индексы `(source_type, source_id)`, `(target_type, target_id)`, `(source_type, relation_type, source_id)`, `(target_type, relation_type, target_id)` SHALL сохраняться. `InitSchema` SHALL сохранять легаси-`DROP INDEX IF EXISTS idx_relations_relation_type` как идемпотентную чистку старых БД; имя нового индекса отличается и этой чисткой не затрагивается.
+
 #### Scenario: GIN-индекс для полнотекстового поиска
 
 - **GIVEN** пустая БД
@@ -159,6 +161,13 @@
 - **GIVEN** БД с сохранённой TRC-сессией
 - **WHEN** выполняется постраничный запрос событий одного или нескольких SPID с курсором по `id`
 - **THEN** план запроса использует `idx_trc_events_session_spid_id`
+
+#### Scenario: Индексы графа связей по типу связи
+
+- **GIVEN** пустая БД
+- **WHEN** выполняется `InitSchema`
+- **THEN** созданы индексы `idx_relations_relation_type_id` на `relations(relation_type, id DESC)` и `idx_relations_source_type_relation_id` на `relations(source_type, relation_type, id DESC)`
+- **AND** легаси-индекс `idx_relations_relation_type` отсутствует
 
 ### Requirement: Nullable helpers
 
@@ -244,7 +253,7 @@
 
 ### Requirement: Полнотекстовые индексы спек
 
-Система SHALL создавать для полнотекстового слоя спек: GIN-индексы на `search_vector` (tsvector, конфигурация 'russian') таблиц `spec_capabilities`, `spec_requirements`, `spec_scenarios`, `spec_usecases`; GIN-индекс pg_trgm на текстовых полях спек для поиска технических идентификаторов; btree-индексы на `spec_capabilities (LOWER(capability_name))`, `(spec_config_id)`, `(parent_id)`, `spec_requirements (capability_id)`, `spec_scenarios (requirement_id)`, `spec_usecases (spec_config_id)`, `spec_usecase_steps (usecase_id, flow_kind, step_order)`, `spec_code_mentions (LOWER(mention_name))`, `(source_type, source_id)`, `spec_change_delta (change_id)`, `spec_vocab (term)` (уникальный), `spec_embeddings (spec_id, embed_level)`. Новые relation_type покрываются существующими составными индексами `relations (source_type, source_id)` / `(target_type, target_id)` — отдельный индекс под relation_type не создаётся.
+Система SHALL создавать для полнотекстового слоя спек: GIN-индексы на `search_vector` (tsvector, конфигурация 'russian') таблиц `spec_capabilities`, `spec_requirements`, `spec_scenarios`, `spec_usecases`; GIN-индекс pg_trgm на текстовых полях спек для поиска технических идентификаторов; btree-индексы на `spec_capabilities (LOWER(capability_name))`, `(spec_config_id)`, `(parent_id)`, `spec_requirements (capability_id)`, `spec_scenarios (requirement_id)`, `spec_usecases (spec_config_id)`, `spec_usecase_steps (usecase_id, flow_kind, step_order)`, `spec_code_mentions (LOWER(mention_name))`, `(source_type, source_id)`, `spec_change_delta (change_id)`, `spec_vocab (term)` (уникальный), `spec_embeddings (spec_id, embed_level)`. Новые relation_type (`depends_on_capability`, `usecase_involves`, `references_code`, `change_modifies`) не требуют отдельных индексов спек — доступ к графу связей обеспечивается индексами таблицы `relations` (см. требование «Индексы для производительности»).
 
 #### Scenario: GIN-индексы полнотекста
 
