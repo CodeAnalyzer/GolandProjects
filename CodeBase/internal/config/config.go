@@ -78,6 +78,8 @@ type MCPConfig struct {
 	QueryTimeoutSec       *int   `toml:"query_timeout_sec"`     // nil = 30, явный 0 = без таймаута
 	ReviewTimeoutSec      *int   `toml:"review_timeout_sec"`    // nil = 120, явный 0 = без таймаута
 	RegexpCacheMaxEntries int    `toml:"regexp_cache_max_entries"`
+	WarmupEnabled         *bool  `toml:"warmup_enabled"`     // nil = true (warm-up probe включён)
+	WarmupTimeoutSec      *int   `toml:"warmup_timeout_sec"` // nil = 60, явный 0 = без таймаута
 }
 
 // SpecConfig конфигурация полнотекстового слоя OpenSpec (LSA)
@@ -373,6 +375,9 @@ func Load() error {
 	if cfg.MCP.ReviewTimeoutSec != nil && *cfg.MCP.ReviewTimeoutSec < 0 {
 		return fmt.Errorf("mcp.review_timeout_sec must be >= 0, got %d", *cfg.MCP.ReviewTimeoutSec)
 	}
+	if cfg.MCP.WarmupTimeoutSec != nil && *cfg.MCP.WarmupTimeoutSec < 0 {
+		return fmt.Errorf("mcp.warmup_timeout_sec must be >= 0, got %d", *cfg.MCP.WarmupTimeoutSec)
+	}
 
 	// Spec defaults
 	if cfg.Spec.LSAK <= 0 {
@@ -514,6 +519,8 @@ func CreateDefault(rootPath string) *Config {
 			QueryTimeoutSec:       intPtr(30),
 			ReviewTimeoutSec:      intPtr(120),
 			RegexpCacheMaxEntries: 2048,
+			WarmupEnabled:         boolPtr(true),
+			WarmupTimeoutSec:      intPtr(60),
 		},
 		Spec: SpecConfig{
 			LSAEnabled:          true,

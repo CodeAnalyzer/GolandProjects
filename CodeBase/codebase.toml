@@ -12,16 +12,16 @@ database = "codebase"  # Имя базы данных
 user = "postgres"      # Пользователь БД
 password = "123456"    # Пароль пользователя БД
 sslmode = "disable"    # Режим SSL (disable, require, verify-ca, verify-full)
-connect_timeout = 10  # Таймаут подключения к БД (секунды)
+connect_timeout = 10   # Таймаут подключения к БД (секунды)
 max_open_conns = 25    # Максимум открытых соединений пула
 max_idle_conns = 25    # Максимум простаивающих соединений пула
-conn_max_lifetime = "5m"  # Время жизни соединения (Go duration)
+conn_max_lifetime = "5m" # Время жизни соединения (Go duration)
 
 # Настройки индексатора
 [indexer]
-parallel = 12         # Количество параллельных workers
-batch_size = 1000     # Размер батча для вставки в БД
-batch_insert_size = 50000  # Размер батча для TRC/RTI insert/delete (строк)
+parallel = 12               # Количество параллельных workers
+batch_size = 1000           # Размер батча для вставки в БД
+batch_insert_size = 50000   # Размер батча для TRC/RTI insert/delete (строк)
 progress_interval_ms = 250  # Интервал вывода прогресса (мс)
 
 # Включаемые файлы (glob-паттерны)
@@ -57,7 +57,7 @@ command_enabled = true
 # Лимиты для query/rti/trc вызовов
 [query]
 default_limit = 100   # Лимит по умолчанию
-max_limit = 1000       # Максимальный лимит (hard cap)
+max_limit = 1000      # Максимальный лимит (hard cap)
 
 # Настройки RTI-анализатора
 [rti]
@@ -102,6 +102,8 @@ lsa_relative_cutoff = 0.5    # Относительный cutoff: отсекат
 # Настройки MCP-сервера
 [mcp]
 pagination_chunk_size = 9000  # Максимальный размер чанка (байт) для пагинации больших ответов
-pagination_ttl = "15m"  # Время жизни пагинированных ответов
-query_timeout_sec = 30  # Таймаут для query-инструментов (секунды, 0 = без таймаута)
-review_timeout_sec = 120  # Таймаут для codebase_review_sql (секунды, 0 = без таймаута)
+pagination_ttl = "15m"        # Время жизни пагинированных ответов
+query_timeout_sec = 30        # Таймаут для query-инструментов (секунды, 0 = без таймаута)
+review_timeout_sec = 120      # Таймаут для codebase_review_sql (секунды, 0 = без таймаута)
+warmup_enabled = true         # Фоновый прогрев кэшей при старте MCP (default: true)
+warmup_timeout_sec = 60       # Общий таймаут пачки warm-up проб (0 = без таймаута)

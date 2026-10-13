@@ -48,7 +48,24 @@ func RunStdio(serverVersion string, profile string, logger *log.Logger) error {
 	}
 	registerSDKCoreTools(server, registry, profile, logger)
 
+	// Warm-up probe: фоновый прогрев горячих путей (буферы БД + ленивые
+	// LSA/embeddings-кэши) реплеем tool-хендлеров. Решение: без логгера probe
+	// не запускается — нефункциональная фоновая нагрузка без наблюдаемости
+	// недопустима. Асинхронно: не блокирует хендшейк и первые запросы.
+	if logger != nil && warmupEnabled(cfg) {
+		go warmupForProfile(context.Background(), profile, registry, logger,
+			secOrDefault(cfg.MCP.WarmupTimeoutSec, 60))
+	}
+
 	return server.Run(context.Background(), &mcpsdk.StdioTransport{})
+}
+
+// warmupEnabled разрешает опциональный параметр warmup_enabled: nil → true.
+func warmupEnabled(cfg *config.Config) bool {
+	if cfg == nil || cfg.MCP.WarmupEnabled == nil {
+		return true
+	}
+	return *cfg.MCP.WarmupEnabled
 }
 
 func prepareMCPDatabase(ctx context.Context, cfg config.DBConfig) (*store.DB, error) {

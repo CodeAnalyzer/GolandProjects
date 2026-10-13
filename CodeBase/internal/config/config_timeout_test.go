@@ -15,7 +15,7 @@ type timeoutsCase struct {
 // конфига как указатель на 0, а не заменяется дефолтом (сценарий «Явный ноль
 // отключает parse-таймаут» / «Явный ноль отключает query-таймаут»).
 func TestTimeouts_ExplicitZeroPreservedAfterLoad(t *testing.T) {
-	section := "\n[rti]\nparse_timeout_sec = 0\n\n[trc]\nparse_timeout_sec = 0\n\n[mcp]\nquery_timeout_sec = 0\nreview_timeout_sec = 0\n"
+	section := "\n[rti]\nparse_timeout_sec = 0\n\n[trc]\nparse_timeout_sec = 0\n\n[mcp]\nquery_timeout_sec = 0\nreview_timeout_sec = 0\nwarmup_timeout_sec = 0\n"
 	if err := writeTestConfig(t, section); err != nil {
 		t.Fatal(err)
 	}
@@ -25,6 +25,7 @@ func TestTimeouts_ExplicitZeroPreservedAfterLoad(t *testing.T) {
 		{"trc.parse_timeout_sec", got.TRC.ParseTimeoutSec},
 		{"mcp.query_timeout_sec", got.MCP.QueryTimeoutSec},
 		{"mcp.review_timeout_sec", got.MCP.ReviewTimeoutSec},
+		{"mcp.warmup_timeout_sec", got.MCP.WarmupTimeoutSec},
 	}
 	for _, c := range cases {
 		if c.field == nil {
@@ -40,7 +41,7 @@ func TestTimeouts_ExplicitZeroPreservedAfterLoad(t *testing.T) {
 // TestTimeouts_ExplicitPositivePreservedAfterLoad — положительное значение
 // сохраняется как есть (без нормализации).
 func TestTimeouts_ExplicitPositivePreservedAfterLoad(t *testing.T) {
-	section := "\n[rti]\nparse_timeout_sec = 600\n\n[trc]\nparse_timeout_sec = 120\n\n[mcp]\nquery_timeout_sec = 45\nreview_timeout_sec = 90\n"
+	section := "\n[rti]\nparse_timeout_sec = 600\n\n[trc]\nparse_timeout_sec = 120\n\n[mcp]\nquery_timeout_sec = 45\nreview_timeout_sec = 90\nwarmup_timeout_sec = 120\n"
 	if err := writeTestConfig(t, section); err != nil {
 		t.Fatal(err)
 	}
@@ -50,8 +51,9 @@ func TestTimeouts_ExplicitPositivePreservedAfterLoad(t *testing.T) {
 		{"trc.parse_timeout_sec", got.TRC.ParseTimeoutSec},
 		{"mcp.query_timeout_sec", got.MCP.QueryTimeoutSec},
 		{"mcp.review_timeout_sec", got.MCP.ReviewTimeoutSec},
+		{"mcp.warmup_timeout_sec", got.MCP.WarmupTimeoutSec},
 	}
-	wants := []int{600, 120, 45, 90}
+	wants := []int{600, 120, 45, 90, 120}
 	for i, c := range cases {
 		if c.field == nil {
 			t.Errorf("%s: поле nil, ожидалось %d", c.name, wants[i])
@@ -75,6 +77,7 @@ func TestTimeouts_AbsentLeavesNilAfterLoad(t *testing.T) {
 		{"trc.parse_timeout_sec", got.TRC.ParseTimeoutSec},
 		{"mcp.query_timeout_sec", got.MCP.QueryTimeoutSec},
 		{"mcp.review_timeout_sec", got.MCP.ReviewTimeoutSec},
+		{"mcp.warmup_timeout_sec", got.MCP.WarmupTimeoutSec},
 	}
 	for _, c := range cases {
 		if c.field != nil {
@@ -95,6 +98,7 @@ func TestTimeouts_NegativeRejected(t *testing.T) {
 		{"\n[trc]\nparse_timeout_sec = -1\n", "trc.parse_timeout_sec"},
 		{"\n[mcp]\nquery_timeout_sec = -10\n", "mcp.query_timeout_sec"},
 		{"\n[mcp]\nreview_timeout_sec = -2\n", "mcp.review_timeout_sec"},
+		{"\n[mcp]\nwarmup_timeout_sec = -5\n", "mcp.warmup_timeout_sec"},
 	}
 	for _, c := range cases {
 		err := writeTestConfig(t, c.section)
@@ -113,8 +117,9 @@ func TestTimeouts_CreateDefaultExplicitDefaults(t *testing.T) {
 		{"trc.parse_timeout_sec", got.TRC.ParseTimeoutSec},
 		{"mcp.query_timeout_sec", got.MCP.QueryTimeoutSec},
 		{"mcp.review_timeout_sec", got.MCP.ReviewTimeoutSec},
+		{"mcp.warmup_timeout_sec", got.MCP.WarmupTimeoutSec},
 	}
-	wants := []int{300, 300, 30, 120}
+	wants := []int{300, 300, 30, 120, 60}
 	for i, c := range cases {
 		if c.field == nil {
 			t.Errorf("%s: поле nil, ожидался явный дефолт %d", c.name, wants[i])
@@ -123,5 +128,29 @@ func TestTimeouts_CreateDefaultExplicitDefaults(t *testing.T) {
 		if *c.field != wants[i] {
 			t.Errorf("%s: значение %d, ожидался дефолт %d", c.name, *c.field, wants[i])
 		}
+	}
+}
+
+// TestWarmupEnabled_ThreeStates — трёх-состоятельная семантика warmup_enabled:
+// отсутствует → nil (дефолт true применяет потребитель), явный false → false,
+// CreateDefault задаёт явный true.
+func TestWarmupEnabled_ThreeStates(t *testing.T) {
+	if err := writeTestConfig(t, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := Get(); got.MCP.WarmupEnabled != nil {
+		t.Errorf("отсутствующий warmup_enabled: поле не nil (%v), ожидался nil", *got.MCP.WarmupEnabled)
+	}
+
+	if err := writeTestConfig(t, "\n[mcp]\nwarmup_enabled = false\n"); err != nil {
+		t.Fatal(err)
+	}
+	if got := Get(); got.MCP.WarmupEnabled == nil || *got.MCP.WarmupEnabled {
+		t.Errorf("явный false: ожидалось *bool(false), получено %v", got.MCP.WarmupEnabled)
+	}
+
+	def := CreateDefault("D:/root")
+	if def.MCP.WarmupEnabled == nil || !*def.MCP.WarmupEnabled {
+		t.Errorf("CreateDefault: ожидался явный дефолт true, получено %v", def.MCP.WarmupEnabled)
 	}
 }

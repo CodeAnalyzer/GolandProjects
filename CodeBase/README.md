@@ -134,6 +134,8 @@ pagination_chunk_size = 8000
 pagination_ttl = "15m"
 query_timeout_sec = 30    # Таймаут для query-инструментов (0 = без таймаута)
 review_timeout_sec = 120  # Таймаут для codebase_review_sql (0 = без таймаута)
+warmup_enabled = true     # Фоновый прогрев кэшей при старте MCP (default: true)
+warmup_timeout_sec = 60   # Общий таймаут пачки warm-up проб (0 = без таймаута)
 ```
 
 Все параметры имеют значения по умолчанию и могут быть опущены — старый `codebase.toml` без новых секций работает без изменений.
@@ -1080,6 +1082,8 @@ pagination_ttl = "15m"
 query_timeout_sec = 30
 review_timeout_sec = 120
 regexp_cache_max_entries = 10000
+warmup_enabled = true
+warmup_timeout_sec = 60
 ```
 
 `regexp_cache_max_entries` — лимит кэша скомпилированных regexp-паттернов (по умолчанию без лимита).
@@ -1096,6 +1100,16 @@ regexp_cache_max_entries = 10000
 | Остальные инструменты | `[mcp] query_timeout_sec` | 30 сек |
 
 Значение `0` отключает таймаут для соответствующей группы. Отдельные `parse_timeout_sec` для RTI и TRC позволяют задать увеличенный таймаут для тяжёлых операций парсинга, не влияя на query-инструменты.
+
+#### Warm-up probe при старте
+
+При старте MCP-сервера профиля `query` (с включённым логированием) в фоне запускается warm-up probe: последовательность реплей-вызовов tool-хендлеров с дешёвыми аргументами, прогревающая буферы PostgreSQL и ленивые LSA/embeddings-кэши. Первый вызов каждого инструмента перестаёт платить «холодную» цену 5–30 с (замер: `desc_search` 25.7 с → 113 мс, `callers` 14.3 с → 35 мс после прогрева).
+
+- Probe асинхронный: не блокирует `initialize` и первые запросы; работает параллельно (~47 с на живой БД FA)
+- Best-effort: ошибки отдельных проб игнорируются (счётчик в лог-строке `profile=... warmup probes=N done=M elapsed=... errors=K`)
+- Общий таймаут пачки — `[mcp] warmup_timeout_sec` (по умолчанию 60 с, `0` — без ограничения)
+- Отключение: `[mcp] warmup_enabled = false`
+- Probe запускается только при включённом логировании (файл `codebase_<дата>.log` рядом с executable); stdout не затрагивается — транспортный контракт MCP не меняется
 
 ## Архитектура
 
@@ -1197,6 +1211,7 @@ CodeBase/
 │   ├── mcp/                       # MCP stdio JSON-RPC transport, tools registry, handlers, пагинация
 │   │   ├── server.go              # MCP SDK server, stdio transport, tool dispatch
 │   │   ├── registry.go            # Registry всех MCP tools (query, RTI, TRC, review, health, stats), profile filtering
+│   │   ├── warmup.go              # Warm-up probe при старте: реплей хендлеров для прогрева кэшей БД и LSA/embeddings
 │   │   ├── pagination.go          # Пагинация больших MCP-ответов (chunking, TTL)
 │   │   ├── tools.go               # Вспомогательные типы для tool definitions
 │   │   └── types.go               # Внутренние типы MCP
