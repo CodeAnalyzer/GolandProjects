@@ -66,6 +66,40 @@ func TestIsKnownRelationType(t *testing.T) {
 	}
 }
 
+func TestNormalizeRelationEntityType(t *testing.T) {
+	cases := []struct {
+		raw    string
+		want   string
+		wantOK bool
+	}{
+		{"service", "api_contract", true},
+		{"event", "api_contract", true},
+		{"callback_event", "api_contract", true},
+		{"used_service", "api_contract", true},
+		{" Service ", "api_contract", true},
+		{"api_contract", "api_contract", true},
+		{"sql_procedure", "sql_procedure", true},
+		{"dfm_form", "dfm_form", true},
+		{"spec_capability", "spec_capability", true},
+		{"  spec_scenario  ", "spec_scenario", true},
+		{"", "", false},
+		{"   ", "", false},
+		{"__no_such_type__", "", false},
+		{"pas_class", "", false},
+		{"dfm_component", "", false},
+	}
+	for _, tc := range cases {
+		got, ok := NormalizeRelationEntityType(tc.raw)
+		if ok != tc.wantOK {
+			t.Errorf("NormalizeRelationEntityType(%q) ok = %v, want %v", tc.raw, ok, tc.wantOK)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("NormalizeRelationEntityType(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
 func TestIsKnownRelationEntityType(t *testing.T) {
 	cases := []struct {
 		raw  string

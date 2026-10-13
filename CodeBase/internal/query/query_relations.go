@@ -133,7 +133,8 @@ func (q *Query) SearchRelations(ctx context.Context, sourceType string, sourceNa
 	if sourceType == "" && sourceName == "" && targetType == "" && targetName == "" && relationType == "" {
 		return nil, errs.ErrNoRelationFilters
 	}
-	if err := validateRelationFilters(sourceType, targetType, relationType); err != nil {
+	normalizedSourceType, normalizedTargetType, err := validateRelationFilters(sourceType, targetType, relationType)
+	if err != nil {
 		return nil, err
 	}
 
@@ -141,7 +142,7 @@ func (q *Query) SearchRelations(ctx context.Context, sourceType string, sourceNa
 
 	var sourceMatches []relationEntityMatch
 	if sourceName != "" {
-		matches, err := q.findRelationEntityMatches(ctx, sourceName, sourceType, matchLimit)
+		matches, err := q.findRelationEntityMatches(ctx, sourceName, normalizedSourceType, matchLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -153,7 +154,7 @@ func (q *Query) SearchRelations(ctx context.Context, sourceType string, sourceNa
 
 	var targetMatches []relationEntityMatch
 	if targetName != "" {
-		matches, err := q.findRelationEntityMatches(ctx, targetName, targetType, matchLimit)
+		matches, err := q.findRelationEntityMatches(ctx, targetName, normalizedTargetType, matchLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -163,7 +164,7 @@ func (q *Query) SearchRelations(ctx context.Context, sourceType string, sourceNa
 		targetMatches = matches
 	}
 
-	queryText, queryArgs := buildRelationIDsQuery(sourceMatches, targetMatches, sourceType, targetType, relationType, limit)
+	queryText, queryArgs := buildRelationIDsQuery(sourceMatches, targetMatches, normalizedSourceType, normalizedTargetType, relationType, limit)
 	relationIDs, err := q.fetchRelationIDs(ctx, queryText, queryArgs)
 	if err != nil {
 		return nil, err
@@ -176,23 +177,42 @@ func (q *Query) SearchRelations(ctx context.Context, sourceType string, sourceNa
 }
 
 // validateRelationFilters проверяет значения фильтров графа связей по
-// каноническим словарям типов (model.RelationTypes / RelationEntityTypes).
-// Пустое значение означает отсутствие фильтра; неизвестное — ошибку со
-// списком валидных значений (до обращения к БД).
-func validateRelationFilters(sourceType string, targetType string, relationType string) error {
+// каноническим словарям типов (model.RelationTypes / RelationEntityTypes) и
+// нормализует типы сущностей: kind-типы API-контрактов (service, event,
+// callback_event, used_service) свёртываются в api_contract
+// (model.NormalizeRelationEntityType). Возвращает нормализованные source_type и
+// target_type. Пустое значение означает отсутствие фильтра; неизвестное —
+// ошибку со списком валидных значений (до обращения к БД).
+func validateRelationFilters(sourceType string, targetType string, relationType string) (string, string, error) {
 	if v := strings.TrimSpace(relationType); v != "" && !model.IsKnownRelationType(v) {
-		return fmt.Errorf("%w %q, valid relation types: %s",
+		return "", "", fmt.Errorf("%w %q, valid relation types: %s",
 			errs.ErrUnknownRelationType, v, strings.Join(model.RelationTypes, ", "))
 	}
-	if v := strings.TrimSpace(sourceType); v != "" && !model.IsKnownRelationEntityType(v) {
-		return fmt.Errorf("%w %q, valid entity types: %s",
+	normalizedSourceType, err := normalizeRelationEntityFilter(sourceType)
+	if err != nil {
+		return "", "", err
+	}
+	normalizedTargetType, err := normalizeRelationEntityFilter(targetType)
+	if err != nil {
+		return "", "", err
+	}
+	return normalizedSourceType, normalizedTargetType, nil
+}
+
+// normalizeRelationEntityFilter нормализует значение source_type/target_type:
+// пустое значение — отсутствие фильтра, канонический тип — как есть, kind-тип
+// контракта — api_contract, неизвестное — ошибку со списком валидных значений.
+func normalizeRelationEntityFilter(raw string) (string, error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return "", nil
+	}
+	normalized, ok := model.NormalizeRelationEntityType(v)
+	if !ok {
+		return "", fmt.Errorf("%w %q, valid entity types: %s",
 			errs.ErrUnknownRelationType, v, strings.Join(model.RelationEntityTypes, ", "))
 	}
-	if v := strings.TrimSpace(targetType); v != "" && !model.IsKnownRelationEntityType(v) {
-		return fmt.Errorf("%w %q, valid entity types: %s",
-			errs.ErrUnknownRelationType, v, strings.Join(model.RelationEntityTypes, ", "))
-	}
-	return nil
+	return normalized, nil
 }
 
 // buildRelationIDsQuery собирает второй проход: выборку id связей по уже
@@ -343,9 +363,20 @@ func relationEntityMatchQueryParts(entityType string, exact bool) ([]string, boo
 		{"vb_function", "vb_functions", "function_name"},
 		{"query_fragment", "query_fragments", "component_name"},
 		{"smf_instrument", "smf_instruments", "instrument_name"},
+		{"dfm_form", "dfm_forms", "form_name"},
+		{"spec_capability", "spec_capabilities", "capability_name"},
+		{"spec_change", "spec_changes", "change_name"},
+		{"spec_requirement", "spec_requirements", "requirement_name"},
+		{"spec_scenario", "spec_scenarios", "scenario_name"},
+		{"spec_usecase", "spec_usecases", "usecase_name"},
 	}
 
 	normalizedType := strings.ToLower(strings.TrimSpace(entityType))
+	if normalizedType != "" {
+		if normalized, ok := model.NormalizeRelationEntityType(normalizedType); ok {
+			normalizedType = normalized
+		}
+	}
 	parts := make([]string, 0, len(sources))
 	for _, source := range sources {
 		if normalizedType != "" && normalizedType != source.entityType {
@@ -384,11 +415,17 @@ func relationSearchBaseQuery() string {
 				vf_src.function_name,
 				qf_src.component_name,
 				smf_src.instrument_name,
+				dfm_src.form_name,
+				scap_src.capability_name,
+				schg_src.change_name,
+				sreq_src.requirement_name,
+				sscn_src.scenario_name,
+				susc_src.usecase_name,
 				r.source_type || ':' || r.source_id::text
 			) as source_name,
-			COALESCE(f_sp_src.id, f_st_src.id, f_pm_src.id, f_jf_src.id, f_ac_src.id, f_rf_src.id, f_rfield_src.id, f_rparam_src.id, f_vf_src.id, f_qf_src.id, f_smf_src.id, 0) as source_file_id,
-			COALESCE(f_sp_src.rel_path, f_st_src.rel_path, f_pm_src.rel_path, f_jf_src.rel_path, f_ac_src.rel_path, f_rf_src.rel_path, f_rfield_src.rel_path, f_rparam_src.rel_path, f_vf_src.rel_path, f_qf_src.rel_path, f_smf_src.rel_path, '') as source_file,
-			COALESCE(sp_src.line_start, st_src.line_number, pm_src.line_number, jf_src.line_start, ac_src.line_start, rf_src.line_start, rfield_src.line_number, rparam_src.line_number, vf_src.line_start, qf_src.line_number, 0) as source_line_number,
+			COALESCE(f_sp_src.id, f_st_src.id, f_pm_src.id, f_jf_src.id, f_ac_src.id, f_rf_src.id, f_rfield_src.id, f_rparam_src.id, f_vf_src.id, f_qf_src.id, f_smf_src.id, f_dfm_src.id, f_scap_src.id, f_schg_src.id, f_sreq_src.id, f_sscn_src.id, f_susc_src.id, 0) as source_file_id,
+			COALESCE(f_sp_src.rel_path, f_st_src.rel_path, f_pm_src.rel_path, f_jf_src.rel_path, f_ac_src.rel_path, f_rf_src.rel_path, f_rfield_src.rel_path, f_rparam_src.rel_path, f_vf_src.rel_path, f_qf_src.rel_path, f_smf_src.rel_path, f_dfm_src.rel_path, f_scap_src.rel_path, f_schg_src.rel_path, f_sreq_src.rel_path, f_sscn_src.rel_path, f_susc_src.rel_path, '') as source_file,
+			COALESCE(sp_src.line_start, st_src.line_number, pm_src.line_number, jf_src.line_start, ac_src.line_start, rf_src.line_start, rfield_src.line_number, rparam_src.line_number, vf_src.line_start, qf_src.line_number, dfm_src.line_start, scap_src.line_start, sreq_src.line_start, sscn_src.line_start, susc_src.line_start, 0) as source_line_number,
 			r.target_id,
 			r.target_type,
 			COALESCE(
@@ -403,11 +440,17 @@ func relationSearchBaseQuery() string {
 				vf_tgt.function_name,
 				qf_tgt.component_name,
 				smf_tgt.instrument_name,
+				dfm_tgt.form_name,
+				scap_tgt.capability_name,
+				schg_tgt.change_name,
+				sreq_tgt.requirement_name,
+				sscn_tgt.scenario_name,
+				susc_tgt.usecase_name,
 				r.target_type || ':' || r.target_id::text
 			) as target_name,
-			COALESCE(f_sp_tgt.id, f_st_tgt.id, f_pm_tgt.id, f_jf_tgt.id, f_ac_tgt.id, f_rf_tgt.id, f_rfield_tgt.id, f_rparam_tgt.id, f_vf_tgt.id, f_qf_tgt.id, f_smf_tgt.id, 0) as target_file_id,
-			COALESCE(f_sp_tgt.rel_path, f_st_tgt.rel_path, f_pm_tgt.rel_path, f_jf_tgt.rel_path, f_ac_tgt.rel_path, f_rf_tgt.rel_path, f_rfield_tgt.rel_path, f_rparam_tgt.rel_path, f_vf_tgt.rel_path, f_qf_tgt.rel_path, f_smf_tgt.rel_path, '') as target_file,
-			COALESCE(sp_tgt.line_start, st_tgt.line_number, pm_tgt.line_number, jf_tgt.line_start, ac_tgt.line_start, rf_tgt.line_start, rfield_tgt.line_number, rparam_tgt.line_number, vf_tgt.line_start, qf_tgt.line_number, 0) as target_line_number
+			COALESCE(f_sp_tgt.id, f_st_tgt.id, f_pm_tgt.id, f_jf_tgt.id, f_ac_tgt.id, f_rf_tgt.id, f_rfield_tgt.id, f_rparam_tgt.id, f_vf_tgt.id, f_qf_tgt.id, f_smf_tgt.id, f_dfm_tgt.id, f_scap_tgt.id, f_schg_tgt.id, f_sreq_tgt.id, f_sscn_tgt.id, f_susc_tgt.id, 0) as target_file_id,
+			COALESCE(f_sp_tgt.rel_path, f_st_tgt.rel_path, f_pm_tgt.rel_path, f_jf_tgt.rel_path, f_ac_tgt.rel_path, f_rf_tgt.rel_path, f_rfield_tgt.rel_path, f_rparam_tgt.rel_path, f_vf_tgt.rel_path, f_qf_tgt.rel_path, f_smf_tgt.rel_path, f_dfm_tgt.rel_path, f_scap_tgt.rel_path, f_schg_tgt.rel_path, f_sreq_tgt.rel_path, f_sscn_tgt.rel_path, f_susc_tgt.rel_path, '') as target_file,
+			COALESCE(sp_tgt.line_start, st_tgt.line_number, pm_tgt.line_number, jf_tgt.line_start, ac_tgt.line_start, rf_tgt.line_start, rfield_tgt.line_number, rparam_tgt.line_number, vf_tgt.line_start, qf_tgt.line_number, dfm_tgt.line_start, scap_tgt.line_start, sreq_tgt.line_start, sscn_tgt.line_start, susc_tgt.line_start, 0) as target_line_number
 		FROM relations r
 		LEFT JOIN sql_procedures sp_src ON r.source_type = 'sql_procedure' AND r.source_id = sp_src.id
 		LEFT JOIN files f_sp_src ON sp_src.file_id = f_sp_src.id
@@ -435,6 +478,18 @@ func relationSearchBaseQuery() string {
 		LEFT JOIN files f_qf_src ON qf_src.file_id = f_qf_src.id
 		LEFT JOIN smf_instruments smf_src ON r.source_type = 'smf_instrument' AND r.source_id = smf_src.id
 		LEFT JOIN files f_smf_src ON smf_src.file_id = f_smf_src.id
+		LEFT JOIN dfm_forms dfm_src ON r.source_type = 'dfm_form' AND r.source_id = dfm_src.id
+		LEFT JOIN files f_dfm_src ON dfm_src.file_id = f_dfm_src.id
+		LEFT JOIN spec_capabilities scap_src ON r.source_type = 'spec_capability' AND r.source_id = scap_src.id
+		LEFT JOIN files f_scap_src ON scap_src.file_id = f_scap_src.id
+		LEFT JOIN spec_changes schg_src ON r.source_type = 'spec_change' AND r.source_id = schg_src.id
+		LEFT JOIN files f_schg_src ON schg_src.file_id = f_schg_src.id
+		LEFT JOIN spec_requirements sreq_src ON r.source_type = 'spec_requirement' AND r.source_id = sreq_src.id
+		LEFT JOIN files f_sreq_src ON sreq_src.file_id = f_sreq_src.id
+		LEFT JOIN spec_scenarios sscn_src ON r.source_type = 'spec_scenario' AND r.source_id = sscn_src.id
+		LEFT JOIN files f_sscn_src ON sscn_src.file_id = f_sscn_src.id
+		LEFT JOIN spec_usecases susc_src ON r.source_type = 'spec_usecase' AND r.source_id = susc_src.id
+		LEFT JOIN files f_susc_src ON susc_src.file_id = f_susc_src.id
 		LEFT JOIN sql_procedures sp_tgt ON r.target_type = 'sql_procedure' AND r.target_id = sp_tgt.id
 		LEFT JOIN files f_sp_tgt ON sp_tgt.file_id = f_sp_tgt.id
 		LEFT JOIN sql_tables st_tgt ON r.target_type = 'sql_table' AND r.target_id = st_tgt.id
@@ -461,5 +516,17 @@ func relationSearchBaseQuery() string {
 		LEFT JOIN files f_qf_tgt ON qf_tgt.file_id = f_qf_tgt.id
 		LEFT JOIN smf_instruments smf_tgt ON r.target_type = 'smf_instrument' AND r.target_id = smf_tgt.id
 		LEFT JOIN files f_smf_tgt ON smf_tgt.file_id = f_smf_tgt.id
+		LEFT JOIN dfm_forms dfm_tgt ON r.target_type = 'dfm_form' AND r.target_id = dfm_tgt.id
+		LEFT JOIN files f_dfm_tgt ON dfm_tgt.file_id = f_dfm_tgt.id
+		LEFT JOIN spec_capabilities scap_tgt ON r.target_type = 'spec_capability' AND r.target_id = scap_tgt.id
+		LEFT JOIN files f_scap_tgt ON scap_tgt.file_id = f_scap_tgt.id
+		LEFT JOIN spec_changes schg_tgt ON r.target_type = 'spec_change' AND r.target_id = schg_tgt.id
+		LEFT JOIN files f_schg_tgt ON schg_tgt.file_id = f_schg_tgt.id
+		LEFT JOIN spec_requirements sreq_tgt ON r.target_type = 'spec_requirement' AND r.target_id = sreq_tgt.id
+		LEFT JOIN files f_sreq_tgt ON sreq_tgt.file_id = f_sreq_tgt.id
+		LEFT JOIN spec_scenarios sscn_tgt ON r.target_type = 'spec_scenario' AND r.target_id = sscn_tgt.id
+		LEFT JOIN files f_sscn_tgt ON sscn_tgt.file_id = f_sscn_tgt.id
+		LEFT JOIN spec_usecases susc_tgt ON r.target_type = 'spec_usecase' AND r.target_id = susc_tgt.id
+		LEFT JOIN files f_susc_tgt ON susc_tgt.file_id = f_susc_tgt.id
 	`
 }

@@ -50,9 +50,9 @@ func init() {
 	querySQLFragmentCmd.Flags().StringVar(&queryFragmentText, "text", "", "SQL text fragment to search")
 	cobra.CheckErr(querySQLFragmentCmd.MarkFlagRequired("text"))
 
-	queryRelationsCmd.Flags().StringVar(&relationSourceType, "source-type", "", "source entity type")
+	queryRelationsCmd.Flags().StringVar(&relationSourceType, "source-type", "", "source entity type (kind types service/event/callback_event/used_service alias api_contract)")
 	queryRelationsCmd.Flags().StringVar(&relationSourceName, "source-name", "", "source entity name pattern")
-	queryRelationsCmd.Flags().StringVar(&relationTargetType, "target-type", "", "target entity type")
+	queryRelationsCmd.Flags().StringVar(&relationTargetType, "target-type", "", "target entity type (kind types service/event/callback_event/used_service alias api_contract)")
 	queryRelationsCmd.Flags().StringVar(&relationTargetName, "target-name", "", "target entity name pattern")
 	queryRelationsCmd.Flags().StringVar(&relationType, "relation-type", "", "relation type")
 

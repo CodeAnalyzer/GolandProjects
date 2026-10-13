@@ -85,3 +85,32 @@ func IsKnownRelationEntityType(raw string) bool {
 	_, ok := relationEntityTypeSet[strings.TrimSpace(raw)]
 	return ok
 }
+
+// relationEntityKindAliases — kind-типы API-контрактов (значения
+// symbols.symbol_type), принимаемые фильтром типа сущности графа связей как
+// алиасы канонического api_contract.
+var relationEntityKindAliases = map[string]struct{}{
+	"service":        {},
+	"event":          {},
+	"callback_event": {},
+	"used_service":   {},
+}
+
+// NormalizeRelationEntityType нормализует значение фильтра типа сущности графа
+// связей: обрезает пробелы и приводит к нижнему регистру. Канонический тип
+// словаря возвращается как есть; kind-типы API-контрактов (service, event,
+// callback_event, used_service) свёртываются в api_contract. Второе значение
+// сообщает, известно ли значение; пустая строка неизвестна.
+func NormalizeRelationEntityType(raw string) (string, bool) {
+	key := strings.ToLower(strings.TrimSpace(raw))
+	if key == "" {
+		return "", false
+	}
+	if _, ok := relationEntityTypeSet[key]; ok {
+		return key, true
+	}
+	if _, ok := relationEntityKindAliases[key]; ok {
+		return "api_contract", true
+	}
+	return "", false
+}
