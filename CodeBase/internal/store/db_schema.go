@@ -663,8 +663,30 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			kind           TEXT NOT NULL,
 			elapsed_ms     INTEGER NOT NULL DEFAULT 0,
 			payload        JSONB,
-			server_call_id BIGINT REFERENCES rti_calls(id)
+			server_call_id BIGINT REFERENCES rti_calls(id) ON DELETE SET NULL
 		)`,
+		// Миграция legacy-FK rti_client_events.server_call_id: в старых БД
+		// ограничение создано без правила удаления (NO ACTION), что ломает
+		// batch-удаление rti_calls (rti delete/prune падают на FK). Guard по
+		// confdeltype='a' делает пересоздание одноразовым: на свежей и уже
+		// мигрированной схеме (confdeltype='n') — no-op.
+		`DO $$
+		BEGIN
+			IF EXISTS (
+				SELECT 1 FROM pg_constraint c
+				JOIN pg_class t ON t.oid = c.conrelid
+				WHERE c.conname = 'rti_client_events_server_call_id_fkey'
+				  AND t.relname = 'rti_client_events'
+				  AND c.confdeltype = 'a'
+			) THEN
+				ALTER TABLE rti_client_events
+					DROP CONSTRAINT rti_client_events_server_call_id_fkey;
+				ALTER TABLE rti_client_events
+					ADD CONSTRAINT rti_client_events_server_call_id_fkey
+					FOREIGN KEY (server_call_id) REFERENCES rti_calls(id)
+					ON DELETE SET NULL;
+			END IF;
+		END $$`,
 		// ==== OpenSpec-артефакты финпродуктов ====
 		// Профиль продукта: один на openspec-корень (config.yaml)
 		`CREATE TABLE IF NOT EXISTS spec_configs (

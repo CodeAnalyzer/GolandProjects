@@ -637,23 +637,8 @@ func SetBatchSize(size int) {
 // таблицы (чтобы избежать длительного CASCADE-удаления в одной транзакции),
 // затем удаляется сама сессия.
 func DeleteSession(ctx context.Context, db *store.DB, sessionID int64) error {
-	// 1. Батч-удаление rti_calls (CASCADE → rti_params, rti_checkpoints)
-	for {
-		res, err := db.ExecContext(ctx, 
-			`DELETE FROM rti_calls WHERE session_id = $1 AND id IN (
-				SELECT id FROM rti_calls WHERE session_id = $1 LIMIT $2
-			)`,
-			sessionID, rtiBatchSize,
-		)
-		if err != nil {
-			return fmt.Errorf("batch delete rti_calls: %w", err)
-		}
-		n, _ := res.RowsAffected()
-		if n == 0 {
-			break
-		}
-	}
-	// 2. Батч-удаление rti_client_events (по session_id)
+	// 1. Батч-удаление rti_client_events (до rti_calls: server_call_id
+	// ссылается на вызовы, голый FK без каскада блокировал бы их удаление)
 	for {
 		res, err := db.ExecContext(ctx, 
 			`DELETE FROM rti_client_events WHERE session_id = $1 AND id IN (
@@ -663,6 +648,22 @@ func DeleteSession(ctx context.Context, db *store.DB, sessionID int64) error {
 		)
 		if err != nil {
 			return fmt.Errorf("batch delete rti_client_events: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			break
+		}
+	}
+	// 2. Батч-удаление rti_calls (CASCADE → rti_params, rti_checkpoints)
+	for {
+		res, err := db.ExecContext(ctx, 
+			`DELETE FROM rti_calls WHERE session_id = $1 AND id IN (
+				SELECT id FROM rti_calls WHERE session_id = $1 LIMIT $2
+			)`,
+			sessionID, rtiBatchSize,
+		)
+		if err != nil {
+			return fmt.Errorf("batch delete rti_calls: %w", err)
 		}
 		n, _ := res.RowsAffected()
 		if n == 0 {
@@ -750,6 +751,23 @@ func PruneSessions(ctx context.Context, db *store.DB, keepLast int) (int64, erro
 
 	// Пакетное удаление дочерних таблиц для каждой сессии
 	for _, sid := range ids {
+		// rti_client_events (до rti_calls: server_call_id ссылается на вызовы,
+		// голый FK без каскада блокировал бы их удаление)
+		for {
+			res, err := db.ExecContext(ctx, 
+				`DELETE FROM rti_client_events WHERE session_id = $1 AND id IN (
+					SELECT id FROM rti_client_events WHERE session_id = $1 LIMIT $2
+				)`,
+				sid, rtiBatchSize,
+			)
+			if err != nil {
+				return 0, fmt.Errorf("batch delete rti_client_events for session %d: %w", sid, err)
+			}
+			n, _ := res.RowsAffected()
+			if n == 0 {
+				break
+			}
+		}
 		// rti_calls (CASCADE → rti_params, rti_checkpoints)
 		for {
 			res, err := db.ExecContext(ctx, 
@@ -760,22 +778,6 @@ func PruneSessions(ctx context.Context, db *store.DB, keepLast int) (int64, erro
 			)
 			if err != nil {
 				return 0, fmt.Errorf("batch delete rti_calls for session %d: %w", sid, err)
-			}
-			n, _ := res.RowsAffected()
-			if n == 0 {
-				break
-			}
-		}
-		// rti_client_events
-		for {
-			res, err := db.ExecContext(ctx, 
-				`DELETE FROM rti_client_events WHERE session_id = $1 AND id IN (
-					SELECT id FROM rti_client_events WHERE session_id = $1 LIMIT $2
-				)`,
-				sid, rtiBatchSize,
-			)
-			if err != nil {
-				return 0, fmt.Errorf("batch delete rti_client_events for session %d: %w", sid, err)
 			}
 			n, _ := res.RowsAffected()
 			if n == 0 {

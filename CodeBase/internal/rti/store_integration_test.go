@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/store/testutil"
 )
 
@@ -87,4 +88,148 @@ func TestPruneAndDeleteRTISessions(t *testing.T) {
 	if _, err := PruneSessions(context.Background(), db, -1); err == nil {
 		t.Log("PruneSessions(-1) accepted; documented as current behavior")
 	}
+}
+
+// insertPlainSession создаёт сессию с одним вызовом без клиентских событий.
+func insertPlainSession(t *testing.T, db *store.DB, path string) int64 {
+	t.Helper()
+	var sid int64
+	err := db.QueryRow(
+		`INSERT INTO rti_sessions (file_path, file_size, total_calls, errors_count, max_nest_level, unparsed_lines)
+		 VALUES ($1, 10, 1, 0, 0, 0) RETURNING id`,
+		path,
+	).Scan(&sid)
+	if err != nil {
+		t.Fatalf("insert session %s: %v", path, err)
+	}
+	if _, err := db.Exec(`INSERT INTO rti_calls (session_id, procedure, enter_line, exit_line, elapsed_ms, nest_level, module_id, tran_count, begin_cnt, spid) VALUES ($1, 'P', 1, 2, 1, 0, 0, 0, 0, 1)`, sid); err != nil {
+		t.Fatalf("insert call: %v", err)
+	}
+	return sid
+}
+
+// insertCorrelatedSession создаёт сессию с вызовом и клиентским событием,
+// ссылающимся на этот вызов через server_call_id, и возвращает id сессии.
+func insertCorrelatedSession(t *testing.T, db *store.DB, path string) int64 {
+	t.Helper()
+	var sid int64
+	err := db.QueryRow(
+		`INSERT INTO rti_sessions (file_path, file_size, total_calls, errors_count, max_nest_level, unparsed_lines, client_events_count)
+		 VALUES ($1, 10, 1, 0, 0, 0, 1) RETURNING id`,
+		path,
+	).Scan(&sid)
+	if err != nil {
+		t.Fatalf("insert session %s: %v", path, err)
+	}
+	var callID int64
+	err = db.QueryRow(
+		`INSERT INTO rti_calls (session_id, procedure, enter_line, exit_line, elapsed_ms, nest_level, module_id, tran_count, begin_cnt, spid)
+		 VALUES ($1, 'P', 1, 2, 1, 0, 0, 0, 0, 1) RETURNING id`,
+		sid,
+	).Scan(&callID)
+	if err != nil {
+		t.Fatalf("insert call for %s: %v", path, err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO rti_client_events (session_id, pid, seq_no, line_no, kind, server_call_id)
+		 VALUES ($1, 100, 1, 1, 'sql_block', $2)`,
+		sid, callID,
+	); err != nil {
+		t.Fatalf("insert client event for %s: %v", path, err)
+	}
+	return sid
+}
+
+// degradeToLegacyFK пересоздаёт FK server_call_id без правила удаления
+// (NO ACTION) — имитирует БД, созданную до миграции.
+func degradeToLegacyFK(t *testing.T, db *store.DB) {
+	t.Helper()
+	if _, err := db.Exec(`ALTER TABLE rti_client_events DROP CONSTRAINT rti_client_events_server_call_id_fkey`); err != nil {
+		t.Fatalf("drop fk: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE rti_client_events ADD CONSTRAINT rti_client_events_server_call_id_fkey FOREIGN KEY (server_call_id) REFERENCES rti_calls(id)`); err != nil {
+		t.Fatalf("add legacy fk: %v", err)
+	}
+}
+
+// assertSessionGone проверяет, что от сессии не осталось строк ни в одной таблице.
+func assertSessionGone(t *testing.T, db *store.DB, sid int64) {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM rti_sessions WHERE id = $1`, sid).Scan(&n); err != nil {
+		t.Fatalf("count rti_sessions: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("session %d still present in rti_sessions", sid)
+	}
+	// rti_params/rti_checkpoints удаляются каскадом вместе с rti_calls,
+	// поэтому их покрывает проверка calls = 0
+	for _, table := range []string{"rti_calls", "rti_blog_blocks", "rti_blog_tables", "rti_client_events"} {
+		var n int
+		if err := db.QueryRow(`SELECT count(*) FROM `+table+` WHERE session_id = $1`, sid).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if n != 0 {
+			t.Fatalf("session %d: %d leftover rows in %s", sid, n, table)
+		}
+	}
+}
+
+// TestDeletePruneWithCorrelatedClientEvents: удаление/prune сессий, у которых
+// клиентские события ссылаются на вызовы (server_call_id) —Regression-тест
+// FK-ошибки, обрушившей `rti prune --keep-last`.
+func TestDeletePruneWithCorrelatedClientEvents(t *testing.T) {
+	db := testutil.Open(t)
+
+	id1 := insertCorrelatedSession(t, db, "ce1.rti")
+	id2 := insertCorrelatedSession(t, db, "ce2.rti")
+	// чистая сессия без клиентских событий — самая свежая, останется после prune
+	idClean := insertPlainSession(t, db, "clean.rti")
+
+	// DeleteSession на сессии с коррелированным событием
+	if err := DeleteSession(context.Background(), db, id1); err != nil {
+		t.Fatalf("DeleteSession with correlated client events: %v", err)
+	}
+	assertSessionGone(t, db, id1)
+
+	// PruneSessions: удаляет сессию с коррелированным событием, оставляет последнюю
+	deleted, err := PruneSessions(context.Background(), db, 1)
+	if err != nil {
+		t.Fatalf("PruneSessions(1) with correlated client events: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+	assertSessionGone(t, db, id2)
+	sessions, err := ListSessions(context.Background(), db, 10)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != idClean {
+		t.Fatalf("remaining sessions = %+v, want only %d", sessions, idClean)
+	}
+}
+
+// TestDeletePruneWithLegacyClientEventsFK: порядок удаления (client_events до
+// calls) работает и без миграции — на старом FK без правила удаления.
+func TestDeletePruneWithLegacyClientEventsFK(t *testing.T) {
+	db := testutil.Open(t)
+	degradeToLegacyFK(t, db)
+
+	id1 := insertCorrelatedSession(t, db, "legacy1.rti")
+	id2 := insertCorrelatedSession(t, db, "legacy2.rti")
+
+	if err := DeleteSession(context.Background(), db, id1); err != nil {
+		t.Fatalf("DeleteSession with legacy NO ACTION fk: %v", err)
+	}
+	assertSessionGone(t, db, id1)
+
+	deleted, err := PruneSessions(context.Background(), db, 0)
+	if err != nil {
+		t.Fatalf("PruneSessions(0) with legacy NO ACTION fk: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+	assertSessionGone(t, db, id2)
 }
