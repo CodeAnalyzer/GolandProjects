@@ -265,6 +265,12 @@ type tableFromClause struct {
 	Alias     string
 	Hint      string // Извлеченный хинт индекса
 	IndexName string // Имя индекса из M_*_INDEX(...)
+	// ScopeText — нижний регистр текста области фильтрации (весь оператор или
+	// тело derived table), из которого берутся WHERE/ON-условия для этой таблицы.
+	// Пусто — область не определена (устаревший вызов), используется весь оператор.
+	ScopeText string
+	// ScopeLen — число таблиц в области фильтрации (для эвристики единственной таблицы).
+	ScopeLen int
 }
 
 type whereAnalysisResult struct {

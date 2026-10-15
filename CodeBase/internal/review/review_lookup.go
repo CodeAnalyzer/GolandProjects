@@ -621,15 +621,29 @@ func (r *Runner) findAPITableNames(ctx context.Context, names []string) (map[str
 	return result, nil
 }
 
-// removeComments удаляет SQL комментарии (-- ... и /* ... */)
+// removeComments удаляет SQL комментарии (-- ... и /* ... */),
+// заменяя их пробелами с сохранением переводов строк: в тексте,
+// собранном в одну строку (Join через пробел), однострочный комментарий
+// иначе съедает весь хвост оператора до конца текста
 func removeComments(text string) string {
-	// Удаляем многострочные комментарии /* ... */
-	text = reLookupCommentBlock.ReplaceAllString(text, "")
+	// Многострочные комментарии /* ... */
+	text = reLookupCommentBlock.ReplaceAllStringFunc(text, blankPreservingNewlines)
 
-	// Удаляем однострочные комментарии -- ...
-	text = reLookupCommentLine.ReplaceAllString(text, "")
+	// Однострочные комментарии -- ...
+	text = reLookupCommentLine.ReplaceAllStringFunc(text, blankPreservingNewlines)
 
 	return text
+}
+
+// blankPreservingNewlines заменяет все символы на пробелы, кроме \r и \n
+func blankPreservingNewlines(s string) string {
+	b := []byte(s)
+	for i := range b {
+		if b[i] != '\n' && b[i] != '\r' {
+			b[i] = ' '
+		}
+	}
+	return string(b)
 }
 
 func isWordChar(c byte) bool {
@@ -758,6 +772,41 @@ func splitByOrRespectingParens(sql string) []string {
 	return parts
 }
 
+// findMatchingParen возвращает индекс парной закрывающей скобки для скобки
+// на позиции openIdx с учётом строковых литералов ('…' с ''-эскейпом).
+// Возвращает -1, если парная скобка не найдена.
+func findMatchingParen(text string, openIdx int) int {
+	if openIdx < 0 || openIdx >= len(text) || text[openIdx] != '(' {
+		return -1
+	}
+	depth := 0
+	inString := false
+	for i := openIdx; i < len(text); i++ {
+		ch := text[i]
+		if ch == '\'' {
+			if inString && i+1 < len(text) && text[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
 func findTopLevelFromClauseBounds(text string) (int, int, bool) {
 	lower := toLowerASCIIPreservingLen(text)
 	fromIdx := -1
@@ -839,7 +888,28 @@ func findTopLevelFromClauseBounds(text string) (int, int, bool) {
 	return fromIdx, endIdx, true
 }
 
+// maxDerivedTableDepth — предельная глубина рекурсии по derived tables;
+// при исчерпании уровень пропускается (лучше FN, чем ложный finding).
+const maxDerivedTableDepth = 10
+
+// sqlReservedTableNames — ключевые слова, которые не могут быть именем таблицы.
+// Guard против артефактов парсинга вида object=select.
+var sqlReservedTableNames = map[string]struct{}{
+	"select": {}, "from": {}, "where": {}, "on": {}, "as": {}, "and": {}, "or": {},
+	"group": {}, "order": {}, "having": {}, "join": {}, "union": {}, "inner": {},
+	"left": {}, "right": {}, "full": {}, "cross": {}, "case": {}, "when": {},
+	"then": {}, "else": {}, "end": {}, "with": {}, "set": {}, "values": {}, "into": {},
+}
+
 func parseTablesInFromClause(fromClause string) []tableFromClause {
+	return parseTablesInFromClauseDepth(fromClause, 0, "")
+}
+
+// parseTablesInFromClauseDepth парсит FROM-часть; scopeLower — нижний регистр
+// полного текста запроса (оператора или подзапроса), из которого берутся
+// WHERE/ON-условия фильтрации таблиц этой области; depth — текущая глубина
+// вложенности derived tables.
+func parseTablesInFromClauseDepth(fromClause string, depth int, scopeLower string) []tableFromClause {
 	result := make([]tableFromClause, 0)
 	lower := strings.ToLower(fromClause)
 
@@ -863,19 +933,60 @@ func parseTablesInFromClause(fromClause string) []tableFromClause {
 	// Это предотвращает ложное разделение по запятым внутри isnull(arg1, arg2)
 	parts := splitByCommasRespectingParens(normalized)
 
+	locals := make([]tableFromClause, 0)
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
 
+		// Derived table: (subquery) alias — внутренние таблицы подзапроса
+		// разбираются рекурсивно со своей областью фильтрации
+		if strings.HasPrefix(part, "(") {
+			if closeIdx := findMatchingParen(part, 0); closeIdx > 0 && depth < maxDerivedTableDepth {
+				inner := part[1:closeIdx]
+				if strings.Contains(strings.ToLower(inner), "select") {
+					result = append(result, extractTablesFromQueryLower(inner, depth+1)...)
+					continue
+				}
+			}
+			continue
+		}
+
 		table := parseTableWithAlias(part)
 		if table.TableName != "" {
-			result = append(result, table)
+			locals = append(locals, table)
 		}
 	}
 
-	return result
+	for i := range locals {
+		locals[i].ScopeText = scopeLower
+		locals[i].ScopeLen = len(locals)
+	}
+
+	return append(locals, result...)
+}
+
+// extractTablesFromQueryLower извлекает таблицы из top-level FROM-части текста
+// запроса (оператора или подзапроса); scopeLower-тег таблиц — сам текст запроса.
+func extractTablesFromQueryLower(queryText string, depth int) []tableFromClause {
+	qLower := strings.ToLower(queryText)
+
+	fromStart, fromEnd, found := findTopLevelFromClauseBounds(qLower)
+	if !found {
+		return nil
+	}
+
+	fromClause, ok := safeSliceByBounds(qLower, fromStart, fromEnd)
+	if !ok {
+		return nil
+	}
+	// Проверяем, что fromClause действительно начинается с FROM
+	if !strings.HasPrefix(strings.ToLower(fromClause), "from") {
+		return nil
+	}
+
+	return parseTablesInFromClauseDepth(fromClause, depth, qLower)
 }
 
 func parseTableWithAlias(part string) tableFromClause {
@@ -912,6 +1023,11 @@ func parseTableWithAlias(part string) tableFromClause {
 
 	// Очищаем имя таблицы от скобок, которые могли попасть из-за неправильного разделения
 	result.TableName = strings.Trim(tokens[0], "()")
+
+	// Guard: SQL-ключевое слово не может быть именем таблицы (артефакт парсинга)
+	if _, reserved := sqlReservedTableNames[result.TableName]; reserved {
+		return tableFromClause{}
+	}
 
 	// Ищем алиас (после AS или просто следующий токен)
 	for i := 1; i < len(tokens); i++ {
@@ -977,27 +1093,17 @@ func extractTablesFromFromClause(fullText string) []tableFromClause {
 				if !ok {
 					return result
 				}
-				return parseTablesInFromClause(fromClause)
+				return parseTablesInFromClauseDepth(fromClause, 0, strings.ToLower(fullText))
 			}
 		}
 	}
 
-	// Для обычных SELECT/DELETE: ищем FROM на верхнем уровне
-	fromStart, fromEnd, found := findTopLevelFromClauseBounds(fullText)
-	if !found {
+	// Для обычных SELECT/DELETE/INSERT: ищем FROM на верхнем уровне
+	if _, _, found := findTopLevelFromClauseBounds(fullText); !found {
 		return result
 	}
 
-	fromClause, ok := safeSliceByBounds(fullText, fromStart, fromEnd)
-	if !ok {
-		return result
-	}
-	// Проверяем, что fromClause действительно начинается с FROM
-	if !strings.HasPrefix(strings.ToLower(fromClause), "from") {
-		return result
-	}
-
-	return parseTablesInFromClause(fromClause)
+	return extractTablesFromQueryLower(fullText, 0)
 }
 
 func extractColumnRefsFromWhere(lower string) whereAnalysisResult {
@@ -1006,20 +1112,77 @@ func extractColumnRefsFromWhere(lower string) whereAnalysisResult {
 		HasUnqualifiedConditions: false,
 	}
 
-	// Находим WHERE clause
-	whereIdx := strings.Index(lower, " where ")
+	// Находим WHERE clause верхнего уровня (вне скобок и строковых литералов),
+	// чтобы WHERE derived tables не подменял фильтрацию внешних таблиц
+	whereIdx := -1
+	depth := 0
+	inString := false
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '\'' {
+			if inString && i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+		if depth == 0 && keywordMatchAt(lower, i, "where") {
+			whereIdx = i
+			break
+		}
+	}
 	if whereIdx == -1 {
 		return result
 	}
 
-	wherePart := lower[whereIdx+7:]
+	wherePart := lower[whereIdx+5:]
 
-	// Обрезаем до следующего ключевого слова
-	endMarkers := []string{" order by ", " group by ", " having ", " union ", " except ", " intersect "}
+	// Обрезаем до следующего ключевого слова верхнего уровня
 	endIdx := len(wherePart)
-	for _, marker := range endMarkers {
-		if idx := strings.Index(wherePart, marker); idx > 0 && idx < endIdx {
-			endIdx = idx
+	depth = 0
+	inString = false
+	for i := 0; i < len(wherePart); i++ {
+		ch := wherePart[i]
+		if ch == '\'' {
+			if inString && i+1 < len(wherePart) && wherePart[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+		if depth == 0 &&
+			(keywordMatchAt(wherePart, i, "order by") ||
+				keywordMatchAt(wherePart, i, "group by") ||
+				keywordMatchAt(wherePart, i, "having") ||
+				keywordMatchAt(wherePart, i, "union") ||
+				keywordMatchAt(wherePart, i, "except") ||
+				keywordMatchAt(wherePart, i, "intersect")) {
+			endIdx = i
+			break
 		}
 	}
 	wherePart = wherePart[:endIdx]
@@ -1045,28 +1208,69 @@ func extractColumnRefsFromWhere(lower string) whereAnalysisResult {
 func extractColumnRefsFromOn(lower string) []string {
 	result := make([]string, 0)
 
-	// Находим все ON условия
-	parts := reLookupOn.Split(lower, -1)
-
-	for _, part := range parts[1:] { // пропускаем первую часть (до первого ON)
-		// Обрезаем до JOIN или другого ключевого слова
-		endMarkers := []string{" join ", " where ", " order by ", " group by "}
-		endIdx := len(part)
-		for _, marker := range endMarkers {
-			if idx := strings.Index(part, marker); idx > 0 && idx < endIdx {
-				endIdx = idx
+	// Находим все ON условия верхнего уровня (вне скобок и строковых литералов),
+	// чтобы ON derived tables не подменял соединения внешних таблиц.
+	// Каждое ON-условие длится до следующего ключевого слова верхнего уровня.
+	depth := 0
+	inString := false
+	current := strings.Builder{}
+	inOn := false
+	flush := func() {
+		if inOn && current.Len() > 0 {
+			matches := reLookupQualifiedRef.FindAllStringSubmatch(current.String(), -1)
+			for _, m := range matches {
+				if len(m) >= 2 {
+					result = append(result, strings.ToLower(m[1]))
+				}
 			}
 		}
-		onPart := part[:endIdx]
-
-		// Извлекаем alias.column ссылки
-		matches := reLookupQualifiedRef.FindAllStringSubmatch(onPart, -1)
-		for _, m := range matches {
-			if len(m) >= 2 {
-				result = append(result, strings.ToLower(m[1]))
+		current.Reset()
+		inOn = false
+	}
+	for i := 0; i < len(lower); i++ {
+		ch := lower[i]
+		if ch == '\'' {
+			if inString && i+1 < len(lower) && lower[i+1] == '\'' {
+				i++
+				continue
 			}
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+		if depth == 0 {
+			if keywordMatchAt(lower, i, "on") {
+				flush()
+				inOn = true
+				i++
+				continue
+			}
+			if keywordMatchAt(lower, i, "join") ||
+				keywordMatchAt(lower, i, "where") ||
+				keywordMatchAt(lower, i, "order by") ||
+				keywordMatchAt(lower, i, "group by") ||
+				keywordMatchAt(lower, i, "union") ||
+				keywordMatchAt(lower, i, "having") {
+				flush()
+				continue
+			}
+		}
+		// Содержимое скобок пишем тоже: ссылки вида isnull(a.x, b.y) внутри ON
+		if inOn {
+			current.WriteByte(lower[i])
 		}
 	}
+	flush()
 
 	return result
 }

@@ -5823,3 +5823,197 @@ func TestEnrichVariableTypesFromAPI_DoesNotOverwriteExisting(t *testing.T) {
 		t.Fatalf("existing type should not be changed, got %q", vt["agreementdate"])
 	}
 }
+
+
+func TestFindMatchingParen(t *testing.T) {
+	cases := []struct {
+		name    string
+		text    string
+		openIdx int
+		want    int
+	}{
+		{"simple", "(select 1)", 0, 9},
+		{"nested", "(select (a, b) from t)", 0, 21},
+		{"paren in string", "(select '(' from t)", 0, 18},
+		{"escaped quote in string", "(select '''' from t)", 0, 19},
+		{"unbalanced", "(select 1", 0, -1},
+		{"not a paren", "select 1", 0, -1},
+		{"inner open", "a(b(c)d)e", 1, 7},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := findMatchingParen(tc.text, tc.openIdx)
+			if got != tc.want {
+				t.Fatalf("findMatchingParen(%q, %d) = %d, want %d", tc.text, tc.openIdx, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseTableWithAlias_ReservedWordDropped(t *testing.T) {
+	table := parseTableWithAlias("(select x from t)")
+	if table.TableName != "" {
+		t.Fatalf("expected empty table for reserved word, got %q", table.TableName)
+	}
+}
+
+func TestParseTablesInFromClause_DerivedTable(t *testing.T) {
+	fromClause := "from (select ct.LoanID from pCons_CTL_Turnover ct where ct.SPID = @@spid group by ct.LoanID) t" +
+		" left join (select l.ContractCreditID from pCons_CTL_Link l where l.SPID = @@spid) g"
+	tables := parseTablesInFromClause(fromClause)
+	if len(tables) != 2 {
+		t.Fatalf("expected 2 tables, got %d: %#v", len(tables), tables)
+	}
+	if tables[0].TableName != "pcons_ctl_turnover" || tables[0].Alias != "ct" {
+		t.Fatalf("tables[0] = %#v", tables[0])
+	}
+	if tables[1].TableName != "pcons_ctl_link" || tables[1].Alias != "l" {
+		t.Fatalf("tables[1] = %#v", tables[1])
+	}
+	for _, tb := range tables {
+		if tb.ScopeText == "" {
+			t.Fatalf("ScopeText must be set for derived inner table %#v", tb)
+		}
+		if tb.ScopeLen != 1 {
+			t.Fatalf("ScopeLen = %d, want 1", tb.ScopeLen)
+		}
+		if !strings.Contains(tb.ScopeText, "where "+tb.Alias+".spid") {
+			t.Fatalf("ScopeText must contain inner WHERE of the subquery: %q", tb.ScopeText)
+		}
+	}
+}
+
+func TestAnalyzeStatementForFullScan_DerivedTableFiltered_NoFinding(t *testing.T) {
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+	lines := []string{
+		"insert into pMinRepro_Target (SPID, K)",
+		"select @@spid, t.K",
+		"  from (select k.K, sum(k.A) as S",
+		"          from pMinRepro_Src k",
+		"         where k.SPID = @@spid",
+		"         group by k.K) t",
+		"  left join (select l.K, sum(l.A) as G",
+		"               from pMinRepro_Lnk l",
+		"              where l.SPID = @@spid",
+		"              group by l.K) g",
+		"    on g.K = t.K",
+		" where isnull(g.G, 0) <> t.S",
+	}
+	finding := analyzeStatementForFullScan(lines, 1, file, "insert")
+	if finding != nil {
+		t.Fatalf("expected no finding for derived tables with inner filters, got: %+v", finding)
+	}
+}
+
+func TestAnalyzeStatementForFullScan_DerivedTableUnfiltered_FindingOnInnerTable(t *testing.T) {
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+	lines := []string{
+		"select t.K",
+		"  from (select k.K from pMinRepro_Src k) t",
+	}
+	finding := analyzeStatementForFullScan(lines, 1, file, "select")
+	if finding == nil {
+		t.Fatalf("expected finding for derived table without inner filter")
+	}
+	if finding.Object != "pminrepro_src" {
+		t.Fatalf("finding.Object = %q, want %q", finding.Object, "pminrepro_src")
+	}
+	if finding.Line != 1 {
+		t.Fatalf("finding.Line = %d, want 1", finding.Line)
+	}
+}
+
+func TestAnalyzeStatementForFullScan_InsertSelect(t *testing.T) {
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+
+	t.Run("values without from no finding", func(t *testing.T) {
+		lines := []string{"insert into pMinRepro_Target (SPID, K)", "values (@@spid, 1)"}
+		if finding := analyzeStatementForFullScan(lines, 1, file, "insert"); finding != nil {
+			t.Fatalf("expected no finding, got: %+v", finding)
+		}
+	})
+
+	t.Run("select part violation reports inner table", func(t *testing.T) {
+		lines := []string{
+			"insert into pMinRepro_Target (SPID, K)",
+			"select @@spid, k.K",
+			"  from pMinRepro_Src k",
+		}
+		finding := analyzeStatementForFullScan(lines, 7, file, "insert")
+		if finding == nil {
+			t.Fatalf("expected finding for unfiltered SELECT part")
+		}
+		if finding.Object != "pminrepro_src" {
+			t.Fatalf("finding.Object = %q, want %q", finding.Object, "pminrepro_src")
+		}
+		if finding.Line != 7 {
+			t.Fatalf("finding.Line = %d, want 7 (insert line)", finding.Line)
+		}
+	})
+}
+
+func TestCheckTableFullScan_InsertSelectLineAnchor(t *testing.T) {
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+	lines := []string{
+		"begin",
+		"",
+		"insert into pMinRepro_Target (SPID, K)",
+		"select @@spid, k.K",
+		"  from pMinRepro_Src k",
+		"",
+		"end",
+	}
+	content := strings.Join(lines, "\n")
+
+	runner := &Runner{}
+	runner.exec = &reviewExecContext{
+		filePath:    normalizePath(file.Path),
+		content:     []byte(content),
+		macroResult: replaceMacros(content),
+		lines:       lines,
+	}
+	findings, err := runner.checkTableFullScan(context.Background(), file)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %#v", len(findings), findings)
+	}
+	if findings[0].Line != 3 {
+		t.Fatalf("finding.Line = %d, want 3 (insert line, not select line)", findings[0].Line)
+	}
+	if findings[0].Object != "pminrepro_src" {
+		t.Fatalf("finding.Object = %q, want %q", findings[0].Object, "pminrepro_src")
+	}
+}
+
+func TestExtractColumnRefsFromOn_TopLevelWithParens(t *testing.T) {
+	lower := "delete pt from pt, a inner join b on a.x = isnull(b.y, 0) inner join c on (c.z = a.x) where a.q = 1"
+	refs := extractColumnRefsFromOn(lower)
+	joined := strings.Join(refs, ",")
+	for _, want := range []string{"a", "b", "c"} {
+		if !strings.Contains(","+joined+",", ","+want+",") {
+			t.Fatalf("refs = %v, want %q among them", refs, want)
+		}
+	}
+}
+
+func TestAnalyzeStatementForFullScan_CommentInsideWhere_NoFalsePositive(t *testing.T) {
+	// Комментарий внутри WHERE не должен съедать хвост оператора
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+	lines := []string{
+		"    delete pAPI_Accrual_Interest",
+		"      from pAPI_Accrual_Interest i,",
+		"           tContractCredit      cc,",
+		"           tContract             c",
+		"     where i.SPID                = @@SPID",
+		"       and cc.ContractCreditID   = i.ObjectID",
+		"       and cc.Flag               & FLAG = 0 -- только договора с неиндивидуальной ставкой",
+		"       and c.ContractID          = i.ObjectID",
+		"    M_FORCEORDER",
+	}
+	finding := analyzeStatementForFullScan(lines, 1, file, "delete")
+	if finding != nil {
+		t.Fatalf("expected no finding, got: %+v", finding)
+	}
+}

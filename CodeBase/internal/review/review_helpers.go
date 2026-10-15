@@ -870,9 +870,11 @@ func enrichUpdateTargetAliases(tables []tableFromClause) []tableFromClause {
 	return tables
 }
 
-func isTableFiltered(table tableFromClause, tables []tableFromClause, whereResult whereAnalysisResult, onRefs []string) bool {
-	// Если одна таблица в запросе и есть неквалифицированные условия - считаем отфильтрованной
-	if len(tables) == 1 && whereResult.HasUnqualifiedConditions {
+// isTableFiltered проверяет, отфильтрована ли таблица по WHERE/ON её области
+// фильтрации; scopeLen — число таблиц в этой области (для эвристики единственной таблицы).
+func isTableFiltered(table tableFromClause, scopeLen int, whereResult whereAnalysisResult, onRefs []string) bool {
+	// Если одна таблица в области и есть неквалифицированные условия - считаем отфильтрованной
+	if scopeLen == 1 && whereResult.HasUnqualifiedConditions {
 		return true
 	}
 

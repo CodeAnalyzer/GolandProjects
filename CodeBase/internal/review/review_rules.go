@@ -2847,7 +2847,9 @@ func (r *Runner) checkTableFullScan(ctx context.Context, file *indexedFile) ([]F
 
 		if !inStatement {
 			var startIdx int
-			stmtType, startIdx = findStatementStart(lower)
+			// Мин-позиция по всем DML-типам, включая INSERT: оператор
+			// INSERT…SELECT должен ловиться со строки insert
+			stmtType, startIdx = findStatementStartForTableHintExists(lower)
 			if startIdx >= 0 && !isInComment(line, startIdx) {
 				depthBefore := 0
 				for j := 0; j < startIdx; j++ {
@@ -2880,7 +2882,7 @@ func (r *Runner) checkTableFullScan(ctx context.Context, file *indexedFile) ([]F
 			parenDepth = 0
 
 			var newStartIdx int
-			stmtType, newStartIdx = findStatementStart(lower)
+			stmtType, newStartIdx = findStatementStartForTableHintExists(lower)
 			if newStartIdx >= 0 && !isInComment(line, newStartIdx) && !hasStatementEnded(lower, stmtBuffer) {
 				depthBefore := 0
 				for j := 0; j < newStartIdx; j++ {
@@ -2910,12 +2912,24 @@ func (r *Runner) checkTableFullScan(ctx context.Context, file *indexedFile) ([]F
 	return findings, nil
 }
 
+// scopeRefs — кэш WHERE/ON-ссылок одной области фильтрации
+type scopeRefs struct {
+	where whereAnalysisResult
+	on    []string
+}
+
 func analyzeStatementForFullScan(lines []string, startLine int, file *indexedFile, stmtType string) *Finding {
 	if len(lines) == 0 || stmtType == "" {
 		return nil
 	}
 
-	fullText := strings.Join(lines, " ")
+	// Чистим комментарии построчно ДО склейки: в тексте, собранном в одну
+	// строку, однострочный комментарий съел бы весь хвост оператора
+	cleanedLines := make([]string, len(lines))
+	for i, ln := range lines {
+		cleanedLines[i] = removeComments(ln)
+	}
+	fullText := strings.Join(cleanedLines, " ")
 	lower := strings.ToLower(fullText)
 
 	// Для MERGE проверяем наличие ON условия
@@ -2980,16 +2994,34 @@ func analyzeStatementForFullScan(lines []string, startLine int, file *indexedFil
 		return nil
 	}
 
-	// Извлекаем условия из WHERE и ON
+	// Извлекаем таблицы; каждая несёт ScopeText — текст области фильтрации
+	// (весь оператор или тело derived table), из которого берутся WHERE/ON-условия
 	whereResult := extractColumnRefsFromWhere(lower)
 	onRefs := extractColumnRefsFromOn(lower)
+	refsByScope := make(map[string]scopeRefs)
 
 	// Проверяем каждую таблицу
 	for _, table := range tables {
 		if strings.HasPrefix(strings.ToLower(table.TableName), "#") {
 			continue
 		}
-		if !isTableFiltered(table, tables, whereResult, onRefs) {
+		scopeLen := table.ScopeLen
+		if scopeLen == 0 {
+			scopeLen = len(tables)
+		}
+		if table.ScopeText != "" {
+			refs, ok := refsByScope[table.ScopeText]
+			if !ok {
+				refs = scopeRefs{
+					where: extractColumnRefsFromWhere(table.ScopeText),
+					on:    extractColumnRefsFromOn(table.ScopeText),
+				}
+				refsByScope[table.ScopeText] = refs
+			}
+			whereResult = refs.where
+			onRefs = refs.on
+		}
+		if !isTableFiltered(table, scopeLen, whereResult, onRefs) {
 			return &Finding{
 				Rule:             RuleTableFullScan,
 				Severity:         SeverityDeployStopper,
