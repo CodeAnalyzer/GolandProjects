@@ -3932,6 +3932,144 @@ as
 	}
 }
 
+func TestCheckUsageVarInSameSelect_SystemVars_NoFinding(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "system @@vars in both assignments",
+			content: `create proc TestProc
+as
+  select @RetVal = @@error, @RowCount = @@rowcount
+`,
+		},
+		{
+			name: "system @@var of earlier assignment name",
+			content: `create proc TestProc
+as
+  select @RowCount = 0, @RetVal = @@rowcount
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Runner{}
+			parser := sqlparser.NewParser()
+			parsed, err := parser.ParseContent(tc.content)
+			if err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+
+			tmpFile, err := os.CreateTemp("", "test_usage_var_*.sql")
+			if err != nil {
+				t.Fatalf("failed to create temp file: %v", err)
+			}
+			defer os.Remove(tmpFile.Name())
+			if _, err := tmpFile.WriteString(tc.content); err != nil {
+				t.Fatalf("failed to write to temp file: %v", err)
+			}
+			tmpFile.Close()
+
+			findings, err := r.checkUsageVarInSameSelect(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(findings) != 0 {
+				t.Fatalf("expected 0 findings, got %d: %v", len(findings), findings)
+			}
+		})
+	}
+}
+
+func TestCheckUsageVarInSameSelect_GluedMacros_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  select @RowCount = @@rowcount, @RetVal = @@error
+  M_BUSINESSLOG_PARAM(@RowCount, DSINT_KEY, INT)
+  M_BUSINESSLOG_PARAM(@RetVal, DSINT_KEY, INT)
+
+  return 0
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_usage_var_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkUsageVarInSameSelect(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings, got %d: %v", len(findings), findings)
+	}
+}
+
+func TestCheckDiffTypesComparison_AnchorWithGluedMacro(t *testing.T) {
+	content := `create proc TestProc
+as
+begin
+  declare @DebtKind DSINT_KEY
+  declare @SubcontoID DSIDENTIFIER
+
+  M_DELETE_PTABLE(pCons_CTL_SubcontoID)
+  insert into pCons_CTL_SubcontoID M_WITH_ROWLOCK
+         (SPID, LoanID)
+  select @@spid,
+         @DebtKind
+    from pCons_CTL_Date dt
+   inner join tConSubcontoDebtKindLink dl
+           on @DebtKind = @SubcontoID
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_diff_types_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	r.exec = &reviewExecContext{filePath: normalizePath(tmpFile.Name()), content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	defer func() { r.exec = nil }()
+
+	findings, err := r.checkDiffTypesComparison(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("expected finding for @DebtKind = @SubcontoID comparison")
+	}
+	if findings[0].Rule != RuleDiffTypesComparison {
+		t.Fatalf("expected RuleDiffTypesComparison, got %s", findings[0].Rule)
+	}
+	// ON-сравнение находится на строке 14, а не на строке макроса (7) —
+	// якорь должен указывать на фактическое сравнение
+	if findings[0].Line != 14 {
+		t.Fatalf("expected line 14 (ON comparison), got %d", findings[0].Line)
+	}
+}
+
 func TestCheckUsageVarInSameSelect_CrossRef_Finding(t *testing.T) {
 	content := `create proc TestProc
 as

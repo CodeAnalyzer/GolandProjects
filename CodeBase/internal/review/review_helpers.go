@@ -2331,13 +2331,41 @@ func hasOrderBy(lowerQuery string) bool {
 
 // containsVarReference проверяет, содержит ли выражение ссылку на переменную @varName
 // с учётом word boundary (чтобы @a не матчило @ab).
+// containsVarReference проверяет наличие ссылки на переменную @var в выражении.
+// Системные переменные @@var (например, @@rowcount) ссылкой на @var не считаются.
 func containsVarReference(expr, varName string) bool {
 	v := strings.TrimPrefix(strings.TrimSpace(varName), "@")
 	if v == "" {
 		return false
 	}
 	re := cachedRegexp(`(?i)@` + regexp.QuoteMeta(v) + `\b`)
-	return re.MatchString(expr)
+	for _, loc := range re.FindAllStringIndex(expr, -1) {
+		if loc[0] > 0 && expr[loc[0]-1] == '@' {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// reStandaloneMacroLine — строка, целиком состоящая из вызова макроса Diasoft
+// M_XXX(...), например M_BUSINESSLOG_PARAM(@RowCount, DSINT_KEY, INT).
+// Inline-макросы (M_NOLOCK_INDEX(...) на строке с другим содержимым, M_FORCEORDER
+// без скобок) под паттерн не попадают.
+var reStandaloneMacroLine = regexp.MustCompile(`(?i)^[\t ]*M_[A-Z0-9_]+[\t ]*\(.*\)[\t ]*\r?$`)
+
+// stripStandaloneMacroLines вырезает из текста оператора standalone-макросы
+// (строка целиком — вызов макроса), заменяя их на пустые строки с сохранением
+// \n: парсер склеивает такие макросы с соседним оператором, а частью SQL-выражений
+// они не являются. Сохранение нумерации строк позволяет искать offset'ы якорей.
+func stripStandaloneMacroLines(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if reStandaloneMacroLine.MatchString(line) {
+			lines[i] = ""
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // filterOutTableNames удаляет из списка имён те, которые являются именами таблиц,

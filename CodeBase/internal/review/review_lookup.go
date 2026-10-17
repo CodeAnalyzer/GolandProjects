@@ -28,7 +28,7 @@ var (
 	// conditionParseRegexes используются при извлечении условий WHERE/ON.
 	reLookupQualifiedRef = regexp.MustCompile(`(?i)(\w+)\.(\w+)`)
 	reLookupCondition    = regexp.MustCompile(`(?i)\b(\w+)\s*(=|<>|!=|<|>|<=|>=|like|in|between)`)
-	reLookupOn           = regexp.MustCompile(`(?i)\s+on\s+`)
+	// reLookupOn           = regexp.MustCompile(`(?i)\s+on\s+`)
 )
 
 func (r *Runner) getIndexedFile(ctx context.Context, path string) (*indexedFile, error) {
@@ -773,7 +773,7 @@ func splitByOrRespectingParens(sql string) []string {
 }
 
 // findMatchingParen возвращает индекс парной закрывающей скобки для скобки
-// на позиции openIdx с учётом строковых литералов ('…' с ''-эскейпом).
+// на позиции openIdx с учётом строковых литералов ('…' с ”-эскейпом).
 // Возвращает -1, если парная скобка не найдена.
 func findMatchingParen(text string, openIdx int) int {
 	if openIdx < 0 || openIdx >= len(text) || text[openIdx] != '(' {

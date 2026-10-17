@@ -2029,6 +2029,26 @@ func findAssignmentLineOffset(queryText string, assignments []selectAssignment, 
 	return 0
 }
 
+// findComparisonLineOffset ищет в тексте оператора первую строку, содержащую оба
+// операнда comparison (case-insensitive), и возвращает её смещение относительно
+// начала текста (0-based). Используется для якоря finding'а на строку фактического
+// сравнения вместо начала query-фрагмента (фрагмент может начинаться со склеенного
+// standalone-макроса). Если операнды не найдены на одной строке — 0 (fallback).
+func findComparisonLineOffset(queryText, left, right string) int {
+	left = strings.ToLower(strings.TrimSpace(left))
+	right = strings.ToLower(strings.TrimSpace(right))
+	if left == "" || right == "" {
+		return 0
+	}
+	for i, line := range strings.Split(queryText, "\n") {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, left) && strings.Contains(lower, right) {
+			return i
+		}
+	}
+	return 0
+}
+
 // parseCasePartAssignments извлекает assignment'ы из THEN/ELSE веток CASE-выражения.
 // Возвращает selectAssignment для каждой переменной, присваиваемой внутри CASE.
 // Expression — весь CASE-текст целиком, чтобы cross-reference check мог найти

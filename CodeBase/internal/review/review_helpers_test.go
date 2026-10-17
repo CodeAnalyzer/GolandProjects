@@ -176,3 +176,68 @@ func TestCachedRegexp_FunctionalMatch(t *testing.T) {
 		t.Error("cachedRegexp returned regexp that does not match expected input")
 	}
 }
+
+func TestContainsVarReference_SystemVarNoMatch(t *testing.T) {
+	cases := []struct {
+		name    string
+		expr    string
+		varName string
+		want    bool
+	}{
+		{name: "system @@rowcount is not @rowcount", expr: "@@rowcount", varName: "@RowCount", want: false},
+		{name: "system @@error is not @error", expr: "@@error", varName: "@Error", want: false},
+		{name: "system @@RowCount case-insensitive", expr: "@@RowCount", varName: "@RowCount", want: false},
+		{name: "plain reference matches", expr: "@RowCount + 1", varName: "@RowCount", want: true},
+		{name: "reference in expression matches", expr: "isnull(@RowCount, 0)", varName: "@RowCount", want: true},
+		{name: "case-insensitive reference", expr: "x = @rowcount", varName: "@RowCount", want: true},
+		{name: "system and plain in one expression", expr: "@@rowcount + @RowCount", varName: "@RowCount", want: true},
+		{name: "no reference", expr: "@@error, 1", varName: "@RowCount", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := containsVarReference(tc.expr, tc.varName); got != tc.want {
+				t.Fatalf("containsVarReference(%q, %q) = %v, want %v", tc.expr, tc.varName, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStripStandaloneMacroLines(t *testing.T) {
+	cases := []struct {
+		name  string
+		line  string
+		blank bool
+	}{
+		{name: "businesslog param", line: "M_BUSINESSLOG_PARAM(@RowCount, DSINT_KEY, INT)", blank: true},
+		{name: "delete ptable", line: "M_DELETE_PTABLE(pCons_CTL_SubcontoID)", blank: true},
+		{name: "log table", line: "M_LOG_TABLE(pCons_CTL_SubcontoID)", blank: true},
+		{name: "leading spaces and lowercase", line: "  m_log_table(pX)  ", blank: true},
+		{name: "inline nolock index not stripped", line: "from tX M_NOLOCK_INDEX(XPK)", blank: false},
+		{name: "forceorder without parens not stripped", line: "M_FORCEORDER", blank: false},
+		{name: "select not stripped", line: "select 1", blank: false},
+		{name: "macro prefix of longer name not matched", line: "M_DELETE_PTABLE_INDEX(pX, XPK)", blank: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripStandaloneMacroLines(tc.line)
+			wantBlank := ""
+			if !tc.blank {
+				wantBlank = tc.line
+			}
+			if got != wantBlank {
+				t.Fatalf("stripStandaloneMacroLines(%q) = %q, want %q", tc.line, got, wantBlank)
+			}
+		})
+	}
+
+	t.Run("line numbering preserved", func(t *testing.T) {
+		input := "select 1\nM_LOG_TABLE(pX)\nwhere x = 1"
+		want := "select 1\n\nwhere x = 1"
+		if got := stripStandaloneMacroLines(input); got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+		if lines := strings.Count(stripStandaloneMacroLines(input), "\n"); lines != 2 {
+			t.Fatalf("line count changed: got %d newlines, want 2", lines)
+		}
+	})
+}

@@ -5020,6 +5020,10 @@ func (r *Runner) checkUsageVarInSameSelect(ctx context.Context, parsed *sqlparse
 
 		var assignments []selectAssignment
 		queryText := strings.TrimSpace(fragment.QueryText)
+		// Standalone-макросы (M_BUSINESSLOG_PARAM и т.п.), склеенные парсером с
+		// оператором, не являются частью SELECT-выражений — вырезаем до разбора,
+		// сохраняя нумерацию строк для поиска offset'а якоря.
+		queryText = stripStandaloneMacroLines(queryText)
 		queryText = truncateAtStatementBoundary(queryText)
 
 		stmt, ok := parseSelectAssignStatement(queryText)
@@ -5917,7 +5921,7 @@ func (r *Runner) checkDiffTypesComparison(ctx context.Context, parsed *sqlparser
 						Severity:         SeverityPostgreReq,
 						Message:          fmt.Sprintf("Сравнение переменных разных типов: %s (%s) %s %s (%s)", cmp.left, t1, cmp.op, cmp.right, t2),
 						File:             file.Path,
-						Line:             fragment.LineNumber,
+						Line:             fragment.LineNumber + findComparisonLineOffset(queryText, cmp.left, cmp.right),
 						Object:           fmt.Sprintf("%s %s %s", cmp.left, cmp.op, cmp.right),
 						CurrentProductID: file.DsProductID,
 					})
@@ -5935,21 +5939,21 @@ func (r *Runner) checkDiffTypesComparison(ctx context.Context, parsed *sqlparser
 					continue
 				}
 
-				key := fmt.Sprintf("%d|%s|%s|%s", fragment.LineNumber, cmp.left, cmp.right, cmp.op)
-				if _, exists := seen[key]; exists {
-					continue
-				}
-				seen[key] = struct{}{}
+			key := fmt.Sprintf("%d|%s|%s|%s", fragment.LineNumber, cmp.left, cmp.right, cmp.op)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
 
-				findings = append(findings, Finding{
-					Rule:             RuleDiffTypesComparison,
-					Severity:         SeverityPostgreReq,
-					Message:          fmt.Sprintf("Сравнение разных типов: %s (%s) %s %s (%s)", strings.TrimSpace(cmp.left), type1, cmp.op, strings.TrimSpace(cmp.right), type2),
-					File:             file.Path,
-					Line:             fragment.LineNumber,
-					Object:           fmt.Sprintf("%s %s %s", strings.TrimSpace(cmp.left), cmp.op, strings.TrimSpace(cmp.right)),
-					CurrentProductID: file.DsProductID,
-				})
+			findings = append(findings, Finding{
+				Rule:             RuleDiffTypesComparison,
+				Severity:         SeverityPostgreReq,
+				Message:          fmt.Sprintf("Сравнение разных типов: %s (%s) %s %s (%s)", strings.TrimSpace(cmp.left), type1, cmp.op, strings.TrimSpace(cmp.right), type2),
+				File:             file.Path,
+				Line:             fragment.LineNumber + findComparisonLineOffset(queryText, cmp.left, cmp.right),
+				Object:           fmt.Sprintf("%s %s %s", strings.TrimSpace(cmp.left), cmp.op, strings.TrimSpace(cmp.right)),
+				CurrentProductID: file.DsProductID,
+			})
 			}
 		}
 	}

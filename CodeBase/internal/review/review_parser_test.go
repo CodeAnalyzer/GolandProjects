@@ -5,6 +5,52 @@ import (
 	"testing"
 )
 
+func TestFindComparisonLineOffset(t *testing.T) {
+	queryText := strings.Join([]string{
+		"M_DELETE_PTABLE(pCons_CTL_SubcontoID)",
+		"insert into pCons_CTL_SubcontoID M_WITH_ROWLOCK",
+		"select @@spid,",
+		"       dt.LoanID",
+		"  from pCons_CTL_Date dt",
+		" inner join tConSubcontoDebtKindLink dl",
+		"         on dl.DebtKind = dt.ConsDebtSubcontoID",
+	}, "\n")
+
+	t.Run("comparison on later line", func(t *testing.T) {
+		got := findComparisonLineOffset(queryText, "dl.DebtKind", "dt.ConsDebtSubcontoID")
+		if got != 6 {
+			t.Fatalf("findComparisonLineOffset = %d, want 6", got)
+		}
+	})
+
+	t.Run("comparison on first line", func(t *testing.T) {
+		got := findComparisonLineOffset(queryText, "insert", "M_WITH_ROWLOCK")
+		if got != 1 {
+			t.Fatalf("findComparisonLineOffset = %d, want 1", got)
+		}
+	})
+
+	t.Run("case-insensitive match", func(t *testing.T) {
+		got := findComparisonLineOffset(queryText, "DL.DEBTKIND", "DT.CONSDEBTSUBCONTOID")
+		if got != 6 {
+			t.Fatalf("findComparisonLineOffset = %d, want 6", got)
+		}
+	})
+
+	t.Run("operands on different lines fallback", func(t *testing.T) {
+		got := findComparisonLineOffset(queryText, "dt.LoanID", "pCons_CTL_Date")
+		if got != 0 {
+			t.Fatalf("findComparisonLineOffset = %d, want 0 (fallback)", got)
+		}
+	})
+
+	t.Run("empty operand fallback", func(t *testing.T) {
+		if got := findComparisonLineOffset(queryText, "", "dt.ConsDebtSubcontoID"); got != 0 {
+			t.Fatalf("findComparisonLineOffset = %d, want 0 (fallback)", got)
+		}
+	})
+}
+
 func TestHasStatementEnded_EndInsideUpdateCase_DoesNotEnd(t *testing.T) {
 	stmtBuffer := []string{
 		"update pConsAccListID",
