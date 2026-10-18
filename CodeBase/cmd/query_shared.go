@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"github.com/codebase/internal/query"
+	"github.com/codebase/internal/specfts"
 	"github.com/spf13/cobra"
 )
 
@@ -29,10 +30,11 @@ var (
 )
 
 type queryResponseMeta struct {
-	Limit   int               `json:"limit"`
-	Filters map[string]string `json:"filters,omitempty"`
-	Output  string            `json:"output,omitempty"`
-	HasMore bool              `json:"has_more,omitempty"`
+	Limit        int                          `json:"limit"`
+	Filters      map[string]string            `json:"filters,omitempty"`
+	Output       string                       `json:"output,omitempty"`
+	HasMore      bool                         `json:"has_more,omitempty"`
+	SemanticMeta *specfts.SemanticDiagnostics `json:"semantic_meta,omitempty"`
 }
 
 type querySuccessResponse struct {

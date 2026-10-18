@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/codebase/internal/query"
+	"github.com/codebase/internal/specfts"
 )
 
 func captureStdout(t *testing.T, fn func()) string {
@@ -36,16 +37,16 @@ func TestPrintDescriptionResults_JSONEnvelope(t *testing.T) {
 	defer func() { outputJSON, limit = origJSON, origLimit }()
 
 	out := captureStdout(t, func() {
-		if err := printDescriptionResults("query desc-search", map[string]string{"text": "тест"}, []query.DescriptionSearchResult{}, false); err != nil {
+		if err := printDescriptionResults("query desc-search", map[string]string{"text": "тест"}, &query.DescriptionSearchOutput{Items: []query.DescriptionSearchResult{}}); err != nil {
 			t.Errorf("print: %v", err)
 		}
 	})
 
 	var response struct {
-		Success       bool   `json:"success"`
-		FormatVersion string `json:"format_version"`
-		Command       string `json:"command"`
-		Count         int    `json:"count"`
+		Success       bool          `json:"success"`
+		FormatVersion string        `json:"format_version"`
+		Command       string        `json:"command"`
+		Count         int           `json:"count"`
 		Items         []interface{} `json:"items"`
 		Meta          struct {
 			Limit   int    `json:"limit"`
@@ -77,7 +78,7 @@ func TestPrintDescriptionResults_JSONHasMore(t *testing.T) {
 		{Kind: "procedure", Name: "P1", Source: "exact", Rank: 1, Snippet: "s"},
 	}
 	out := captureStdout(t, func() {
-		if err := printDescriptionResults("query desc-search", nil, items, true); err != nil {
+		if err := printDescriptionResults("query desc-search", nil, &query.DescriptionSearchOutput{Items: items, HasMore: true}); err != nil {
 			t.Errorf("print: %v", err)
 		}
 	})
@@ -89,6 +90,48 @@ func TestPrintDescriptionResults_JSONHasMore(t *testing.T) {
 	}
 }
 
+func TestPrintDescriptionResults_JSONSemanticMeta(t *testing.T) {
+	origJSON, origLimit := outputJSON, limit
+	outputJSON = true
+	limit = 20
+	defer func() { outputJSON, limit = origJSON, origLimit }()
+
+	coverage := 0.5
+	threshold := 0.6
+	out := captureStdout(t, func() {
+		if err := printDescriptionResults("query desc-search", nil, &query.DescriptionSearchOutput{
+			Items: []query.DescriptionSearchResult{},
+			SemanticMeta: &specfts.SemanticDiagnostics{
+				Reason:            "query_coverage",
+				Coverage:          &coverage,
+				CoverageThreshold: &threshold,
+				OOVTerms:          []string{"asdkjhasd", "zzz"},
+			},
+		}); err != nil {
+			t.Errorf("print: %v", err)
+		}
+	})
+
+	var response struct {
+		Meta struct {
+			SemanticMeta *specfts.SemanticDiagnostics `json:"semantic_meta"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("unmarshal: %v; out=%s", err, out)
+	}
+	meta := response.Meta.SemanticMeta
+	if meta == nil || meta.Reason != "query_coverage" {
+		t.Fatalf("semantic_meta = %+v", meta)
+	}
+	if meta.Coverage == nil || *meta.Coverage != 0.5 {
+		t.Fatalf("coverage = %v, want 0.5", meta.Coverage)
+	}
+	if meta.CoverageThreshold == nil || *meta.CoverageThreshold != 0.6 {
+		t.Fatalf("coverage_threshold = %v, want 0.6", meta.CoverageThreshold)
+	}
+}
+
 func TestPrintDescriptionResults_TextTruncationNotice(t *testing.T) {
 	origJSON, origLimit := outputJSON, limit
 	outputJSON = false
@@ -96,7 +139,7 @@ func TestPrintDescriptionResults_TextTruncationNotice(t *testing.T) {
 	defer func() { outputJSON, limit = origJSON, origLimit }()
 
 	out := captureStdout(t, func() {
-		if err := printDescriptionResults("query desc-search", nil, []query.DescriptionSearchResult{}, true); err != nil {
+		if err := printDescriptionResults("query desc-search", nil, &query.DescriptionSearchOutput{Items: []query.DescriptionSearchResult{}, HasMore: true}); err != nil {
 			t.Errorf("print: %v", err)
 		}
 	})

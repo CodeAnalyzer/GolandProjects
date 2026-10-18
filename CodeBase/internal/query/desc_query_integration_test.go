@@ -1,4 +1,4 @@
-﻿//go:build integration
+//go:build integration
 
 package query
 
@@ -91,11 +91,22 @@ func setupDescSearchFixture(t *testing.T) (*store.DB, context.Context) {
 	return db, ctx
 }
 
+// searchDescriptionsCompat оборачивает новый API в старую форму (items,
+// hasMore, error) для существующих сценариев; новые тесты используют
+// DescriptionSearchOutput напрямую.
+func searchDescriptionsCompat(ctx context.Context, q *Query, text string, kinds []string, limit int) ([]DescriptionSearchResult, bool, error) {
+	out, err := q.SearchDescriptions(ctx, text, kinds, limit)
+	if err != nil {
+		return nil, false, err
+	}
+	return out.Items, out.HasMore, nil
+}
+
 func TestSearchDescriptions_HitByContractDescription(t *testing.T) {
 	db, ctx := setupDescSearchFixture(t)
 	q := New(db)
 
-	items, hasMore, err := q.SearchDescriptions(ctx, "привязка кредитных договоров к классификатору", nil, 10)
+	items, hasMore, err := searchDescriptionsCompat(ctx, q, "привязка кредитных договоров к классификатору", nil, 10)
 	if err != nil {
 		t.Fatalf("SearchDescriptions: %v", err)
 	}
@@ -123,7 +134,7 @@ func TestSearchDescriptions_HitByProcedureDescription(t *testing.T) {
 	db, ctx := setupDescSearchFixture(t)
 	q := New(db)
 
-	items, _, err := q.SearchDescriptions(ctx, "возврат сумм из Банка-партнера", nil, 10)
+	items, _, err := searchDescriptionsCompat(ctx, q, "возврат сумм из Банка-партнера", nil, 10)
 	if err != nil {
 		t.Fatalf("SearchDescriptions: %v", err)
 	}
@@ -165,7 +176,7 @@ func TestSearchDescriptions_NameRanksAboveDescription(t *testing.T) {
 		t.Fatalf("имя (%v) должно ранжироваться выше описания (%v)", nameRank, descRank)
 	}
 
-	items, _, err := q.SearchDescriptions(ctx, "классификатор", nil, 10)
+	items, _, err := searchDescriptionsCompat(ctx, q, "классификатор", nil, 10)
 	if err != nil {
 		t.Fatalf("SearchDescriptions: %v", err)
 	}
@@ -184,7 +195,7 @@ func TestSearchDescriptions_KindFilter(t *testing.T) {
 	db, ctx := setupDescSearchFixture(t)
 	q := New(db)
 
-	items, _, err := q.SearchDescriptions(ctx, "классификатор", []string{"procedure"}, 10)
+	items, _, err := searchDescriptionsCompat(ctx, q, "классификатор", []string{"procedure"}, 10)
 	if err != nil {
 		t.Fatalf("SearchDescriptions(procedure): %v", err)
 	}
@@ -197,7 +208,7 @@ func TestSearchDescriptions_KindFilter(t *testing.T) {
 		t.Fatal("пустая выдача для kind=procedure, ожидается Unrelated_Proc")
 	}
 
-	items, _, err = q.SearchDescriptions(ctx, "классификатор", []string{"service", "event"}, 10)
+	items, _, err = searchDescriptionsCompat(ctx, q, "классификатор", []string{"service", "event"}, 10)
 	if err != nil {
 		t.Fatalf("SearchDescriptions(service,event): %v", err)
 	}
@@ -226,7 +237,7 @@ func TestSearchDescriptions_FallbackWhenContractDescriptionEmpty(t *testing.T) {
 		t.Fatalf("rebackfill: %v", err)
 	}
 
-	items, _, err := q.SearchDescriptions(ctx, "привязка кредитных договоров к классификатору", nil, 10)
+	items, _, err := searchDescriptionsCompat(ctx, q, "привязка кредитных договоров к классификатору", nil, 10)
 	if err != nil {
 		t.Fatalf("SearchDescriptions: %v", err)
 	}
@@ -245,7 +256,7 @@ func TestSearchDescriptions_LimitAndTruncation(t *testing.T) {
 	db, ctx := setupDescSearchFixture(t)
 	q := New(db)
 
-	items, hasMore, err := q.SearchDescriptions(ctx, "классификатор", nil, 1)
+	items, hasMore, err := searchDescriptionsCompat(ctx, q, "классификатор", nil, 1)
 	if err != nil {
 		t.Fatalf("SearchDescriptions: %v", err)
 	}
@@ -261,7 +272,7 @@ func TestSearchDescriptions_EmptyResult(t *testing.T) {
 	db, ctx := setupDescSearchFixture(t)
 	q := New(db)
 
-	items, hasMore, err := q.SearchDescriptions(ctx, "xyzzy qwerty фырц", nil, 10)
+	items, hasMore, err := searchDescriptionsCompat(ctx, q, "xyzzy qwerty фырц", nil, 10)
 	if err != nil {
 		t.Fatalf("SearchDescriptions: %v", err)
 	}
@@ -374,6 +385,94 @@ func setupDescLSAEnv(t *testing.T) (*store.DB, context.Context) {
 	return db, ctx
 }
 
+// Гейт покрытия в desc-search: смешанный запрос (2/4) не загружает модель,
+// exact-слой не затронут, диагностика содержит coverage/coverage_threshold.
+func TestSearchDescriptions_QueryCoverageGate(t *testing.T) {
+	db, ctx := setupDescLSAEnv(t)
+	trainDescLSAForTest(t, db)
+	descSemanticCache.reset()
+	q := New(db)
+
+	// Документ, содержащий и «мусорные», и осмысленный термин: exact-слой
+	// (plainto_tsquery — AND по всем терминам) должен найти его независимо от гейта.
+	var fileID int64
+	if err := db.QueryRow(`
+		SELECT id FROM files WHERE rel_path = 'Server/Misc/Unrelated_Proc.sql'`).Scan(&fileID); err != nil {
+		t.Fatalf("read file id: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sql_procedures (file_id, proc_name, line_start, line_end, description)
+		VALUES ($1, 'Garbage_Mixed', 1, 2, 'asdkjhasd zzz классификатор')`, fileID); err != nil {
+		t.Fatalf("insert mixed proc: %v", err)
+	}
+	if err := db.EnsureDescriptionSearchVectors(ctx, fileID); err != nil {
+		t.Fatalf("ensure vectors: %v", err)
+	}
+
+	out, err := q.SearchDescriptions(ctx, "asdkjhasd классификатор zzz", nil, 10)
+	if err != nil {
+		t.Fatalf("SearchDescriptions: %v", err)
+	}
+	if len(out.Items) == 0 {
+		t.Fatal("exact-хиты потеряны при срабатывании гейта")
+	}
+	for _, item := range out.Items {
+		if item.Source != "exact" {
+			t.Fatalf("semantic-хит при срабатывании гейта: %+v", item)
+		}
+	}
+	cov := out.SemanticMeta
+	if cov == nil || cov.Reason != "query_coverage" {
+		t.Fatalf("semantic_meta = %+v", cov)
+	}
+	if cov.Coverage == nil || *cov.Coverage != 1.0/3.0 {
+		t.Fatalf("coverage = %v, want 1/3", cov.Coverage)
+	}
+	if cov.CoverageThreshold == nil || *cov.CoverageThreshold != config.DefaultLSAMinQueryCoverage {
+		t.Fatalf("coverage_threshold = %v, want %v", cov.CoverageThreshold, config.DefaultLSAMinQueryCoverage)
+	}
+	if cov.FilteredOut != 0 {
+		t.Fatalf("filtered_out = %d, want 0", cov.FilteredOut)
+	}
+	if len(cov.OOVTerms) != 2 || cov.OOVTerms[0] != "asdkjhasd" || cov.OOVTerms[1] != "zzz" {
+		t.Fatalf("oov_terms = %v", cov.OOVTerms)
+	}
+	if got := descSemanticCache.loadCount(); got != 0 {
+		t.Fatalf("модель загружена при срабатывании гейта: loads = %d", got)
+	}
+}
+
+// Явный 0 отключает гейт desc-секции: запрос 2/4 доходит до semantic-слоя.
+func TestSearchDescriptions_QueryCoverageGateDisabled(t *testing.T) {
+	db, ctx := setupDescLSAEnv(t)
+	trainDescLSAForTest(t, db)
+	descSemanticCache.reset()
+	q := New(db)
+
+	cfg := config.Get()
+	old := cfg.DescLSA.LSAMinQueryCoverage
+	zero := 0.0
+	cfg.DescLSA.LSAMinQueryCoverage = &zero
+	t.Cleanup(func() { cfg.DescLSA.LSAMinQueryCoverage = old })
+
+	out, err := q.SearchDescriptions(ctx, "asdkjhasd zzz возврат классификатор", nil, 10)
+	if err != nil {
+		t.Fatalf("SearchDescriptions: %v", err)
+	}
+	semanticFound := false
+	for _, item := range out.Items {
+		if item.Source == "semantic" {
+			semanticFound = true
+		}
+	}
+	if !semanticFound {
+		t.Fatalf("semantic-хиты отсутствуют при отключённом гейте: %+v", out.Items)
+	}
+	if out.SemanticMeta != nil && out.SemanticMeta.Reason == "query_coverage" {
+		t.Fatalf("гейт сработал при явном 0: %+v", out.SemanticMeta)
+	}
+}
+
 // Семантический хит: запрос «возврат классификатор» не проходит exact-слой
 // (plainto требует оба термина в одном документе), но LSA находит процедуры
 // по латентной близости.
@@ -382,7 +481,7 @@ func TestSearchDescriptions_SemanticHit(t *testing.T) {
 	trainDescLSAForTest(t, db)
 	q := New(db)
 
-	items, _, err := q.SearchDescriptions(ctx, "возврат классификатор", nil, 10)
+	items, _, err := searchDescriptionsCompat(ctx, q, "возврат классификатор", nil, 10)
 	if err != nil {
 		t.Fatalf("SearchDescriptions: %v", err)
 	}
@@ -408,7 +507,7 @@ func TestSearchDescriptions_MergeExactAndSemantic(t *testing.T) {
 	trainDescLSAForTest(t, db)
 	q := New(db)
 
-	items, _, err := q.SearchDescriptions(ctx, "классификатор", nil, 20)
+	items, _, err := searchDescriptionsCompat(ctx, q, "классификатор", nil, 20)
 	if err != nil {
 		t.Fatalf("SearchDescriptions: %v", err)
 	}
@@ -439,7 +538,7 @@ func TestSearchDescriptions_FallbackWithoutModel(t *testing.T) {
 		t.Fatalf("remove model: %v", err)
 	}
 
-	items, _, err := q.SearchDescriptions(ctx, "классификатор", nil, 10)
+	items, _, err := searchDescriptionsCompat(ctx, q, "классификатор", nil, 10)
 	if err != nil {
 		t.Fatalf("SearchDescriptions без модели: %v", err)
 	}

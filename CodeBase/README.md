@@ -502,8 +502,18 @@ codebase query desc-search --text "массовые операции" --kind ser
 `'russian'`). Процедура, реализующая контракт с непустым описанием, представляется
 в выдаче контрактом (`kind=service`); при пустом описании контракта — процедурой
 (fallback). Каждый хит помечен источником (`exact` / `semantic`); без обученной
-desc-LSA-модели поиск возвращает только exact-хиты. MCP-инструмент —
-`codebase_query_desc_search` (`text`, `kind`, `limit`).
+desc-LSA-модели поиск возвращает только exact-хиты.
+
+Semantic-слой применяет гейт лексического покрытия запроса: если доля распознанных
+слов ниже `lsa_min_query_coverage` (по умолчанию `0.6`, `0` отключает проверку),
+semantic-хиты не возвращаются, а exact-слой продолжает работать. Причина пустой
+semantic-секции и метрики доступны в `meta.semantic_meta` (CLI) и `semantic_meta`
+(MCP): `reason` (`query_coverage` / `threshold` / `oov`), `coverage`,
+`coverage_threshold`, `oov_terms`, `filtered_out`, `threshold`, `hint`.
+
+MCP-инструмент `codebase_query_desc_search` (`text`, `kind`, `limit`) возвращает
+объект `{items, has_more, semantic_meta}` (breaking change: ранее возвращался
+массив).
 
 Миграция (важно):
 
@@ -559,7 +569,7 @@ codebase query spec config --product fa-cards
 codebase query spec config --product fa-cards --include-hierarchy true --depth 2
 ```
 
-Спеки индексируются из `openspec/` директорий финпродуктов: capabilities, requirements, scenarios, usecases, changes. Usecase-слой поддерживает четыре формата (`scenarios/`, `usecases/`, `business-processes/`, `specs/usecases/`) с извлечением inline-метаданных, шагов (`**Шаг N**.`, табличных, нумерованных), ветвлений WHEN/ELSE, Confluence pageId и ссылок на capabilities. Поиск поддерживает два слоя: лексический (tsvector 'russian' + pg_trgm) и семантический (TF-IDF + LSA). Фильтры: `--product`, `--level` (capability|requirement|scenario|usecase), `--layer` (exact|semantic|both).
+Спеки индексируются из `openspec/` директорий финпродуктов: capabilities, requirements, scenarios, usecases, changes. Usecase-слой поддерживает четыре формата (`scenarios/`, `usecases/`, `business-processes/`, `specs/usecases/`) с извлечением inline-метаданных, шагов (`**Шаг N**.`, табличных, нумерованных), ветвлений WHEN/ELSE, Confluence pageId и ссылок на capabilities. Поиск поддерживает два слоя: лексический (tsvector 'russian' + pg_trgm) и семантический (TF-IDF + LSA). Semantic-слой использует тот же гейт `lsa_min_query_coverage` (по умолчанию `0.6`, `0` отключает): при низком покрытии `semantic=[]`, а `semantic_meta` содержит `reason=query_coverage`, `coverage`, `coverage_threshold` и `oov_terms`. Фильтры: `--product`, `--level` (capability|requirement|scenario|usecase), `--layer` (exact|semantic|both).
 
 Опции для всех запросов:
 - `--json` - вывод в формате JSON
@@ -1046,7 +1056,7 @@ profile=<name> tool=<name> args=<аргументы> duration=<d> duration_ms=<m
 
 Контракт формата:
 
-- **MCP**: tools возвращают чистые доменные данные (например `{ "count": N, "items": [...] }`)
+- **MCP**: tools возвращают чистые доменные данные (например `{ "count": N, "items": [...] }`); `codebase_query_desc_search` возвращает объект `{ "items": [...], "has_more": false, "semantic_meta": {...} }` (не массив)
 - **CLI**: сохраняет текущий JSON envelope (`success`, `format_version`, `command`, `meta`, ...)
 
 ### Пагинация MCP-ответов

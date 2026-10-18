@@ -307,3 +307,66 @@ func TestTokenize_StopWordInflectedForms(t *testing.T) {
 		}
 	}
 }
+
+func TestQueryLexicalCoverage(t *testing.T) {
+	tests := []struct {
+		query      string
+		recognized int
+		total      int
+	}{
+		{query: "asdkjhasd несуществующий запрос zzz", recognized: 2, total: 4},
+		{query: "asdkjhasd zzzzz несуществующее", recognized: 1, total: 3},
+		{query: "asdkjhasd zzz", recognized: 0, total: 2},
+		{query: "массовое создание плановых событий", recognized: 4, total: 4},
+		{query: "расчёт аннуитетного платежа", recognized: 3, total: 3},
+		{query: "расчёт для платежа", recognized: 3, total: 3},
+		{query: "asdkjhasd аннуитетного платежа", recognized: 2, total: 3},
+		{query: "API_Card", recognized: 1, total: 1},
+		{query: "", recognized: 0, total: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			recognized, total := QueryLexicalCoverage(tt.query)
+			if recognized != tt.recognized || total != tt.total {
+				t.Fatalf("QueryLexicalCoverage(%q) = %d/%d, want %d/%d",
+					tt.query, recognized, total, tt.recognized, tt.total)
+			}
+		})
+	}
+}
+
+func TestUnrecognizedWords(t *testing.T) {
+	got := UnrecognizedWords("asdkjhasd несуществующий zzz")
+	if len(got) != 2 || got[0] != "asdkjhasd" || got[1] != "zzz" {
+		t.Fatalf("UnrecognizedWords = %v, want [asdkjhasd zzz]", got)
+	}
+	if got := UnrecognizedWords("расчёт для платежа"); len(got) != 0 {
+		t.Fatalf("UnrecognizedWords = %v, want empty (stop word recognized)", got)
+	}
+}
+
+func TestQueryCoverageGate(t *testing.T) {
+	tests := []struct {
+		name      string
+		query     string
+		threshold float64
+		wantCov   float64
+		wantGate  bool
+	}{
+		{name: "TC-037 ниже порога", query: "asdkjhasd несуществующий запрос zzz", threshold: 0.6, wantCov: 0.5, wantGate: true},
+		{name: "TC-119 ниже порога", query: "asdkjhasd zzzzz несуществующее", threshold: 0.6, wantCov: 1.0 / 3.0, wantGate: true},
+		{name: "2/3 проходит", query: "asdkjhasd аннуитетного платежа", threshold: 0.6, wantCov: 2.0 / 3.0, wantGate: false},
+		{name: "ровно 0.6 не гейтится", query: "asdkjhasd zzz классификатор запрос таблица", threshold: 0.6, wantCov: 0.6, wantGate: false},
+		{name: "порог 0 отключает", query: "asdkjhasd zzz", threshold: 0, wantCov: 0, wantGate: false},
+		{name: "пустой запрос гейтится", query: "", threshold: 0.6, wantCov: 0, wantGate: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cov, gated := QueryCoverageGate(tt.query, tt.threshold)
+			if cov != tt.wantCov || gated != tt.wantGate {
+				t.Fatalf("QueryCoverageGate(%q, %v) = %v/%v, want %v/%v",
+					tt.query, tt.threshold, cov, gated, tt.wantCov, tt.wantGate)
+			}
+		})
+	}
+}

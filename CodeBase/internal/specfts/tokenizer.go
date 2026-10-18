@@ -29,6 +29,9 @@ var (
 	// буквенным суффиксом нормализуется (6406-У и 6406U → один термин).
 	reHyphenDigitLetter = regexp.MustCompile(`([0-9])-([a-zа-я])`)
 	reHyphenLetterDigit = regexp.MustCompile(`([a-zа-я])-([0-9])`)
+	// reLexicalUnit — «сырая» единица запроса для метрики покрытия:
+	// буквы/цифры/подчёркивание (дефис и пунктуация — разделители).
+	reLexicalUnit = regexp.MustCompile(`[0-9A-Za-zА-Яа-яЁё_]+`)
 )
 
 // identHomoglyphs — кириллические символы, совпадающие с латинскими визуально
@@ -231,6 +234,79 @@ func TokenizeToStemCounts(text string) map[string]int {
 		counts[t.Stemmed]++
 	}
 	return counts
+}
+
+// QueryLexicalCoverage возвращает число распознанных и общее число «сырых»
+// лексических единиц запроса. Единица — максимальная последовательность
+// букв/цифр/подчёркиваний, содержащая хотя бы одну букву и не короче двух рун.
+// Единица распознана, если Tokenize(unit) непуст либо она (её стем) входит в
+// стоп-словарь. Метрика считается по лексике запроса, а не по словарю LSA:
+// слова, известные корпусу (например, «несуществующий»), не должны влиять на
+// распознанность запроса.
+func QueryLexicalCoverage(query string) (recognized, total int) {
+	for _, unit := range lexicalUnits(query) {
+		total++
+		if isRecognizedLexicalUnit(unit) {
+			recognized++
+		}
+	}
+	return recognized, total
+}
+
+// UnrecognizedWords возвращает «сырые» лексические единицы запроса, которые
+// токенизатор не распознал и которые не являются стоп-словами.
+func UnrecognizedWords(query string) []string {
+	units := lexicalUnits(query)
+	unrecognized := make([]string, 0)
+	for _, unit := range units {
+		if !isRecognizedLexicalUnit(unit) {
+			unrecognized = append(unrecognized, unit)
+		}
+	}
+	return unrecognized
+}
+
+// QueryCoverageGate вычисляет долю распознанных слов и признак срабатывания
+// гейта: coverage < threshold при threshold > 0. Порог 0 отключает проверку;
+// при отсутствии лексических единиц coverage = 0.
+func QueryCoverageGate(query string, threshold float64) (coverage float64, gated bool) {
+	recognized, total := QueryLexicalCoverage(query)
+	if total > 0 {
+		coverage = float64(recognized) / float64(total)
+	}
+	return coverage, threshold > 0 && coverage < threshold
+}
+
+// lexicalUnits разбивает запрос на «сырые» лексические единицы по D1.
+func lexicalUnits(query string) []string {
+	raw := reLexicalUnit.FindAllString(query, -1)
+	units := make([]string, 0, len(raw))
+	for _, unit := range raw {
+		if utf8.RuneCountInString(unit) < 2 || !containsLetter(unit) {
+			continue
+		}
+		units = append(units, unit)
+	}
+	return units
+}
+
+func containsLetter(s string) bool {
+	for _, r := range s {
+		if unicode.IsLetter(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRecognizedLexicalUnit(unit string) bool {
+	if len(Tokenize(unit)) > 0 {
+		return true
+	}
+	lower := strings.ToLower(unit)
+	lower = strings.ReplaceAll(lower, "ё", "е")
+	stem := stemRussian(lower)
+	return stopWords[lower] || stopWords[stem] || stopStems[lower] || stopStems[stem]
 }
 
 // isTechName проверяет, является ли строка техименем.

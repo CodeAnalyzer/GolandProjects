@@ -24,22 +24,20 @@ description matches (weights A/B). A procedure implementing a contract with a
 non-empty description is represented by the contract (kind=service).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		var hasMore bool
 		results, err := querysvc.Execute(func(q *query.Query) (interface{}, error) {
-			items, hm, err := q.SearchDescriptions(ctx, descSearchText, descSearchKinds, limit)
-			if err != nil {
-				return nil, err
-			}
-			hasMore = hm
-			return items, nil
+			return q.SearchDescriptions(ctx, descSearchText, descSearchKinds, limit)
 		})
 		if err != nil {
 			return handleQueryError("query desc-search", err)
 		}
+		output, ok := results.(*query.DescriptionSearchOutput)
+		if !ok {
+			return fmt.Errorf("unexpected desc-search result type %T", results)
+		}
 		return printDescriptionResults("query desc-search", map[string]string{
 			"text":  descSearchText,
 			"kinds": strings.Join(descSearchKinds, ","),
-		}, results, hasMore)
+		}, output)
 	},
 }
 
@@ -51,10 +49,19 @@ func init() {
 }
 
 // printDescriptionResults — печать выдачи desc-search: JSON-конверт содержит
-// meta.has_more (признак усечения); пустой результат — [] без ошибки.
-func printDescriptionResults(commandName string, filters map[string]string, results interface{}, hasMore bool) error {
+// meta.has_more (признак усечения) и meta.semantic_meta (диагностика semantic-
+// слоя); пустой результат — [] без ошибки.
+func printDescriptionResults(commandName string, filters map[string]string, output *query.DescriptionSearchOutput) error {
+	if output == nil {
+		output = &query.DescriptionSearchOutput{Items: []query.DescriptionSearchResult{}}
+	}
+	items := output.Items
+	if items == nil {
+		items = []query.DescriptionSearchResult{}
+	}
+
 	if outputNDJSON {
-		return writeNDJSON(os.Stdout, normalizeNilResults(results))
+		return writeNDJSON(os.Stdout, items)
 	}
 
 	if outputJSON {
@@ -62,27 +69,27 @@ func printDescriptionResults(commandName string, filters map[string]string, resu
 			Success:       true,
 			FormatVersion: "1.0",
 			Command:       commandName,
-			Count:         resultCount(results),
-			Items:         normalizeNilResults(results),
+			Count:         len(items),
+			Items:         items,
 			Meta: queryResponseMeta{
-				Limit:   limit,
-				Filters: filterEmptyValues(filters),
-				Output:  detectQueryOutputMode(),
-				HasMore: hasMore,
+				Limit:        limit,
+				Filters:      filterEmptyValues(filters),
+				Output:       detectQueryOutputMode(),
+				HasMore:      output.HasMore,
+				SemanticMeta: output.SemanticMeta,
 			},
 		}
 		if outputSummary {
-			response.Summary = buildQuerySummary(results)
+			response.Summary = buildQuerySummary(items)
 		}
 		return writeJSON(os.Stdout, response)
 	}
 
 	if outputSummary {
-		return writeJSON(os.Stdout, buildQuerySummary(results))
+		return writeJSON(os.Stdout, buildQuerySummary(items))
 	}
 
-	items := normalizeNilResults(results)
-	if hasMore {
+	if output.HasMore {
 		fmt.Fprintf(os.Stdout, "(truncated at --limit %d, use --limit to get more)\n", limit)
 	}
 	fmt.Printf("%+v\n", items)

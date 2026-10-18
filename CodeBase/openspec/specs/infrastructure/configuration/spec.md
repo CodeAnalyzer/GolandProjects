@@ -52,6 +52,45 @@
 - **WHEN** выполняется `query symbol --name MyProc` без флага `--limit`
 - **THEN** возвращено не более 50 результатов
 
+### Requirement: Настройки лексического покрытия LSA-запросов
+
+Система SHALL поддерживать настройку минимального лексического покрытия
+запроса для semantic-слоя через параметр `lsa_min_query_coverage` в секциях
+`[spec]` и `[desc_lsa]` конфигурации `codebase.toml`. Параметр SHALL иметь три
+состояния: отсутствует — применяется значение по умолчанию 0.6; явный `0` —
+проверка покрытия отключена; значение меньше 0 или больше 1 — ошибка загрузки
+конфигурации с указанием имени параметра. Секции настраиваются независимо:
+`[spec]` действует на `spec_search`, `[desc_lsa]` — на `desc_search`.
+
+#### Scenario: Параметр отсутствует
+
+- **GIVEN** конфигурация без `lsa_min_query_coverage` в секциях `[spec]` и
+  `[desc_lsa]`
+- **WHEN** загружается конфигурация
+- **THEN** для обоих поисков применяется порог покрытия 0.6
+
+#### Scenario: Явный ноль отключает проверку
+
+- **GIVEN** конфигурация с `[spec] lsa_min_query_coverage = 0`
+- **WHEN** выполняется `spec_search` со смешанным запросом
+- **THEN** гейт покрытия не применяется, значение `0` не заменяется дефолтом
+
+#### Scenario: Значение вне диапазона отклоняется
+
+- **GIVEN** конфигурация с `[desc_lsa] lsa_min_query_coverage = 1.5`
+- **WHEN** загружается конфигурация
+- **THEN** загрузка завершается ошибкой с упоминанием `lsa_min_query_coverage`
+- **AND** поиск не продолжает работу со значением по умолчанию
+
+#### Scenario: Секции настраиваются независимо
+
+- **GIVEN** конфигурация с `[spec] lsa_min_query_coverage = 0.5` и
+  `[desc_lsa] lsa_min_query_coverage = 0.7`
+- **WHEN** выполняются `spec_search` и `desc_search` с одинаковым запросом
+  покрытия 0.6
+- **THEN** `spec_search` гейт не применяет (0.6 не ниже 0.5), а `desc_search`
+  подавляет semantic-слой (0.6 ниже 0.7)
+
 ### Requirement: Настройки RTI и TRC
 
 Система SHALL поддерживать настройку RTI-анализатора через секцию `[rti]` (slow_threshold_ms, top_slow_count, parse_timeout_sec) и TRC-анализатора через секцию `[trc]` (slow_threshold_ms, max_enrich_workers, min_procs_for_parallel_enrich, parse_timeout_sec). Параметр `parse_timeout_sec` задаёт таймаут в секундах для MCP-инструментов `codebase_rti_parse` и `codebase_trc_parse` соответственно и SHALL иметь три состояния: параметр отсутствует в конфигурации — применяется значение по умолчанию 300; явный `0` — таймаут отключён (вызов без ограничения по времени); явное отрицательное значение — ошибка загрузки конфигурации с указанием имени параметра.
@@ -211,7 +250,7 @@
 
 ## Related code
 
-- `internal/config/config.go` — `Config`, `LoadConfig`, `MCPConfig.QueryTimeoutSec`, `MCPConfig.ReviewTimeoutSec`, `MCPConfig.RegexpCacheMaxEntries`, `MCPConfig.PaginationChunkSize`, `MCPConfig.PaginationTTL`, `RTIConfig.ParseTimeoutSec`, `TRCConfig.ParseTimeoutSec`
+- `internal/config/config.go` — `Config`, `LoadConfig`, `MCPConfig.QueryTimeoutSec`, `MCPConfig.ReviewTimeoutSec`, `MCPConfig.RegexpCacheMaxEntries`, `MCPConfig.PaginationChunkSize`, `MCPConfig.PaginationTTL`, `RTIConfig.ParseTimeoutSec`, `TRCConfig.ParseTimeoutSec`, `SpecConfig.LSAMinQueryCoverage`, `DescLSAConfig.LSAMinQueryCoverage`
 - `internal/config/config_test.go` — тесты конфигурации
 - `internal/util/regexp_cache.go` — `CachedRegexp`, `SetRegexpCacheMaxEntries`, `globalRegexpCache`, LRU eviction
 - `internal/store/db.go` — `FormatDSN`, `quoteDSNValue` (применяется при `NewDB` из `[database]` секции)

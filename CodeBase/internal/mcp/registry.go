@@ -222,18 +222,18 @@ var rtiTools = map[string]bool{
 
 // trcTools — codebase_trc_* инструменты.
 var trcTools = map[string]bool{
-	"codebase_trc_parse":      true,
-	"codebase_trc_list":       true,
-	"codebase_trc_summary":    true,
-	"codebase_trc_events":     true,
-	"codebase_trc_procedures": true,
+	"codebase_trc_parse":              true,
+	"codebase_trc_list":               true,
+	"codebase_trc_summary":            true,
+	"codebase_trc_events":             true,
+	"codebase_trc_procedures":         true,
 	"codebase_trc_compare_procedures": true,
-	"codebase_trc_spids":      true,
-	"codebase_trc_tree":       true,
-	"codebase_trc_errors":     true,
-	"codebase_trc_slow":       true,
-	"codebase_trc_delete":     true,
-	"codebase_trc_prune":      true,
+	"codebase_trc_spids":              true,
+	"codebase_trc_tree":               true,
+	"codebase_trc_errors":             true,
+	"codebase_trc_slow":               true,
+	"codebase_trc_delete":             true,
+	"codebase_trc_prune":              true,
 }
 
 // reviewTools — codebase_review_sql инструмент.
@@ -771,11 +771,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				limit := optionalLimit(args)
 				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
-					items, _, err := q.SearchDescriptions(ctx, text, kinds, limit)
-					if err != nil {
-						return nil, err
-					}
-					return items, nil
+					return q.SearchDescriptions(ctx, text, kinds, limit)
 				})
 			},
 		},

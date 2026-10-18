@@ -25,14 +25,8 @@ type SpecSearchResult struct {
 }
 
 // SpecSearchMeta — диагностика semantic-секции: почему пуста или какие термины
-// запроса не вошли в словарь LSA.
-type SpecSearchMeta struct {
-	FilteredOut int      `json:"filtered_out,omitempty"` // сколько кандидатов отсеяно порогами
-	Threshold   float64  `json:"threshold,omitempty"`    // применённый абсолютный порог cosine
-	Reason      string   `json:"reason,omitempty"`       // threshold | oov
-	OOVTerms    []string `json:"oov_terms,omitempty"`    // стемы запроса вне словаря LSA
-	Hint        string   `json:"hint,omitempty"`         // подсказка для пользователя
-}
+// запроса не вошли в словарь LSA. Алиас общего типа specfts.SemanticDiagnostics.
+type SpecSearchMeta = specfts.SemanticDiagnostics
 
 type SpecSearchHit struct {
 	CapabilityID   int64   `json:"capability_id"`
@@ -1278,14 +1272,7 @@ func filterSemanticHits(hits []SpecSearchHit, minCosine, relativeCutoff float64,
 
 // oovQueryStems возвращает стемы запроса, отсутствующие в словаре модели.
 func oovQueryStems(query string, vocab *specfts.Vocab) []string {
-	stems := specfts.TokenizeToStems(query)
-	var oov []string
-	for _, s := range stems {
-		if _, ok := vocab.Index[s]; !ok {
-			oov = append(oov, s)
-		}
-	}
-	return oov
+	return specfts.OOVStems(query, vocab)
 }
 
 // searchSpecSemantic — LSA поиск через spec_embeddings.
@@ -1303,6 +1290,23 @@ func searchSpecSemantic(ctx context.Context, db *store.DB, query, product string
 	if err != nil {
 		return nil, nil, err
 	}
+
+	minQueryCoverage := config.DefaultLSAMinQueryCoverage
+	if cfg != nil {
+		minQueryCoverage = cfg.Spec.MinQueryCoverage()
+	}
+	if coverage, gated := specfts.QueryCoverageGate(query, minQueryCoverage); gated {
+		cov := coverage
+		threshold := minQueryCoverage
+		return nil, &SpecSearchMeta{
+			Coverage:          &cov,
+			CoverageThreshold: &threshold,
+			Reason:            "query_coverage",
+			OOVTerms:          specfts.UnrecognizedWords(query),
+			Hint:              "слишком малая доля распознанных слов запроса; semantic-слой пропущен — см. секцию exact",
+		}, nil
+	}
+
 	queryVec := model.Vocab.ProjectQuery(query, model.VT)
 	if len(queryVec) == 0 {
 		return nil, nil, fmt.Errorf("invalid spec LSA query projection")

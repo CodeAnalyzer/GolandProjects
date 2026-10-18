@@ -111,6 +111,47 @@ func TestSpecThresholds_OutOfRangeRejected(t *testing.T) {
 	}
 }
 
+func TestMinQueryCoverage_Defaults(t *testing.T) {
+	if err := writeTestConfig(t, ""); err != nil {
+		t.Fatal(err)
+	}
+	got := Get()
+	if got.Spec.MinQueryCoverage() != DefaultLSAMinQueryCoverage {
+		t.Errorf("Spec.MinQueryCoverage() = %v, want %v", got.Spec.MinQueryCoverage(), DefaultLSAMinQueryCoverage)
+	}
+	if got.DescLSA.MinQueryCoverage() != DefaultLSAMinQueryCoverage {
+		t.Errorf("DescLSA.MinQueryCoverage() = %v, want %v", got.DescLSA.MinQueryCoverage(), DefaultLSAMinQueryCoverage)
+	}
+}
+
+func TestMinQueryCoverage_ExplicitValues(t *testing.T) {
+	if err := writeTestConfig(t, "\n[spec]\nlsa_min_query_coverage = 0.75\n\n[desc_lsa]\nlsa_min_query_coverage = 0.0\n"); err != nil {
+		t.Fatal(err)
+	}
+	got := Get()
+	if got.Spec.MinQueryCoverage() != 0.75 {
+		t.Errorf("Spec.MinQueryCoverage() = %v, want 0.75", got.Spec.MinQueryCoverage())
+	}
+	if got.DescLSA.MinQueryCoverage() != 0 {
+		t.Errorf("DescLSA.MinQueryCoverage() = %v, want explicit 0 (gate disabled)", got.DescLSA.MinQueryCoverage())
+	}
+}
+
+func TestMinQueryCoverage_OutOfRangeRejected(t *testing.T) {
+	cases := []string{
+		"\n[spec]\nlsa_min_query_coverage = 1.5\n",
+		"\n[spec]\nlsa_min_query_coverage = -0.1\n",
+		"\n[desc_lsa]\nlsa_min_query_coverage = 1.5\n",
+		"\n[desc_lsa]\nlsa_min_query_coverage = -0.1\n",
+	}
+	for _, specSection := range cases {
+		err := writeTestConfig(t, specSection)
+		if err == nil || !strings.Contains(err.Error(), "lsa_min_query_coverage") {
+			t.Errorf("expected lsa_min_query_coverage error for %q, got %v", specSection, err)
+		}
+	}
+}
+
 func TestSpecLSAPaths(t *testing.T) {
 	oldCfg := cfg
 	oldConfigFile := configFile

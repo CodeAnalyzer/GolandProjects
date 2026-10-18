@@ -24,6 +24,14 @@ type DescriptionSearchResult struct {
 	Description string  `json:"description,omitempty"` // полное описание (очищенное)
 }
 
+// DescriptionSearchOutput — результат гибридного поиска по описаниям.
+// Форма используется CLI (плоские items + meta) и MCP (объект целиком).
+type DescriptionSearchOutput struct {
+	Items        []DescriptionSearchResult    `json:"items"`
+	HasMore      bool                         `json:"has_more"`
+	SemanticMeta *specfts.SemanticDiagnostics `json:"semantic_meta,omitempty"`
+}
+
 // descSearchKindValid — допустимые значения фильтра kind.
 var descSearchKindValid = map[string]bool{
 	"procedure":      true,
@@ -70,23 +78,24 @@ const descSearchDisplaceFilter = `AND NOT EXISTS (
 // имя = вес A / описание = вес B) + semantic (LSA desc-модели, перефразировки).
 // Дедуп «контракт вытесняет процедуру» и kind-фильтр действуют на объединённую
 // выдачу. Хиты помечаются источником (exact | semantic); без обученной desc-
-// модели поиск возвращает только exact-хиты без ошибки.
-func (q *Query) SearchDescriptions(ctx context.Context, text string, kinds []string, limit int) ([]DescriptionSearchResult, bool, error) {
+// модели поиск возвращает только exact-хиты без ошибки. Диагностика semantic-
+// слоя возвращается в SemanticMeta.
+func (q *Query) SearchDescriptions(ctx context.Context, text string, kinds []string, limit int) (*DescriptionSearchOutput, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 	normalizedKinds, err := ValidateDescriptionSearchKinds(kinds)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	exact, exactHasMore, err := q.searchDescriptionsExact(ctx, text, normalizedKinds, limit)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	semantic, err := q.searchDescriptionsSemantic(ctx, text, normalizedKinds, limit)
+	semantic, semanticMeta, err := q.searchDescriptionsSemantic(ctx, text, normalizedKinds, limit)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	// Объединение: exact-хиты первыми (по убыванию ранга), затем semantic
@@ -109,7 +118,7 @@ func (q *Query) SearchDescriptions(ctx context.Context, text string, kinds []str
 	// Усечение детектируется, если хоть один слой вернул limit+1 строку
 	// либо объединённая выдача заполнена до лимита при остатке в слоях.
 	hasMore := exactHasMore || len(exact)+len(semantic) > limit
-	return combined, hasMore, nil
+	return &DescriptionSearchOutput{Items: combined, HasMore: hasMore, SemanticMeta: semanticMeta}, nil
 }
 
 // searchDescriptionsExact — лексический слой: ts_rank по векторам процедур
@@ -204,25 +213,41 @@ func (q *Query) searchDescriptionsExact(ctx context.Context, text string, kinds 
 
 // searchDescriptionsSemantic — семантический слой: LSA desc-модели поверх
 // desc_embeddings. Без модели/поколения возвращает nil (graceful exact-only).
-func (q *Query) searchDescriptionsSemantic(ctx context.Context, text string, kinds []string, limit int) ([]DescriptionSearchResult, error) {
+// Гейт лексического покрытия проверяется до загрузки модели, чтобы мусорный
+// запрос не тянул 130-МБ кэш.
+func (q *Query) searchDescriptionsSemantic(ctx context.Context, text string, kinds []string, limit int) ([]DescriptionSearchResult, *specfts.SemanticDiagnostics, error) {
 	cfg := config.Get()
 	minCosine := 0.15
 	relativeCutoff := 0.5
+	minQueryCoverage := config.DefaultLSAMinQueryCoverage
 	if cfg != nil {
 		minCosine = cfg.DescLSA.MinCosine()
 		relativeCutoff = cfg.DescLSA.RelativeCutoff()
+		minQueryCoverage = cfg.DescLSA.MinQueryCoverage()
+	}
+
+	if coverage, gated := specfts.QueryCoverageGate(text, minQueryCoverage); gated {
+		cov := coverage
+		threshold := minQueryCoverage
+		return nil, &specfts.SemanticDiagnostics{
+			Coverage:          &cov,
+			CoverageThreshold: &threshold,
+			Reason:            "query_coverage",
+			OOVTerms:          specfts.UnrecognizedWords(text),
+			Hint:              "слишком малая доля распознанных слов запроса; semantic-слой пропущен — см. точные совпадения (exact)",
+		}, nil
 	}
 
 	model, rows, err := descSemanticCache.get(ctx, q)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if model == nil {
-		return nil, nil // модель не обучена — exact-only
+		return nil, nil, nil // модель не обучена — exact-only
 	}
 	queryVec := model.Vocab.ProjectQuery(text, model.VT)
 	if len(queryVec) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// Дедуп «контракт вытесняет процедуру» для semantic-стороны: процедуры,
@@ -236,19 +261,19 @@ func (q *Query) searchDescriptionsSemantic(ctx context.Context, text string, kin
 		  AND r.relation_type = 'implements_contract'
 		  AND coalesce(dc.short_description, '') || coalesce(dc.full_description, '') <> ''`)
 	if err != nil {
-		return nil, fmt.Errorf("desc semantic displaced: %w", err)
+		return nil, nil, fmt.Errorf("desc semantic displaced: %w", err)
 	}
 	for dRows.Next() {
 		var id int64
 		if err := dRows.Scan(&id); err != nil {
 			dRows.Close()
-			return nil, fmt.Errorf("desc semantic displaced scan: %w", err)
+			return nil, nil, fmt.Errorf("desc semantic displaced scan: %w", err)
 		}
 		displaced[id] = true
 	}
 	dRows.Close()
 	if err := dRows.Err(); err != nil {
-		return nil, fmt.Errorf("desc semantic displaced rows: %w", err)
+		return nil, nil, fmt.Errorf("desc semantic displaced rows: %w", err)
 	}
 
 	kindSet := make(map[string]bool, len(kinds))
@@ -303,10 +328,42 @@ func (q *Query) searchDescriptionsSemantic(ctx context.Context, text string, kin
 		}
 		filtered = kept
 	}
+
+	filteredOut := len(hits) - len(filtered)
+	meta := buildDescriptionSemanticMeta(text, model.Vocab, filteredOut, minCosine, len(filtered))
+
 	if limit > 0 && len(filtered) > limit+1 {
 		filtered = filtered[:limit+1]
 	}
-	return filtered, nil
+	return filtered, meta, nil
+}
+
+// buildDescriptionSemanticMeta строит диагностику semantic-слоя desc-search:
+// OOV-термины запроса, причина пустой секции и число отсечённых кандидатов.
+// Чистая функция, тестируется без БД. При непустой секции без OOV метаданные
+// не возвращаются.
+func buildDescriptionSemanticMeta(query string, vocab *specfts.Vocab, filteredOut int, minCosine float64, keptHits int) *specfts.SemanticDiagnostics {
+	oov := specfts.OOVStems(query, vocab)
+	if keptHits > 0 && len(oov) == 0 {
+		return nil
+	}
+	meta := &specfts.SemanticDiagnostics{
+		FilteredOut: filteredOut,
+		Threshold:   minCosine,
+		OOVTerms:    oov,
+	}
+	allStems := specfts.TokenizeToStems(query)
+	switch {
+	case len(allStems) > 0 && len(oov) == len(allStems):
+		meta.Reason = "oov"
+		meta.Hint = "все значимые термины запроса вне словаря LSA — см. секцию точных совпадений (exact)"
+	case keptHits == 0:
+		meta.Reason = "threshold"
+		if len(oov) > 0 {
+			meta.Hint = "часть терминов запроса вне словаря LSA; релевантные результаты может находить exact-слой"
+		}
+	}
+	return meta
 }
 
 // firstDescriptionLine — сниппет semantic-хита: первая непустая строка описания.

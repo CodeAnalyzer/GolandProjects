@@ -19,7 +19,7 @@ func TestSearchDescriptions_HolderReusesModelAndRows(t *testing.T) {
 	descSemanticCache.reset()
 	q := New(db)
 
-	first, _, err := q.SearchDescriptions(ctx, "возврат классификатор", nil, 10)
+	first, _, err := searchDescriptionsCompat(ctx, q, "возврат классификатор", nil, 10)
 	if err != nil {
 		t.Fatalf("first SearchDescriptions: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestSearchDescriptions_HolderReusesModelAndRows(t *testing.T) {
 		t.Fatalf("после первого вызова loads = %d, want 1", loadsAfterFirst)
 	}
 
-	second, _, err := q.SearchDescriptions(ctx, "возврат классификатор", nil, 10)
+	second, _, err := searchDescriptionsCompat(ctx, q, "возврат классификатор", nil, 10)
 	if err != nil {
 		t.Fatalf("second SearchDescriptions: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestSearchDescriptions_HolderReusesModelAndRows(t *testing.T) {
 
 	// новый Query (как MCP на каждый вызов инструмента) — тот же holder
 	q2 := New(db)
-	if _, _, err := q2.SearchDescriptions(ctx, "возврат классификатор", nil, 10); err != nil {
+	if _, _, err := searchDescriptionsCompat(ctx, q2, "возврат классификатор", nil, 10); err != nil {
 		t.Fatalf("q2 SearchDescriptions: %v", err)
 	}
 	if got := descSemanticCache.loadCount(); got != loadsAfterFirst {
@@ -64,7 +64,7 @@ func TestSearchDescriptions_HolderGenerationInvalidation(t *testing.T) {
 	descSemanticCache.reset()
 	q := New(db)
 
-	if _, _, err := q.SearchDescriptions(ctx, "классификатор", nil, 10); err != nil {
+	if _, _, err := searchDescriptionsCompat(ctx, q, "классификатор", nil, 10); err != nil {
 		t.Fatalf("first: %v", err)
 	}
 	if descSemanticCache.loadCount() != 1 {
@@ -83,7 +83,7 @@ func TestSearchDescriptions_HolderGenerationInvalidation(t *testing.T) {
 		t.Fatalf("delete vocab: %v", err)
 	}
 
-	items, _, err := q.SearchDescriptions(ctx, "классификатор", nil, 10)
+	items, _, err := searchDescriptionsCompat(ctx, q, "классификатор", nil, 10)
 	if err != nil {
 		t.Fatalf("after invalidation: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestSearchDescriptions_FallbackRepeatedWithoutModel(t *testing.T) {
 
 	ctx := context.Background()
 	for call := 0; call < 3; call++ {
-		items, _, err := q.SearchDescriptions(ctx, "классификатор", nil, 10)
+		items, _, err := searchDescriptionsCompat(ctx, q, "классификатор", nil, 10)
 		if err != nil {
 			t.Fatalf("call %d: %v", call, err)
 		}

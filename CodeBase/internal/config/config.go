@@ -54,16 +54,16 @@ type QueryConfig struct {
 
 // RTIConfig настройки RTI-анализатора
 type RTIConfig struct {
-	SlowThresholdMs int `toml:"slow_threshold_ms"`
-	TopSlowCount    int `toml:"top_slow_count"`
+	SlowThresholdMs int  `toml:"slow_threshold_ms"`
+	TopSlowCount    int  `toml:"top_slow_count"`
 	ParseTimeoutSec *int `toml:"parse_timeout_sec"` // таймаут MCP codebase_rti_parse; nil = 300, явный 0 = без таймаута
 }
 
 // TRCConfig настройки TRC-анализатора
 type TRCConfig struct {
-	SlowThresholdMs           int `toml:"slow_threshold_ms"`
-	MaxEnrichWorkers          int `toml:"max_enrich_workers"`
-	MinProcsForParallelEnrich int `toml:"min_procs_for_parallel_enrich"`
+	SlowThresholdMs           int  `toml:"slow_threshold_ms"`
+	MaxEnrichWorkers          int  `toml:"max_enrich_workers"`
+	MinProcsForParallelEnrich int  `toml:"min_procs_for_parallel_enrich"`
 	ParseTimeoutSec           *int `toml:"parse_timeout_sec"` // таймаут MCP codebase_trc_parse; nil = 300, явный 0 = без таймаута
 }
 
@@ -74,9 +74,9 @@ type LoggingConfig struct {
 // MCPConfig конфигурация MCP-сервера
 type MCPConfig struct {
 	PaginationChunkSize   int    `toml:"pagination_chunk_size"`
-	PaginationTTL         string `toml:"pagination_ttl"`        // Go duration: "15m", "30m"
-	QueryTimeoutSec       *int   `toml:"query_timeout_sec"`     // nil = 30, явный 0 = без таймаута
-	ReviewTimeoutSec      *int   `toml:"review_timeout_sec"`    // nil = 120, явный 0 = без таймаута
+	PaginationTTL         string `toml:"pagination_ttl"`     // Go duration: "15m", "30m"
+	QueryTimeoutSec       *int   `toml:"query_timeout_sec"`  // nil = 30, явный 0 = без таймаута
+	ReviewTimeoutSec      *int   `toml:"review_timeout_sec"` // nil = 120, явный 0 = без таймаута
 	RegexpCacheMaxEntries int    `toml:"regexp_cache_max_entries"`
 	WarmupEnabled         *bool  `toml:"warmup_enabled"`     // nil = true (warm-up probe включён)
 	WarmupTimeoutSec      *int   `toml:"warmup_timeout_sec"` // nil = 60, явный 0 = без таймаута
@@ -84,30 +84,36 @@ type MCPConfig struct {
 
 // SpecConfig конфигурация полнотекстового слоя OpenSpec (LSA)
 type SpecConfig struct {
-	LSAEnabled          bool     `toml:"lsa_enabled"`           // включить LSA-постпроцессинг (default: true)
-	LSAK                int      `toml:"lsa_k"`                 // размерность LSA (default: 512 — по данным lsaktune поднимает редкие термины в топ-5)
-	LSAMinDF            int      `toml:"lsa_min_df"`            // минимальная document frequency (default: 3)
-	LSAMaxDF            float64  `toml:"lsa_max_df"`            // максимальная доля документов (default: 0.3)
-	LSAMinCorpus        int      `toml:"lsa_min_corpus"`        // минимальный размер корпуса для обучения (default: 100)
-	LSARetrainThreshold *int     `toml:"lsa_retrain_threshold"` // порог накопленных изменений для амортизации переобучения; nil = 100, явный 0 = переобучать при любом изменении fingerprint
-	LSAModelPath        string   `toml:"lsa_model_path"`        // путь к файлу модели (default: рядом с БД)
-	LSAMinCosine        *float64 `toml:"lsa_min_cosine"`        // минимальный cosine для semantic-хита; nil = 0.15, 0 = без абсолютного фильтра
-	LSARelativeCutoff   *float64 `toml:"lsa_relative_cutoff"`   // относительный cutoff: доля от maxRank; nil = 0.5, 0 = без relative cutoff
+	LSAEnabled          bool     `toml:"lsa_enabled"`            // включить LSA-постпроцессинг (default: true)
+	LSAK                int      `toml:"lsa_k"`                  // размерность LSA (default: 512 — по данным lsaktune поднимает редкие термины в топ-5)
+	LSAMinDF            int      `toml:"lsa_min_df"`             // минимальная document frequency (default: 3)
+	LSAMaxDF            float64  `toml:"lsa_max_df"`             // максимальная доля документов (default: 0.3)
+	LSAMinCorpus        int      `toml:"lsa_min_corpus"`         // минимальный размер корпуса для обучения (default: 100)
+	LSARetrainThreshold *int     `toml:"lsa_retrain_threshold"`  // порог накопленных изменений для амортизации переобучения; nil = 100, явный 0 = переобучать при любом изменении fingerprint
+	LSAModelPath        string   `toml:"lsa_model_path"`         // путь к файлу модели (default: рядом с БД)
+	LSAMinCosine        *float64 `toml:"lsa_min_cosine"`         // минимальный cosine для semantic-хита; nil = 0.15, 0 = без абсолютного фильтра
+	LSARelativeCutoff   *float64 `toml:"lsa_relative_cutoff"`    // относительный cutoff: доля от maxRank; nil = 0.5, 0 = без relative cutoff
+	LSAMinQueryCoverage *float64 `toml:"lsa_min_query_coverage"` // минимальная доля распознанных слов запроса; nil = 0.6, 0 = гейт отключён
 }
+
+// DefaultLSAMinQueryCoverage — дефолтный порог лексического покрытия запроса
+// для semantic-слоя (общий для spec- и desc-корпусов).
+const DefaultLSAMinQueryCoverage = 0.6
 
 // DescLSAConfig конфигурация LSA-модели корпуса описаний (процедуры + контракты).
 // Корпус независим от спекового (D8 change add-description-search): собственные
 // sidecar-файлы, публикации поколений и параметры.
 type DescLSAConfig struct {
-	LSAEnabled          *bool    `toml:"lsa_enabled"`           // включить desc-LSA постпроцессинг; nil = true (включено по умолчанию)
-	LSAK                int      `toml:"lsa_k"`                 // размерность LSA (default: 512)
-	LSAMinDF            int      `toml:"lsa_min_df"`            // минимальная document frequency (default: 10)
-	LSAMaxDF            float64  `toml:"lsa_max_df"`            // максимальная доля документов (default: 0.3)
-	LSAMinCorpus        int      `toml:"lsa_min_corpus"`        // минимальный размер корпуса (default: 100)
-	LSARetrainThreshold *int     `toml:"lsa_retrain_threshold"` // порог амортизации переобучения; nil = 100
-	LSAModelPath        string   `toml:"lsa_model_path"`        // путь к файлу модели (default: desc_lsa_model.bin рядом с конфигом)
-	LSAMinCosine        *float64 `toml:"lsa_min_cosine"`        // минимальный cosine semantic-хита; nil = 0.15
-	LSARelativeCutoff   *float64 `toml:"lsa_relative_cutoff"`   // относительный cutoff; nil = 0.5
+	LSAEnabled          *bool    `toml:"lsa_enabled"`            // включить desc-LSA постпроцессинг; nil = true (включено по умолчанию)
+	LSAK                int      `toml:"lsa_k"`                  // размерность LSA (default: 512)
+	LSAMinDF            int      `toml:"lsa_min_df"`             // минимальная document frequency (default: 10)
+	LSAMaxDF            float64  `toml:"lsa_max_df"`             // максимальная доля документов (default: 0.3)
+	LSAMinCorpus        int      `toml:"lsa_min_corpus"`         // минимальный размер корпуса (default: 100)
+	LSARetrainThreshold *int     `toml:"lsa_retrain_threshold"`  // порог амортизации переобучения; nil = 100
+	LSAModelPath        string   `toml:"lsa_model_path"`         // путь к файлу модели (default: desc_lsa_model.bin рядом с конфигом)
+	LSAMinCosine        *float64 `toml:"lsa_min_cosine"`         // минимальный cosine semantic-хита; nil = 0.15
+	LSARelativeCutoff   *float64 `toml:"lsa_relative_cutoff"`    // относительный cutoff; nil = 0.5
+	LSAMinQueryCoverage *float64 `toml:"lsa_min_query_coverage"` // минимальная доля распознанных слов запроса; nil = 0.6, 0 = гейт отключён
 }
 
 // Enabled возвращает эффективное состояние desc-LSA: nil = включено.
@@ -142,6 +148,15 @@ func (c DescLSAConfig) RelativeCutoff() float64 {
 	return *c.LSARelativeCutoff
 }
 
+// MinQueryCoverage возвращает эффективный порог лексического покрытия запроса.
+// nil → 0.6; явный 0 отключает гейт.
+func (c DescLSAConfig) MinQueryCoverage() float64 {
+	if c.LSAMinQueryCoverage == nil {
+		return DefaultLSAMinQueryCoverage
+	}
+	return *c.LSAMinQueryCoverage
+}
+
 // RetrainThreshold возвращает эффективный порог накопленных изменений.
 // Дефолт 100 — амортизация дорогого SVD (замер: ~97 c на корпусе 2322 capability);
 // явный 0 отключает амортизацию («переобучать при любом изменении fingerprint»).
@@ -166,6 +181,15 @@ func (s SpecConfig) RelativeCutoff() float64 {
 		return 0.5
 	}
 	return *s.LSARelativeCutoff
+}
+
+// MinQueryCoverage возвращает эффективный порог лексического покрытия запроса.
+// nil → 0.6; явный 0 отключает гейт.
+func (s SpecConfig) MinQueryCoverage() float64 {
+	if s.LSAMinQueryCoverage == nil {
+		return DefaultLSAMinQueryCoverage
+	}
+	return *s.LSAMinQueryCoverage
 }
 
 var (
@@ -405,6 +429,9 @@ func Load() error {
 	if cfg.Spec.LSARelativeCutoff != nil && (*cfg.Spec.LSARelativeCutoff < 0 || *cfg.Spec.LSARelativeCutoff > 1) {
 		return fmt.Errorf("spec.lsa_relative_cutoff must be in [0, 1], got %v", *cfg.Spec.LSARelativeCutoff)
 	}
+	if cfg.Spec.LSAMinQueryCoverage != nil && (*cfg.Spec.LSAMinQueryCoverage < 0 || *cfg.Spec.LSAMinQueryCoverage > 1) {
+		return fmt.Errorf("spec.lsa_min_query_coverage must be in [0, 1], got %v", *cfg.Spec.LSAMinQueryCoverage)
+	}
 
 	// DescLSA defaults: nil-поля получают включённое состояние (Enabled() = true),
 	// числовые — те же дефолты, что и у спек-слоя. LSAEnabled — *bool (nil = true):
@@ -429,6 +456,9 @@ func Load() error {
 	}
 	if cfg.DescLSA.LSARelativeCutoff != nil && (*cfg.DescLSA.LSARelativeCutoff < 0 || *cfg.DescLSA.LSARelativeCutoff > 1) {
 		return fmt.Errorf("desc_lsa.lsa_relative_cutoff must be in [0, 1], got %v", *cfg.DescLSA.LSARelativeCutoff)
+	}
+	if cfg.DescLSA.LSAMinQueryCoverage != nil && (*cfg.DescLSA.LSAMinQueryCoverage < 0 || *cfg.DescLSA.LSAMinQueryCoverage > 1) {
+		return fmt.Errorf("desc_lsa.lsa_min_query_coverage must be in [0, 1], got %v", *cfg.DescLSA.LSAMinQueryCoverage)
 	}
 
 	return nil

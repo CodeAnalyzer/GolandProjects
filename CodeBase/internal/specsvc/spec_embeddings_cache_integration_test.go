@@ -163,6 +163,85 @@ func cacheTestSetupEnv(t *testing.T, generation string) (*store.DB, int64) {
 	return db, fileID
 }
 
+// setSpecMinQueryCoverage временно задаёт порог покрытия spec-секции.
+func setSpecMinQueryCoverage(t *testing.T, value *float64) {
+	t.Helper()
+	cfg := config.Get()
+	if cfg == nil {
+		t.Fatal("config is nil")
+	}
+	old := cfg.Spec.LSAMinQueryCoverage
+	cfg.Spec.LSAMinQueryCoverage = value
+	t.Cleanup(func() { cfg.Spec.LSAMinQueryCoverage = old })
+}
+
+// Гейт покрытия: TC-119 (1/3) не доходит до скоринга, диагностика содержит
+// coverage/coverage_threshold и нераспознанные слова; filtered_out не заполняется.
+func TestSpecSemanticCache_QueryCoverageGate(t *testing.T) {
+	db, fileID := cacheTestSetupEnv(t, "spec-cache-gen-gate")
+	ctx := context.Background()
+	capA := cacheTestInsertCapability(t, db, fileID, "cap-gate")
+	cacheTestPublishEmbeddings(t, db, "spec-cache-gen-gate",
+		model.SpecEmbedding{SpecID: capA, EmbedLevel: "spec", EmbedText: "арест счёта", Embedding: []float64{1}, EmbedMethod: "tfidf-lsa", EmbedDim: 1},
+	)
+
+	res, err := ExecuteSpecSearch(ctx, db, "asdkjhasd zzzzz несуществующее", "", "", "semantic", 10)
+	if err != nil {
+		t.Fatalf("gate search: %v", err)
+	}
+	if len(res.Semantic) != 0 {
+		t.Fatalf("semantic hits = %d, want 0: %+v", len(res.Semantic), res.Semantic)
+	}
+	meta := res.SemanticMeta
+	if meta == nil || meta.Reason != "query_coverage" {
+		t.Fatalf("semantic_meta = %+v", meta)
+	}
+	if meta.Coverage == nil || *meta.Coverage != 1.0/3.0 {
+		t.Fatalf("coverage = %v, want 1/3", meta.Coverage)
+	}
+	if meta.CoverageThreshold == nil || *meta.CoverageThreshold != config.DefaultLSAMinQueryCoverage {
+		t.Fatalf("coverage_threshold = %v, want %v", meta.CoverageThreshold, config.DefaultLSAMinQueryCoverage)
+	}
+	if meta.FilteredOut != 0 {
+		t.Fatalf("filtered_out = %d, want 0 (гейт до скоринга)", meta.FilteredOut)
+	}
+	if len(meta.OOVTerms) != 2 || meta.OOVTerms[0] != "asdkjhasd" || meta.OOVTerms[1] != "zzzzz" {
+		t.Fatalf("oov_terms = %v", meta.OOVTerms)
+	}
+
+	// Явный 0 отключает гейт: запрос 1/2 (ниже 0.6) доходит до semantic-слоя.
+	zero := 0.0
+	setSpecMinQueryCoverage(t, &zero)
+	res, err = ExecuteSpecSearch(ctx, db, "asdkjhasd арест", "", "", "semantic", 10)
+	if err != nil {
+		t.Fatalf("gate-disabled search: %v", err)
+	}
+	if len(res.Semantic) != 1 {
+		t.Fatalf("semantic hits = %d, want 1 (гейт отключён): %+v", len(res.Semantic), res.Semantic)
+	}
+}
+
+// Покрытие ровно 0.6 не срабатывает (строгое '<'); 3/5 проходит гейт и даёт хит.
+func TestSpecSemanticCache_QueryCoverageBoundary(t *testing.T) {
+	db, fileID := cacheTestSetupEnv(t, "spec-cache-gen-boundary")
+	ctx := context.Background()
+	capA := cacheTestInsertCapability(t, db, fileID, "cap-boundary")
+	cacheTestPublishEmbeddings(t, db, "spec-cache-gen-boundary",
+		model.SpecEmbedding{SpecID: capA, EmbedLevel: "spec", EmbedText: "арест счёта", Embedding: []float64{1}, EmbedMethod: "tfidf-lsa", EmbedDim: 1},
+	)
+
+	res, err := ExecuteSpecSearch(ctx, db, "asdkjhasd zzz арест счёт имущество", "", "", "semantic", 10)
+	if err != nil {
+		t.Fatalf("boundary search: %v", err)
+	}
+	if len(res.Semantic) != 1 {
+		t.Fatalf("semantic hits = %d, want 1 at coverage 0.6: %+v", len(res.Semantic), res.Semantic)
+	}
+	if res.SemanticMeta != nil && res.SemanticMeta.Reason == "query_coverage" {
+		t.Fatalf("gate fired at coverage 0.6: %+v", res.SemanticMeta)
+	}
+}
+
 // Первый вызов создаёт файловый кэш, повторный — переиспользует модель и
 // эмбеддинги из holder (loads не растёт), результаты идентичны.
 func TestSpecSemanticCache_FileCreatedAndReused(t *testing.T) {
