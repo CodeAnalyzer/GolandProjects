@@ -76,6 +76,58 @@ func TestBuildSymbolLookupCondition_LikeUsesILike(t *testing.T) {
 	}
 }
 
+func TestBuildSymbolLookupCondition_ReportFormTypeSearchesNameAndFormFields(t *testing.T) {
+	got := buildSymbolLookupCondition("report_form", false, 1)
+	want := "LOWER(s.symbol_name) = LOWER($1) OR LOWER(rf.form_name) = LOWER($1) OR LOWER(rf.form_class) = LOWER($1)"
+	if got != want {
+		t.Fatalf("condition: got=%q want=%q", got, want)
+	}
+}
+
+func TestBuildSymbolLookupCondition_ReportFormLikeUsesILike(t *testing.T) {
+	got := buildSymbolLookupCondition("report_form", true, 2)
+	want := "s.symbol_name ILIKE $2 OR rf.form_name ILIKE $2 OR rf.form_class ILIKE $2"
+	if got != want {
+		t.Fatalf("condition: got=%q want=%q", got, want)
+	}
+}
+
+func TestBuildSymbolLookupCondition_EmptyTypeDoesNotReferenceReportForms(t *testing.T) {
+	for _, like := range []bool{false, true} {
+		got := buildSymbolLookupCondition("", like, 1)
+		if strings.Contains(got, "rf.") {
+			t.Fatalf("condition without type must not reference rf.* (like=%v): %q", like, got)
+		}
+	}
+}
+
+func TestBuildSymbolLookupCondition_OtherTypesDoNotReferenceReportForms(t *testing.T) {
+	for _, symbolType := range []string{"class", "procedure", "report_param", "vb_function"} {
+		got := buildSymbolLookupCondition(symbolType, false, 1)
+		if strings.Contains(got, "rf.") {
+			t.Fatalf("condition for type %q must not reference rf.*: %q", symbolType, got)
+		}
+	}
+}
+
+func TestNeedsReportFormsLookup(t *testing.T) {
+	cases := []struct {
+		primaryType string
+		want        bool
+	}{
+		{"report_form", true},
+		{"  report_form  ", true},
+		{"form", false},
+		{"report_param", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := needsReportFormsLookup(tc.primaryType); got != tc.want {
+			t.Fatalf("needsReportFormsLookup(%q) = %v, want %v", tc.primaryType, got, tc.want)
+		}
+	}
+}
+
 func TestBuildRelationDetailsQueryByIDs(t *testing.T) {
 	queryText, args := buildRelationDetailsQueryByIDs([]int64{10, 20, 30})
 	if !strings.Contains(queryText, "WHERE r.id IN ($1,$2,$3)") {

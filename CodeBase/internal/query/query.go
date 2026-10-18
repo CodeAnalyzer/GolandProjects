@@ -258,8 +258,36 @@ func buildNameLookupCondition(fields []string, like bool, argPosition int) strin
 	return strings.Join(conditions, " OR ")
 }
 
+// needsReportFormsLookup сообщает, требует ли поиск с данным первичным
+// каноническим типом fallback на поля report_forms (form_name, form_class).
+// Единая точка решения для buildSymbolLookupCondition и SearchSymbol:
+// условие ссылается на rf.* только вместе с LEFT JOIN report_forms,
+// поэтому оба места обязаны проверять один и тот же предикат.
+func needsReportFormsLookup(primaryType string) bool {
+	return strings.TrimSpace(primaryType) == "report_form"
+}
+
+// buildReportFormLookupCondition строит составное условие поиска символа
+// отчётной формы по трём именам: имя отчёта (symbol_name), имя DFM-формы
+// (rf.form_name) и класс DFM-формы (rf.form_class). Требует LEFT JOIN
+// report_forms rf в SearchSymbol (см. needsReportFormsLookup).
+func buildReportFormLookupCondition(like bool, argPosition int) string {
+	fields := []string{"s.symbol_name", "rf.form_name", "rf.form_class"}
+	if like {
+		return buildNameLookupCondition(fields, true, argPosition)
+	}
+	conditions := make([]string, 0, len(fields))
+	for _, field := range fields {
+		conditions = append(conditions, fmt.Sprintf("LOWER(%s) = LOWER($%d)", field, argPosition))
+	}
+	return strings.Join(conditions, " OR ")
+}
+
 func buildSymbolLookupCondition(symbolType string, like bool, argPosition int) string {
 	normalizedType := strings.TrimSpace(symbolType)
+	if needsReportFormsLookup(normalizedType) {
+		return buildReportFormLookupCondition(like, argPosition)
+	}
 	if !like && normalizedType != "" && normalizedType != "form" {
 		return fmt.Sprintf("LOWER(s.symbol_name) = LOWER($%d)", argPosition)
 	}
@@ -318,7 +346,16 @@ func (q *Query) SearchSymbol(ctx context.Context, name string, symbolType string
 			f.rel_path,
 			s.line_number,
 			s.signature
-		FROM symbols s
+		FROM symbols s`
+	if needsReportFormsLookup(primaryType) {
+		// JOIN нужен для fallback-полей report_forms (form_name/form_class);
+		// guard по symbol_type исключает пересечение entity_id с идентификаторами
+		// других типов символов. LEFT, а не INNER: символы report_form без
+		// резолвнутой записи report_forms не теряются.
+		query += `
+		LEFT JOIN report_forms rf ON s.symbol_type = 'report_form' AND s.entity_id = rf.id`
+	}
+	query += `
 		JOIN files f ON s.file_id = f.id
 		WHERE (` + lookupCondition + `)
 	`
@@ -429,7 +466,7 @@ func (q *Query) SearchInContent(ctx context.Context, pattern string, limit int) 
 // SearchReportForm поиск report forms
 func (q *Query) SearchReportForm(ctx context.Context, name string, like bool, limit int) ([]ReportFormResult, error) {
 	lookupValue := buildLookupValue(name, like)
-	lookupCondition := buildNameLookupCondition([]string{"rf.report_name", "rf.form_name"}, like, 1)
+	lookupCondition := buildNameLookupCondition([]string{"rf.report_name", "rf.form_name", "rf.form_class"}, like, 1)
 	query := `
 		SELECT
 			rf.id,

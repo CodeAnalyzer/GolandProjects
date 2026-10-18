@@ -181,3 +181,149 @@ func TestSearchSymbol_CaseInsensitiveAlias(t *testing.T) {
 		t.Fatalf("case/whitespace alias must resolve, got %v", symbolNames(results))
 	}
 }
+
+// seedReportFormFixture наполняет БД тремя отчётными формами: RPT_ALPHA и
+// RPT_BETA используют одну DFM-форму (FormAlpha/TFormAlpha), RPT_GAMMA — свою
+// (FormGamma/TFormGamma). Символы report_form ссылаются entity_id на записи
+// report_forms, как это делает индексатор (TPR и RPT пути).
+func seedReportFormFixture(t *testing.T) *Query {
+	t.Helper()
+	db := testutil.Open(t)
+	ctx := context.Background()
+	scanID, err := db.CreateScanRun(ctx, "/repo")
+	if err != nil {
+		t.Fatalf("CreateScanRun: %v", err)
+	}
+	var fileID int64
+	err = db.QueryRow(`
+		INSERT INTO files (scan_run_id, path, rel_path, extension, size_bytes, hash_sha256, modified_at, encoding, language)
+		VALUES ($1, '/repo/reports.rpt', '/repo/reports.rpt', 'rpt', 1, 'hash', NOW(), 'UTF8', 'REPORT')
+		RETURNING id
+	`, scanID).Scan(&fileID)
+	if err != nil {
+		t.Fatalf("insert file: %v", err)
+	}
+
+	reports := []struct {
+		reportName string
+		formName   string
+		formClass  string
+		lineStart  int
+	}{
+		{"RPT_ALPHA", "FormAlpha", "TFormAlpha", 1},
+		{"RPT_BETA", "FormAlpha", "TFormAlpha", 100},
+		{"RPT_GAMMA", "FormGamma", "TFormGamma", 200},
+	}
+	for _, r := range reports {
+		var reportFormID int64
+		err = db.QueryRow(`
+			INSERT INTO report_forms (file_id, report_name, report_type, form_name, form_class, line_start, line_end)
+			VALUES ($1, $2, 'RPT', $3, $4, $5, $5)
+			RETURNING id
+		`, fileID, r.reportName, r.formName, r.formClass, r.lineStart).Scan(&reportFormID)
+		if err != nil {
+			t.Fatalf("insert report_form %s: %v", r.reportName, err)
+		}
+		_, err = db.Exec(`
+			INSERT INTO symbols (file_id, symbol_name, symbol_type, entity_type, entity_id, line_number)
+			VALUES ($1, $2, 'report_form', 'report', $3, $4)
+		`, fileID, r.reportName, reportFormID, r.lineStart)
+		if err != nil {
+			t.Fatalf("insert symbol %s: %v", r.reportName, err)
+		}
+	}
+	return New(db)
+}
+
+// Поиск без JOIN (условие не ссылается на rf.*) и поиск с рассинхроном
+// «условие есть — JOIN нет» дают разные наблюдаемые исходы: первый — пустой
+// результат, второй — SQL-ошибку unknown column. Поэтому поведенческих
+// проверок ниже достаточно для контроля связности condition↔JOIN.
+func TestSearchSymbol_ReportFormFallbackByFormName(t *testing.T) {
+	q := seedReportFormFixture(t)
+	ctx := context.Background()
+
+	results, err := q.SearchSymbol(ctx, "FormAlpha", "report_form", false, 50)
+	if err != nil {
+		t.Fatalf("SearchSymbol(FormAlpha, report_form): %v", err)
+	}
+	got := symbolNames(results)
+	if len(got) != 2 || !containsAll(got, "RPT_ALPHA", "RPT_BETA") {
+		t.Fatalf("form_name fallback must find RPT_ALPHA and RPT_BETA, got %v", got)
+	}
+}
+
+func TestSearchSymbol_ReportFormFallbackByFormClass(t *testing.T) {
+	q := seedReportFormFixture(t)
+	ctx := context.Background()
+
+	results, err := q.SearchSymbol(ctx, "TFormAlpha", "report_form", false, 50)
+	if err != nil {
+		t.Fatalf("SearchSymbol(TFormAlpha, report_form): %v", err)
+	}
+	got := symbolNames(results)
+	if len(got) != 2 || !containsAll(got, "RPT_ALPHA", "RPT_BETA") {
+		t.Fatalf("form_class fallback must find RPT_ALPHA and RPT_BETA, got %v", got)
+	}
+
+	// exact-режим сравнивает без учёта регистра (LOWER).
+	results, err = q.SearchSymbol(ctx, "tformalpha", "report_form", false, 50)
+	if err != nil {
+		t.Fatalf("SearchSymbol(tformalpha, report_form): %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("exact lookup must be case-insensitive, got %v", symbolNames(results))
+	}
+}
+
+func TestSearchSymbol_ReportFormByReportNameStillWorks(t *testing.T) {
+	q := seedReportFormFixture(t)
+	ctx := context.Background()
+
+	results, err := q.SearchSymbol(ctx, "RPT_ALPHA", "report_form", false, 50)
+	if err != nil {
+		t.Fatalf("SearchSymbol(RPT_ALPHA, report_form): %v", err)
+	}
+	if len(results) != 1 || results[0].Name != "RPT_ALPHA" {
+		t.Fatalf("report_name lookup must find single RPT_ALPHA, got %v", symbolNames(results))
+	}
+}
+
+func TestSearchSymbol_ReportFormFallbackNotAppliedWithoutType(t *testing.T) {
+	q := seedReportFormFixture(t)
+	ctx := context.Background()
+
+	results, err := q.SearchSymbol(ctx, "FormAlpha", "", false, 50)
+	if err != nil {
+		t.Fatalf("SearchSymbol(FormAlpha, no type): %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("fallback must not apply without explicit type, got %v", symbolNames(results))
+	}
+}
+
+func TestSearchSymbol_ReportFormLikeMatchesAllThreeFields(t *testing.T) {
+	q := seedReportFormFixture(t)
+	ctx := context.Background()
+
+	results, err := q.SearchSymbol(ctx, "Form", "report_form", true, 50)
+	if err != nil {
+		t.Fatalf("SearchSymbol(Form, report_form, like): %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("like over form_name/form_class must find all three reports, got %v", symbolNames(results))
+	}
+}
+
+func containsAll(items []string, want ...string) bool {
+	set := make(map[string]bool, len(items))
+	for _, item := range items {
+		set[item] = true
+	}
+	for _, w := range want {
+		if !set[w] {
+			return false
+		}
+	}
+	return true
+}

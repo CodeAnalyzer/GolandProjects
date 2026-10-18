@@ -224,6 +224,8 @@ codebase query symbol --name API --ndjson
 
 В `symbols` индексируются основные name-based сущности: SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects, SMF instruments и XML/API symbols. Сущности начинают появляться в `query symbol` после переиндексации соответствующих файлов.
 
+При явном фильтре типа действуют fallback-поля: `--type form` ищет дополнительно по классу формы (`signature`), `--type report_form` — по имени и классу DFM-формы отчёта (`form_name`/`form_class` из `report_forms`; точный поиск регистронезависим, `--like` — по подстроке во всех полях). Без фильтра типа fallback-поля не используются.
+
 #### Поиск информации о таблице
 
 ```bash
@@ -331,7 +333,14 @@ codebase query form-component --name "Наименование" --json
 codebase query report-form --name Credit
 codebase query report-form --name Cred --like
 codebase query report-form --name Portfolio --json
+codebase query report-form --name TFormCreditReport
 ```
+
+Поиск выполняется по:
+
+- `report_name` (имя отчёта)
+- `form_name` (имя DFM-формы)
+- `form_class` (класс DFM-формы)
 
 #### Поиск report fields
 
@@ -1485,6 +1494,7 @@ $env:CODEBASE_TEST_DSN = "postgres://postgres:123456@localhost:5435/postgres?ssl
 - [x] Единый словарь типов символов (`internal/model/symbol_types.go`): алиасы relations-стиля (`sql_procedure`, `sql_table`, `pas_method`, `js_function`, `dfm_form`, `dfm_component`, `api_contract`) в `query symbol`/`query inspect`, strict-валидация неизвестного типа (ошибка со списком допустимых вместо пустого результата), полный мост symbols→relations для inspect (PAS-методы/юниты/классы, JS-функции, API-контракты всех kind-типов)
 - [x] Строгая валидация фильтров `query relations`: словарь entity-типов (17) и типов связей (21) в `internal/model/relation_types.go`; неизвестное значение — ошибка `invalid_arguments` со списком допустимых **до** обращения к БД (устранён seq-scan/таймаут на неизвестном `relation_type`); два индекса `relations` — `(relation_type, id DESC)` и `(source_type, relation_type, id DESC)`
 - [x] Алиасы kind-типов API-контрактов в `query relations`: `service`/`event`/`callback_event`/`used_service` нормализуются в `api_contract` (валидация + name-резолв + type-only SQL, `NormalizeRelationEntityType` в `internal/model`); name-фильтр покрывает все 17 entity-типов словаря (добавлены `dfm_form`, `spec_capability`, `spec_change`, `spec_requirement`, `spec_scenario`, `spec_usecase`); обновлено описание MCP-инструмента и справка флагов
+- [x] Fallback `query symbol --type report_form` по `form_name`/`form_class` (LEFT JOIN `report_forms`, активен только при явном типе, точный поиск регистронезависим) и расширение `query report-form` полем `form_class` — устранена асимметрия unified-индекса (TC-142)
 
 ## Лицензия
 
