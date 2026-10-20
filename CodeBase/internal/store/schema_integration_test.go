@@ -50,6 +50,22 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		}
 	}
 
+	requiredColumns := []struct{ table, column string }{
+		{"rti_sessions", "file_hash"},
+		{"rti_sessions", "parser_version"},
+		{"trc_sessions", "file_hash"},
+		{"trc_sessions", "parser_version"},
+	}
+	for _, col := range requiredColumns {
+		var exists bool
+		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name=$2)`, col.table, col.column).Scan(&exists); err != nil {
+			t.Fatalf("check column %s.%s: %v", col.table, col.column, err)
+		}
+		if !exists {
+			t.Fatalf("missing column %s.%s", col.table, col.column)
+		}
+	}
+
 	requiredIndexes := []string{
 		"idx_api_contracts_lower_name_kind",
 		"idx_symbols_symbol_name_type_lower",
@@ -81,6 +97,8 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		"idx_spec_code_mentions_name_trgm",
 		"idx_relations_relation_type_id",
 		"idx_relations_source_type_relation_id",
+		"idx_rti_sessions_file_hash",
+		"idx_trc_sessions_file_hash",
 	}
 	for _, idx := range requiredIndexes {
 		var exists bool
@@ -92,7 +110,7 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		}
 	}
 
-	for _, idx := range []string{"idx_spec_capabilities_config_name_unique", "idx_spec_changes_config_name_unique"} {
+	for _, idx := range []string{"idx_spec_capabilities_config_name_unique", "idx_spec_changes_config_name_unique", "idx_rti_sessions_file_hash", "idx_trc_sessions_file_hash"} {
 		var unique bool
 		if err := db.QueryRow(`
 			SELECT i.indisunique

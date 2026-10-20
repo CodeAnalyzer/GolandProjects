@@ -911,3 +911,59 @@ func TestLoadMaxDurationMs_ZeroWhenNoDurations(t *testing.T) {
 		t.Fatalf("max duration = %d, want 0", maxDur)
 	}
 }
+
+// --- Reuse сессий по (file_hash, parser_version) ---
+
+// TestFindSetSessionHash_TRC: семантика FindSessionByHash/SetSessionHash —
+// roundtrip, legacy-NULL не находится, версия в ключе, unique violation
+// на дубликат ключа.
+func TestFindSetSessionHash_TRC(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	insertSession := func(path string) int64 {
+		t.Helper()
+		var sid int64
+		if err := db.QueryRow(
+			`INSERT INTO trc_sessions (file_path, file_size, total_events) VALUES ($1, 10, 0) RETURNING id`,
+			path,
+		).Scan(&sid); err != nil {
+			t.Fatalf("insert session %s: %v", path, err)
+		}
+		return sid
+	}
+
+	// legacy-сессия без хеша и целевая сессия
+	legacy := insertSession("legacy-null.trc")
+	if legacy == 0 {
+		t.Fatal("legacy insert failed")
+	}
+	sid := insertSession("hashed.trc")
+
+	hash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	// До простановки хеша — не находится
+	if id, err := FindSessionByHash(ctx, db, hash, 1); err != nil || id != 0 {
+		t.Fatalf("FindSessionByHash before set = (%d, %v), want (0, nil)", id, err)
+	}
+
+	// Set → Find roundtrip (legacy-строка с NULL не мешает)
+	if err := SetSessionHash(ctx, db, sid, hash, 1); err != nil {
+		t.Fatalf("SetSessionHash: %v", err)
+	}
+	if id, err := FindSessionByHash(ctx, db, hash, 1); err != nil || id != sid {
+		t.Fatalf("FindSessionByHash after set = (%d, %v), want (%d, nil)", id, err, sid)
+	}
+
+	// Другая версия парсера — тот же хеш не находится (версия в ключе)
+	if id, err := FindSessionByHash(ctx, db, hash, 2); err != nil || id != 0 {
+		t.Fatalf("FindSessionByHash other version = (%d, %v), want (0, nil)", id, err)
+	}
+
+	// Дубликат ключа — unique violation (гонка параллельных parse)
+	loser := insertSession("loser.trc")
+	err := SetSessionHash(ctx, db, loser, hash, 1)
+	if err == nil || !store.IsUniqueViolation(err) {
+		t.Fatalf("second SetSessionHash = %v, want unique violation", err)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/rti"
 	"github.com/codebase/internal/store"
+	"github.com/codebase/internal/util"
 )
 
 // resolveSession загружает данные из БД (session_id > 0) или парсит файл.
@@ -65,24 +66,14 @@ func normalizeLimit(limit int) int {
 }
 
 // ExecuteParse парсит RTI-файл и сохраняет в БД (если db доступен).
+// При повторном парсинге файла с тем же содержимым (SHA-256) той же версией
+// парсера возвращается существующая сессия без повторного разбора.
 func ExecuteParse(ctx context.Context, db *store.DB, filePath string) (*ParseResult, error) {
 	if filePath == "" {
 		return nil, fmt.Errorf("file_path is required")
 	}
 	if db != nil {
-		result, err := rti.ParseFile(filePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse rti file: %w", err)
-		}
-		sessionID, err := rti.SaveSession(ctx, db, result, filePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to save session: %w", err)
-		}
-		return &ParseResult{
-			SessionID:  sessionID,
-			TotalCalls: result.Summary.TotalCalls,
-			Summary:    result.Summary,
-		}, nil
+		return executeParseDB(ctx, db, filePath)
 	}
 	result, err := rti.ParseFile(filePath)
 	if err != nil {
@@ -93,6 +84,77 @@ func ExecuteParse(ctx context.Context, db *store.DB, filePath string) (*ParseRes
 		TotalCalls: result.Summary.TotalCalls,
 		Summary:    result.Summary,
 		Warning:    "database unavailable, session not saved",
+	}, nil
+}
+
+// executeParseDB разбирает файл с сохранением в БД и reuse существующей
+// сессии по ключу (file_hash, parser_version).
+func executeParseDB(ctx context.Context, db *store.DB, filePath string) (*ParseResult, error) {
+	fileHash, err := util.FileHash(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse rti file: %w", err)
+	}
+
+	// Reuse: файл с тем же содержимым уже разобран этой версией парсера.
+	if reusedID, err := rti.FindSessionByHash(ctx, db, fileHash, rti.ParserVersion); err != nil {
+		return nil, err
+	} else if reusedID > 0 {
+		return parseResultFromSession(ctx, db, reusedID)
+	}
+
+	result, err := rti.ParseFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse rti file: %w", err)
+	}
+	sessionID, err := rti.SaveSession(ctx, db, result, filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to save session: %w", err)
+	}
+
+	// Хеш проставляется последним шагом: прерванное сохранение оставляет
+	// file_hash NULL — сессия не попадает в кэш reuse.
+	if err := rti.SetSessionHash(ctx, db, sessionID, fileHash, rti.ParserVersion); err != nil {
+		if !store.IsUniqueViolation(err) {
+			return nil, err
+		}
+		// Гонка параллельных разборов одного файла: победитель уже записал
+		// тот же ключ. Возвращаем результат победителя, проигравшую сессию
+		// удаляем явно (prune хранит N свежих — проигравшая самая свежая).
+		winnerID, findErr := rti.FindSessionByHash(ctx, db, fileHash, rti.ParserVersion)
+		if findErr != nil {
+			return nil, findErr
+		}
+		if winnerID > 0 {
+			if delErr := rti.DeleteSession(ctx, db, sessionID); delErr != nil {
+				return nil, fmt.Errorf("failed to delete duplicate rti session %d: %w", sessionID, delErr)
+			}
+			return parseResultFromSession(ctx, db, winnerID)
+		}
+		// Победитель удалён конкурентно между violation и повторным поиском:
+		// один повтор записи хеша, затем ошибка.
+		if retryErr := rti.SetSessionHash(ctx, db, sessionID, fileHash, rti.ParserVersion); retryErr != nil {
+			return nil, retryErr
+		}
+	}
+
+	return &ParseResult{
+		SessionID:  sessionID,
+		TotalCalls: result.Summary.TotalCalls,
+		Summary:    result.Summary,
+	}, nil
+}
+
+// parseResultFromSession собирает ParseResult по существующей сессии из БД
+// (путь reuse: сводка эквивалентна первому парсингу).
+func parseResultFromSession(ctx context.Context, db *store.DB, sessionID int64) (*ParseResult, error) {
+	summary, err := rti.LoadSummary(ctx, db, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return &ParseResult{
+		SessionID:  sessionID,
+		TotalCalls: summary.TotalCalls,
+		Summary:    *summary,
 	}, nil
 }
 

@@ -96,8 +96,8 @@ func TestExecuteParse_FileMode(t *testing.T) {
 	if result.TotalEvents <= 0 {
 		t.Errorf("TotalEvents = %d, want > 0", result.TotalEvents)
 	}
-	if result.Warning == "" {
-		t.Errorf("Warning should be set when db is nil")
+	if result.Warning != "database unavailable, session not saved" {
+		t.Errorf("Warning = %q, want exact fallback text", result.Warning)
 	}
 }
 

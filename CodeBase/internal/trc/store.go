@@ -364,6 +364,38 @@ func GetLatestSessionID(ctx context.Context, db *store.DB) (int64, error) {
 	return id, err
 }
 
+// FindSessionByHash возвращает ID существующей сессии для пары
+// (file_hash, parser_version) или 0, если такой сессии нет.
+// Сессии с NULL file_hash (legacy, прерванные) не находятся.
+func FindSessionByHash(ctx context.Context, db *store.DB, fileHash string, parserVersion int) (int64, error) {
+	var sessionID int64
+	err := db.QueryRowContext(ctx,
+		`SELECT id FROM trc_sessions WHERE file_hash = $1 AND parser_version = $2 LIMIT 1`,
+		fileHash, parserVersion,
+	).Scan(&sessionID)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("failed to find trc session by hash: %w", err)
+	}
+	return sessionID, nil
+}
+
+// SetSessionHash проставляет хеш и версию парсера успешно разобранной сессии.
+// При гонке параллельных разборов одного файла упирается в unique violation
+// (idx_trc_sessions_file_hash) — вызывающая сторона решает конфликт.
+func SetSessionHash(ctx context.Context, db *store.DB, sessionID int64, fileHash string, parserVersion int) error {
+	_, err := db.ExecContext(ctx,
+		`UPDATE trc_sessions SET file_hash = $2, parser_version = $3 WHERE id = $1`,
+		sessionID, fileHash, parserVersion,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set trc session hash: %w", err)
+	}
+	return nil
+}
+
 // batchDeleteSize — размер батча для построчного удаления событий.
 // Использует trcBatchSize (настраивается через SetBatchSize).
 

@@ -233,3 +233,47 @@ func TestDeletePruneWithLegacyClientEventsFK(t *testing.T) {
 	}
 	assertSessionGone(t, db, id2)
 }
+
+// --- Reuse сессий по (file_hash, parser_version) ---
+
+// TestFindSetSessionHash: семантика FindSessionByHash/SetSessionHash —
+// roundtrip, legacy-NULL не находится, версия в ключе, unique violation
+// на дубликат ключа.
+func TestFindSetSessionHash(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	// legacy-сессия без хеша (создана до reuse) и целевая сессия
+	legacy := insertPlainSession(t, db, "legacy-null.rti")
+	if legacy == 0 {
+		t.Fatal("legacy insert failed")
+	}
+	sid := insertPlainSession(t, db, "hashed.rti")
+
+	hash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	// До простановки хеша — не находится
+	if id, err := FindSessionByHash(ctx, db, hash, 1); err != nil || id != 0 {
+		t.Fatalf("FindSessionByHash before set = (%d, %v), want (0, nil)", id, err)
+	}
+
+	// Set → Find roundtrip (legacy-строка с NULL не мешает)
+	if err := SetSessionHash(ctx, db, sid, hash, 1); err != nil {
+		t.Fatalf("SetSessionHash: %v", err)
+	}
+	if id, err := FindSessionByHash(ctx, db, hash, 1); err != nil || id != sid {
+		t.Fatalf("FindSessionByHash after set = (%d, %v), want (%d, nil)", id, err, sid)
+	}
+
+	// Другая версия парсера — тот же хеш не находится (версия в ключе)
+	if id, err := FindSessionByHash(ctx, db, hash, 2); err != nil || id != 0 {
+		t.Fatalf("FindSessionByHash other version = (%d, %v), want (0, nil)", id, err)
+	}
+
+	// Дубликат ключа — unique violation (гонка параллельных parse)
+	loser := insertPlainSession(t, db, "loser.rti")
+	err := SetSessionHash(ctx, db, loser, hash, 1)
+	if err == nil || !store.IsUniqueViolation(err) {
+		t.Fatalf("second SetSessionHash = %v, want unique violation", err)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/codebase/internal/store"
 )
@@ -32,6 +33,34 @@ func ParseFileToDB(ctx context.Context, path string, db *store.DB) (sessionID in
 		return 0, 0, fmt.Errorf("trc: open %s: %w", path, err)
 	}
 	defer f.Close()
+
+	// Сериализация параллельных разборов одного файла. Выделение явных id для
+	// COPY IN (getBaseID = MAX(id)+1) не атомарно: два параллельных ParseFileToDB
+	// получили бы одинаковый baseID и столкнулись на trc_events_pkey.
+	// Session-level advisory lock на выделенном соединении, ключ — абсолютный
+	// путь файла: разборы одного файла выстраиваются в очередь (дождавшийся
+	// второй парсинг обычно попадает в reuse выше по стеку, либо доходит до
+	// конфликта SetSessionHash и разрешается им), разборы разных файлов идут
+	// параллельно. Unlock выполняется на том же соединении; при отмене ctx
+	// или сбое лок отпускается закрытием соединения (session advisory locks
+	// живут до дисконнекта).
+	lockConn, err := db.Conn(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("trc: acquire lock connection: %w", err)
+	}
+	defer lockConn.Close() // выполнится после unlock (LIFO)
+	lockKey := path
+	if abs, aerr := filepath.Abs(path); aerr == nil {
+		lockKey = abs
+	}
+	if _, err := lockConn.ExecContext(ctx, `SELECT pg_advisory_lock(hashtextextended($1, 0))`, lockKey); err != nil {
+		return 0, 0, fmt.Errorf("trc: acquire parse lock for %s: %w", path, err)
+	}
+	defer func() {
+		// context.Background: явный unlock обязан выполниться даже при
+		// отменённом ctx; при неудаче лок отпустит lockConn.Close().
+		_, _ = lockConn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, lockKey)
+	}()
 
 	// Читаем буфер для детекции формата.
 	const headerBufSize = 65536

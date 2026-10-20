@@ -10,6 +10,7 @@ import (
 	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/trc"
+	"github.com/codebase/internal/util"
 )
 
 // resolveSession загружает данные из БД (session_id > 0) или парсит файл.
@@ -48,19 +49,14 @@ func normalizeLimit(limit int) int {
 }
 
 // ExecuteParse парсит TRC-файл и сохраняет в БД (если db доступен).
+// При повторном парсинге файла с тем же содержимым (SHA-256) той же версией
+// парсера возвращается существующая сессия без повторного разбора.
 func ExecuteParse(ctx context.Context, db *store.DB, filePath string) (*ParseResult, error) {
 	if filePath == "" {
 		return nil, fmt.Errorf("file_path is required")
 	}
 	if db != nil {
-		sessionID, totalEvents, err := trc.ParseFileToDB(ctx, filePath, db)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse trc file: %w", err)
-		}
-		return &ParseResult{
-			SessionID:   sessionID,
-			TotalEvents: totalEvents,
-		}, nil
+		return executeParseDB(ctx, db, filePath)
 	}
 	result, err := trc.ParseFile(filePath)
 	if err != nil {
@@ -70,6 +66,72 @@ func ExecuteParse(ctx context.Context, db *store.DB, filePath string) (*ParseRes
 		SessionID:   0,
 		TotalEvents: len(result.Events),
 		Warning:     "database unavailable, session not saved",
+	}, nil
+}
+
+// executeParseDB разбирает файл с сохранением в БД и reuse существующей
+// сессии по ключу (file_hash, parser_version).
+func executeParseDB(ctx context.Context, db *store.DB, filePath string) (*ParseResult, error) {
+	fileHash, err := util.FileHash(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse trc file: %w", err)
+	}
+
+	// Reuse: файл с тем же содержимым уже разобран этой версией парсера.
+	if reusedID, err := trc.FindSessionByHash(ctx, db, fileHash, trc.ParserVersion); err != nil {
+		return nil, err
+	} else if reusedID > 0 {
+		return parseResultFromSession(ctx, db, reusedID)
+	}
+
+	sessionID, totalEvents, err := trc.ParseFileToDB(ctx, filePath, db)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse trc file: %w", err)
+	}
+
+	// Хеш проставляется последним шагом: сессия вставляется до парсинга (нужна
+	// для FK), при ошибке разбора file_hash остаётся NULL — сессия не попадает
+	// в кэш reuse.
+	if err := trc.SetSessionHash(ctx, db, sessionID, fileHash, trc.ParserVersion); err != nil {
+		if !store.IsUniqueViolation(err) {
+			return nil, err
+		}
+		// Гонка параллельных разборов одного файла: победитель уже записал
+		// тот же ключ. Возвращаем результат победителя, проигравшую сессию
+		// удаляем явно (prune хранит N свежих — проигравшая самая свежая).
+		winnerID, findErr := trc.FindSessionByHash(ctx, db, fileHash, trc.ParserVersion)
+		if findErr != nil {
+			return nil, findErr
+		}
+		if winnerID > 0 {
+			if delErr := trc.DeleteSession(ctx, db, sessionID); delErr != nil {
+				return nil, fmt.Errorf("failed to delete duplicate trc session %d: %w", sessionID, delErr)
+			}
+			return parseResultFromSession(ctx, db, winnerID)
+		}
+		// Победитель удалён конкурентно между violation и повторным поиском:
+		// один повтор записи хеша, затем ошибка.
+		if retryErr := trc.SetSessionHash(ctx, db, sessionID, fileHash, trc.ParserVersion); retryErr != nil {
+			return nil, retryErr
+		}
+	}
+
+	return &ParseResult{
+		SessionID:   sessionID,
+		TotalEvents: totalEvents,
+	}, nil
+}
+
+// parseResultFromSession собирает ParseResult по существующей сессии из БД
+// (путь reuse: total_events эквивалентен первому парсингу).
+func parseResultFromSession(ctx context.Context, db *store.DB, sessionID int64) (*ParseResult, error) {
+	session, err := trc.GetSession(ctx, db, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
+	}
+	return &ParseResult{
+		SessionID:   sessionID,
+		TotalEvents: session.TotalEvents,
 	}, nil
 }
 

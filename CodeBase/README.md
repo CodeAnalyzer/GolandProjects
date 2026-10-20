@@ -698,7 +698,7 @@ codebase rti prune --keep-last 5
 ```
 
 Подкоманды:
-- **`parse`** — распарсить `.rti` файл и сохранить результат в БД; выводит сводку + session ID
+- **`parse`** — распарсить `.rti` файл и сохранить результат в БД; выводит сводку + session ID. Повторный `parse` файла с тем же содержимым (SHA-256), разобранного текущей версией парсера, молча возвращает существующую сессию без повторного разбора (ключ кэша — `file_hash + parser_version` в `rti_sessions`; CLI и MCP). Принудительный перепарсинг — `delete` + `parse`; после изменения логики разбора (инкремент `rti.ParserVersion`) тот же файл даёт новую сессию
 - **`summary`** — общая сводка: total_calls, errors_count, max_nest_level, top_slow
 - **`tree`** — дерево вызовов с временами и кодами возврата
 - **`errors`** — вызовы с ненулевым ret_val + расшифровка кода из `ds_return_codes`; также клиентские ошибки (kind=error)
@@ -794,7 +794,7 @@ codebase trc prune --keep-last 5
 - **Extended Events `.xel`** — бинарный формат SQL Server Extended Events; декодируется через `ParseXEL` (самоописывающийся формат с dictionary-блоком, декодирование событий wait_completed, sql_batch_completed, sql_statement_completed, sp_statement_completed, калибровка timestamp)
 
 Подкоманды:
-- **`parse`** — распарсить `.trc`, `.xml` или `.xel` файл и сохранить результат в БД; выводит сводку + session ID
+- **`parse`** — распарсить `.trc`, `.xml` или `.xel` файл и сохранить результат в БД; выводит сводку + session ID. Повторный `parse` файла с тем же содержимым (SHA-256), разобранного текущей версией парсера, молча возвращает существующую сессию без повторного разбора (ключ кэша — `file_hash + parser_version` в `trc_sessions`; CLI и MCP); параллельные разборы одного файла сериализуются advisory-lock'ом. Принудительный перепарсинг — `delete` + `parse`; после изменения логики разбора (инкремент `trc.ParserVersion`) тот же файл даёт новую сессию
 - **`summary`** — общая сводка: total_events, метаданные провайдера/сервера/версии
 - **`events`** — список декодированных событий с фильтрами (`--spids`, `--event-names`, `--proc`, `--time-from/--time-to`, `--min-duration-ms`), постраничной выборкой (`--after-id`) и форматами (`--format full|short`). Ответ содержит `filtered_count` (полный размер отфильтрованного набора — на каждой странице), `total_count` (только на первой странице, при `after_id` отсутствует), `has_more` и `next_after_id` (курсор следующей страницы, отсутствует при `has_more=false`). Short-формат исключает `params`/`columns`; для saved-session short-запрос не читает JSONB-колонки. `--spid` — legacy-алиас `--spids` с одним значением; одновременно `--spid` и `--spids` — ошибка
 - **`procedures`** — агрегация вызовов процедур: по умолчанию только `SP:Completed` с непустым именем (count, min/max/avg/total duration; enrichment из индекса). `--event-names` задаёт явный набор классов событий (длительности разных уровней пересекаются — суммы не являются wall-clock time), `--spids` ограничивает SPID, `--top N` (0 = все, max 1000), `--sort total_ms|avg_ms|max_ms|count` (secondary: procedure, затем spid), `--group-by-spid` — группы `(spid, procedure)` без событий с NULL spid

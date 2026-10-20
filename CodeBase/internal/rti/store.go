@@ -62,6 +62,38 @@ func SaveSession(ctx context.Context, db *store.DB, result *RTIParseResult, file
 	return sessionID, nil
 }
 
+// FindSessionByHash возвращает ID существующей сессии для пары
+// (file_hash, parser_version) или 0, если такой сессии нет.
+// Сессии с NULL file_hash (legacy, прерванные) не находятся.
+func FindSessionByHash(ctx context.Context, db *store.DB, fileHash string, parserVersion int) (int64, error) {
+	var sessionID int64
+	err := db.QueryRowContext(ctx,
+		`SELECT id FROM rti_sessions WHERE file_hash = $1 AND parser_version = $2 LIMIT 1`,
+		fileHash, parserVersion,
+	).Scan(&sessionID)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("failed to find rti session by hash: %w", err)
+	}
+	return sessionID, nil
+}
+
+// SetSessionHash проставляет хеш и версию парсера успешно разобранной сессии.
+// При гонке параллельных разборов одного файла упирается в unique violation
+// (idx_rti_sessions_file_hash) — вызывающая сторона решает конфликт.
+func SetSessionHash(ctx context.Context, db *store.DB, sessionID int64, fileHash string, parserVersion int) error {
+	_, err := db.ExecContext(ctx,
+		`UPDATE rti_sessions SET file_hash = $2, parser_version = $3 WHERE id = $1`,
+		sessionID, fileHash, parserVersion,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set rti session hash: %w", err)
+	}
+	return nil
+}
+
 // clientEventPayload — типизированные данные клиентского события, сериализуемые
 // в колонку payload (JSONB) rti_client_events. Общие поля (timestamp, category,
 // class_name, method_name, pid, kind и т.д.) хранятся в отдельных колонках.

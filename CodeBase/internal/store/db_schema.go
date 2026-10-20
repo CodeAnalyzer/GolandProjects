@@ -612,6 +612,18 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			source_format TEXT NOT NULL DEFAULT 'trc_binary'
 		)`,
 		`ALTER TABLE trc_sessions ADD COLUMN IF NOT EXISTS source_format TEXT NOT NULL DEFAULT 'trc_binary'`,
+		// Reuse сессий при повторном парсинге того же файла:
+		// file_hash — SHA-256 содержимого (hex), проставляется последним шагом
+		// успешного разбора (прерванные/legacy-сессии остаются NULL);
+		// parser_version — версия соответствующего парсера (инкрементируется
+		// при изменении логики разбора). Partial unique index терпит legacy-NULL
+		// и позволяет сосуществовать сессиям разных версий парсера.
+		`ALTER TABLE rti_sessions ADD COLUMN IF NOT EXISTS file_hash TEXT`,
+		`ALTER TABLE rti_sessions ADD COLUMN IF NOT EXISTS parser_version INTEGER`,
+		`ALTER TABLE trc_sessions ADD COLUMN IF NOT EXISTS file_hash TEXT`,
+		`ALTER TABLE trc_sessions ADD COLUMN IF NOT EXISTS parser_version INTEGER`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_rti_sessions_file_hash ON rti_sessions(file_hash, parser_version) WHERE file_hash IS NOT NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_trc_sessions_file_hash ON trc_sessions(file_hash, parser_version) WHERE file_hash IS NOT NULL`,
 		`CREATE TABLE IF NOT EXISTS trc_events (
 			id             BIGSERIAL PRIMARY KEY,
 			session_id     BIGINT NOT NULL REFERENCES trc_sessions(id) ON DELETE CASCADE,

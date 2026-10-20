@@ -22,6 +22,56 @@
 - **WHEN** выполняется `codebase trc summary --session 42`
 - **THEN** сводка загружена из БД без повторного парсинга файла
 
+### Requirement: Reuse сессии при повторном парсинге того же файла
+
+Система SHALL при выполнении `trc parse` файла, содержимое которого (SHA-256) уже разобрано текущей версией TRC-парсера, возвращать `session_id` существующей сессии без повторного разбора файла и без добавления строк в БД. Ответ при reuse SHALL иметь тот же формат, что и при первом парсинге (`session_id`, `total_events`), без пометки о reuse. Поведение SHALL быть единым для CLI и MCP. Ключ кэша — пара (хеш содержимого, версия парсера): после инкремента версии парсера повторный парсинг того же файла SHALL создавать новую сессию. Сессии без хеша (созданные до введения reuse или с прерванным разбором) не переиспользуются и не мешают созданию новых. Принудительный перепарсинг выполняется через `trc delete` + `trc parse`.
+
+#### Scenario: Повторный парсинг того же файла
+
+- **GIVEN** .trc файл `trace.trc`, уже разобранный и сохранённый в сессию 42
+- **WHEN** выполняется `codebase trc parse trace.trc` повторно
+- **THEN** возвращён тот же `session_id = 42` с `total_events` первого парсинга
+- **AND** новые строки в `trc_events` не добавлены
+
+#### Scenario: Reuse через MCP
+
+- **GIVEN** .trc файл, уже разобранный ранее текущей версией парсера
+- **WHEN** инструмент `codebase_trc_parse` вызывается с тем же `file_path`
+- **THEN** ответ содержит тот же `session_id`, что и предыдущий вызов
+
+#### Scenario: Изменённое содержимое файла
+
+- **GIVEN** .trc файл `trace.trc`, ранее сохранённый в сессию 42
+- **WHEN** содержимое файла изменилось и выполняется `codebase trc parse trace.trc`
+- **THEN** создана новая сессия с новым `session_id` и полным разбором
+
+#### Scenario: Удаление сессии сбрасывает кэш
+
+- **GIVEN** сохранённая сессия 42 для файла `trace.trc`
+- **WHEN** выполняется `codebase trc delete --session 42`, затем `codebase trc parse trace.trc`
+- **THEN** создана новая сессия с новым `session_id > 42` без reuse
+
+#### Scenario: Инкремент версии парсера
+
+- **GIVEN** файл разобран версией парсера N и сохранён в сессию 42
+- **WHEN** версия парсера инкрементирована до N+1 и выполняется `trc parse` того же файла
+- **THEN** создана новая сессия с новым `session_id`
+- **AND** сессия 42 остаётся в БД
+
+#### Scenario: Конфликт параллельных парсингов одного файла
+
+- **GIVEN** файл `trace.trc` ещё не разобран
+- **WHEN** два `trc parse` одного файла выполняются параллельно
+- **THEN** оба вызова завершаются успешно с одинаковым `session_id` сессии-победителя
+- **AND** сессия проигравшего парсинга удалена из БД
+
+#### Scenario: Прерванный разбор не переиспользуется
+
+- **GIVEN** предыдущий `trc parse` завершился ошибкой в середине разбора (сессия-обрывок сохранена без хеша)
+- **WHEN** выполняется повторный `trc parse` того же файла
+- **THEN** выполняется полный разбор и создаётся новая сессия
+- **AND** сессия-обрывок не переиспользуется
+
 ### Requirement: Список сессий
 
 Система SHALL предоставлять команду `trc list` для вывода списка сохранённых сессий, упорядоченных по убыванию даты, с указанием session_id, file_path, total_events, file_size.
@@ -101,10 +151,12 @@
 
 ## Related code
 
-- `internal/trc/store.go` — `SaveSession`, `LoadEvents`, `ListSessions`, `DeleteSession`, `PruneSessions`
-- `internal/trc/parse_to_db.go` — `ParseFileToDB`, связка парсинг + сохранение в БД (используется при доступной БД)
-- `internal/trcsvc/runtime.go` — execution-слой для CLI (`cmd/trc.go`) и MCP: `ExecuteParse` (с веткой fallback при `db == nil`), `ExecuteList`/`ExecuteDelete`/`ExecutePrune` (требуют БД), `ExecuteSummary`/`ExecuteEvents`/`ExecuteProcedures`/`ExecuteTree`/`ExecuteErrors`/`ExecuteSlow` (работают из файла при недоступной БД через `resolveSession`)
-- `internal/store/db_schema.go` — таблицы `trc_sessions`, `trc_events`
+- `internal/trc/store.go` — `SaveSession`, `LoadEvents`, `ListSessions`, `DeleteSession`, `PruneSessions`, `FindSessionByHash`, `SetSessionHash` (reuse по `(file_hash, parser_version)`)
+- `internal/trc/parser_version.go` — `ParserVersion` (инкремент при изменении логики разбора; входит в ключ reuse)
+- `internal/util/hash.go` — `FileHash` (SHA-256 содержимого файла)
+- `internal/trc/parse_to_db.go` — `ParseFileToDB`, связка парсинг + сохранение в БД (используется при доступной БД); сериализация параллельных разборов одного файла session-level advisory lock по абсолютному пути
+- `internal/trcsvc/runtime.go` — execution-слой для CLI (`cmd/trc.go`) и MCP: `ExecuteParse` (reuse-ветка + fallback при `db == nil`, конфликт unique violation → победитель + удаление проигравшей), `ExecuteList`/`ExecuteDelete`/`ExecutePrune` (требуют БД), `ExecuteSummary`/`ExecuteEvents`/`ExecuteProcedures`/`ExecuteTree`/`ExecuteErrors`/`ExecuteSlow` (работают из файла при недоступной БД через `resolveSession`)
+- `internal/store/db_schema.go` — таблицы `trc_sessions` (колонки `file_hash`/`parser_version`, partial unique index `(file_hash, parser_version)`), `trc_events`
 - `cmd/trc.go` — CLI commands `trc parse`, `trc list`, `trc delete`, `trc prune`
 
 ## Notes
@@ -113,4 +165,5 @@
 - `keep_last < 0` отклоняется с ошибкой валидации
 - VACUUM ANALYZE выполняется после prune (ошибка игнорируется — не критично)
 - trc_events содержит JSONB-поля params и columns для гибкого хранения декодированных данных
+- Reuse молчаливый: формат ответа не меняется, CLI печатает `Saved session: N` и при reuse; хеш проставляется последним шагом после успешного сохранения — сессия вставляется до парсинга (нужна для FK `trc_events.session_id`), при ошибке разбора `file_hash` остаётся NULL и сессия в кэш не попадает
 - Execution-слой `internal/trcsvc` — общая точка входа для CLI и MCP, устраняющая дублирование оркестрации (см. также домен `mcp-server`). Поведение storage-команд специфицировано здесь; транспорт MCP — в `mcp-server/mcp-transport-tools`.

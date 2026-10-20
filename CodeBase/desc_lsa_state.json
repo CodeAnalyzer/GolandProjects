@@ -1,13 +1,13 @@
 {
-  "fingerprint": "978717926b2a89b6e8952d1cad46c9408f893eacb5528e7aacbe0277a718bcb9",
-  "pending": 1,
+  "fingerprint": "497dba27b3c185dbb7f5a3019ea2fb35dc6bfd3387fa707157c5f9eb0cc935a5",
+  "pending": 0,
   "params": {
     "min_df": 10,
     "max_df": 0.3,
     "k": 512
   },
   "algorithm": 2,
-  "num_docs": 54573,
-  "generation": "978717926b2a89b6e8952d1cad46c9408f893eacb5528e7aacbe0277a718bcb9",
-  "trained_at": "2026-10-08T19:33:50.7184767+03:00"
+  "num_docs": 54620,
+  "generation": "497dba27b3c185dbb7f5a3019ea2fb35dc6bfd3387fa707157c5f9eb0cc935a5",
+  "trained_at": "2026-10-19T19:52:10.1650641+03:00"
 }

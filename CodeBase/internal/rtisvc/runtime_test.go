@@ -57,8 +57,8 @@ func TestExecuteParse_FileMode(t *testing.T) {
 	if result.Summary.TotalCalls != 3 {
 		t.Errorf("Summary.TotalCalls = %d, want 3", result.Summary.TotalCalls)
 	}
-	if result.Warning == "" {
-		t.Errorf("Warning should be set when db is nil")
+	if result.Warning != "database unavailable, session not saved" {
+		t.Errorf("Warning = %q, want exact fallback text", result.Warning)
 	}
 }
 
