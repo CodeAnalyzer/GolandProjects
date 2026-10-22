@@ -654,6 +654,7 @@ Health status: ok
 ```bash
 # Парсинг файла и сохранение в БД
 codebase rti parse path/to/file.rti
+codebase rti parse path/to/file.rti --name "Проблемный расчёт"
 
 # Сводка по логу
 codebase rti summary path/to/file.rti
@@ -694,11 +695,13 @@ codebase rti list --limit 10
 
 # Управление сессиями
 codebase rti delete --session 42
+codebase rti delete --name "Проблемный расчёт"
 codebase rti prune --keep-last 5
+codebase rti prune --keep-hours 24
 ```
 
 Подкоманды:
-- **`parse`** — распарсить `.rti` файл и сохранить результат в БД; выводит сводку + session ID. Повторный `parse` файла с тем же содержимым (SHA-256), разобранного текущей версией парсера, молча возвращает существующую сессию без повторного разбора (ключ кэша — `file_hash + parser_version` в `rti_sessions`; CLI и MCP). Принудительный перепарсинг — `delete` + `parse`; после изменения логики разбора (инкремент `rti.ParserVersion`) тот же файл даёт новую сессию
+- **`parse`** — распарсить `.rti` файл и сохранить результат в БД; выводит сводку + session ID. Имя сессии по умолчанию — имя файла (`filepath.Base`), `--name` задаёт своё. Повторный `parse` файла с тем же содержимым (SHA-256), разобранного текущей версией парсера, молча возвращает существующую сессию без повторного разбора (ключ кэша — `file_hash + parser_version` в `rti_sessions`; CLI и MCP); при reuse с явным `--name` сессия переименовывается, без `--name` имя не меняется. Принудительный перепарсинг — `delete` + `parse`; после изменения логики разбора (инкремент `rti.ParserVersion`) тот же файл даёт новую сессию
 - **`summary`** — общая сводка: total_calls, errors_count, max_nest_level, top_slow
 - **`tree`** — дерево вызовов с временами и кодами возврата
 - **`errors`** — вызовы с ненулевым ret_val + расшифровка кода из `ds_return_codes`; также клиентские ошибки (kind=error)
@@ -707,9 +710,9 @@ codebase rti prune --keep-last 5
 - **`blog`** — бизнес-лог процедуры: блоки с Enter/Exit и elapsed_ms, контрольные точки с timestamp, дампы таблиц с заголовками и строками
 - **`client-tree`** — дерево клиентских событий (thick client d5nt), сгруппированных по PID; enrichment из индекса (PAS-методы, DFM-формы, SQL-фрагменты)
 - **`timeline`** — единый хронологический timeline серверных вызовов и клиентских событий; enrichment клиентских событий из индекса
-- **`list`** — список сохранённых сессий
-- **`delete`** — удалить сессию (CASCADE удаляет все связанные записи)
-- **`prune`** — удалить старые сессии, оставить последние N
+- **`list`** — список сохранённых сессий с `session_name`
+- **`delete`** — удалить сессию по `--session` (ID) или `--name` (точное имя; удаляются все совпадения, в результате `deleted_count`/`session_ids`); CASCADE удаляет все связанные записи
+- **`prune`** — удалить старые сессии: оставить последние `--keep-last N` либо только сессии за последние `--keep-hours N` часов (режимы взаимоисключающие, `--keep-hours` > 0)
 
 Общие флаги для большинства подкоманд:
 - `--session` — загрузить данные из сохранённой сессии вместо файла
@@ -719,7 +722,9 @@ codebase rti prune --keep-last 5
 Командно-специфичные флаги:
 - `--depth N` — максимальная глубина дерева (для `tree`, 0 = без лимита)
 - `--slow-ms N` — порог медленности в миллисекундах (для `slow`, по умолчанию из `[rti] slow_threshold_ms`)
-- `--keep-last N` — сколько последних сессий оставить (для `prune`)
+- `--name NAME` — имя сессии (для `parse`, по умолчанию имя файла; для `delete` — точное имя, взаимоисключающе с `--session`)
+- `--keep-last N` — сколько последних сессий оставить (для `prune`; взаимоисключающе с `--keep-hours`)
+- `--keep-hours N` — оставить нетронутыми сессии за последние N часов (для `prune`, N > 0; удаляются сессии с `parsed_at` старше cutoff)
 - `--limit N` — максимум сессий в списке (для `list`, по умолчанию 20)
 
 ### TRC-анализатор
@@ -731,6 +736,7 @@ codebase rti prune --keep-last 5
 codebase trc parse path/to/file.trc
 codebase trc parse path/to/file.xml
 codebase trc parse path/to/file.xel
+codebase trc parse path/to/file.trc --name "Проблемный SPID"
 
 # Сводка по трейсу
 codebase trc summary path/to/file.trc
@@ -785,7 +791,9 @@ codebase trc list --limit 10
 
 # Управление сессиями
 codebase trc delete --session 42
+codebase trc delete --name "Проблемный SPID"
 codebase trc prune --keep-last 5
+codebase trc prune --keep-hours 24
 ```
 
 Поддерживаемые форматы файлов:
@@ -794,7 +802,7 @@ codebase trc prune --keep-last 5
 - **Extended Events `.xel`** — бинарный формат SQL Server Extended Events; декодируется через `ParseXEL` (самоописывающийся формат с dictionary-блоком, декодирование событий wait_completed, sql_batch_completed, sql_statement_completed, sp_statement_completed, калибровка timestamp)
 
 Подкоманды:
-- **`parse`** — распарсить `.trc`, `.xml` или `.xel` файл и сохранить результат в БД; выводит сводку + session ID. Повторный `parse` файла с тем же содержимым (SHA-256), разобранного текущей версией парсера, молча возвращает существующую сессию без повторного разбора (ключ кэша — `file_hash + parser_version` в `trc_sessions`; CLI и MCP); параллельные разборы одного файла сериализуются advisory-lock'ом. Принудительный перепарсинг — `delete` + `parse`; после изменения логики разбора (инкремент `trc.ParserVersion`) тот же файл даёт новую сессию
+- **`parse`** — распарсить `.trc`, `.xml` или `.xel` файл и сохранить результат в БД; выводит сводку + session ID. Имя сессии по умолчанию — имя файла (`filepath.Base`), `--name` задаёт своё. Повторный `parse` файла с тем же содержимым (SHA-256), разобранного текущей версией парсера, молча возвращает существующую сессию без повторного разбора (ключ кэша — `file_hash + parser_version` в `trc_sessions`; CLI и MCP); параллельные разборы одного файла сериализуются advisory-lock'ом; при reuse с явным `--name` сессия переименовывается, без `--name` имя не меняется. Принудительный перепарсинг — `delete` + `parse`; после изменения логики разбора (инкремент `trc.ParserVersion`) тот же файл даёт новую сессию
 - **`summary`** — общая сводка: total_events, метаданные провайдера/сервера/версии
 - **`events`** — список декодированных событий с фильтрами (`--spids`, `--event-names`, `--proc`, `--time-from/--time-to`, `--min-duration-ms`), постраничной выборкой (`--after-id`) и форматами (`--format full|short`). Ответ содержит `filtered_count` (полный размер отфильтрованного набора — на каждой странице), `total_count` (только на первой странице, при `after_id` отсутствует), `has_more` и `next_after_id` (курсор следующей страницы, отсутствует при `has_more=false`). Short-формат исключает `params`/`columns`; для saved-session short-запрос не читает JSONB-колонки. `--spid` — legacy-алиас `--spids` с одним значением; одновременно `--spid` и `--spids` — ошибка
 - **`procedures`** — агрегация вызовов процедур: по умолчанию только `SP:Completed` с непустым именем (count, min/max/avg/total duration; enrichment из индекса). `--event-names` задаёт явный набор классов событий (длительности разных уровней пересекаются — суммы не являются wall-clock time), `--spids` ограничивает SPID, `--top N` (0 = все, max 1000), `--sort total_ms|avg_ms|max_ms|count` (secondary: procedure, затем spid), `--group-by-spid` — группы `(spid, procedure)` без событий с NULL spid
@@ -803,9 +811,9 @@ codebase trc prune --keep-last 5
 - **`tree`** — дерево вызовов, сгруппированное по SPID, с восстановлением вложенности через Starting/Completed пары (RPC, SQL:Batch, SQL:Stmt, SP, SP:Stmt)
 - **`errors`** — события с ненулевой колонкой Error(31)
 - **`slow`** — события медленнее порога (по умолчанию 100 мс), отсортированные по убыванию длительности
-- **`list`** — список сохранённых сессий
-- **`delete`** — удалить сессию (CASCADE удаляет все связанные события)
-- **`prune`** — удалить старые сессии, оставить последние N
+- **`list`** — список сохранённых сессий с `session_name`
+- **`delete`** — удалить сессию по `--session` (ID) или `--name` (точное имя; удаляются все совпадения, в результате `deleted_count`/`session_ids`); CASCADE удаляет все связанные события
+- **`prune`** — удалить старые сессии: оставить последние `--keep-last N` либо только сессии за последние `--keep-hours N` часов (режимы взаимоисключающие, `--keep-hours` > 0)
 
 Общие флаги для большинства подкоманд:
 - `--session` — загрузить данные из сохранённой сессии вместо файла
@@ -824,7 +832,9 @@ codebase trc prune --keep-last 5
 - `--slow-ms N` — порог медленности в миллисекундах (для `slow`, по умолчанию из `[trc] slow_threshold_ms`)
 - `--max-depth N` — максимальная глубина дерева (для `tree`, 0 = без лимита)
 - `--limit N` — максимум root nodes и children per node (для `tree`, 0 = без лимита)
-- `--keep-last N` — сколько последних сессий оставить (для `prune`)
+- `--name NAME` — имя сессии (для `parse`, по умолчанию имя файла; для `delete` — точное имя, взаимоисключающе с `--session`)
+- `--keep-last N` — сколько последних сессий оставить (для `prune`; взаимоисключающе с `--keep-hours`)
+- `--keep-hours N` — оставить нетронутыми сессии за последние N часов (для `prune`, N > 0; удаляются сессии с `parsed_at` старше cutoff)
 
 ### Review (проверка SQL перед деплоем)
 

@@ -44,7 +44,7 @@ const rtiSample = "04.03.2026 16:59:03.173\tINFO\tTrace.Server.Proc\t\tCons_Get_
 func TestExecuteParse_FileMode(t *testing.T) {
 	p := writeTempFile(t, ".rti", rtiSample)
 	ctx := context.Background()
-	result, err := ExecuteParse(ctx, nil, p)
+	result, err := ExecuteParse(ctx, nil, p, ParseOptions{})
 	if err != nil {
 		t.Fatalf("ExecuteParse error: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestExecuteParse_FileMode(t *testing.T) {
 }
 
 func TestExecuteParse_EmptyPath(t *testing.T) {
-	_, err := ExecuteParse(context.Background(), nil, "")
+	_, err := ExecuteParse(context.Background(), nil, "", ParseOptions{})
 	if err == nil {
 		t.Fatal("expected error for empty path, got nil")
 	}

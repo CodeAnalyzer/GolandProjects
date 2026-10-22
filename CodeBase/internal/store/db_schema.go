@@ -532,6 +532,7 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS rti_sessions (
 			id BIGSERIAL PRIMARY KEY,
 			file_path TEXT NOT NULL,
+			session_name TEXT NOT NULL DEFAULT '',
 			file_size BIGINT NOT NULL DEFAULT 0,
 			parsed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			total_calls INTEGER NOT NULL DEFAULT 0,
@@ -601,6 +602,7 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS trc_sessions (
 			id BIGSERIAL PRIMARY KEY,
 			file_path TEXT NOT NULL,
+			session_name TEXT NOT NULL DEFAULT '',
 			file_size BIGINT NOT NULL DEFAULT 0,
 			parsed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			total_events INTEGER NOT NULL DEFAULT 0,
@@ -624,6 +626,12 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`ALTER TABLE trc_sessions ADD COLUMN IF NOT EXISTS parser_version INTEGER`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_rti_sessions_file_hash ON rti_sessions(file_hash, parser_version) WHERE file_hash IS NOT NULL`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_trc_sessions_file_hash ON trc_sessions(file_hash, parser_version) WHERE file_hash IS NOT NULL`,
+		// Имя сессии по умолчанию — имя разобранного файла. Backfill идемпотентен:
+		// заполняются только legacy-строки с пустым именем.
+		`ALTER TABLE rti_sessions ADD COLUMN IF NOT EXISTS session_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE trc_sessions ADD COLUMN IF NOT EXISTS session_name TEXT NOT NULL DEFAULT ''`,
+		`UPDATE rti_sessions SET session_name = substring(file_path from '[^/\\]+$') WHERE session_name = ''`,
+		`UPDATE trc_sessions SET session_name = substring(file_path from '[^/\\]+$') WHERE session_name = ''`,
 		`CREATE TABLE IF NOT EXISTS trc_events (
 			id             BIGSERIAL PRIMARY KEY,
 			session_id     BIGINT NOT NULL REFERENCES trc_sessions(id) ON DELETE CASCADE,

@@ -15,7 +15,7 @@ import (
 
 // SaveSession сохраняет результат разбора .trc файла в БД. Возвращает ID
 // созданной сессии.
-func SaveSession(ctx context.Context, db *store.DB, result *TRCParseResult, filePath string, fileSize int64) (int64, error) {
+func SaveSession(ctx context.Context, db *store.DB, result *TRCParseResult, filePath, sessionName string, fileSize int64) (int64, error) {
 	var sessionID int64
 	h := result.Header
 	sourceFormat := result.SourceFormat
@@ -23,9 +23,9 @@ func SaveSession(ctx context.Context, db *store.DB, result *TRCParseResult, file
 		sourceFormat = "trc_binary"
 	}
 	err := db.QueryRowContext(ctx,
-		`INSERT INTO trc_sessions (file_path, file_size, total_events, provider_name, server_name, major_version, minor_version, build_number, source_format)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-		filePath, fileSize, len(result.Events),
+		`INSERT INTO trc_sessions (file_path, session_name, file_size, total_events, provider_name, server_name, major_version, minor_version, build_number, source_format)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+		filePath, sessionName, fileSize, len(result.Events),
 		h.ProviderName, h.ServerName, h.MajorVersion, h.MinorVersion, h.BuildNumber,
 		sourceFormat,
 	).Scan(&sessionID)
@@ -315,7 +315,7 @@ func ListSessions(ctx context.Context, db *store.DB, limit int) ([]TRCSession, e
 		limit = 20
 	}
 	rows, err := db.QueryContext(ctx,
-		`SELECT id, file_path, file_size, parsed_at, total_events, provider_name, server_name, major_version, minor_version, build_number
+		`SELECT id, file_path, session_name, file_size, parsed_at, total_events, provider_name, server_name, major_version, minor_version, build_number
 		 FROM trc_sessions ORDER BY parsed_at DESC LIMIT $1`,
 		limit,
 	)
@@ -328,7 +328,7 @@ func ListSessions(ctx context.Context, db *store.DB, limit int) ([]TRCSession, e
 	for rows.Next() {
 		var s TRCSession
 		var provider, server sql.NullString
-		if err := rows.Scan(&s.ID, &s.FilePath, &s.FileSize, &s.ParsedAt, &s.TotalEvents,
+		if err := rows.Scan(&s.ID, &s.FilePath, &s.SessionName, &s.FileSize, &s.ParsedAt, &s.TotalEvents,
 			&provider, &server, &s.MajorVersion, &s.MinorVersion, &s.BuildNumber); err != nil {
 			return nil, err
 		}
@@ -344,10 +344,10 @@ func GetSession(ctx context.Context, db *store.DB, sessionID int64) (*TRCSession
 	var s TRCSession
 	var provider, server sql.NullString
 	err := db.QueryRowContext(ctx,
-		`SELECT id, file_path, file_size, parsed_at, total_events, provider_name, server_name, major_version, minor_version, build_number
+		`SELECT id, file_path, session_name, file_size, parsed_at, total_events, provider_name, server_name, major_version, minor_version, build_number
 		 FROM trc_sessions WHERE id = $1`,
 		sessionID,
-	).Scan(&s.ID, &s.FilePath, &s.FileSize, &s.ParsedAt, &s.TotalEvents,
+	).Scan(&s.ID, &s.FilePath, &s.SessionName, &s.FileSize, &s.ParsedAt, &s.TotalEvents,
 		&provider, &server, &s.MajorVersion, &s.MinorVersion, &s.BuildNumber)
 	if err != nil {
 		return nil, err
@@ -396,6 +396,40 @@ func SetSessionHash(ctx context.Context, db *store.DB, sessionID int64, fileHash
 	return nil
 }
 
+// SetSessionName обновляет имя сессии (например, при reuse с явно заданным именем).
+func SetSessionName(ctx context.Context, db *store.DB, sessionID int64, name string) error {
+	_, err := db.ExecContext(ctx,
+		`UPDATE trc_sessions SET session_name = $2 WHERE id = $1`,
+		sessionID, name,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set trc session name: %w", err)
+	}
+	return nil
+}
+
+// FindSessionIDsByName возвращает ID всех сессий с точным совпадением имени.
+func FindSessionIDsByName(ctx context.Context, db *store.DB, name string) ([]int64, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT id FROM trc_sessions WHERE session_name = $1 ORDER BY id`,
+		name,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find trc sessions by name: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // batchDeleteSize — размер батча для построчного удаления событий.
 // Использует trcBatchSize (настраивается через SetBatchSize).
 
@@ -403,6 +437,21 @@ func SetSessionHash(ctx context.Context, db *store.DB, sessionID int64, fileHash
 // (чтобы избежать длительного CASCADE-удаления в одной транзакции), затем
 // удаляется сама сессия.
 func DeleteSession(ctx context.Context, db *store.DB, sessionID int64) error {
+	return deleteSessionIDs(ctx, db, []int64{sessionID})
+}
+
+// deleteSessionIDs удаляет набор сессий, последовательно очищая события тем же
+// порядком, что и DeleteSession.
+func deleteSessionIDs(ctx context.Context, db *store.DB, ids []int64) error {
+	for _, sessionID := range ids {
+		if err := deleteSessionData(ctx, db, sessionID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func deleteSessionData(ctx context.Context, db *store.DB, sessionID int64) error {
 	// Пакетное удаление событий из trc_events
 	for {
 		res, err := db.ExecContext(ctx,
@@ -412,7 +461,7 @@ func DeleteSession(ctx context.Context, db *store.DB, sessionID int64) error {
 			sessionID, trcBatchSize,
 		)
 		if err != nil {
-			return fmt.Errorf("batch delete trc_events: %w", err)
+			return fmt.Errorf("batch delete trc_events for session %d: %w", sessionID, err)
 		}
 		n, _ := res.RowsAffected()
 		if n == 0 {
@@ -468,39 +517,43 @@ func PruneSessions(ctx context.Context, db *store.DB, keepLast int) (int64, erro
 		return 0, err
 	}
 
-	// Пакетное удаление событий для каждой сессии
-	for _, sid := range ids {
-		for {
-			res, err := db.ExecContext(ctx,
-				`DELETE FROM trc_events WHERE session_id = $1 AND id IN (
-					SELECT id FROM trc_events WHERE session_id = $1 LIMIT $2
-				)`,
-				sid, trcBatchSize,
-			)
-			if err != nil {
-				return 0, fmt.Errorf("batch delete trc_events for session %d: %w", sid, err)
-			}
-			n, _ := res.RowsAffected()
-			if n == 0 {
-				break
-			}
-		}
+	if err := deleteSessionIDs(ctx, db, ids); err != nil {
+		return 0, err
 	}
-
-	// Удаление сессий (CASCADE уже нечего удалять)
-	result, err := db.ExecContext(ctx,
-		`DELETE FROM trc_sessions WHERE id NOT IN (
-			SELECT id FROM trc_sessions ORDER BY parsed_at DESC LIMIT $1
-		)`,
-		keepLast,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("delete trc_sessions: %w", err)
-	}
-	deleted, _ := result.RowsAffected()
 	// VACUUM ANALYZE после массового удаления (ошибка не критична)
 	_, _ = db.ExecContext(ctx, `VACUUM ANALYZE trc_events, trc_sessions`)
-	return deleted, nil
+	return int64(len(ids)), nil
+}
+
+// PruneSessionsOlderThan удаляет сессии с parsed_at < cutoff.
+func PruneSessionsOlderThan(ctx context.Context, db *store.DB, cutoff time.Time) (int64, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT id FROM trc_sessions WHERE parsed_at < $1 ORDER BY id`,
+		cutoff,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("select trc_sessions older than cutoff: %w", err)
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	if err := deleteSessionIDs(ctx, db, ids); err != nil {
+		return 0, err
+	}
+	// VACUUM ANALYZE после массового удаления (ошибка не критична)
+	_, _ = db.ExecContext(ctx, `VACUUM ANALYZE trc_events, trc_sessions`)
+	return int64(len(ids)), nil
 }
 
 // LoadEvents загружает события сессии из БД, восстанавливая полный набор

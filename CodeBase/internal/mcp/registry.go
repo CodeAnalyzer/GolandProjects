@@ -806,17 +806,21 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_rti_parse": {
-			Definition: toolDefinition{Name: "codebase_rti_parse", Description: "Parse an RTI trace log file and save the session to the database. Returns summary statistics (total calls, errors, max nest level, top slowest calls) and the saved session ID. Use this as the first step before querying RTI data via other rti tools.", InputSchema: objectSchema(map[string]interface{}{"file_path": stringProp("Absolute path to .rti file")})},
+			Definition: toolDefinition{Name: "codebase_rti_parse", Description: "Parse an RTI trace log file and save the session to the database. Returns summary statistics (total calls, errors, max nest level, top slowest calls) and the saved session ID. Optional name sets the session name; by default the parsed file name is used. Use this as the first step before querying RTI data via other rti tools.", InputSchema: objectSchema(map[string]interface{}{"file_path": stringProp("Absolute path to .rti file"), "name": stringProp("Optional session name (default: file name)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				filePath, err := requiredString(args, "file_path")
 				if err != nil {
 					return nil, err
 				}
-				return rtisvc.ExecuteParse(ctx, db, filePath)
+				name, err := optionalString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				return rtisvc.ExecuteParse(ctx, db, filePath, rtisvc.ParseOptions{Name: name})
 			},
 		},
 		"codebase_rti_list": {
-			Definition: toolDefinition{Name: "codebase_rti_list", Description: "List saved RTI parsing sessions from the database, ordered by most recent first. Returns session ID, file path, call counts, error counts, file size, and parse timestamp.", InputSchema: objectSchema(map[string]interface{}{"limit": intProp("Max sessions to return (default 20)")})},
+			Definition: toolDefinition{Name: "codebase_rti_list", Description: "List saved RTI parsing sessions from the database, ordered by most recent first. Returns session ID, session name, file path, call counts, error counts, file size, and parse timestamp.", InputSchema: objectSchema(map[string]interface{}{"limit": intProp("Max sessions to return (default 20)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				limit := optionalLimit(args)
 				return rtisvc.ExecuteList(ctx, db, limit)
@@ -902,26 +906,38 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_rti_delete": {
-			Definition: toolDefinition{Name: "codebase_rti_delete", Description: "Delete a saved RTI session by ID. Cascades to delete all associated calls, parameters, and checkpoints.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Session ID to delete")})},
+			Definition: toolDefinition{Name: "codebase_rti_delete", Description: "Delete saved RTI sessions by session_id or by exact session name (mutually exclusive). Deleting by name removes all matching sessions and returns deleted_count and session_ids. Cascades to delete all associated calls, parameters, checkpoints, blog data, and client events.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Session ID to delete"), "name": stringProp("Or: exact session name to delete (all matches)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				sessionID, err := optionalInt64(args, "session_id")
 				if err != nil {
 					return nil, err
 				}
-				if sessionID <= 0 {
-					return nil, fmt.Errorf("session_id is required")
-				}
-				return rtisvc.ExecuteDelete(ctx, db, sessionID)
-			},
-		},
-		"codebase_rti_prune": {
-			Definition: toolDefinition{Name: "codebase_rti_prune", Description: "Delete old RTI sessions, keeping only the most recent N. Use keep_last=0 to delete all sessions (uses TRUNCATE for instant cleanup). Returns the number of deleted sessions.", InputSchema: objectSchema(map[string]interface{}{"keep_last": intProp("Number of most recent sessions to keep")})},
-			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				keepLast, err := optionalInt(args, "keep_last")
+				name, err := optionalString(args, "name")
 				if err != nil {
 					return nil, err
 				}
-				return rtisvc.ExecutePrune(ctx, db, keepLast)
+				return rtisvc.ExecuteDelete(ctx, db, rtisvc.DeleteParams{SessionID: sessionID, Name: name})
+			},
+		},
+		"codebase_rti_prune": {
+			Definition: toolDefinition{Name: "codebase_rti_prune", Description: "Delete old RTI sessions by keeping only the most recent N (keep_last) or only sessions from the last N hours (keep_hours). The arguments are mutually exclusive; keep_hours must be > 0. Use keep_last=0 to delete all sessions (uses TRUNCATE for instant cleanup). Returns deleted_count, kept_last, kept_hours and cutoff.", InputSchema: objectSchema(map[string]interface{}{"keep_last": intProp("Number of most recent sessions to keep"), "keep_hours": intProp("Or: keep sessions from the last N hours (> 0)")})},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				var params rtisvc.PruneParams
+				if _, ok := args["keep_last"]; ok {
+					value, err := optionalInt(args, "keep_last")
+					if err != nil {
+						return nil, err
+					}
+					params.KeepLast = &value
+				}
+				if _, ok := args["keep_hours"]; ok {
+					value, err := optionalInt(args, "keep_hours")
+					if err != nil {
+						return nil, err
+					}
+					params.KeepHours = &value
+				}
+				return rtisvc.ExecutePrune(ctx, db, params)
 			},
 		},
 		"codebase_rti_blog": {
@@ -1006,17 +1022,21 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_trc_parse": {
-			Definition: toolDefinition{Name: "codebase_trc_parse", Description: "Parse a SQL Server trace file (.trc binary, .trc XML export, or .xel Extended Events) and save the session to the database. Returns total event count and the saved session ID. Use this as the first step before querying trc data via other trc tools.", InputSchema: objectSchema(map[string]interface{}{"file_path": stringProp("Absolute path to .trc or .xel file")})},
+			Definition: toolDefinition{Name: "codebase_trc_parse", Description: "Parse a SQL Server trace file (.trc binary, .trc XML export, or .xel Extended Events) and save the session to the database. Returns total event count and the saved session ID. Optional name sets the session name; by default the parsed file name is used. Use this as the first step before querying trc data via other trc tools.", InputSchema: objectSchema(map[string]interface{}{"file_path": stringProp("Absolute path to .trc or .xel file"), "name": stringProp("Optional session name (default: file name)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				filePath, err := requiredString(args, "file_path")
 				if err != nil {
 					return nil, err
 				}
-				return trcsvc.ExecuteParse(ctx, db, filePath)
+				name, err := optionalString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				return trcsvc.ExecuteParse(ctx, db, filePath, trcsvc.ParseOptions{Name: name})
 			},
 		},
 		"codebase_trc_list": {
-			Definition: toolDefinition{Name: "codebase_trc_list", Description: "List saved trc parsing sessions from the database, ordered by most recent first. Returns session ID, file path, total events, file size, and parse timestamp.", InputSchema: objectSchema(map[string]interface{}{"limit": intProp("Max sessions to return (default 20)")})},
+			Definition: toolDefinition{Name: "codebase_trc_list", Description: "List saved trc parsing sessions from the database, ordered by most recent first. Returns session ID, session name, file path, total events, file size, and parse timestamp.", InputSchema: objectSchema(map[string]interface{}{"limit": intProp("Max sessions to return (default 20)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				limit, err := optionalInt(args, "limit")
 				if err != nil {
@@ -1327,26 +1347,38 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_trc_delete": {
-			Definition: toolDefinition{Name: "codebase_trc_delete", Description: "Delete a saved trc session by ID. Batch-deletes all associated events first, then removes the session.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Session ID to delete")})},
+			Definition: toolDefinition{Name: "codebase_trc_delete", Description: "Delete saved trc sessions by session_id or by exact session name (mutually exclusive). Deleting by name removes all matching sessions and returns deleted_count and session_ids. Batch-deletes all associated events first, then removes the sessions.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Session ID to delete"), "name": stringProp("Or: exact session name to delete (all matches)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				sessionID, err := optionalInt64(args, "session_id")
 				if err != nil {
 					return nil, err
 				}
-				if sessionID <= 0 {
-					return nil, fmt.Errorf("session_id is required")
-				}
-				return trcsvc.ExecuteDelete(ctx, db, sessionID)
-			},
-		},
-		"codebase_trc_prune": {
-			Definition: toolDefinition{Name: "codebase_trc_prune", Description: "Delete old trc sessions, keeping only the most recent N. Use keep_last=0 to delete all sessions (uses TRUNCATE for instant cleanup). Returns the number of deleted sessions.", InputSchema: objectSchema(map[string]interface{}{"keep_last": intProp("Number of most recent sessions to keep")})},
-			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				keepLast, err := optionalInt(args, "keep_last")
+				name, err := optionalString(args, "name")
 				if err != nil {
 					return nil, err
 				}
-				return trcsvc.ExecutePrune(ctx, db, keepLast)
+				return trcsvc.ExecuteDelete(ctx, db, trcsvc.DeleteParams{SessionID: sessionID, Name: name})
+			},
+		},
+		"codebase_trc_prune": {
+			Definition: toolDefinition{Name: "codebase_trc_prune", Description: "Delete old trc sessions by keeping only the most recent N (keep_last) or only sessions from the last N hours (keep_hours). The arguments are mutually exclusive; keep_hours must be > 0. Use keep_last=0 to delete all sessions (uses TRUNCATE for instant cleanup). Returns deleted_count, kept_last, kept_hours and cutoff.", InputSchema: objectSchema(map[string]interface{}{"keep_last": intProp("Number of most recent sessions to keep"), "keep_hours": intProp("Or: keep sessions from the last N hours (> 0)")})},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				var params trcsvc.PruneParams
+				if _, ok := args["keep_last"]; ok {
+					value, err := optionalInt(args, "keep_last")
+					if err != nil {
+						return nil, err
+					}
+					params.KeepLast = &value
+				}
+				if _, ok := args["keep_hours"]; ok {
+					value, err := optionalInt(args, "keep_hours")
+					if err != nil {
+						return nil, err
+					}
+					params.KeepHours = &value
+				}
+				return trcsvc.ExecutePrune(ctx, db, params)
 			},
 		},
 		"codebase_query_spec_search": {

@@ -17,7 +17,9 @@ var (
 	rtiMaxDepth      int
 	rtiProcedure     string
 	rtiSessionID     int64
+	rtiSessionName   string
 	rtiKeepLast      int
+	rtiKeepHours     int
 	rtiListLimit     int
 	rtiPID           int
 	rtiLimit         int
@@ -36,8 +38,8 @@ Subcommands:
   slow    - print slowest calls (threshold --slow-ms)
   details - show enriched details for a procedure
   list    - list saved sessions
-  delete  - delete a session by ID
-  prune   - prune old sessions`,
+  delete  - delete a session by ID or name
+  prune   - prune old sessions (keep last N or last N hours)`,
 }
 
 var rtiParseCmd = &cobra.Command{
@@ -128,7 +130,7 @@ func runRTIParse(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	db := openDB()
 	defer closeDB(db)
-	result, err := rtisvc.ExecuteParse(ctx, db, args[0])
+	result, err := rtisvc.ExecuteParse(ctx, db, args[0], rtisvc.ParseOptions{Name: rtiSessionName})
 	if err != nil {
 		return err
 	}
@@ -443,8 +445,8 @@ func runRTIList(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("%d session(s):\n\n", len(result.Sessions))
 	for _, s := range result.Sessions {
-		fmt.Printf("  %d  %s  calls=%d  errors=%d  size=%d  parsed=%s\n",
-			s.ID, s.FilePath, s.TotalCalls, s.ErrorsCount, s.FileSize,
+		fmt.Printf("  %d  %s  name=%s  calls=%d  errors=%d  size=%d  parsed=%s\n",
+			s.ID, s.FilePath, s.SessionName, s.TotalCalls, s.ErrorsCount, s.FileSize,
 			s.ParsedAt.Format("2006-01-02 15:04:05"))
 	}
 	return nil
@@ -452,35 +454,63 @@ func runRTIList(cmd *cobra.Command, args []string) error {
 
 func runRTIDelete(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	if rtiSessionID <= 0 {
-		return fmt.Errorf("--session is required for delete command")
+	if rtiSessionID > 0 && rtiSessionName != "" {
+		return fmt.Errorf("--session and --name are mutually exclusive")
+	}
+	if rtiSessionID <= 0 && rtiSessionName == "" {
+		return fmt.Errorf("either --session or --name is required for delete command")
 	}
 	db := openDB()
 	defer closeDB(db)
-	result, err := rtisvc.ExecuteDelete(ctx, db, rtiSessionID)
+	result, err := rtisvc.ExecuteDelete(ctx, db, rtisvc.DeleteParams{
+		SessionID: rtiSessionID,
+		Name:      rtiSessionName,
+	})
 	if err != nil {
 		return err
 	}
 	if rtiOutputJSON {
 		return printJSON(result)
 	}
-	fmt.Printf("Deleted session %d (file: %s)\n", result.SessionID, result.FilePath)
+	if result.DeletedCount == 1 {
+		fmt.Printf("Deleted session %d (file: %s)\n", result.SessionID, result.FilePath)
+		return nil
+	}
+	fmt.Printf("Deleted %d sessions: %v\n", result.DeletedCount, result.SessionIDs)
 	return nil
 }
 
 func runRTIPrune(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	if rtiKeepLast < 0 {
+	var params rtisvc.PruneParams
+	if cmd.Flags().Changed("keep-last") {
+		value := rtiKeepLast
+		params.KeepLast = &value
+	}
+	if cmd.Flags().Changed("keep-hours") {
+		value := rtiKeepHours
+		params.KeepHours = &value
+	}
+	if params.KeepLast != nil && *params.KeepLast < 0 {
 		return fmt.Errorf("--keep-last must be >= 0")
 	}
 	db := openDB()
 	defer closeDB(db)
-	result, err := rtisvc.ExecutePrune(ctx, db, rtiKeepLast)
+	result, err := rtisvc.ExecutePrune(ctx, db, params)
 	if err != nil {
 		return err
 	}
 	if rtiOutputJSON {
 		return printJSON(result)
+	}
+	if result.KeptHours != nil {
+		cutoff := ""
+		if result.Cutoff != nil {
+			cutoff = result.Cutoff.Format(time.RFC3339)
+		}
+		fmt.Printf("Deleted %d session(s), kept sessions newer than %d hour(s) (cutoff %s)\n",
+			result.DeletedCount, *result.KeptHours, cutoff)
+		return nil
 	}
 	fmt.Printf("Deleted %d session(s), kept last %d\n", result.DeletedCount, result.KeptLast)
 	return nil
@@ -600,7 +630,10 @@ func init() {
 	rtiSlowCmd.Flags().Int64Var(&rtiSessionID, "session", 0, "load from saved session ID instead of file")
 	rtiDetailsCmd.Flags().Int64Var(&rtiSessionID, "session", 0, "load from saved session ID instead of file")
 	rtiDeleteCmd.Flags().Int64Var(&rtiSessionID, "session", 0, "session ID to delete")
+	rtiDeleteCmd.Flags().StringVar(&rtiSessionName, "name", "", "session name to delete (all exact matches)")
 	rtiPruneCmd.Flags().IntVar(&rtiKeepLast, "keep-last", 0, "keep only last N sessions (0 = delete all)")
+	rtiPruneCmd.Flags().IntVar(&rtiKeepHours, "keep-hours", 0, "keep sessions from the last N hours (mutually exclusive with --keep-last)")
+	rtiParseCmd.Flags().StringVar(&rtiSessionName, "name", "", "session name (default: file name)")
 	rtiListCmd.Flags().IntVar(&rtiListLimit, "limit", 20, "max sessions to list")
 	rtiSummaryCmd.Flags().Int64Var(&rtiSessionID, "session", 0, "load from saved session ID instead of file")
 

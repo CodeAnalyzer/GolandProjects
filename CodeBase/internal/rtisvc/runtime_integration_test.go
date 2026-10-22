@@ -20,7 +20,7 @@ func TestExecuteParse_ReusesSessionForSameFile(t *testing.T) {
 	ctx := context.Background()
 	p := writeTempFile(t, ".rti", rtiSample)
 
-	r1, err := ExecuteParse(ctx, db, p)
+	r1, err := ExecuteParse(ctx, db, p, ParseOptions{})
 	if err != nil {
 		t.Fatalf("first ExecuteParse: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestExecuteParse_ReusesSessionForSameFile(t *testing.T) {
 		t.Fatal("first parse: SessionID = 0")
 	}
 
-	r2, err := ExecuteParse(ctx, db, p)
+	r2, err := ExecuteParse(ctx, db, p, ParseOptions{})
 	if err != nil {
 		t.Fatalf("second ExecuteParse: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestExecuteParse_ReusesSessionForSameFile(t *testing.T) {
 	if err := rti.DeleteSession(ctx, db, r1.SessionID); err != nil {
 		t.Fatalf("DeleteSession: %v", err)
 	}
-	r3, err := ExecuteParse(ctx, db, p)
+	r3, err := ExecuteParse(ctx, db, p, ParseOptions{})
 	if err != nil {
 		t.Fatalf("ExecuteParse after delete: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestExecuteParse_NewSessionForDifferentParserVersion(t *testing.T) {
 	ctx := context.Background()
 	p := writeTempFile(t, ".rti", rtiSample)
 
-	r1, err := ExecuteParse(ctx, db, p)
+	r1, err := ExecuteParse(ctx, db, p, ParseOptions{})
 	if err != nil {
 		t.Fatalf("first ExecuteParse: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestExecuteParse_NewSessionForDifferentParserVersion(t *testing.T) {
 		t.Fatalf("update parser_version: %v", err)
 	}
 
-	r2, err := ExecuteParse(ctx, db, p)
+	r2, err := ExecuteParse(ctx, db, p, ParseOptions{})
 	if err != nil {
 		t.Fatalf("second ExecuteParse: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestExecuteParse_ConcurrentSameFileConverges(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			results[i], errs[i] = ExecuteParse(context.Background(), db, p)
+			results[i], errs[i] = ExecuteParse(context.Background(), db, p, ParseOptions{})
 		}(i)
 	}
 	close(start)

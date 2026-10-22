@@ -13,6 +13,24 @@ type SessionSource struct {
 	FilePath  string
 }
 
+// ParseOptions — параметры парсинга; Name — явно заданное имя сессии.
+type ParseOptions struct {
+	Name string
+}
+
+// DeleteParams — параметры удаления: ровно один из SessionID/Name.
+type DeleteParams struct {
+	SessionID int64
+	Name      string
+}
+
+// PruneParams — параметры очистки: KeepLast и KeepHours взаимоисключающие.
+// nil означает, что аргумент не передан.
+type PruneParams struct {
+	KeepLast  *int
+	KeepHours *int
+}
+
 // ParseResult — результат парсинга TRC-файла.
 type ParseResult struct {
 	SessionID   int64  `json:"session_id"`
@@ -127,15 +145,19 @@ type ListResult struct {
 
 // DeleteResult — результат удаления.
 type DeleteResult struct {
-	Deleted   bool   `json:"deleted"`
-	SessionID int64  `json:"session_id"`
-	FilePath  string `json:"file_path,omitempty"`
+	Deleted      bool    `json:"deleted"`
+	SessionID    int64   `json:"session_id"`
+	FilePath     string  `json:"file_path,omitempty"`
+	DeletedCount int     `json:"deleted_count"`
+	SessionIDs   []int64 `json:"session_ids,omitempty"`
 }
 
 // PruneResult — результат очистки.
 type PruneResult struct {
-	DeletedCount int `json:"deleted_count"`
-	KeptLast     int `json:"kept_last"`
+	DeletedCount int        `json:"deleted_count"`
+	KeptLast     int        `json:"kept_last"`
+	KeptHours    *int       `json:"kept_hours"`
+	Cutoff       *time.Time `json:"cutoff"`
 }
 
 // --- Параметры функций ---

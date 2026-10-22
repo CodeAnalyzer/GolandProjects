@@ -338,6 +338,53 @@ func TestRTIPruneHandlerAcceptsZeroKeepLast(t *testing.T) {
 	}
 }
 
+func TestRTISessionToolsSchemaAndValidation(t *testing.T) {
+	parse, ok := toolRegistry["codebase_rti_parse"]
+	if !ok {
+		t.Fatal("codebase_rti_parse not in toolRegistry")
+	}
+	parseProps, _ := parse.Definition.InputSchema["properties"].(map[string]interface{})
+	if _, ok := parseProps["name"]; !ok {
+		t.Error("codebase_rti_parse schema missing name")
+	}
+
+	del, ok := toolRegistry["codebase_rti_delete"]
+	if !ok {
+		t.Fatal("codebase_rti_delete not in toolRegistry")
+	}
+	delProps, _ := del.Definition.InputSchema["properties"].(map[string]interface{})
+	if _, ok := delProps["name"]; !ok {
+		t.Error("codebase_rti_delete schema missing name")
+	}
+	_, err := del.Handler(context.Background(), map[string]interface{}{
+		"session_id": float64(1),
+		"name":       "trace.rti",
+	})
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("rti delete conflict err = %v", err)
+	}
+
+	prune, ok := toolRegistry["codebase_rti_prune"]
+	if !ok {
+		t.Fatal("codebase_rti_prune not in toolRegistry")
+	}
+	pruneProps, _ := prune.Definition.InputSchema["properties"].(map[string]interface{})
+	if _, ok := pruneProps["keep_hours"]; !ok {
+		t.Error("codebase_rti_prune schema missing keep_hours")
+	}
+	_, err = prune.Handler(context.Background(), map[string]interface{}{"keep_hours": float64(0)})
+	if err == nil || !strings.Contains(err.Error(), "keep_hours") {
+		t.Fatalf("rti prune keep_hours=0 err = %v", err)
+	}
+	_, err = prune.Handler(context.Background(), map[string]interface{}{
+		"keep_last":  float64(1),
+		"keep_hours": float64(24),
+	})
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("rti prune conflict err = %v", err)
+	}
+}
+
 func TestTRCToolsInRegistry(t *testing.T) {
 	expected := []string{
 		"codebase_trc_parse",
@@ -385,6 +432,53 @@ func TestTRCPruneHandlerAcceptsZeroKeepLast(t *testing.T) {
 	})
 	if err != nil && err.Error() == "keep_last must be >= 0" {
 		t.Fatalf("keep_last=0 should be accepted, got: %v", err)
+	}
+}
+
+func TestTRCSessionToolsSchemaAndValidation(t *testing.T) {
+	parse, ok := toolRegistry["codebase_trc_parse"]
+	if !ok {
+		t.Fatal("codebase_trc_parse not in toolRegistry")
+	}
+	parseProps, _ := parse.Definition.InputSchema["properties"].(map[string]interface{})
+	if _, ok := parseProps["name"]; !ok {
+		t.Error("codebase_trc_parse schema missing name")
+	}
+
+	del, ok := toolRegistry["codebase_trc_delete"]
+	if !ok {
+		t.Fatal("codebase_trc_delete not in toolRegistry")
+	}
+	delProps, _ := del.Definition.InputSchema["properties"].(map[string]interface{})
+	if _, ok := delProps["name"]; !ok {
+		t.Error("codebase_trc_delete schema missing name")
+	}
+	_, err := del.Handler(context.Background(), map[string]interface{}{
+		"session_id": float64(1),
+		"name":       "trace.trc",
+	})
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("trc delete conflict err = %v", err)
+	}
+
+	prune, ok := toolRegistry["codebase_trc_prune"]
+	if !ok {
+		t.Fatal("codebase_trc_prune not in toolRegistry")
+	}
+	pruneProps, _ := prune.Definition.InputSchema["properties"].(map[string]interface{})
+	if _, ok := pruneProps["keep_hours"]; !ok {
+		t.Error("codebase_trc_prune schema missing keep_hours")
+	}
+	_, err = prune.Handler(context.Background(), map[string]interface{}{"keep_hours": float64(-1)})
+	if err == nil || !strings.Contains(err.Error(), "keep_hours") {
+		t.Fatalf("trc prune keep_hours=-1 err = %v", err)
+	}
+	_, err = prune.Handler(context.Background(), map[string]interface{}{
+		"keep_last":  float64(1),
+		"keep_hours": float64(24),
+	})
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("trc prune conflict err = %v", err)
 	}
 }
 

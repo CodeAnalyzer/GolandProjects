@@ -17,7 +17,9 @@ var (
 	trcSlowThreshold int
 	trcProcedure     string
 	trcSessionID     int64
+	trcSessionName   string
 	trcKeepLast      int
+	trcKeepHours     int
 	trcListLimit     int
 	trcSPID          int
 	trcMaxDepth      int
@@ -35,10 +37,10 @@ var (
 	trcSortBy        string
 	trcGroupBySPID   bool
 
-	trcFocusSPID      int
+	trcFocusSPID       int
 	trcCompareSPIDsRaw string
-	trcSpidsLimit     int
-	trcSpidsSortBy    string
+	trcSpidsLimit      int
+	trcSpidsSortBy     string
 )
 
 var trcCmd = &cobra.Command{
@@ -61,8 +63,8 @@ Subcommands:
   errors     - print events with non-zero Error column
   slow       - print slowest events (threshold --slow-ms)
   list       - list saved sessions
-  delete     - delete a session by ID
-  prune      - prune old sessions`,
+  delete     - delete a session by ID or name
+  prune      - prune old sessions (keep last N or last N hours)`,
 }
 
 var trcParseCmd = &cobra.Command{
@@ -161,7 +163,7 @@ func runTRCParse(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	db := openDB()
 	defer closeDB(db)
-	result, err := trcsvc.ExecuteParse(ctx, db, args[0])
+	result, err := trcsvc.ExecuteParse(ctx, db, args[0], trcsvc.ParseOptions{Name: trcSessionName})
 	if err != nil {
 		return err
 	}
@@ -630,8 +632,8 @@ func runTRCList(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("%d session(s):\n\n", len(result.Sessions))
 	for _, s := range result.Sessions {
-		fmt.Printf("  %d  %s  events=%d  size=%d  parsed=%s\n",
-			s.ID, s.FilePath, s.TotalEvents, s.FileSize,
+		fmt.Printf("  %d  %s  name=%s  events=%d  size=%d  parsed=%s\n",
+			s.ID, s.FilePath, s.SessionName, s.TotalEvents, s.FileSize,
 			s.ParsedAt.Format("2006-01-02 15:04:05"))
 	}
 	return nil
@@ -639,35 +641,63 @@ func runTRCList(cmd *cobra.Command, args []string) error {
 
 func runTRCDelete(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	if trcSessionID <= 0 {
-		return fmt.Errorf("--session is required for delete command")
+	if trcSessionID > 0 && trcSessionName != "" {
+		return fmt.Errorf("--session and --name are mutually exclusive")
+	}
+	if trcSessionID <= 0 && trcSessionName == "" {
+		return fmt.Errorf("either --session or --name is required for delete command")
 	}
 	db := openDB()
 	defer closeDB(db)
-	result, err := trcsvc.ExecuteDelete(ctx, db, trcSessionID)
+	result, err := trcsvc.ExecuteDelete(ctx, db, trcsvc.DeleteParams{
+		SessionID: trcSessionID,
+		Name:      trcSessionName,
+	})
 	if err != nil {
 		return err
 	}
 	if trcOutputJSON {
 		return printJSON(result)
 	}
-	fmt.Printf("Deleted session %d (file: %s)\n", result.SessionID, result.FilePath)
+	if result.DeletedCount == 1 {
+		fmt.Printf("Deleted session %d (file: %s)\n", result.SessionID, result.FilePath)
+		return nil
+	}
+	fmt.Printf("Deleted %d sessions: %v\n", result.DeletedCount, result.SessionIDs)
 	return nil
 }
 
 func runTRCPrune(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	if trcKeepLast < 0 {
+	var params trcsvc.PruneParams
+	if cmd.Flags().Changed("keep-last") {
+		value := trcKeepLast
+		params.KeepLast = &value
+	}
+	if cmd.Flags().Changed("keep-hours") {
+		value := trcKeepHours
+		params.KeepHours = &value
+	}
+	if params.KeepLast != nil && *params.KeepLast < 0 {
 		return fmt.Errorf("--keep-last must be >= 0")
 	}
 	db := openDB()
 	defer closeDB(db)
-	result, err := trcsvc.ExecutePrune(ctx, db, trcKeepLast)
+	result, err := trcsvc.ExecutePrune(ctx, db, params)
 	if err != nil {
 		return err
 	}
 	if trcOutputJSON {
 		return printJSON(result)
+	}
+	if result.KeptHours != nil {
+		cutoff := ""
+		if result.Cutoff != nil {
+			cutoff = result.Cutoff.Format(time.RFC3339)
+		}
+		fmt.Printf("Deleted %d session(s), kept sessions newer than %d hour(s) (cutoff %s)\n",
+			result.DeletedCount, *result.KeptHours, cutoff)
+		return nil
 	}
 	fmt.Printf("Deleted %d session(s), kept last %d\n", result.DeletedCount, result.KeptLast)
 	return nil
@@ -726,7 +756,10 @@ func init() {
 
 	trcListCmd.Flags().IntVar(&trcListLimit, "limit", 20, "max sessions to list")
 	trcDeleteCmd.Flags().Int64Var(&trcSessionID, "session", 0, "session ID to delete")
+	trcDeleteCmd.Flags().StringVar(&trcSessionName, "name", "", "session name to delete (all exact matches)")
 	trcPruneCmd.Flags().IntVar(&trcKeepLast, "keep-last", 0, "keep only last N sessions (0 = delete all)")
+	trcPruneCmd.Flags().IntVar(&trcKeepHours, "keep-hours", 0, "keep sessions from the last N hours (mutually exclusive with --keep-last)")
+	trcParseCmd.Flags().StringVar(&trcSessionName, "name", "", "session name (default: file name)")
 
 	trcCmd.AddCommand(trcParseCmd)
 	trcCmd.AddCommand(trcSummaryCmd)

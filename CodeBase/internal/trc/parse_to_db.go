@@ -27,7 +27,7 @@ import (
 // стримит события в БД без накопления []TRCEvent.
 //
 // Возвращает ID созданной сессии и общее количество событий.
-func ParseFileToDB(ctx context.Context, path string, db *store.DB) (sessionID int64, totalEvents int, err error) {
+func ParseFileToDB(ctx context.Context, path, sessionName string, db *store.DB) (sessionID int64, totalEvents int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, 0, fmt.Errorf("trc: open %s: %w", path, err)
@@ -88,10 +88,10 @@ func ParseFileToDB(ctx context.Context, path string, db *store.DB) (sessionID in
 	// заголовок). После парсинга обновим real header + total_events.
 	// Сессия должна существовать ДО парсинга, т.к. flushBatch вставляет
 	// события с foreign key на session_id.
-	insertErr := db.QueryRowContext(ctx, 
-		`INSERT INTO trc_sessions (file_path, file_size, total_events, provider_name, server_name, major_version, minor_version, build_number, source_format)
-		 VALUES ($1, $2, 0, '', '', 0, 0, 0, 'trc_binary') RETURNING id`,
-		path, fileSize,
+	insertErr := db.QueryRowContext(ctx,
+		`INSERT INTO trc_sessions (file_path, session_name, file_size, total_events, provider_name, server_name, major_version, minor_version, build_number, source_format)
+		 VALUES ($1, $2, $3, 0, '', '', 0, 0, 0, 'trc_binary') RETURNING id`,
+		path, sessionName, fileSize,
 	).Scan(&sessionID)
 	if insertErr != nil {
 		return 0, 0, fmt.Errorf("failed to insert trc_sessions: %w", insertErr)
@@ -211,7 +211,7 @@ func ParseFileToDB(ctx context.Context, path string, db *store.DB) (sessionID in
 	}
 
 	// Обновляем сессию: real header + total_events + source_format.
-	if _, err := db.ExecContext(ctx, 
+	if _, err := db.ExecContext(ctx,
 		`UPDATE trc_sessions SET total_events = $2, provider_name = $3, server_name = $4,
 		 major_version = $5, minor_version = $6, build_number = $7, source_format = $8
 		 WHERE id = $1`,

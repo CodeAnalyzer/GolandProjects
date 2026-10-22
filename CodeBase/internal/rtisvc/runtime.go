@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/rti"
@@ -68,12 +70,12 @@ func normalizeLimit(limit int) int {
 // ExecuteParse парсит RTI-файл и сохраняет в БД (если db доступен).
 // При повторном парсинге файла с тем же содержимым (SHA-256) той же версией
 // парсера возвращается существующая сессия без повторного разбора.
-func ExecuteParse(ctx context.Context, db *store.DB, filePath string) (*ParseResult, error) {
+func ExecuteParse(ctx context.Context, db *store.DB, filePath string, opts ParseOptions) (*ParseResult, error) {
 	if filePath == "" {
 		return nil, fmt.Errorf("file_path is required")
 	}
 	if db != nil {
-		return executeParseDB(ctx, db, filePath)
+		return executeParseDB(ctx, db, filePath, opts.Name)
 	}
 	result, err := rti.ParseFile(filePath)
 	if err != nil {
@@ -89,7 +91,7 @@ func ExecuteParse(ctx context.Context, db *store.DB, filePath string) (*ParseRes
 
 // executeParseDB разбирает файл с сохранением в БД и reuse существующей
 // сессии по ключу (file_hash, parser_version).
-func executeParseDB(ctx context.Context, db *store.DB, filePath string) (*ParseResult, error) {
+func executeParseDB(ctx context.Context, db *store.DB, filePath, explicitName string) (*ParseResult, error) {
 	fileHash, err := util.FileHash(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse rti file: %w", err)
@@ -99,6 +101,9 @@ func executeParseDB(ctx context.Context, db *store.DB, filePath string) (*ParseR
 	if reusedID, err := rti.FindSessionByHash(ctx, db, fileHash, rti.ParserVersion); err != nil {
 		return nil, err
 	} else if reusedID > 0 {
+		if err := renameOnReuse(ctx, db, reusedID, explicitName); err != nil {
+			return nil, err
+		}
 		return parseResultFromSession(ctx, db, reusedID)
 	}
 
@@ -106,7 +111,11 @@ func executeParseDB(ctx context.Context, db *store.DB, filePath string) (*ParseR
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse rti file: %w", err)
 	}
-	sessionID, err := rti.SaveSession(ctx, db, result, filePath)
+	sessionName := explicitName
+	if sessionName == "" {
+		sessionName = filepath.Base(filePath)
+	}
+	sessionID, err := rti.SaveSession(ctx, db, result, filePath, sessionName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to save session: %w", err)
 	}
@@ -128,6 +137,9 @@ func executeParseDB(ctx context.Context, db *store.DB, filePath string) (*ParseR
 			if delErr := rti.DeleteSession(ctx, db, sessionID); delErr != nil {
 				return nil, fmt.Errorf("failed to delete duplicate rti session %d: %w", sessionID, delErr)
 			}
+			if err := renameOnReuse(ctx, db, winnerID, explicitName); err != nil {
+				return nil, err
+			}
 			return parseResultFromSession(ctx, db, winnerID)
 		}
 		// Победитель удалён конкурентно между violation и повторным поиском:
@@ -142,6 +154,21 @@ func executeParseDB(ctx context.Context, db *store.DB, filePath string) (*ParseR
 		TotalCalls: result.Summary.TotalCalls,
 		Summary:    result.Summary,
 	}, nil
+}
+
+// renameOnReuse переименовывает найденную сессию, если имя передано явно.
+func renameOnReuse(ctx context.Context, db *store.DB, sessionID int64, explicitName string) error {
+	if explicitName == "" {
+		return nil
+	}
+	session, err := rti.GetSession(ctx, db, sessionID)
+	if err != nil {
+		return err
+	}
+	if session.SessionName == explicitName {
+		return nil
+	}
+	return rti.SetSessionName(ctx, db, sessionID, explicitName)
 }
 
 // parseResultFromSession собирает ParseResult по существующей сессии из БД
@@ -177,7 +204,11 @@ func ExecuteSummary(ctx context.Context, db *store.DB, src SessionSource) (*Summ
 		if err != nil {
 			return nil, err
 		}
-		return &SummaryResult{Summary: *summary}, nil
+		session, err := rti.GetSession(ctx, db, src.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		return &SummaryResult{Summary: *summary, Session: session}, nil
 	}
 	_, _, parseResult, err := resolveSession(ctx, db, src)
 	if err != nil {
@@ -575,29 +606,96 @@ func ExecuteTimeline(ctx context.Context, db *store.DB, p TimelineParams) (*Time
 	}, nil
 }
 
-// ExecuteDelete удаляет сессию по ID.
-func ExecuteDelete(ctx context.Context, db *store.DB, sessionID int64) (*DeleteResult, error) {
+// ExecuteDelete удаляет сессию по ID либо все сессии с указанным именем.
+func ExecuteDelete(ctx context.Context, db *store.DB, p DeleteParams) (*DeleteResult, error) {
+	if p.SessionID > 0 && p.Name != "" {
+		return nil, fmt.Errorf("session_id and name are mutually exclusive")
+	}
+	if p.SessionID <= 0 && p.Name == "" {
+		return nil, fmt.Errorf("either session_id or name is required")
+	}
 	if db == nil {
 		return nil, fmt.Errorf("database not available")
 	}
-	session, err := rti.GetSession(ctx, db, sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("session %d not found: %w", sessionID, err)
+
+	if p.SessionID > 0 {
+		session, err := rti.GetSession(ctx, db, p.SessionID)
+		if err != nil {
+			return nil, fmt.Errorf("session %d not found: %w", p.SessionID, err)
+		}
+		if err := rti.DeleteSession(ctx, db, p.SessionID); err != nil {
+			return nil, err
+		}
+		return &DeleteResult{
+			Deleted:      true,
+			SessionID:    p.SessionID,
+			FilePath:     session.FilePath,
+			DeletedCount: 1,
+			SessionIDs:   []int64{p.SessionID},
+		}, nil
 	}
-	if err := rti.DeleteSession(ctx, db, sessionID); err != nil {
+
+	ids, err := rti.FindSessionIDsByName(ctx, db, p.Name)
+	if err != nil {
 		return nil, err
 	}
-	return &DeleteResult{
-		Deleted:   true,
-		SessionID: sessionID,
-		FilePath:  session.FilePath,
-	}, nil
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("session with name %q not found", p.Name)
+	}
+	var singleFilePath string
+	if len(ids) == 1 {
+		if session, err := rti.GetSession(ctx, db, ids[0]); err == nil {
+			singleFilePath = session.FilePath
+		}
+	}
+	for _, id := range ids {
+		if err := rti.DeleteSession(ctx, db, id); err != nil {
+			return nil, err
+		}
+	}
+	result := &DeleteResult{
+		Deleted:      true,
+		DeletedCount: len(ids),
+		SessionIDs:   ids,
+	}
+	if len(ids) == 1 {
+		result.SessionID = ids[0]
+		result.FilePath = singleFilePath
+	}
+	return result, nil
 }
 
-// ExecutePrune удаляет старые сессии, оставляя keepLast последних.
-func ExecutePrune(ctx context.Context, db *store.DB, keepLast int) (*PruneResult, error) {
+// ExecutePrune удаляет старые сессии: последние KeepLast либо старше KeepHours.
+func ExecutePrune(ctx context.Context, db *store.DB, p PruneParams) (*PruneResult, error) {
+	if p.KeepLast != nil && p.KeepHours != nil {
+		return nil, fmt.Errorf("keep_last and keep_hours are mutually exclusive")
+	}
+	if p.KeepHours != nil && *p.KeepHours <= 0 {
+		return nil, fmt.Errorf("keep_hours must be > 0")
+	}
+	if p.KeepLast != nil && *p.KeepLast < 0 {
+		return nil, fmt.Errorf("keep_last must be >= 0")
+	}
 	if db == nil {
 		return nil, fmt.Errorf("database not available")
+	}
+
+	if p.KeepHours != nil {
+		cutoff := time.Now().Add(-time.Duration(*p.KeepHours) * time.Hour)
+		deleted, err := rti.PruneSessionsOlderThan(ctx, db, cutoff)
+		if err != nil {
+			return nil, err
+		}
+		return &PruneResult{
+			DeletedCount: int(deleted),
+			KeptHours:    p.KeepHours,
+			Cutoff:       &cutoff,
+		}, nil
+	}
+
+	keepLast := 0
+	if p.KeepLast != nil {
+		keepLast = *p.KeepLast
 	}
 	if keepLast < 0 {
 		return nil, fmt.Errorf("keep_last must be >= 0")

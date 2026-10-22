@@ -167,6 +167,7 @@ type RTIMemoryUsage struct {
 type RTISession struct {
 	ID                int64     `json:"id"`
 	FilePath          string    `json:"file_path"`
+	SessionName       string    `json:"session_name"`
 	ParsedAt          time.Time `json:"parsed_at"`
 	TotalCalls        int       `json:"total_calls"`
 	ErrorsCount       int       `json:"errors_count"`

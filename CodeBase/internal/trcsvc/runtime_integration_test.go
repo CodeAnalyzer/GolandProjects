@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/codebase/internal/trc"
 	"github.com/codebase/internal/store/testutil"
+	"github.com/codebase/internal/trc"
 )
 
 // TestExecuteParse_ReusesSessionForSameFile: повторный ExecuteParse того же
@@ -19,7 +19,7 @@ func TestExecuteParse_ReusesSessionForSameFile_TRC(t *testing.T) {
 	ctx := context.Background()
 	p := trcTestPath(t)
 
-	r1, err := ExecuteParse(ctx, db, p)
+	r1, err := ExecuteParse(ctx, db, p, ParseOptions{})
 	if err != nil {
 		t.Fatalf("first ExecuteParse: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestExecuteParse_ReusesSessionForSameFile_TRC(t *testing.T) {
 		t.Fatal("first parse: SessionID = 0")
 	}
 
-	r2, err := ExecuteParse(ctx, db, p)
+	r2, err := ExecuteParse(ctx, db, p, ParseOptions{})
 	if err != nil {
 		t.Fatalf("second ExecuteParse: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestExecuteParse_ReusesSessionForSameFile_TRC(t *testing.T) {
 	if err := trc.DeleteSession(ctx, db, r1.SessionID); err != nil {
 		t.Fatalf("DeleteSession: %v", err)
 	}
-	r3, err := ExecuteParse(ctx, db, p)
+	r3, err := ExecuteParse(ctx, db, p, ParseOptions{})
 	if err != nil {
 		t.Fatalf("ExecuteParse after delete: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestExecuteParse_InterruptedSessionNotReused(t *testing.T) {
 		t.Fatalf("insert orphan session: %v", err)
 	}
 
-	r, err := ExecuteParse(ctx, db, p)
+	r, err := ExecuteParse(ctx, db, p, ParseOptions{})
 	if err != nil {
 		t.Fatalf("ExecuteParse with orphan: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestExecuteParse_NewSessionForDifferentParserVersion_TRC(t *testing.T) {
 	ctx := context.Background()
 	p := trcTestPath(t)
 
-	r1, err := ExecuteParse(ctx, db, p)
+	r1, err := ExecuteParse(ctx, db, p, ParseOptions{})
 	if err != nil {
 		t.Fatalf("first ExecuteParse: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestExecuteParse_NewSessionForDifferentParserVersion_TRC(t *testing.T) {
 		t.Fatalf("update parser_version: %v", err)
 	}
 
-	r2, err := ExecuteParse(ctx, db, p)
+	r2, err := ExecuteParse(ctx, db, p, ParseOptions{})
 	if err != nil {
 		t.Fatalf("second ExecuteParse: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestExecuteParse_ConcurrentSameFileConverges_TRC(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			results[i], errs[i] = ExecuteParse(context.Background(), db, p)
+			results[i], errs[i] = ExecuteParse(context.Background(), db, p, ParseOptions{})
 		}(i)
 	}
 	close(start)

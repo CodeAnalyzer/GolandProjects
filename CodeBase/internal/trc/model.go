@@ -109,6 +109,7 @@ type TRCParseResult struct {
 type TRCSession struct {
 	ID           int64     `json:"id"`
 	FilePath     string    `json:"file_path"`
+	SessionName  string    `json:"session_name"`
 	FileSize     int64     `json:"file_size"`
 	ParsedAt     time.Time `json:"parsed_at"`
 	TotalEvents  int       `json:"total_events"`

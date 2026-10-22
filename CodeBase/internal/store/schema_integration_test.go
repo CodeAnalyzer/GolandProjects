@@ -53,8 +53,10 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 	requiredColumns := []struct{ table, column string }{
 		{"rti_sessions", "file_hash"},
 		{"rti_sessions", "parser_version"},
+		{"rti_sessions", "session_name"},
 		{"trc_sessions", "file_hash"},
 		{"trc_sessions", "parser_version"},
+		{"trc_sessions", "session_name"},
 	}
 	for _, col := range requiredColumns {
 		var exists bool
@@ -141,6 +143,54 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		if exists {
 			t.Fatalf("dropped index still exists: %s", idx)
 		}
+	}
+}
+
+func TestInitSchema_BackfillsSessionName(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	var rtiID, trcID int64
+	if err := db.QueryRowContext(ctx, `
+		INSERT INTO rti_sessions (file_path, session_name) VALUES ($1, '') RETURNING id
+	`, `D:\logs\trace.rti`).Scan(&rtiID); err != nil {
+		t.Fatalf("insert legacy rti session: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		INSERT INTO trc_sessions (file_path, session_name) VALUES ($1, '') RETURNING id
+	`, `C:\logs\trace.trc`).Scan(&trcID); err != nil {
+		t.Fatalf("insert legacy trc session: %v", err)
+	}
+
+	if err := db.InitSchemaCtx(ctx); err != nil {
+		t.Fatalf("InitSchemaCtx: %v", err)
+	}
+
+	var rtiName, trcName string
+	if err := db.QueryRowContext(ctx, `SELECT session_name FROM rti_sessions WHERE id = $1`, rtiID).Scan(&rtiName); err != nil {
+		t.Fatalf("read rti session name: %v", err)
+	}
+	if rtiName != "trace.rti" {
+		t.Fatalf("rti session_name = %q, want %q", rtiName, "trace.rti")
+	}
+	if err := db.QueryRowContext(ctx, `SELECT session_name FROM trc_sessions WHERE id = $1`, trcID).Scan(&trcName); err != nil {
+		t.Fatalf("read trc session name: %v", err)
+	}
+	if trcName != "trace.trc" {
+		t.Fatalf("trc session_name = %q, want %q", trcName, "trace.trc")
+	}
+
+	if _, err := db.ExecContext(ctx, `UPDATE rti_sessions SET session_name = 'custom' WHERE id = $1`, rtiID); err != nil {
+		t.Fatalf("set custom name: %v", err)
+	}
+	if err := db.InitSchemaCtx(ctx); err != nil {
+		t.Fatalf("second InitSchemaCtx: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT session_name FROM rti_sessions WHERE id = $1`, rtiID).Scan(&rtiName); err != nil {
+		t.Fatalf("read rti session name after second init: %v", err)
+	}
+	if rtiName != "custom" {
+		t.Fatalf("filled session_name changed by backfill: %q", rtiName)
 	}
 }
 

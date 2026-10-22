@@ -544,13 +544,13 @@ func TestLoadEventsForTree_DiagnosticFilteredFromRoot(t *testing.T) {
 // compareRow описывает синтетическое событие для parity-тестов compare/spids:
 // одна спецификация порождает и SQL-строку, и эквивалентное TRCEvent.
 type compareRow struct {
-	spid      int32
-	name      string
-	proc      string
-	dur       int64
-	start     *time.Time
-	errCode   *int32
-	app       string
+	spid    int32
+	name    string
+	proc    string
+	dur     int64
+	start   *time.Time
+	errCode *int32
+	app     string
 }
 
 func (r compareRow) toEvent() TRCEvent {
@@ -965,5 +965,123 @@ func TestFindSetSessionHash_TRC(t *testing.T) {
 	err := SetSessionHash(ctx, db, loser, hash, 1)
 	if err == nil || !store.IsUniqueViolation(err) {
 		t.Fatalf("second SetSessionHash = %v, want unique violation", err)
+	}
+}
+
+// --- Имя сессии, delete-by-name, prune-by-hours ---
+
+func TestSaveSessionName_TRC(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	result := &TRCParseResult{Header: &TraceHeader{}}
+	sid, err := SaveSession(ctx, db, result, "named.trc", "Проблемный SPID", 10)
+	if err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+	defer DeleteSession(ctx, db, sid)
+
+	session, err := GetSession(ctx, db, sid)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if session.SessionName != "Проблемный SPID" {
+		t.Fatalf("GetSession session_name = %q", session.SessionName)
+	}
+
+	sessions, err := ListSessions(ctx, db, 10)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].SessionName != "Проблемный SPID" {
+		t.Fatalf("ListSessions = %+v", sessions)
+	}
+}
+
+func TestFindSessionIDsByNameAndDelete_TRC(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	insert := func(path string) int64 {
+		t.Helper()
+		var id int64
+		if err := db.QueryRow(`INSERT INTO trc_sessions (file_path, session_name, file_size, total_events) VALUES ($1, '', 10, 1) RETURNING id`, path).Scan(&id); err != nil {
+			t.Fatalf("insert session %s: %v", path, err)
+		}
+		if _, err := db.Exec(`INSERT INTO trc_events (session_id, event_class, event_name, duration_ms) VALUES ($1, 10, 'RPC:Completed', 5)`, id); err != nil {
+			t.Fatalf("insert event: %v", err)
+		}
+		return id
+	}
+
+	first := insert("first.trc")
+	second := insert("second.trc")
+	other := insert("other.trc")
+	for _, id := range []int64{first, second} {
+		if _, err := db.Exec(`UPDATE trc_sessions SET session_name = 'trace.trc' WHERE id = $1`, id); err != nil {
+			t.Fatalf("set name: %v", err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE trc_sessions SET session_name = 'other.trc' WHERE id = $1`, other); err != nil {
+		t.Fatalf("set other name: %v", err)
+	}
+
+	ids, err := FindSessionIDsByName(ctx, db, "trace.trc")
+	if err != nil {
+		t.Fatalf("FindSessionIDsByName: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != first || ids[1] != second {
+		t.Fatalf("ids = %v, want [%d %d]", ids, first, second)
+	}
+
+	if err := deleteSessionIDs(ctx, db, ids); err != nil {
+		t.Fatalf("deleteSessionIDs: %v", err)
+	}
+	var events int
+	if err := db.QueryRow(`SELECT count(*) FROM trc_events WHERE session_id IN ($1, $2)`, first, second).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if events != 0 {
+		t.Fatalf("leftover events = %d", events)
+	}
+	if _, err := GetSession(ctx, db, other); err != nil {
+		t.Fatalf("unrelated session removed: %v", err)
+	}
+}
+
+func TestPruneSessionsOlderThan_TRC(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	insert := func(path string) int64 {
+		t.Helper()
+		var id int64
+		if err := db.QueryRow(`INSERT INTO trc_sessions (file_path, file_size, total_events) VALUES ($1, 10, 1) RETURNING id`, path).Scan(&id); err != nil {
+			t.Fatalf("insert session %s: %v", path, err)
+		}
+		return id
+	}
+
+	old := insert("old.trc")
+	fresh := insert("fresh.trc")
+	if _, err := db.Exec(`UPDATE trc_sessions SET parsed_at = NOW() - INTERVAL '25 hours' WHERE id = $1`, old); err != nil {
+		t.Fatalf("age old session: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE trc_sessions SET parsed_at = NOW() - INTERVAL '1 hour' WHERE id = $1`, fresh); err != nil {
+		t.Fatalf("age fresh session: %v", err)
+	}
+
+	deleted, err := PruneSessionsOlderThan(ctx, db, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("PruneSessionsOlderThan: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+	if _, err := GetSession(ctx, db, old); err == nil {
+		t.Fatal("old session was not removed")
+	}
+	if _, err := GetSession(ctx, db, fresh); err != nil {
+		t.Fatalf("fresh session removed: %v", err)
 	}
 }

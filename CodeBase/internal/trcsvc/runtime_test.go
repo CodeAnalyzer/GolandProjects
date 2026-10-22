@@ -86,7 +86,7 @@ func TestEnrichProcedureAggregates_AllAggregates(t *testing.T) {
 func TestExecuteParse_FileMode(t *testing.T) {
 	p := trcTestPath(t)
 	ctx := context.Background()
-	result, err := ExecuteParse(ctx, nil, p)
+	result, err := ExecuteParse(ctx, nil, p, ParseOptions{})
 	if err != nil {
 		t.Fatalf("ExecuteParse error: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestExecuteParse_FileMode(t *testing.T) {
 }
 
 func TestExecuteParse_EmptyPath(t *testing.T) {
-	_, err := ExecuteParse(context.Background(), nil, "")
+	_, err := ExecuteParse(context.Background(), nil, "", ParseOptions{})
 	if err == nil {
 		t.Fatal("expected error for empty path, got nil")
 	}

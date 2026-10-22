@@ -1,6 +1,8 @@
 package rtisvc
 
 import (
+	"time"
+
 	"github.com/codebase/internal/rti"
 )
 
@@ -8,6 +10,24 @@ import (
 type SessionSource struct {
 	SessionID int64
 	FilePath  string
+}
+
+// ParseOptions — параметры парсинга; Name — явно заданное имя сессии.
+type ParseOptions struct {
+	Name string
+}
+
+// DeleteParams — параметры удаления: ровно один из SessionID/Name.
+type DeleteParams struct {
+	SessionID int64
+	Name      string
+}
+
+// PruneParams — параметры очистки: KeepLast и KeepHours взаимоисключающие.
+// nil означает, что аргумент не передан.
+type PruneParams struct {
+	KeepLast  *int
+	KeepHours *int
 }
 
 // TimelineFilter — alias for rti.TimelineFilter.
@@ -23,13 +43,14 @@ type ParseResult struct {
 
 // SummaryResult — статистика по сессии.
 type SummaryResult struct {
-	Summary rti.RTISummary `json:"summary"`
+	Summary rti.RTISummary  `json:"summary"`
+	Session *rti.RTISession `json:"session,omitempty"`
 }
 
 // TreeResult — дерево вызовов.
 type TreeResult struct {
-	Tree       *rti.RTITreeNode                     `json:"tree"`
-	Enrichment map[string]*rti.ProcedureEnrichment  `json:"enrichment,omitempty"`
+	Tree       *rti.RTITreeNode                    `json:"tree"`
+	Enrichment map[string]*rti.ProcedureEnrichment `json:"enrichment,omitempty"`
 }
 
 // RTICallSlim — RTICall без тяжёлых BLog-полей в JSON.
@@ -41,33 +62,33 @@ type RTICallSlim struct {
 
 // ErrorsResult — ошибки с enrich.
 type ErrorsResult struct {
-	ServerErrors     []RTICallSlim                     `json:"server_errors"`
-	ServerErrorCount int                               `json:"server_error_count"`
+	ServerErrors     []RTICallSlim                       `json:"server_errors"`
+	ServerErrorCount int                                 `json:"server_error_count"`
 	ServerEnrichment map[string]*rti.ProcedureEnrichment `json:"server_enrichment,omitempty"`
-	ClientErrors     []*rti.RTIClientEvent             `json:"client_errors"`
-	ClientErrorCount int                               `json:"client_error_count"`
-	ClientEnrichment map[string]*rti.ClientEnrichment  `json:"client_enrichment,omitempty"`
-	Limit            int                               `json:"limit"`
+	ClientErrors     []*rti.RTIClientEvent               `json:"client_errors"`
+	ClientErrorCount int                                 `json:"client_error_count"`
+	ClientEnrichment map[string]*rti.ClientEnrichment    `json:"client_enrichment,omitempty"`
+	Limit            int                                 `json:"limit"`
 }
 
 // SlowResult — медленные вызовы.
 type SlowResult struct {
-	ServerCalls      []RTICallSlim                     `json:"server_calls"`
-	ServerCallCount  int                               `json:"server_call_count"`
+	ServerCalls      []RTICallSlim                       `json:"server_calls"`
+	ServerCallCount  int                                 `json:"server_call_count"`
 	ServerEnrichment map[string]*rti.ProcedureEnrichment `json:"server_enrichment,omitempty"`
-	ClientSQLBlocks  []*rti.RTIClientEvent             `json:"client_sql_blocks"`
-	ClientSQLCount   int                               `json:"client_sql_count"`
-	ClientEnrichment map[string]*rti.ClientEnrichment  `json:"client_enrichment,omitempty"`
-	Threshold        int                               `json:"threshold"`
-	Limit            int                               `json:"limit"`
+	ClientSQLBlocks  []*rti.RTIClientEvent               `json:"client_sql_blocks"`
+	ClientSQLCount   int                                 `json:"client_sql_count"`
+	ClientEnrichment map[string]*rti.ClientEnrichment    `json:"client_enrichment,omitempty"`
+	Threshold        int                                 `json:"threshold"`
+	Limit            int                                 `json:"limit"`
 }
 
 // DetailsResult — детали процедуры.
 type DetailsResult struct {
-	Procedure  string                       `json:"procedure"`
-	Calls      []*rti.RTICall               `json:"calls"`
-	Count      int                          `json:"count"`
-	Enrichment *rti.ProcedureEnrichment     `json:"enrichment,omitempty"`
+	Procedure  string                   `json:"procedure"`
+	Calls      []*rti.RTICall           `json:"calls"`
+	Count      int                      `json:"count"`
+	Enrichment *rti.ProcedureEnrichment `json:"enrichment,omitempty"`
 }
 
 // BlogCallItem — выжимка BLog-данных из вызова.
@@ -111,15 +132,19 @@ type ListResult struct {
 
 // DeleteResult — результат удаления.
 type DeleteResult struct {
-	Deleted   bool   `json:"deleted"`
-	SessionID int64  `json:"session_id"`
-	FilePath  string `json:"file_path,omitempty"`
+	Deleted      bool    `json:"deleted"`
+	SessionID    int64   `json:"session_id"`
+	FilePath     string  `json:"file_path,omitempty"`
+	DeletedCount int     `json:"deleted_count"`
+	SessionIDs   []int64 `json:"session_ids,omitempty"`
 }
 
 // PruneResult — результат очистки.
 type PruneResult struct {
-	DeletedCount int `json:"deleted_count"`
-	KeptLast     int `json:"kept_last"`
+	DeletedCount int        `json:"deleted_count"`
+	KeptLast     int        `json:"kept_last"`
+	KeptHours    *int       `json:"kept_hours"`
+	Cutoff       *time.Time `json:"cutoff"`
 }
 
 // --- Параметры функций ---

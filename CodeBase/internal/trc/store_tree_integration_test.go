@@ -35,7 +35,7 @@ func TestInsertTRCEvents_ParentIDMapping(t *testing.T) {
 		SourceFormat: "trc_binary",
 	}
 
-	sessionID, err := SaveSession(context.Background(), db, result, "test-mapping.trc", 100)
+	sessionID, err := SaveSession(context.Background(), db, result, "test-mapping.trc", "test-mapping.trc", 100)
 	if err != nil {
 		t.Fatalf("SaveSession: %v", err)
 	}
@@ -240,9 +240,9 @@ func TestLoadEventsForTree_DirectJoinNoNumbered(t *testing.T) {
 	// 4: SP:Completed (child of 0)
 	// 5: RPC:Completed (root, parent_id = NULL)
 	updates := []struct {
-		idx       int
-		parentID  *int64
-		depth     int
+		idx      int
+		parentID *int64
+		depth    int
 	}{
 		{0, nil, 0},
 		{1, &ids[0], 1},
@@ -422,9 +422,9 @@ func TestLoadEventsForTree_ParentChildSameSPID(t *testing.T) {
 	// SPID 55: RPC:Starting (root) + SP:Starting (child)
 	// SPID 66: RPC:Starting (root) + SP:Starting (child)
 	type ev struct {
-		name     string
-		spid     int
-		proc     string
+		name string
+		spid int
+		proc string
 	}
 	evtSpecs := []ev{
 		{"RPC:Starting", 55, "ProcA"},

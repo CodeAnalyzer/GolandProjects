@@ -5,6 +5,7 @@ package rti
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/store/testutil"
@@ -275,5 +276,95 @@ func TestFindSetSessionHash(t *testing.T) {
 	err := SetSessionHash(ctx, db, loser, hash, 1)
 	if err == nil || !store.IsUniqueViolation(err) {
 		t.Fatalf("second SetSessionHash = %v, want unique violation", err)
+	}
+}
+
+// --- Имя сессии, delete-by-name, prune-by-hours ---
+
+func TestSaveSessionName(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	result := &RTIParseResult{Summary: RTISummary{FilePath: "named.rti", FileSize: 10}}
+	sid, err := SaveSession(ctx, db, result, "named.rti", "Проблемный расчёт")
+	if err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+	defer DeleteSession(ctx, db, sid)
+
+	session, err := GetSession(ctx, db, sid)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if session.SessionName != "Проблемный расчёт" {
+		t.Fatalf("GetSession session_name = %q", session.SessionName)
+	}
+
+	sessions, err := ListSessions(ctx, db, 10)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].SessionName != "Проблемный расчёт" {
+		t.Fatalf("ListSessions = %+v", sessions)
+	}
+}
+
+func TestFindSessionIDsByNameAndDelete(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	first := insertCorrelatedSession(t, db, "first.rti")
+	second := insertPlainSession(t, db, "second.rti")
+	other := insertPlainSession(t, db, "other.rti")
+	for _, id := range []int64{first, second} {
+		if _, err := db.Exec(`UPDATE rti_sessions SET session_name = 'trace.rti' WHERE id = $1`, id); err != nil {
+			t.Fatalf("set name: %v", err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE rti_sessions SET session_name = 'other.rti' WHERE id = $1`, other); err != nil {
+		t.Fatalf("set other name: %v", err)
+	}
+
+	ids, err := FindSessionIDsByName(ctx, db, "trace.rti")
+	if err != nil {
+		t.Fatalf("FindSessionIDsByName: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != first || ids[1] != second {
+		t.Fatalf("ids = %v, want [%d %d]", ids, first, second)
+	}
+
+	if err := deleteSessionIDs(ctx, db, ids); err != nil {
+		t.Fatalf("deleteSessionIDs: %v", err)
+	}
+	assertSessionGone(t, db, first)
+	assertSessionGone(t, db, second)
+	if _, err := GetSession(ctx, db, other); err != nil {
+		t.Fatalf("unrelated session removed: %v", err)
+	}
+}
+
+func TestPruneSessionsOlderThan(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	old := insertPlainSession(t, db, "old.rti")
+	fresh := insertPlainSession(t, db, "fresh.rti")
+	if _, err := db.Exec(`UPDATE rti_sessions SET parsed_at = NOW() - INTERVAL '25 hours' WHERE id = $1`, old); err != nil {
+		t.Fatalf("age old session: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE rti_sessions SET parsed_at = NOW() - INTERVAL '1 hour' WHERE id = $1`, fresh); err != nil {
+		t.Fatalf("age fresh session: %v", err)
+	}
+
+	deleted, err := PruneSessionsOlderThan(ctx, db, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("PruneSessionsOlderThan: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+	assertSessionGone(t, db, old)
+	if _, err := GetSession(ctx, db, fresh); err != nil {
+		t.Fatalf("fresh session removed: %v", err)
 	}
 }
