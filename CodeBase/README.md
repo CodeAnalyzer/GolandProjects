@@ -695,13 +695,14 @@ codebase rti list --limit 10
 
 # Управление сессиями
 codebase rti delete --session 42
+codebase rti delete --session 42 --hard
 codebase rti delete --name "Проблемный расчёт"
 codebase rti prune --keep-last 5
 codebase rti prune --keep-hours 24
 ```
 
 Подкоманды:
-- **`parse`** — распарсить `.rti` файл и сохранить результат в БД; выводит сводку + session ID. Имя сессии по умолчанию — имя файла (`filepath.Base`), `--name` задаёт своё. Повторный `parse` файла с тем же содержимым (SHA-256), разобранного текущей версией парсера, молча возвращает существующую сессию без повторного разбора (ключ кэша — `file_hash + parser_version` в `rti_sessions`; CLI и MCP); при reuse с явным `--name` сессия переименовывается, без `--name` имя не меняется. Принудительный перепарсинг — `delete` + `parse`; после изменения логики разбора (инкремент `rti.ParserVersion`) тот же файл даёт новую сессию
+- **`parse`** — распарсить `.rti` файл и сохранить результат в БД; выводит сводку + session ID + счётчик использования (`use count`). Имя сессии по умолчанию — имя файла (`filepath.Base`), `--name` задаёт своё. Повторный `parse` файла с тем же содержимым (SHA-256), разобранного текущей версией парсера, молча возвращает существующую сессию без повторного разбора (ключ кэша — `file_hash + parser_version` в `rti_sessions`; CLI и MCP); при reuse с явным `--name` сессия переименовывается, без `--name` имя не меняется. Каждый успешный parse инкрементирует счётчик `use_count` сессии (первый — 1, reuse — +1; при гонке параллельных разборов +1 получает победитель), актуальное значение возвращается в поле `use_count` ответа. Принудительный перепарсинг — `delete --hard` + `parse` (обычный `delete` при `use_count > 1` только декрементирует, и сессия остаётся переиспользуемой); после изменения логики разбора (инкремент `rti.ParserVersion`) тот же файл даёт новую сессию
 - **`summary`** — общая сводка: total_calls, errors_count, max_nest_level, top_slow
 - **`tree`** — дерево вызовов с временами и кодами возврата
 - **`errors`** — вызовы с ненулевым ret_val + расшифровка кода из `ds_return_codes`; также клиентские ошибки (kind=error)
@@ -710,9 +711,9 @@ codebase rti prune --keep-hours 24
 - **`blog`** — бизнес-лог процедуры: блоки с Enter/Exit и elapsed_ms, контрольные точки с timestamp, дампы таблиц с заголовками и строками
 - **`client-tree`** — дерево клиентских событий (thick client d5nt), сгруппированных по PID; enrichment из индекса (PAS-методы, DFM-формы, SQL-фрагменты)
 - **`timeline`** — единый хронологический timeline серверных вызовов и клиентских событий; enrichment клиентских событий из индекса
-- **`list`** — список сохранённых сессий с `session_name`
-- **`delete`** — удалить сессию по `--session` (ID) или `--name` (точное имя; удаляются все совпадения, в результате `deleted_count`/`session_ids`); CASCADE удаляет все связанные записи
-- **`prune`** — удалить старые сессии: оставить последние `--keep-last N` либо только сессии за последние `--keep-hours N` часов (режимы взаимоисключающие, `--keep-hours` > 0)
+- **`list`** — список сохранённых сессий с `session_name` и счётчиком использования `use_count`
+- **`delete`** — удалить сессию по `--session` (ID) или `--name` (точное имя; обрабатываются все совпадения). Учитывает счётчик: при `use_count > 1` декрементирует и оставляет сессию (ответ `deleted=false`, `decremented=true`, `use_count` — остаток), при `use_count <= 1` удаляет окончательно (CASCADE всех связанных записей; в результате `deleted_count`/`session_ids`). `--hard` удаляет окончательно независимо от счётчика; при удалении по имени результат содержит также `decremented_ids`
+- **`prune`** — удалить старые сессии: оставить последние `--keep-last N` либо только сессии за последние `--keep-hours N` часов (режимы взаимоисключающие, `--keep-hours` > 0); игнорирует счётчик использования — удаляет окончательно
 
 Общие флаги для большинства подкоманд:
 - `--session` — загрузить данные из сохранённой сессии вместо файла
@@ -723,6 +724,7 @@ codebase rti prune --keep-hours 24
 - `--depth N` — максимальная глубина дерева (для `tree`, 0 = без лимита)
 - `--slow-ms N` — порог медленности в миллисекундах (для `slow`, по умолчанию из `[rti] slow_threshold_ms`)
 - `--name NAME` — имя сессии (для `parse`, по умолчанию имя файла; для `delete` — точное имя, взаимоисключающе с `--session`)
+- `--hard` — окончательное удаление мимо счётчика использования (для `delete`)
 - `--keep-last N` — сколько последних сессий оставить (для `prune`; взаимоисключающе с `--keep-hours`)
 - `--keep-hours N` — оставить нетронутыми сессии за последние N часов (для `prune`, N > 0; удаляются сессии с `parsed_at` старше cutoff)
 - `--limit N` — максимум сессий в списке (для `list`, по умолчанию 20)
@@ -791,6 +793,7 @@ codebase trc list --limit 10
 
 # Управление сессиями
 codebase trc delete --session 42
+codebase trc delete --session 42 --hard
 codebase trc delete --name "Проблемный SPID"
 codebase trc prune --keep-last 5
 codebase trc prune --keep-hours 24
@@ -802,7 +805,7 @@ codebase trc prune --keep-hours 24
 - **Extended Events `.xel`** — бинарный формат SQL Server Extended Events; декодируется через `ParseXEL` (самоописывающийся формат с dictionary-блоком, декодирование событий wait_completed, sql_batch_completed, sql_statement_completed, sp_statement_completed, калибровка timestamp)
 
 Подкоманды:
-- **`parse`** — распарсить `.trc`, `.xml` или `.xel` файл и сохранить результат в БД; выводит сводку + session ID. Имя сессии по умолчанию — имя файла (`filepath.Base`), `--name` задаёт своё. Повторный `parse` файла с тем же содержимым (SHA-256), разобранного текущей версией парсера, молча возвращает существующую сессию без повторного разбора (ключ кэша — `file_hash + parser_version` в `trc_sessions`; CLI и MCP); параллельные разборы одного файла сериализуются advisory-lock'ом; при reuse с явным `--name` сессия переименовывается, без `--name` имя не меняется. Принудительный перепарсинг — `delete` + `parse`; после изменения логики разбора (инкремент `trc.ParserVersion`) тот же файл даёт новую сессию
+- **`parse`** — распарсить `.trc`, `.xml` или `.xel` файл и сохранить результат в БД; выводит сводку + session ID + счётчик использования (`use count`). Имя сессии по умолчанию — имя файла (`filepath.Base`), `--name` задаёт своё. Повторный `parse` файла с тем же содержимым (SHA-256), разобранного текущей версией парсера, молча возвращает существующую сессию без повторного разбора (ключ кэша — `file_hash + parser_version` в `trc_sessions`; CLI и MCP); параллельные разборы одного файла сериализуются advisory-lock'ом; при reuse с явным `--name` сессия переименовывается, без `--name` имя не меняется. Каждый успешный parse инкрементирует счётчик `use_count` сессии (первый — 1, reuse — +1; при гонке параллельных разборов +1 получает победитель), актуальное значение возвращается в поле `use_count` ответа. Принудительный перепарсинг — `delete --hard` + `parse` (обычный `delete` при `use_count > 1` только декрементирует, и сессия остаётся переиспользуемой); после изменения логики разбора (инкремент `trc.ParserVersion`) тот же файл даёт новую сессию
 - **`summary`** — общая сводка: total_events, метаданные провайдера/сервера/версии
 - **`events`** — список декодированных событий с фильтрами (`--spids`, `--event-names`, `--proc`, `--time-from/--time-to`, `--min-duration-ms`), постраничной выборкой (`--after-id`) и форматами (`--format full|short`). Ответ содержит `filtered_count` (полный размер отфильтрованного набора — на каждой странице), `total_count` (только на первой странице, при `after_id` отсутствует), `has_more` и `next_after_id` (курсор следующей страницы, отсутствует при `has_more=false`). Short-формат исключает `params`/`columns`; для saved-session short-запрос не читает JSONB-колонки. `--spid` — legacy-алиас `--spids` с одним значением; одновременно `--spid` и `--spids` — ошибка
 - **`procedures`** — агрегация вызовов процедур: по умолчанию только `SP:Completed` с непустым именем (count, min/max/avg/total duration; enrichment из индекса). `--event-names` задаёт явный набор классов событий (длительности разных уровней пересекаются — суммы не являются wall-clock time), `--spids` ограничивает SPID, `--top N` (0 = все, max 1000), `--sort total_ms|avg_ms|max_ms|count` (secondary: procedure, затем spid), `--group-by-spid` — группы `(spid, procedure)` без событий с NULL spid
@@ -811,9 +814,9 @@ codebase trc prune --keep-hours 24
 - **`tree`** — дерево вызовов, сгруппированное по SPID, с восстановлением вложенности через Starting/Completed пары (RPC, SQL:Batch, SQL:Stmt, SP, SP:Stmt)
 - **`errors`** — события с ненулевой колонкой Error(31)
 - **`slow`** — события медленнее порога (по умолчанию 100 мс), отсортированные по убыванию длительности
-- **`list`** — список сохранённых сессий с `session_name`
-- **`delete`** — удалить сессию по `--session` (ID) или `--name` (точное имя; удаляются все совпадения, в результате `deleted_count`/`session_ids`); CASCADE удаляет все связанные события
-- **`prune`** — удалить старые сессии: оставить последние `--keep-last N` либо только сессии за последние `--keep-hours N` часов (режимы взаимоисключающие, `--keep-hours` > 0)
+- **`list`** — список сохранённых сессий с `session_name` и счётчиком использования `use_count`
+- **`delete`** — удалить сессию по `--session` (ID) или `--name` (точное имя; обрабатываются все совпадения). Учитывает счётчик: при `use_count > 1` декрементирует и оставляет сессию (ответ `deleted=false`, `decremented=true`, `use_count` — остаток), при `use_count <= 1` удаляет окончательно (CASCADE всех связанных событий; в результате `deleted_count`/`session_ids`). `--hard` удаляет окончательно независимо от счётчика; при удалении по имени результат содержит также `decremented_ids`
+- **`prune`** — удалить старые сессии: оставить последние `--keep-last N` либо только сессии за последние `--keep-hours N` часов (режимы взаимоисключающие, `--keep-hours` > 0); игнорирует счётчик использования — удаляет окончательно
 
 Общие флаги для большинства подкоманд:
 - `--session` — загрузить данные из сохранённой сессии вместо файла
@@ -833,6 +836,7 @@ codebase trc prune --keep-hours 24
 - `--max-depth N` — максимальная глубина дерева (для `tree`, 0 = без лимита)
 - `--limit N` — максимум root nodes и children per node (для `tree`, 0 = без лимита)
 - `--name NAME` — имя сессии (для `parse`, по умолчанию имя файла; для `delete` — точное имя, взаимоисключающе с `--session`)
+- `--hard` — окончательное удаление мимо счётчика использования (для `delete`)
 - `--keep-last N` — сколько последних сессий оставить (для `prune`; взаимоисключающе с `--keep-hours`)
 - `--keep-hours N` — оставить нетронутыми сессии за последние N часов (для `prune`, N > 0; удаляются сессии с `parsed_at` старше cutoff)
 
@@ -1022,8 +1026,8 @@ profile=<name> tool=<name> args=<аргументы> duration=<d> duration_ms=<m
 
 | Tool | Описание | Обязательные параметры |
 |------|----------|------------------------|
-| `codebase_rti_parse` | Парсинг `.rti`/`.hrti` файла и сохранение в БД | `file_path` |
-| `codebase_rti_list` | Список сохранённых сессий | — |
+| `codebase_rti_parse` | Парсинг `.rti`/`.hrti` файла и сохранение в БД; reuse того же содержимого, ответ содержит `use_count` | `file_path` |
+| `codebase_rti_list` | Список сохранённых сессий (с `use_count`) | — |
 | `codebase_rti_summary` | Сводка сессии | `session_id` или `file_path` |
 | `codebase_rti_tree` | Дерево вызовов | `session_id` или `file_path` |
 | `codebase_rti_errors` | Вызовы с ошибками (ret_val ≠ 0) | `session_id` или `file_path` |
@@ -1032,7 +1036,7 @@ profile=<name> tool=<name> args=<аргументы> duration=<d> duration_ms=<m
 | `codebase_rti_blog` | Бизнес-лог процедуры: блоки/checkpoints/таблицы | `session_id` или `file_path`, `procedure` |
 | `codebase_rti_client_tree` | Дерево клиентских событий по PID | `session_id` или `file_path`, опц. `pid` |
 | `codebase_rti_timeline` | Единый timeline серверных и клиентских событий | `session_id` или `file_path`, опц. `time_from`/`time_to` |
-| `codebase_rti_delete` | Удалить сессию | `session_id` |
+| `codebase_rti_delete` | Удалить сессию: при `use_count > 1` декремент (`deleted=false`, `decremented=true`), окончательно при `use_count <= 1` или `hard=true` | `session_id` |
 | `codebase_rti_prune` | Удалить старые сессии, оставить N | `keep_last` |
 
 Пример вывода `codebase_rti_blog`:
@@ -1060,8 +1064,8 @@ profile=<name> tool=<name> args=<аргументы> duration=<d> duration_ms=<m
 
 | Tool | Описание | Обязательные параметры |
 |------|----------|------------------------|
-| `codebase_trc_parse` | Парсинг `.trc`, `.xml` или `.xel` файла и сохранение в БД | `file_path` |
-| `codebase_trc_list` | Список сохранённых сессий | — |
+| `codebase_trc_parse` | Парсинг `.trc`, `.xml` или `.xel` файла и сохранение в БД; reuse того же содержимого, ответ содержит `use_count` | `file_path` |
+| `codebase_trc_list` | Список сохранённых сессий (с `use_count`) | — |
 | `codebase_trc_summary` | Сводка сессии: total_events, метаданные | `session_id` или `file_path` |
 | `codebase_trc_events` | Декодированные события с server-side фильтрами и keyset-пагинацией; `filtered_count` на каждой странице, `total_count` только на первой, `has_more`/`next_after_id`, `format=full\|short` | `session_id` или `file_path`, опц. `spids[]`/`event_names[]`/`procedure`/`time_from`/`time_to`/`min_duration_ms`/`after_id`/`format`/`limit`; legacy `spid`/`event_name` нормализуются в массивы |
 | `codebase_trc_procedures` | Агрегация вызовов процедур (default `SP:Completed`) с enrichment, `spids[]`, `event_names[]`, `top`, `sort_by`, `group_by_spid` | `session_id` или `file_path`, опц. `spids[]`/`event_names[]`/`top`/`sort_by`/`group_by_spid` |
@@ -1070,7 +1074,7 @@ profile=<name> tool=<name> args=<аргументы> duration=<d> duration_ms=<m
 | `codebase_trc_tree` | Дерево вызовов по SPID с опц. фильтром по процедуре | `session_id` или `file_path`, опц. `spid`/`max_depth`/`limit`/`procedure` |
 | `codebase_trc_errors` | События с ненулевой Error(31) | `session_id` или `file_path` |
 | `codebase_trc_slow` | Медленные события (порог DurationMs) | `session_id` или `file_path`, опц. `threshold_ms` |
-| `codebase_trc_delete` | Удалить сессию | `session_id` |
+| `codebase_trc_delete` | Удалить сессию: при `use_count > 1` декремент (`deleted=false`, `decremented=true`), окончательно при `use_count <= 1` или `hard=true` | `session_id` |
 | `codebase_trc_prune` | Удалить старые сессии, оставить N | `keep_last` |
 
 Контракт формата:
@@ -1324,14 +1328,14 @@ CodeBase/
 - `api_contract_return_values` - return values (возвращаемые значения) контрактов
 - `api_contract_contexts` - contexts (контексты) контрактов
 - `api_macro_invocations` - извлечённые API macros (макросы API) из исходных `.sql`
-- `rti_sessions` — сессии парсинга RTI-логов
+- `rti_sessions` — сессии парсинга RTI-логов (включая `file_hash`/`parser_version` для reuse и счётчик использования `use_count`)
 - `rti_calls` — вызовы процедур из RTI-лога (Enter/Exit, elapsed_ms, ret_val, nest_level)
 - `rti_params` — параметры вызовов
 - `rti_checkpoints` — контрольные точки (`M_BUSINESSLOG_CHECKPOINT`) с timestamp
 - `rti_blog_blocks` — бизнес-лог блоки (`M_BUSINESSLOG_BLOCK_BEGIN/END`) с Enter/Exit временами и elapsed_ms
 - `rti_blog_tables` — дампы таблиц из бизнес-лога (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`) с заголовками и строками
 - `rti_client_events` — клиентские события (thick client d5nt): SQL blocks, recordset open, connection, BPL load, errors, memory; с enrichment-ссылкой на серверный вызов (`server_call_id`)
-- `trc_sessions` — сессии парсинга `.trc`/`.xml` файлов (file_path, file_size, total_events, provider/server/version metadata)
+- `trc_sessions` — сессии парсинга `.trc`/`.xml` файлов (file_path, file_size, total_events, provider/server/version metadata, `file_hash`/`parser_version` для reuse, счётчик использования `use_count`)
 - `trc_events` — декодированные события из `.trc`/`.xml` (event_class, event_name, text_data, procedure, spid, duration_ms, cpu, reads, writes, error, params JSONB, columns JSONB)
 - `ds_return_codes` — справочник кодов возврата процедур
 - `ds_products` — каталог продуктов Diasoft (product catalog)
@@ -1505,6 +1509,7 @@ $env:CODEBASE_TEST_DSN = "postgres://postgres:123456@localhost:5435/postgres?ssl
 - [x] Строгая валидация фильтров `query relations`: словарь entity-типов (17) и типов связей (21) в `internal/model/relation_types.go`; неизвестное значение — ошибка `invalid_arguments` со списком допустимых **до** обращения к БД (устранён seq-scan/таймаут на неизвестном `relation_type`); два индекса `relations` — `(relation_type, id DESC)` и `(source_type, relation_type, id DESC)`
 - [x] Алиасы kind-типов API-контрактов в `query relations`: `service`/`event`/`callback_event`/`used_service` нормализуются в `api_contract` (валидация + name-резолв + type-only SQL, `NormalizeRelationEntityType` в `internal/model`); name-фильтр покрывает все 17 entity-типов словаря (добавлены `dfm_form`, `spec_capability`, `spec_change`, `spec_requirement`, `spec_scenario`, `spec_usecase`); обновлено описание MCP-инструмента и справка флагов
 - [x] Fallback `query symbol --type report_form` по `form_name`/`form_class` (LEFT JOIN `report_forms`, активен только при явном типе, точный поиск регистронезависим) и расширение `query report-form` полем `form_class` — устранена асимметрия unified-индекса (TC-142)
+- [x] Счётчик использования RTI/TRC-сессий `use_count` (refcount): каждый успешный parse — +1 (fresh — вместе с хешем, reuse — атомарный acquire, победитель конфликта — +1), `delete` без `--hard` при `use_count > 1` декрементирует (сессия остаётся переиспользуемой), при `<= 1` удаляет окончательно; `delete --hard`/`hard=true` — всегда окончательно; `prune` игнорирует счётчик; `use_count` в ответах parse/list/delete
 
 ## Лицензия
 

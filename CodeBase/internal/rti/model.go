@@ -175,4 +175,5 @@ type RTISession struct {
 	MaxNestLevel      int       `json:"max_nest_level"`
 	UnparsedLines     int       `json:"unparsed_lines"`
 	ClientEventsCount int       `json:"client_events_count,omitempty"`
+	UseCount          int       `json:"use_count"`
 }

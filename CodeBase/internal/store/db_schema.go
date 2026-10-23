@@ -626,6 +626,11 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`ALTER TABLE trc_sessions ADD COLUMN IF NOT EXISTS parser_version INTEGER`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_rti_sessions_file_hash ON rti_sessions(file_hash, parser_version) WHERE file_hash IS NOT NULL`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_trc_sessions_file_hash ON trc_sessions(file_hash, parser_version) WHERE file_hash IS NOT NULL`,
+		// Счётчик использования сессии (refcount): первый успешный parse — 1,
+		// каждый reuse — +1, delete без --hard — -1 при > 1 (иначе окончательное
+		// удаление). Legacy-строки получают 0 и ведут себя как раньше.
+		`ALTER TABLE rti_sessions ADD COLUMN IF NOT EXISTS use_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE trc_sessions ADD COLUMN IF NOT EXISTS use_count INTEGER NOT NULL DEFAULT 0`,
 		// Имя сессии по умолчанию — имя разобранного файла. Backfill идемпотентен:
 		// заполняются только legacy-строки с пустым именем.
 		`ALTER TABLE rti_sessions ADD COLUMN IF NOT EXISTS session_name TEXT NOT NULL DEFAULT ''`,

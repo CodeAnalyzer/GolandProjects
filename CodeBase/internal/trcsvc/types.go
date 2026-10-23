@@ -22,6 +22,8 @@ type ParseOptions struct {
 type DeleteParams struct {
 	SessionID int64
 	Name      string
+	// Hard — окончательное удаление мимо счётчика использования.
+	Hard bool
 }
 
 // PruneParams — параметры очистки: KeepLast и KeepHours взаимоисключающие.
@@ -32,10 +34,14 @@ type PruneParams struct {
 }
 
 // ParseResult — результат парсинга TRC-файла.
+// ParseResult — результат парсинга с сохранением в БД.
 type ParseResult struct {
 	SessionID   int64  `json:"session_id"`
 	TotalEvents int    `json:"total_events"`
 	Warning     string `json:"warning,omitempty"`
+	// UseCount — актуальное значение счётчика использования сессии
+	// (fresh-парсинг = 1, reuse — после инкремента; 0 при недоступной БД).
+	UseCount int `json:"use_count"`
 }
 
 // SummaryResult — статистика по сессии.
@@ -143,13 +149,19 @@ type ListResult struct {
 	Sessions []trc.TRCSession `json:"sessions"`
 }
 
-// DeleteResult — результат удаления.
+// DeleteResult — результат удаления. Deleted/SessionIDs — окончательно
+// удалённые; Decremented/DecrementedIDs — декрементированные (use_count > 1,
+// сессия сохранена и остаётся переиспользуемой); UseCount — остаток после
+// декремента (одиночный случай).
 type DeleteResult struct {
-	Deleted      bool    `json:"deleted"`
-	SessionID    int64   `json:"session_id"`
-	FilePath     string  `json:"file_path,omitempty"`
-	DeletedCount int     `json:"deleted_count"`
-	SessionIDs   []int64 `json:"session_ids,omitempty"`
+	Deleted        bool    `json:"deleted"`
+	Decremented    bool    `json:"decremented"`
+	SessionID      int64   `json:"session_id"`
+	FilePath       string  `json:"file_path,omitempty"`
+	DeletedCount   int     `json:"deleted_count"`
+	SessionIDs     []int64 `json:"session_ids,omitempty"`
+	DecrementedIDs []int64 `json:"decremented_ids,omitempty"`
+	UseCount       int     `json:"use_count,omitempty"`
 }
 
 // PruneResult — результат очистки.

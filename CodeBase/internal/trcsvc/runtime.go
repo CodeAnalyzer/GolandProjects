@@ -79,13 +79,19 @@ func executeParseDB(ctx context.Context, db *store.DB, filePath, explicitName st
 	}
 
 	// Reuse: файл с тем же содержимым уже разобран этой версией парсера.
-	if reusedID, err := trc.FindSessionByHash(ctx, db, fileHash, trc.ParserVersion); err != nil {
+	// acquire атомарно инкрементирует use_count.
+	if reusedID, useCount, err := trc.AcquireSessionByHash(ctx, db, fileHash, trc.ParserVersion); err != nil {
 		return nil, err
 	} else if reusedID > 0 {
 		if err := renameOnReuse(ctx, db, reusedID, explicitName); err != nil {
 			return nil, err
 		}
-		return parseResultFromSession(ctx, db, reusedID)
+		result, err := parseResultFromSession(ctx, db, reusedID)
+		if err != nil {
+			return nil, err
+		}
+		result.UseCount = useCount
+		return result, nil
 	}
 
 	sessionName := explicitName
@@ -97,17 +103,18 @@ func executeParseDB(ctx context.Context, db *store.DB, filePath, explicitName st
 		return nil, fmt.Errorf("failed to parse trc file: %w", err)
 	}
 
-	// Хеш проставляется последним шагом: сессия вставляется до парсинга (нужна
-	// для FK), при ошибке разбора file_hash остаётся NULL — сессия не попадает
-	// в кэш reuse.
+	// Хеш и use_count = 1 проставляются последним шагом: сессия вставляется до
+	// парсинга (нужна для FK), при ошибке разбора file_hash остаётся NULL —
+	// сессия не попадает в кэш reuse.
 	if err := trc.SetSessionHash(ctx, db, sessionID, fileHash, trc.ParserVersion); err != nil {
 		if !store.IsUniqueViolation(err) {
 			return nil, err
 		}
 		// Гонка параллельных разборов одного файла: победитель уже записал
-		// тот же ключ. Возвращаем результат победителя, проигравшую сессию
-		// удаляем явно (prune хранит N свежих — проигравшая самая свежая).
-		winnerID, findErr := trc.FindSessionByHash(ctx, db, fileHash, trc.ParserVersion)
+		// тот же ключ. Acquire инкрементирует use_count победителя (оба
+		// вызова — держатели), проигравшую сессию удаляем явно (prune хранит
+		// N свежих — проигравшая самая свежая).
+		winnerID, winnerUse, findErr := trc.AcquireSessionByHash(ctx, db, fileHash, trc.ParserVersion)
 		if findErr != nil {
 			return nil, findErr
 		}
@@ -118,7 +125,12 @@ func executeParseDB(ctx context.Context, db *store.DB, filePath, explicitName st
 			if err := renameOnReuse(ctx, db, winnerID, explicitName); err != nil {
 				return nil, err
 			}
-			return parseResultFromSession(ctx, db, winnerID)
+			winnerResult, err := parseResultFromSession(ctx, db, winnerID)
+			if err != nil {
+				return nil, err
+			}
+			winnerResult.UseCount = winnerUse
+			return winnerResult, nil
 		}
 		// Победитель удалён конкурентно между violation и повторным поиском:
 		// один повтор записи хеша, затем ошибка.
@@ -130,6 +142,7 @@ func executeParseDB(ctx context.Context, db *store.DB, filePath, explicitName st
 	return &ParseResult{
 		SessionID:   sessionID,
 		TotalEvents: totalEvents,
+		UseCount:    1,
 	}, nil
 }
 
@@ -628,6 +641,21 @@ func ExecuteDelete(ctx context.Context, db *store.DB, p DeleteParams) (*DeleteRe
 		if err != nil {
 			return nil, fmt.Errorf("session %d not found: %w", p.SessionID, err)
 		}
+		if !p.Hard {
+			// Общая сессия (use_count > 1): декремент, данные остаются.
+			if remaining, ok, err := trc.ReleaseSession(ctx, db, p.SessionID); err != nil {
+				return nil, err
+			} else if ok {
+				return &DeleteResult{
+					Deleted:        false,
+					Decremented:    true,
+					SessionID:      p.SessionID,
+					FilePath:       session.FilePath,
+					DecrementedIDs: []int64{p.SessionID},
+					UseCount:       remaining,
+				}, nil
+			}
+		}
 		if err := trc.DeleteSession(ctx, db, p.SessionID); err != nil {
 			return nil, err
 		}
@@ -653,21 +681,49 @@ func ExecuteDelete(ctx context.Context, db *store.DB, p DeleteParams) (*DeleteRe
 			singleFilePath = session.FilePath
 		}
 	}
+	var deletedIDs, decrementedIDs []int64
 	for _, id := range ids {
-		if err := trc.DeleteSession(ctx, db, id); err != nil {
+		deleted, err := deleteOrRelease(ctx, db, id, p.Hard)
+		if err != nil {
 			return nil, err
+		}
+		if deleted {
+			deletedIDs = append(deletedIDs, id)
+		} else {
+			decrementedIDs = append(decrementedIDs, id)
 		}
 	}
 	result := &DeleteResult{
-		Deleted:      true,
-		DeletedCount: len(ids),
-		SessionIDs:   ids,
+		Deleted:        len(deletedIDs) > 0,
+		Decremented:    len(decrementedIDs) > 0,
+		DeletedCount:   len(deletedIDs),
+		SessionIDs:     deletedIDs,
+		DecrementedIDs: decrementedIDs,
 	}
 	if len(ids) == 1 {
 		result.SessionID = ids[0]
 		result.FilePath = singleFilePath
+		if len(decrementedIDs) == 1 {
+			if session, err := trc.GetSession(ctx, db, ids[0]); err == nil {
+				result.UseCount = session.UseCount
+			}
+		}
 	}
 	return result, nil
+}
+
+// deleteOrRelease обрабатывает одну сессию по правилам счётчика: без hard —
+// декремент при use_count > 1 (deleted=false), иначе окончательное удаление
+// (deleted=true).
+func deleteOrRelease(ctx context.Context, db *store.DB, sessionID int64, hard bool) (bool, error) {
+	if !hard {
+		if _, ok, err := trc.ReleaseSession(ctx, db, sessionID); err != nil {
+			return false, err
+		} else if ok {
+			return false, nil
+		}
+	}
+	return true, trc.DeleteSession(ctx, db, sessionID)
 }
 
 // ExecutePrune удаляет старые сессии: последние KeepLast либо старше KeepHours.

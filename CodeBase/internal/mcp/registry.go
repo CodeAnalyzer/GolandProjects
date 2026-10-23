@@ -906,7 +906,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_rti_delete": {
-			Definition: toolDefinition{Name: "codebase_rti_delete", Description: "Delete saved RTI sessions by session_id or by exact session name (mutually exclusive). Deleting by name removes all matching sessions and returns deleted_count and session_ids. Cascades to delete all associated calls, parameters, checkpoints, blog data, and client events.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Session ID to delete"), "name": stringProp("Or: exact session name to delete (all matches)")})},
+			Definition: toolDefinition{Name: "codebase_rti_delete", Description: "Delete saved RTI sessions by session_id or by exact session name (mutually exclusive). Respects the session use counter: when use_count > 1 the session is shared — delete only decrements use_count (response: deleted=false, decremented=true, use_count = remaining) and the session stays reusable; the session is permanently deleted only when use_count <= 1. Pass hard=true to delete permanently regardless of use_count (force re-parse: hard delete + parse). Deleting by name processes each matching session independently and returns deleted_count, session_ids (permanently deleted) and decremented_ids. Cascades to delete all associated calls, parameters, checkpoints, blog data, and client events on permanent deletion.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Session ID to delete"), "name": stringProp("Or: exact session name to delete (all matches)"), "hard": boolProp("Delete permanently regardless of use_count (default: decrement when shared)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				sessionID, err := optionalInt64(args, "session_id")
 				if err != nil {
@@ -916,7 +916,11 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if err != nil {
 					return nil, err
 				}
-				return rtisvc.ExecuteDelete(ctx, db, rtisvc.DeleteParams{SessionID: sessionID, Name: name})
+				hard, err := optionalBool(args, "hard")
+				if err != nil {
+					return nil, err
+				}
+				return rtisvc.ExecuteDelete(ctx, db, rtisvc.DeleteParams{SessionID: sessionID, Name: name, Hard: hard})
 			},
 		},
 		"codebase_rti_prune": {
@@ -1347,7 +1351,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_trc_delete": {
-			Definition: toolDefinition{Name: "codebase_trc_delete", Description: "Delete saved trc sessions by session_id or by exact session name (mutually exclusive). Deleting by name removes all matching sessions and returns deleted_count and session_ids. Batch-deletes all associated events first, then removes the sessions.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Session ID to delete"), "name": stringProp("Or: exact session name to delete (all matches)")})},
+			Definition: toolDefinition{Name: "codebase_trc_delete", Description: "Delete saved trc sessions by session_id or by exact session name (mutually exclusive). Respects the session use counter: when use_count > 1 the session is shared — delete only decrements use_count (response: deleted=false, decremented=true, use_count = remaining) and the session stays reusable; the session is permanently deleted only when use_count <= 1. Pass hard=true to delete permanently regardless of use_count (force re-parse: hard delete + parse). Deleting by name processes each matching session independently and returns deleted_count, session_ids (permanently deleted) and decremented_ids. Batch-deletes all associated events first, then removes the sessions.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Session ID to delete"), "name": stringProp("Or: exact session name to delete (all matches)"), "hard": boolProp("Delete permanently regardless of use_count (default: decrement when shared)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				sessionID, err := optionalInt64(args, "session_id")
 				if err != nil {
@@ -1357,7 +1361,11 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if err != nil {
 					return nil, err
 				}
-				return trcsvc.ExecuteDelete(ctx, db, trcsvc.DeleteParams{SessionID: sessionID, Name: name})
+				hard, err := optionalBool(args, "hard")
+				if err != nil {
+					return nil, err
+				}
+				return trcsvc.ExecuteDelete(ctx, db, trcsvc.DeleteParams{SessionID: sessionID, Name: name, Hard: hard})
 			},
 		},
 		"codebase_trc_prune": {

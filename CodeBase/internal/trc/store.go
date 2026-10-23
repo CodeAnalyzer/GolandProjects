@@ -315,7 +315,7 @@ func ListSessions(ctx context.Context, db *store.DB, limit int) ([]TRCSession, e
 		limit = 20
 	}
 	rows, err := db.QueryContext(ctx,
-		`SELECT id, file_path, session_name, file_size, parsed_at, total_events, provider_name, server_name, major_version, minor_version, build_number
+		`SELECT id, file_path, session_name, file_size, parsed_at, total_events, provider_name, server_name, major_version, minor_version, build_number, use_count
 		 FROM trc_sessions ORDER BY parsed_at DESC LIMIT $1`,
 		limit,
 	)
@@ -329,7 +329,7 @@ func ListSessions(ctx context.Context, db *store.DB, limit int) ([]TRCSession, e
 		var s TRCSession
 		var provider, server sql.NullString
 		if err := rows.Scan(&s.ID, &s.FilePath, &s.SessionName, &s.FileSize, &s.ParsedAt, &s.TotalEvents,
-			&provider, &server, &s.MajorVersion, &s.MinorVersion, &s.BuildNumber); err != nil {
+			&provider, &server, &s.MajorVersion, &s.MinorVersion, &s.BuildNumber, &s.UseCount); err != nil {
 			return nil, err
 		}
 		s.ProviderName = provider.String
@@ -344,11 +344,11 @@ func GetSession(ctx context.Context, db *store.DB, sessionID int64) (*TRCSession
 	var s TRCSession
 	var provider, server sql.NullString
 	err := db.QueryRowContext(ctx,
-		`SELECT id, file_path, session_name, file_size, parsed_at, total_events, provider_name, server_name, major_version, minor_version, build_number
+		`SELECT id, file_path, session_name, file_size, parsed_at, total_events, provider_name, server_name, major_version, minor_version, build_number, use_count
 		 FROM trc_sessions WHERE id = $1`,
 		sessionID,
 	).Scan(&s.ID, &s.FilePath, &s.SessionName, &s.FileSize, &s.ParsedAt, &s.TotalEvents,
-		&provider, &server, &s.MajorVersion, &s.MinorVersion, &s.BuildNumber)
+		&provider, &server, &s.MajorVersion, &s.MinorVersion, &s.BuildNumber, &s.UseCount)
 	if err != nil {
 		return nil, err
 	}
@@ -364,36 +364,63 @@ func GetLatestSessionID(ctx context.Context, db *store.DB) (int64, error) {
 	return id, err
 }
 
-// FindSessionByHash возвращает ID существующей сессии для пары
-// (file_hash, parser_version) или 0, если такой сессии нет.
-// Сессии с NULL file_hash (legacy, прерванные) не находятся.
-func FindSessionByHash(ctx context.Context, db *store.DB, fileHash string, parserVersion int) (int64, error) {
+// AcquireSessionByHash атомарно находит сессию для пары (file_hash,
+// parser_version) и инкрементирует её use_count (найти-и-инкрементнуть одним
+// statement). Возвращает ID сессии и актуальный use_count или (0, 0, nil),
+// если такой сессии нет. Сессии с NULL file_hash (legacy, прерванные)
+// не находятся.
+func AcquireSessionByHash(ctx context.Context, db *store.DB, fileHash string, parserVersion int) (int64, int, error) {
 	var sessionID int64
+	var useCount int
 	err := db.QueryRowContext(ctx,
-		`SELECT id FROM trc_sessions WHERE file_hash = $1 AND parser_version = $2 LIMIT 1`,
+		`UPDATE trc_sessions SET use_count = use_count + 1
+		 WHERE file_hash = $1 AND parser_version = $2
+		 RETURNING id, use_count`,
 		fileHash, parserVersion,
-	).Scan(&sessionID)
+	).Scan(&sessionID, &useCount)
 	if err == sql.ErrNoRows {
-		return 0, nil
+		return 0, 0, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("failed to find trc session by hash: %w", err)
+		return 0, 0, fmt.Errorf("failed to acquire trc session by hash: %w", err)
 	}
-	return sessionID, nil
+	return sessionID, useCount, nil
 }
 
-// SetSessionHash проставляет хеш и версию парсера успешно разобранной сессии.
+// SetSessionHash проставляет хеш и версию парсера успешно разобранной сессии
+// и одновременно инкрементирует use_count (первый парсинг: 0 → 1).
 // При гонке параллельных разборов одного файла упирается в unique violation
 // (idx_trc_sessions_file_hash) — вызывающая сторона решает конфликт.
 func SetSessionHash(ctx context.Context, db *store.DB, sessionID int64, fileHash string, parserVersion int) error {
 	_, err := db.ExecContext(ctx,
-		`UPDATE trc_sessions SET file_hash = $2, parser_version = $3 WHERE id = $1`,
+		`UPDATE trc_sessions SET file_hash = $2, parser_version = $3, use_count = use_count + 1 WHERE id = $1`,
 		sessionID, fileHash, parserVersion,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to set trc session hash: %w", err)
 	}
 	return nil
+}
+
+// ReleaseSession декрементирует use_count сессии при use_count > 1
+// (одним атомарным statement). Возвращает оставшееся значение и true, если
+// декремент произошёл. При false сессию нужно удалить окончательно
+// (use_count <= 1) либо она не существует (sql.ErrNoRows от GetSession).
+func ReleaseSession(ctx context.Context, db *store.DB, sessionID int64) (int, bool, error) {
+	var remaining int
+	err := db.QueryRowContext(ctx,
+		`UPDATE trc_sessions SET use_count = use_count - 1
+		 WHERE id = $1 AND use_count > 1
+		 RETURNING use_count`,
+		sessionID,
+	).Scan(&remaining)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("failed to release trc session: %w", err)
+	}
+	return remaining, true, nil
 }
 
 // SetSessionName обновляет имя сессии (например, при reuse с явно заданным именем).

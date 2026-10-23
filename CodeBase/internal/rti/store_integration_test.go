@@ -237,10 +237,11 @@ func TestDeletePruneWithLegacyClientEventsFK(t *testing.T) {
 
 // --- Reuse сессий по (file_hash, parser_version) ---
 
-// TestFindSetSessionHash: семантика FindSessionByHash/SetSessionHash —
-// roundtrip, legacy-NULL не находится, версия в ключе, unique violation
-// на дубликат ключа.
-func TestFindSetSessionHash(t *testing.T) {
+// TestAcquireReleaseSessionUse: семантика AcquireSessionByHash (атомарный
+// find+increment), SetSessionHash (хеш + use_count = 1), ReleaseSession
+// (декремент при use_count > 1), legacy-NULL не находится, версия в ключе,
+// unique violation на дубликат ключа.
+func TestAcquireReleaseSessionUse(t *testing.T) {
 	db := testutil.Open(t)
 	ctx := context.Background()
 
@@ -254,29 +255,79 @@ func TestFindSetSessionHash(t *testing.T) {
 	hash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 	// До простановки хеша — не находится
-	if id, err := FindSessionByHash(ctx, db, hash, 1); err != nil || id != 0 {
-		t.Fatalf("FindSessionByHash before set = (%d, %v), want (0, nil)", id, err)
+	if id, cnt, err := AcquireSessionByHash(ctx, db, hash, 1); err != nil || id != 0 || cnt != 0 {
+		t.Fatalf("AcquireSessionByHash before set = (%d, %d, %v), want (0, 0, nil)", id, cnt, err)
 	}
 
-	// Set → Find roundtrip (legacy-строка с NULL не мешает)
+	// SetSessionHash проставляет хеш и use_count = 1 в одном statement
 	if err := SetSessionHash(ctx, db, sid, hash, 1); err != nil {
 		t.Fatalf("SetSessionHash: %v", err)
 	}
-	if id, err := FindSessionByHash(ctx, db, hash, 1); err != nil || id != sid {
-		t.Fatalf("FindSessionByHash after set = (%d, %v), want (%d, nil)", id, err, sid)
+	if s, err := GetSession(ctx, db, sid); err != nil || s.UseCount != 1 {
+		t.Fatalf("use_count after SetSessionHash = (%d, %v), want 1", s.UseCount, err)
+	}
+
+	// Acquire — find + инкремент, дважды: use_count 2, затем 3
+	if id, cnt, err := AcquireSessionByHash(ctx, db, hash, 1); err != nil || id != sid || cnt != 2 {
+		t.Fatalf("AcquireSessionByHash #1 = (%d, %d, %v), want (%d, 2, nil)", id, cnt, err, sid)
+	}
+	if id, cnt, err := AcquireSessionByHash(ctx, db, hash, 1); err != nil || id != sid || cnt != 3 {
+		t.Fatalf("AcquireSessionByHash #2 = (%d, %d, %v), want (%d, 3, nil)", id, cnt, err, sid)
+	}
+	if s, err := GetSession(ctx, db, sid); err != nil || s.UseCount != 3 {
+		t.Fatalf("use_count after 2 acquires = (%d, %v), want 3", s.UseCount, err)
 	}
 
 	// Другая версия парсера — тот же хеш не находится (версия в ключе)
-	if id, err := FindSessionByHash(ctx, db, hash, 2); err != nil || id != 0 {
-		t.Fatalf("FindSessionByHash other version = (%d, %v), want (0, nil)", id, err)
+	if id, _, err := AcquireSessionByHash(ctx, db, hash, 2); err != nil || id != 0 {
+		t.Fatalf("AcquireSessionByHash other version = (%d, %v), want (0, nil)", id, err)
 	}
 
-	// Дубликат ключа — unique violation (гонка параллельных parse)
+	// Дубликат ключа — unique violation (гонка параллельных parse);
+	// statement откатывается целиком — use_count не «прилипает».
 	loser := insertPlainSession(t, db, "loser.rti")
 	err := SetSessionHash(ctx, db, loser, hash, 1)
 	if err == nil || !store.IsUniqueViolation(err) {
 		t.Fatalf("second SetSessionHash = %v, want unique violation", err)
 	}
+	if s, gerr := GetSession(ctx, db, sid); gerr != nil || s.UseCount != 3 {
+		t.Fatalf("use_count after violation = (%d, %v), want 3", s.UseCount, gerr)
+	}
+
+	// Release при use_count > 1: декремент, сессия жива
+	if remaining, ok, err := ReleaseSession(ctx, db, sid); err != nil || !ok || remaining != 2 {
+		t.Fatalf("ReleaseSession at 3 = (%d, %v, %v), want (2, true, nil)", remaining, ok, err)
+	}
+	if _, gerr := GetSession(ctx, db, sid); gerr != nil {
+		t.Fatalf("session gone after release: %v", gerr)
+	}
+
+	// Release при use_count <= 1: false — вызывающая сторона удаляет окончательно.
+	if err := DeleteSession(ctx, db, legacy); err != nil { // cleanup legacy
+		t.Fatalf("delete legacy: %v", err)
+	}
+	for i := 0; i < 2; i++ { // 2 → 1 → false
+		if _, ok, err := ReleaseSession(ctx, db, sid); err != nil {
+			t.Fatalf("ReleaseSession #%d: %v", i, err)
+		} else if i == 1 && ok {
+			t.Fatal("ReleaseSession at use_count=1 = ok, want false")
+		}
+	}
+	if err := DeleteSession(ctx, db, sid); err != nil {
+		t.Fatalf("DeleteSession after last release: %v", err)
+	}
+	assertSessionGone(t, db, sid)
+
+	// Legacy-сессия (use_count = 0, hash NULL): release-семантика —
+	// окончательное удаление (ок > 0 нет, счётчик не трогаем).
+	legacy2 := insertPlainSession(t, db, "legacy2.rti")
+	if remaining, ok, err := ReleaseSession(ctx, db, legacy2); err != nil || ok || remaining != 0 {
+		t.Fatalf("ReleaseSession legacy = (%d, %v, %v), want (0, false, nil)", remaining, ok, err)
+	}
+	if err := DeleteSession(ctx, db, legacy2); err != nil {
+		t.Fatalf("DeleteSession legacy: %v", err)
+	}
+	assertSessionGone(t, db, legacy2)
 }
 
 // --- Имя сессии, delete-by-name, prune-by-hours ---

@@ -118,6 +118,7 @@ type TRCSession struct {
 	MajorVersion int       `json:"major_version,omitempty"`
 	MinorVersion int       `json:"minor_version,omitempty"`
 	BuildNumber  int       `json:"build_number,omitempty"`
+	UseCount     int       `json:"use_count"`
 }
 
 // ToTime конвертирует SystemTime в time.UTC. Часовой пояс исходного значения

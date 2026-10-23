@@ -17,6 +17,7 @@ var (
 	trcSlowThreshold int
 	trcProcedure     string
 	trcSessionID     int64
+	trcDeleteHard    bool
 	trcSessionName   string
 	trcKeepLast      int
 	trcKeepHours     int
@@ -173,7 +174,7 @@ func runTRCParse(cmd *cobra.Command, args []string) error {
 	fmt.Printf("TRC file: %s\n", args[0])
 	fmt.Printf("Total events: %d\n", result.TotalEvents)
 	if result.SessionID > 0 {
-		fmt.Printf("Saved session: %d\n", result.SessionID)
+		fmt.Printf("Saved session: %d (use count: %d)\n", result.SessionID, result.UseCount)
 	} else {
 		fmt.Fprintf(os.Stderr, "Warning: database unavailable, session not saved\n")
 	}
@@ -632,9 +633,9 @@ func runTRCList(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("%d session(s):\n\n", len(result.Sessions))
 	for _, s := range result.Sessions {
-		fmt.Printf("  %d  %s  name=%s  events=%d  size=%d  parsed=%s\n",
+		fmt.Printf("  %d  %s  name=%s  events=%d  size=%d  parsed=%s  use_count=%d\n",
 			s.ID, s.FilePath, s.SessionName, s.TotalEvents, s.FileSize,
-			s.ParsedAt.Format("2006-01-02 15:04:05"))
+			s.ParsedAt.Format("2006-01-02 15:04:05"), s.UseCount)
 	}
 	return nil
 }
@@ -652,6 +653,7 @@ func runTRCDelete(cmd *cobra.Command, args []string) error {
 	result, err := trcsvc.ExecuteDelete(ctx, db, trcsvc.DeleteParams{
 		SessionID: trcSessionID,
 		Name:      trcSessionName,
+		Hard:      trcDeleteHard,
 	})
 	if err != nil {
 		return err
@@ -659,11 +661,29 @@ func runTRCDelete(cmd *cobra.Command, args []string) error {
 	if trcOutputJSON {
 		return printJSON(result)
 	}
+	if result.Decremented && !result.Deleted {
+		if len(result.DecrementedIDs) == 1 {
+			fmt.Printf("Session %d kept: use_count %d (use --hard to remove completely)\n",
+				result.SessionID, result.UseCount)
+			return nil
+		}
+		fmt.Printf("Decremented %d session(s): %v (use --hard to remove completely)\n",
+			len(result.DecrementedIDs), result.DecrementedIDs)
+		return nil
+	}
 	if result.DeletedCount == 1 {
 		fmt.Printf("Deleted session %d (file: %s)\n", result.SessionID, result.FilePath)
+		if result.Decremented {
+			fmt.Printf("Decremented %d session(s): %v (use --hard to remove completely)\n",
+				len(result.DecrementedIDs), result.DecrementedIDs)
+		}
 		return nil
 	}
 	fmt.Printf("Deleted %d sessions: %v\n", result.DeletedCount, result.SessionIDs)
+	if result.Decremented {
+		fmt.Printf("Decremented %d session(s): %v (use --hard to remove completely)\n",
+			len(result.DecrementedIDs), result.DecrementedIDs)
+	}
 	return nil
 }
 
@@ -757,6 +777,7 @@ func init() {
 	trcListCmd.Flags().IntVar(&trcListLimit, "limit", 20, "max sessions to list")
 	trcDeleteCmd.Flags().Int64Var(&trcSessionID, "session", 0, "session ID to delete")
 	trcDeleteCmd.Flags().StringVar(&trcSessionName, "name", "", "session name to delete (all exact matches)")
+	trcDeleteCmd.Flags().BoolVar(&trcDeleteHard, "hard", false, "delete completely regardless of use_count (default: decrement when shared)")
 	trcPruneCmd.Flags().IntVar(&trcKeepLast, "keep-last", 0, "keep only last N sessions (0 = delete all)")
 	trcPruneCmd.Flags().IntVar(&trcKeepHours, "keep-hours", 0, "keep sessions from the last N hours (mutually exclusive with --keep-last)")
 	trcParseCmd.Flags().StringVar(&trcSessionName, "name", "", "session name (default: file name)")
