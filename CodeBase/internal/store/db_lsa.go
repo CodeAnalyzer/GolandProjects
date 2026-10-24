@@ -36,30 +36,49 @@ func (db *DB) LoadAllSpecCapabilitiesForLSA(ctx context.Context) ([]model.SpecCa
 	return result, rows.Err()
 }
 
+// docCopyPrioritySQL — общий приоритет выбора актуальной копии документа
+// при мультиветочной индексации (используется корпусами spec-LSA и
+// desc-LSA, см. LoadAllSpecCapabilitiesWithReqsForLSA и
+// LoadDescriptionsForLSA): копия из default-ветки файла предпочтительнее
+// остальных (b подключается LEFT JOIN files → ds_products_branch),
+// при равенстве — более свежая (id DESC). Требование «LSA-корпус при
+// мультиветочной индексации».
+const docCopyPrioritySQL = `COALESCE(b.is_default, FALSE)`
+
 // LoadAllSpecCapabilitiesWithReqsForLSA загружает все capability с агрегированным текстом
 // требований и сценариев (LSAText) для обучения LSA. Агрегация детерминирована:
 // string_agg с ORDER BY, NULL-поля пропускаются через concat_ws, текст требования
 // предшествует сценариям этого же требования (interleave по req_order).
+// При мультиветочной индексации каждая capability (продукт, имя) даёт один
+// документ: копия из default-ветки, иначе самая свежая — корпус не
+// раздувается параллельными ветками.
 func (db *DB) LoadAllSpecCapabilitiesWithReqsForLSA(ctx context.Context) ([]model.SpecCapability, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT c.id, c.title, c.purpose, c.notes,
-		       COALESCE((
-		           SELECT string_agg(t.part, ' ' ORDER BY t.ord1, t.ord2, t.ord3, t.id)
-		           FROM (
-		               SELECT req.req_order AS ord1, 0 AS ord2, 0 AS ord3, req.id AS id,
-		                      concat_ws(' ', req.requirement_name, req.body_text) AS part
-		               FROM spec_requirements req
-		               WHERE req.capability_id = c.id
-		               UNION ALL
-		               SELECT req.req_order, 1, s.scn_order, s.id,
-		                      concat_ws(' ', s.scenario_name, s.given_text, s.when_text, s.then_text)
-		               FROM spec_scenarios s
-		               JOIN spec_requirements req ON req.id = s.requirement_id
-		               WHERE req.capability_id = c.id
-		           ) t
-		       ), '')
-		FROM spec_capabilities c
-		ORDER BY c.id`)
+		SELECT id, title, purpose, notes, lsatext FROM (
+			SELECT DISTINCT ON (COALESCE(c.ds_product_id, 0), c.capability_name)
+				c.id, c.title, c.purpose, c.notes,
+				COALESCE((
+				    SELECT string_agg(t.part, ' ' ORDER BY t.ord1, t.ord2, t.ord3, t.id)
+				    FROM (
+				        SELECT req.req_order AS ord1, 0 AS ord2, 0 AS ord3, req.id AS id,
+				               concat_ws(' ', req.requirement_name, req.body_text) AS part
+				        FROM spec_requirements req
+				        WHERE req.capability_id = c.id
+				        UNION ALL
+				        SELECT req.req_order, 1, s.scn_order, s.id,
+				               concat_ws(' ', s.scenario_name, s.given_text, s.when_text, s.then_text)
+				        FROM spec_scenarios s
+				        JOIN spec_requirements req ON req.id = s.requirement_id
+				        WHERE req.capability_id = c.id
+				    ) t
+				), '') AS lsatext,
+				`+docCopyPrioritySQL+` AS priority
+			FROM spec_capabilities c
+			LEFT JOIN files f ON f.id = c.file_id
+			LEFT JOIN ds_products_branch b ON b.id = f.ds_product_branch_id
+			ORDER BY COALESCE(c.ds_product_id, 0), c.capability_name, `+docCopyPrioritySQL+` DESC, c.id DESC
+		) picked
+		ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("LoadAllSpecCapabilitiesWithReqsForLSA: %w", err)
 	}
@@ -69,11 +88,13 @@ func (db *DB) LoadAllSpecCapabilitiesWithReqsForLSA(ctx context.Context) ([]mode
 	for rows.Next() {
 		var c model.SpecCapability
 		var purpose, notes sql.NullString
-		if err := rows.Scan(&c.ID, &c.Title, &purpose, &notes, &c.LSAText); err != nil {
+		var lsatext string
+		if err := rows.Scan(&c.ID, &c.Title, &purpose, &notes, &lsatext); err != nil {
 			return nil, fmt.Errorf("LoadAllSpecCapabilitiesWithReqsForLSA scan: %w", err)
 		}
 		c.Purpose = purpose.String
 		c.Notes = notes.String
+		c.LSAText = lsatext
 		result = append(result, c)
 	}
 	return result, rows.Err()

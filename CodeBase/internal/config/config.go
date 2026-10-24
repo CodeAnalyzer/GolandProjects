@@ -44,6 +44,9 @@ type IndexerConfig struct {
 	ProgressIntervalMs int      `toml:"progress_interval_ms"`
 	IncludePatterns    []string `toml:"include_patterns"`
 	ExcludePatterns    []string `toml:"exclude_patterns"`
+	// DefaultBranch — имя git-ветки, помечаемой is_default при discovery
+	// источников; fallback-ветка для lookup'ов без явного контекста.
+	DefaultBranch string `toml:"default_branch"`
 }
 
 // QueryConfig лимиты для query/rti/trc вызовов
@@ -339,6 +342,9 @@ func Load() error {
 	if cfg.Indexer.ProgressIntervalMs <= 0 {
 		cfg.Indexer.ProgressIntervalMs = 250
 	}
+	if cfg.Indexer.DefaultBranch == "" {
+		cfg.Indexer.DefaultBranch = "develop"
+	}
 	if cfg.Query.DefaultLimit <= 0 {
 		cfg.Query.DefaultLimit = 100
 	}
@@ -518,6 +524,7 @@ func CreateDefault(rootPath string) *Config {
 			BatchSize:          100,
 			BatchInsertSize:    50000,
 			ProgressIntervalMs: 250,
+			DefaultBranch:      "develop",
 			IncludePatterns: []string{
 				"*.sql", "*.h", "*.pas", "*.inc", "*.js", "*.smf", "*.dfm", "*.tpr", "*.rpt",
 			},

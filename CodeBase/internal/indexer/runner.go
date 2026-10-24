@@ -82,6 +82,10 @@ func (idx *Indexer) runInitPipeline(ctx context.Context, rootPath string, parall
 		return nil, fmt.Errorf("failed to backfill api_contracts search vectors: %w", err)
 	}
 
+	// Discovery git-источников до обхода файлов: префиксная карта нужна
+	// saveFileCtx (продукт/линия), backfill чинит существующие строки.
+	discoveryCutoff := idx.discoverGitSources(ctx, rootPath, newGitDetector())
+
 	collector := &statsCollector{}
 	stopProgress := startProgressReporter(progressLabel, collector.Snapshot)
 	defer stopProgress()
@@ -120,6 +124,9 @@ errorLoopInit:
 	if ctx.Err() == nil {
 		idx.runPostProcessingParallel(ctx, collector, parallel)
 	}
+	// Очистка устаревших линий (без файлов, до discovery) — после пост-
+	// обработки, когда индексация файлов завершена.
+	idx.cleanupStaleBranches(ctx, discoveryCutoff)
 	postProcessDone := time.Now()
 	stats := collector.Snapshot()
 	stats.WalkSaveMs = walkSaveDone.Sub(startedAt).Milliseconds()
@@ -170,6 +177,10 @@ func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified
 	if err := idx.db.BackfillAPIContractSearchVectors(ctx); err != nil {
 		return nil, fmt.Errorf("failed to backfill api_contracts search vectors: %w", err)
 	}
+
+	// Discovery git-источников до обхода файлов (карта для saveFileCtx +
+	// backfill существующих строк, пропущенных pre-filter'ом mtime+size).
+	discoveryCutoff := idx.discoverGitSources(ctx, rootPath, newGitDetector())
 
 	existing, err := idx.db.GetLatestFilesByRootPath(ctx, rootPath)
 	if err != nil {
@@ -315,6 +326,8 @@ errorLoopUpdate:
 	if ctx.Err() == nil {
 		idx.runPostProcessingParallel(ctx, collector, parallel)
 	}
+	// Очистка устаревших линий — после удаления исчезнувших файлов.
+	idx.cleanupStaleBranches(ctx, discoveryCutoff)
 	postProcessDone := time.Now()
 	cleanupDone := time.Now()
 

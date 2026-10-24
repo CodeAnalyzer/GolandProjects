@@ -31,6 +31,9 @@ func TestCreateDefault(t *testing.T) {
 	if got.Indexer.Parallel != 4 || got.Indexer.BatchSize != 100 {
 		t.Fatalf("unexpected indexer defaults: %+v", got.Indexer)
 	}
+	if got.Indexer.DefaultBranch != "develop" {
+		t.Fatalf("DefaultBranch = %q, want develop", got.Indexer.DefaultBranch)
+	}
 	if len(got.Indexer.IncludePatterns) == 0 || len(got.Indexer.ExcludePatterns) == 0 {
 		t.Fatalf("expected default include and exclude patterns")
 	}

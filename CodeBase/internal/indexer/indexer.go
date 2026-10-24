@@ -62,6 +62,9 @@ type indexerSharedState struct {
 	// поэтому upsert в БД делаем только на промахе кэша.
 	dsProductMu    sync.Mutex
 	dsProductCache map[string]int64
+	// Префиксная карта git-источников (discovery до обхода файлов):
+	// файлы из каталогов источников привязываются к продукту и линии.
+	sourceRegistry *sourceRegistry
 }
 
 func newIndexerSharedState() *indexerSharedState {
@@ -72,9 +75,10 @@ func newIndexerSharedState() *indexerSharedState {
 		pendingSQLCalls:          make([]*PendingSQLCallFile, 0),
 		pendingFragmentRefs:      make([]*PendingFragmentRef, 0),
 		pendingJSCallRefs:        make([]*PendingJSCallRef, 0),
-		pendingT01SubscriberRefs: make([]*PendingT01SubscriberRef, 0),
-		pendingAPIMacroRefs:      make([]*PendingAPIMacroRef, 0),
-		dsProductCache:           make(map[string]int64),
+		pendingT01SubscriberRefs:  make([]*PendingT01SubscriberRef, 0),
+		pendingAPIMacroRefs:       make([]*PendingAPIMacroRef, 0),
+		dsProductCache:            make(map[string]int64),
+		sourceRegistry:            newSourceRegistry(),
 	}
 }
 
@@ -1751,9 +1755,15 @@ func (idx *Indexer) resolveDSProductID(ctx context.Context, productName string) 
 }
 
 func (idx *Indexer) saveFileCtx(ctx context.Context, file fswalk.FileInfo, scanRunID int64) (int64, error) {
-	productName := extractCanonicalDSProductName(file.Path, file.RelPath)
 	var dsProductID interface{}
-	if productName != "" {
+	var dsProductBranchID interface{}
+	if binding := idx.shared.sourceRegistry.match(file.Path); binding != nil {
+		// Файл из git-источника: продукт и линия — из discovery-карты,
+		// эвристика по имени каталога не применяется (имена вроде
+		// fa-contracts-11017 больше не порождают псевдопродуктов).
+		dsProductID = binding.ProductID
+		dsProductBranchID = binding.BranchID
+	} else if productName := extractCanonicalDSProductName(file.Path, file.RelPath); productName != "" {
 		productID, err := idx.resolveDSProductID(ctx, productName)
 		if err != nil {
 			return 0, fmt.Errorf("failed to resolve ds product id for %q: %w", productName, err)
@@ -1763,12 +1773,13 @@ func (idx *Indexer) saveFileCtx(ctx context.Context, file fswalk.FileInfo, scanR
 
 	var id int64
 	err := idx.db.QueryRowContext(ctx, `
-		INSERT INTO files (scan_run_id, ds_product_id, path, rel_path, extension, size_bytes, hash_sha256, modified_at, encoding, language, is_generated)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		INSERT INTO files (scan_run_id, ds_product_id, ds_product_branch_id, path, rel_path, extension, size_bytes, hash_sha256, modified_at, encoding, language, is_generated)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id
 	`,
 		scanRunID,
 		dsProductID,
+		dsProductBranchID,
 		file.Path,
 		file.RelPath,
 		file.Extension,

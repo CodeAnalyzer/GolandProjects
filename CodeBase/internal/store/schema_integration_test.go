@@ -40,6 +40,7 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		"spec_code_mentions", "spec_vocab", "spec_embeddings",
 		"desc_vocab", "desc_embeddings",
 		"dsinfo", "dsinfo_products", "dsinfo_modules", "dsinfo_procedures", "dsinfo_state",
+		"ds_products_branch",
 	}
 	for _, table := range requiredTables {
 		var exists bool
@@ -58,6 +59,7 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		{"trc_sessions", "file_hash"},
 		{"trc_sessions", "parser_version"},
 		{"trc_sessions", "session_name"},
+		{"files", "ds_product_branch_id"},
 	}
 	for _, col := range requiredColumns {
 		var exists bool
@@ -111,6 +113,10 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		"idx_dsinfo_procedures_object",
 		"idx_dsinfo_procedures_packet",
 		"idx_dsinfo_procedures_module",
+		"uniq_ds_products_branch_product_key",
+		"uniq_ds_products_branch_path",
+		"idx_ds_products_branch_product",
+		"idx_files_ds_product_branch_id",
 	}
 	for _, idx := range requiredIndexes {
 		var exists bool
@@ -122,7 +128,7 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		}
 	}
 
-	for _, idx := range []string{"idx_spec_capabilities_config_name_unique", "idx_spec_changes_config_name_unique", "idx_rti_sessions_file_hash", "idx_trc_sessions_file_hash", "idx_dsinfo_file_hash"} {
+	for _, idx := range []string{"idx_spec_capabilities_config_name_unique", "idx_spec_changes_config_name_unique", "idx_rti_sessions_file_hash", "idx_trc_sessions_file_hash", "idx_dsinfo_file_hash", "uniq_ds_products_branch_product_key", "uniq_ds_products_branch_path"} {
 		var unique bool
 		if err := db.QueryRow(`
 			SELECT i.indisunique

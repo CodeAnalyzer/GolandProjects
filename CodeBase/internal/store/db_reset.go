@@ -15,7 +15,10 @@ import (
 // новой таблицы в схеме требует явного решения — в список усечения или в сохраняемые.
 var codebaseResetTables = []string{
 	// Файлы/символы/продукты/кэш статистики
-	"files", "symbols", "ds_products", "stats_snapshot",
+	// ds_products_branch — дочерняя к ds_products (FK CASCADE), усекается
+	// явно рядом с родителем; files.ds_product_branch_id сбрасывается в NULL
+	// правилом ON DELETE SET NULL при усечении files.
+	"files", "symbols", "ds_products", "ds_products_branch", "stats_snapshot",
 	// SQL
 	"sql_procedures", "sql_tables", "sql_columns", "sql_column_definitions",
 	"sql_index_definitions", "sql_index_definition_fields",

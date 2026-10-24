@@ -23,6 +23,7 @@ parallel = 12               # Количество параллельных work
 batch_size = 1000           # Размер батча для вставки в БД
 batch_insert_size = 50000   # Размер батча для TRC/RTI insert/delete (строк)
 progress_interval_ms = 250  # Интервал вывода прогресса (мс)
+default_branch = "develop"  # Ветка, помечаемая is_default при discovery git-источников (fallback для lookup'ов)
 
 # Включаемые файлы (glob-паттерны)
 include_patterns = [
@@ -74,7 +75,7 @@ parse_timeout_sec = 900  # Таймаут MCP codebase_trc_parse (секунды
 
 # Настройки полнотекстового слоя OpenSpec (LSA)
 [spec]
-lsa_enabled = true           # Включить LSA-постпроцессинг
+lsa_enabled = false           # Включить LSA-постпроцессинг
 lsa_k = 512                  # Размерность LSA (по данным k-тюнинга: 512 поднимает редкие термины в топ-5)
 lsa_min_df = 3               # Минимальная document frequency термина (термины в <3 документах отбрасываются)
 lsa_max_df = 0.3             # Максимальная доля документов (термины в >30% документов отбрасываются)
@@ -89,7 +90,7 @@ lsa_relative_cutoff = 0.5    # Относительный cutoff: отсекат
 # Настройки LSA-модели корпуса описаний (процедуры + API-контракты).
 # Корпус независим от спекового: собственная модель desc_lsa_model.bin.
 [desc_lsa]
-lsa_enabled = true           # Включить desc-LSA постпроцессинг (nil/отсутствие секции = включено)
+lsa_enabled = false           # Включить desc-LSA постпроцессинг (nil/отсутствие секции = включено)
 lsa_k = 512                  # Размерность LSA
 lsa_min_df = 10              # Минимальная document frequency (корпус 46k+ документов: термины <10 доков — шум идентификаторов)
 lsa_max_df = 0.3             # Максимальная доля документов

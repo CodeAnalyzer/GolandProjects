@@ -101,14 +101,9 @@ func validateArtifactRoot(path string) (bool, error) {
 // resolveSpecConfigID получает или создаёт spec_config для файла.
 func (idx *Indexer) resolveSpecConfigID(ctx context.Context, file fswalk.FileInfo, fileID int64) (int64, error) {
 	classified := openspecmd.ClassifyPath(file.RelPath)
-	productName := extractCanonicalDSProductName(file.Path, file.RelPath)
-	var dsProductID int64
-	if productName != "" {
-		pid, err := idx.resolveDSProductID(ctx, productName)
-		if err != nil {
-			return 0, err
-		}
-		dsProductID = pid
+	productName, dsProductID, err := idx.resolveFileProduct(ctx, file)
+	if err != nil {
+		return 0, err
 	}
 	return idx.db.GetOrCreateSpecConfig(ctx, fileID, dsProductID, productName, classified.RootDir)
 }
@@ -120,7 +115,10 @@ func (idx *Indexer) parseSpecConfigYAML(ctx context.Context, file fswalk.FileInf
 		return nil // не spec-driven — пропускаем
 	}
 
-	productName := extractCanonicalDSProductName(file.Path, file.RelPath)
+	productName, _, err := idx.resolveFileProduct(ctx, file)
+	if err != nil {
+		return err
+	}
 	configID, err := idx.resolveSpecConfigID(ctx, file, fileID)
 	if err != nil {
 		return err
@@ -142,10 +140,9 @@ func (idx *Indexer) parseSpecMD(ctx context.Context, file fswalk.FileInfo, fileI
 		return err
 	}
 
-	productName := extractCanonicalDSProductName(file.Path, file.RelPath)
-	var dsProductID int64
-	if productName != "" {
-		dsProductID, _ = idx.resolveDSProductID(ctx, productName)
+	_, dsProductID, err := idx.resolveFileProduct(ctx, file)
+	if err != nil {
+		return err
 	}
 
 	var parentID int64

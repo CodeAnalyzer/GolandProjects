@@ -149,16 +149,32 @@ func isMojibakeText(s string) bool {
 // корневой фикс кодировок: change fix-sql-encoding-detection) исключаются,
 // чтобы словарь LSA не учился на артефактах декодирования. Порядок
 // детерминирован — fingerprint корпуса стабилен между прогонами.
+// При мультиветочной индексации каждая сущность (тип, имя) даёт один
+// документ: копия из default-ветки, иначе самая свежая (требование «Корпус
+// описаний при мультиветочной индексации») — побайтовые дубли разных веток
+// не меняют состав корпуса и его fingerprint.
 func (db *DB) LoadDescriptionsForLSA(ctx context.Context) ([]DescLSADocRow, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, entity_type, name, description FROM (
-			SELECT id, 'procedure' AS entity_type, proc_name AS name, coalesce(description, '') AS description
-			FROM sql_procedures
-			UNION ALL
-			SELECT id, 'contract' AS entity_type, contract_name AS name,
-			       coalesce(short_description, '') || ' ' || coalesce(full_description, '') AS description
-			FROM api_contracts
-		) docs
+			SELECT DISTINCT ON (entity_type, name)
+				entity_type, id, name, description, priority
+			FROM (
+				SELECT 'procedure' AS entity_type, p.id, p.proc_name AS name,
+				       coalesce(p.description, '') AS description,
+				       `+docCopyPrioritySQL+` AS priority
+				FROM sql_procedures p
+				LEFT JOIN files f ON f.id = p.file_id
+				LEFT JOIN ds_products_branch b ON b.id = f.ds_product_branch_id
+				UNION ALL
+				SELECT 'contract', c.id, c.contract_name,
+				       coalesce(c.short_description, '') || ' ' || coalesce(c.full_description, ''),
+				       `+docCopyPrioritySQL+`
+				FROM api_contracts c
+				LEFT JOIN files f ON f.id = c.file_id
+				LEFT JOIN ds_products_branch b ON b.id = f.ds_product_branch_id
+			) docs
+			ORDER BY entity_type, name, priority DESC, id DESC
+		) picked
 		ORDER BY entity_type, id`)
 	if err != nil {
 		return nil, fmt.Errorf("load descriptions for LSA: %w", err)

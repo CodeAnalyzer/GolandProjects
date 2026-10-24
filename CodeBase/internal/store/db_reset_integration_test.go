@@ -12,10 +12,10 @@ import (
 	"github.com/codebase/internal/store/testutil"
 )
 
-// resetTables — эталонный список усекаемых таблиц (59), синхронизирован с
+// resetTables — эталонный список усекаемых таблиц (60), синхронизирован с
 // store-списком усечения; тест-сторож сверяет его с фактической схемой БД.
 var resetTables = []string{
-	"files", "symbols", "ds_products", "stats_snapshot",
+	"files", "symbols", "ds_products", "ds_products_branch", "stats_snapshot",
 	"sql_procedures", "sql_tables", "sql_columns", "sql_column_definitions",
 	"sql_index_definitions", "sql_index_definition_fields",
 	"pas_units", "pas_classes", "pas_methods", "pas_fields", "h_files_defines",
@@ -65,6 +65,10 @@ func seedResetFixture(t *testing.T, db *store.DB) {
 		t.Fatalf("seed file: %v", err)
 	}
 	insert(`INSERT INTO ds_products (product_name) VALUES ('prod')`)
+	// Релизная линия: ds_products_branch (уникальность product+key, path) —
+	// файлы ссылаются через files.ds_product_branch_id (SET NULL при усечении)
+	insert(`INSERT INTO ds_products_branch (ds_product_id, branch_name, branch_key, path, is_default)
+		SELECT id, 'develop', 'develop', 'repo/prod-develop', TRUE FROM ds_products WHERE product_name = 'prod'`)
 	insert(`INSERT INTO stats_snapshot (payload) VALUES ('{"files":1}'::jsonb)`)
 	insert(`INSERT INTO symbols (file_id, symbol_name, symbol_type, entity_type, entity_id)
 		VALUES ($1, 'CallerA', 'procedure', 'sql_procedure', 1)`, fileID)

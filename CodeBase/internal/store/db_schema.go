@@ -39,6 +39,30 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		// ==== Релизные линии продуктов (мультиветочная индексация) ====
+		// Один git-checkout (каталог-источник) = одна строка: продукт
+		// (ds_product_id) + нормализованный ключ линии (branch_key, единая
+		// нормализация internal/branchkey с манифестом dsinfo). branch_name —
+		// сырое имя git-ветки; is_default помечает default-ветку продукта
+		// (indexer.default_branch, обычно develop); commit_sha — HEAD скана.
+		`CREATE TABLE IF NOT EXISTS ds_products_branch (
+			id BIGSERIAL PRIMARY KEY,
+			ds_product_id BIGINT NOT NULL REFERENCES ds_products(id) ON DELETE CASCADE,
+			branch_name TEXT NOT NULL,
+			branch_key TEXT NOT NULL,
+			path TEXT NOT NULL,
+			commit_sha TEXT NOT NULL DEFAULT '',
+			is_default BOOLEAN NOT NULL DEFAULT FALSE,
+			indexed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_ds_products_branch_product_key
+			ON ds_products_branch(ds_product_id, branch_key)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_ds_products_branch_path
+			ON ds_products_branch(path)`,
+		`CREATE INDEX IF NOT EXISTS idx_ds_products_branch_product
+			ON ds_products_branch(ds_product_id)`,
 		`CREATE TABLE IF NOT EXISTS files (
 			id BIGSERIAL PRIMARY KEY,
 			scan_run_id BIGINT NOT NULL REFERENCES scan_runs(id) ON DELETE CASCADE,
@@ -54,6 +78,11 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		// Привязка файла к релизной линии источника (мультиветочная
+		// индексация): для файлов из git-источников — id строки
+		// ds_products_branch; вне источников — NULL. ALTER — для существующих
+		// БД (CREATE TABLE IF NOT EXISTS не расширяет существующую таблицу).
+		`ALTER TABLE files ADD COLUMN IF NOT EXISTS ds_product_branch_id BIGINT REFERENCES ds_products_branch(id) ON DELETE SET NULL`,
 		// Признак генерируемой копии (*/UPLOAD/*, *.t01): файлы индексируются
 		// как обычно, но депriorитизируются в name-based lookup'ах.
 		`ALTER TABLE files ADD COLUMN IF NOT EXISTS is_generated BOOLEAN NOT NULL DEFAULT FALSE`,
@@ -994,6 +1023,7 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ds_products_product_name ON ds_products(product_name)`,
 		`CREATE INDEX IF NOT EXISTS idx_files_scan_run_id ON files(scan_run_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_files_ds_product_id ON files(ds_product_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_files_ds_product_branch_id ON files(ds_product_branch_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_files_extension ON files(extension)`,
 		`CREATE INDEX IF NOT EXISTS idx_symbols_file_id ON symbols(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_symbols_symbol_name_type_lower ON symbols(LOWER(symbol_name), symbol_type)`,
