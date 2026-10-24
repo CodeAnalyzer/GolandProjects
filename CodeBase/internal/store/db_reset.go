@@ -40,6 +40,13 @@ var codebaseResetTables = []string{
 	"spec_code_mentions", "spec_vocab", "spec_embeddings",
 	// LSA корпуса описаний (процедуры + контракты)
 	"desc_vocab", "desc_embeddings",
+	// Профили DiasoftSystemInfo: снимок окружения — при полной переустановке
+	// индекса усекаются вместе с остальным (решение dsinfo-parser: reset =
+	// полная переустановка; точечное управление — dsinfo delete). Дочерние
+	// таблицы указаны явно (усекаются и через CASCADE от dsinfo), чтобы
+	// сторож-тест схемы не требовал отдельного решения по каждой.
+	"dsinfo", "dsinfo_products", "dsinfo_modules", "dsinfo_procedures",
+	"dsinfo_state",
 }
 
 // ResetCodebaseTables усекает все таблицы кодовой базы одним statement

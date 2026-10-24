@@ -712,6 +712,87 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 					ON DELETE SET NULL;
 			END IF;
 		END $$`,
+		// ==== Профили DiasoftSystemInfo (dsinfo) ====
+		// Профиль — полный снимок DiasoftSystemInfo.csv: манифест продуктов
+		// (dsinfo_products), клиентские модули (dsinfo_modules) и объекты БД
+		// (dsinfo_procedures, ~63k строк). Идемпотентность parse — по
+		// file_hash + parser_version (partial unique, как у RTI/TRC-сессий);
+		// use_count не заводится: удаление профиля всегда окончательное.
+		`CREATE TABLE IF NOT EXISTS dsinfo (
+			id               BIGSERIAL PRIMARY KEY,
+			file_path        TEXT NOT NULL,
+			session_name     TEXT NOT NULL DEFAULT '',
+			file_size        BIGINT NOT NULL DEFAULT 0,
+			file_hash        TEXT,
+			parser_version   INTEGER,
+			db_server        TEXT NOT NULL DEFAULT '',
+			db_name          TEXT NOT NULL DEFAULT '',
+			client_alias     TEXT NOT NULL DEFAULT '',
+			products_count   INTEGER NOT NULL DEFAULT 0,
+			modules_count    INTEGER NOT NULL DEFAULT 0,
+			procedures_count INTEGER NOT NULL DEFAULT 0,
+			parsed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_dsinfo_file_hash
+			ON dsinfo(file_hash, parser_version) WHERE file_hash IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_dsinfo_parsed_at ON dsinfo(parsed_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS dsinfo_products (
+			id           BIGSERIAL PRIMARY KEY,
+			dsinfo_id    BIGINT NOT NULL REFERENCES dsinfo(id) ON DELETE CASCADE,
+			line_no      INTEGER NOT NULL DEFAULT 0,
+			raw_name     TEXT NOT NULL,
+			packet_ref   TEXT NOT NULL DEFAULT '',
+			product_name TEXT NOT NULL,
+			branch_key   TEXT NOT NULL,
+			hotfix_name  TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_dsinfo_products_profile ON dsinfo_products(dsinfo_id)`,
+		// 18 колонок секции «Модули» → 12 колонок: Addition*/PacketVersion*
+		// во всех просмотренных файлах пусты; при обнаружении заполненных
+		// схема расширяется аддитивно + bump parser_version.
+		`CREATE TABLE IF NOT EXISTS dsinfo_modules (
+			id               BIGSERIAL PRIMARY KEY,
+			dsinfo_id        BIGINT NOT NULL REFERENCES dsinfo(id) ON DELETE CASCADE,
+			file_name        TEXT NOT NULL,
+			file_description TEXT NOT NULL DEFAULT '',
+			module_name      TEXT NOT NULL DEFAULT '',
+			product_version  INTEGER NOT NULL DEFAULT 0,
+			product_release  INTEGER NOT NULL DEFAULT 0,
+			product_issue    INTEGER NOT NULL DEFAULT 0,
+			product_build    INTEGER NOT NULL DEFAULT 0,
+			packet_name      TEXT NOT NULL DEFAULT '',
+			hotfix_name      TEXT NOT NULL DEFAULT '',
+			comments         TEXT NOT NULL DEFAULT '',
+			file_hash        TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_dsinfo_modules_profile ON dsinfo_modules(dsinfo_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_dsinfo_modules_module  ON dsinfo_modules(dsinfo_id, module_name)`,
+		// install_date хранится как TEXT: в файле встречаются dd/mm/yyyy hh:mm:ss,
+		// dd.mm.yyyy и нулевая 01/01/1900 — неоднозначность d/m/y опасна, снимок
+		// хранится «как есть».
+		`CREATE TABLE IF NOT EXISTS dsinfo_procedures (
+			id           BIGSERIAL PRIMARY KEY,
+			dsinfo_id    BIGINT NOT NULL REFERENCES dsinfo(id) ON DELETE CASCADE,
+			elem_schema  TEXT NOT NULL DEFAULT '',
+			object_name  TEXT NOT NULL,
+			install_date TEXT NOT NULL DEFAULT '',
+			module_name  TEXT NOT NULL DEFAULT '',
+			packet_name  TEXT NOT NULL DEFAULT '',
+			source_file  TEXT NOT NULL DEFAULT '',
+			state        INTEGER NOT NULL DEFAULT 0,
+			status       TEXT NOT NULL DEFAULT '',
+			comment      TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_dsinfo_procedures_profile ON dsinfo_procedures(dsinfo_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_dsinfo_procedures_object  ON dsinfo_procedures(dsinfo_id, object_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_dsinfo_procedures_packet  ON dsinfo_procedures(dsinfo_id, packet_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_dsinfo_procedures_module  ON dsinfo_procedures(dsinfo_id, module_name)`,
+		// Singleton активного профиля: CHECK(id=1) + ON DELETE SET NULL — БД сама
+		// держит инвариант «активный указывает на существующий профиль или NULL».
+		`CREATE TABLE IF NOT EXISTS dsinfo_state (
+			id               INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+			active_dsinfo_id BIGINT REFERENCES dsinfo(id) ON DELETE SET NULL
+		)`,
 		// ==== OpenSpec-артефакты финпродуктов ====
 		// Профиль продукта: один на openspec-корень (config.yaml)
 		`CREATE TABLE IF NOT EXISTS spec_configs (

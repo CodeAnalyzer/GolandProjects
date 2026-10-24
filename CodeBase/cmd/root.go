@@ -23,8 +23,8 @@ import (
 
 var (
 	appName        = "CodeBase"
-	version        = "0.9.3"
-	buildNumber    = "1624"
+	version        = "0.9.4"
+	buildNumber    = "1630"
 	copyright      = "Copyright (c) 2026"
 	cfgFile        string
 	commandLogger  *log.Logger
@@ -45,6 +45,7 @@ Supported modes:
   stats  - index summary
   rti    - RTI trace log analyzer (parse, summary, tree, errors, slow)
   trc    - SQL Server Profiler trace analyzer (parse, summary, events, procedures, tree, slow, errors)
+  dsinfo - DiasoftSystemInfo profile manager (parse, list, show, delete, use)
   mcp    - MCP JSON-RPC server over stdio`,
 		Version: version,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {

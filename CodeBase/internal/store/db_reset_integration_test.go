@@ -12,7 +12,7 @@ import (
 	"github.com/codebase/internal/store/testutil"
 )
 
-// resetTables — эталонный список усекаемых таблиц (54), синхронизирован с
+// resetTables — эталонный список усекаемых таблиц (59), синхронизирован с
 // store-списком усечения; тест-сторож сверяет его с фактической схемой БД.
 var resetTables = []string{
 	"files", "symbols", "ds_products", "stats_snapshot",
@@ -32,6 +32,8 @@ var resetTables = []string{
 	"spec_usecases", "spec_usecase_steps", "spec_changes", "spec_change_delta",
 	"spec_code_mentions", "spec_vocab", "spec_embeddings",
 	"desc_vocab", "desc_embeddings",
+	"dsinfo", "dsinfo_products", "dsinfo_modules", "dsinfo_procedures",
+	"dsinfo_state",
 }
 
 // keptTables — таблицы, сохраняемые при пересборке: анализаторы (RTI/TRC)
@@ -78,6 +80,17 @@ func seedResetFixture(t *testing.T, db *store.DB) {
 		VALUES ($1, $2, 'cap', 'Cap')`, fileID, configID)
 	insert(`INSERT INTO rti_sessions (file_path, file_size, total_calls) VALUES ('trace.rti', 10, 5)`)
 	insert(`INSERT INTO trc_sessions (file_path, file_size, total_events) VALUES ('trace.trc', 10, 7)`)
+	var dsinfoID int64
+	if err := db.QueryRow(`
+		INSERT INTO dsinfo (file_path, file_hash, parser_version, products_count)
+		VALUES ('sysinfo.csv', 'hash1', 1, 1) RETURNING id`).Scan(&dsinfoID); err != nil {
+		t.Fatalf("seed dsinfo profile: %v", err)
+	}
+	insert(`INSERT INTO dsinfo_products (dsinfo_id, raw_name, product_name, branch_key)
+		VALUES ($1, 'FA-Core', 'fa-core', 'fa-core')`, dsinfoID)
+	insert(`INSERT INTO dsinfo_modules (dsinfo_id, file_name, module_name) VALUES ($1, 'D5NTCORE.BPL', 'Core')`, dsinfoID)
+	insert(`INSERT INTO dsinfo_procedures (dsinfo_id, object_name, packet_name) VALUES ($1, 'FA_P_GET', 'FA-Core-9-01')`, dsinfoID)
+	insert(`INSERT INTO dsinfo_state (id, active_dsinfo_id) VALUES (1, $1)`, dsinfoID)
 	insert(`INSERT INTO schema_migrations (version) VALUES ('reset-test-marker')`)
 }
 
@@ -140,9 +153,9 @@ func TestResetCodebaseTables_ClearsCodebaseKeepsAnalyzers(t *testing.T) {
 	}
 }
 
-// TestResetCodebaseTables_GuardSchemaCoverage — сторож: список усечения
-// (52 таблицы) плюс сохраняемые (11) покрывают все таблицы схемы без пропусков
-// и лишних; у сохраняемых таблиц нет FK на усекаемые (CASCADE зацепил бы сессии).
+// TestResetCodebaseTables_GuardSchemaCoverage — сторож: список усечения плюс
+// сохраняемые покрывают все таблицы схемы без пропусков и лишних; у сохраняемых
+// таблиц нет FK на усекаемые (CASCADE зацепил бы сессии).
 func TestResetCodebaseTables_GuardSchemaCoverage(t *testing.T) {
 	db := testutil.Open(t)
 

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/codebase/internal/dsinfosvc"
 	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/querysvc"
 	"github.com/codebase/internal/review"
@@ -169,6 +170,11 @@ var baseTools = map[string]bool{
 	"codebase_health":    true,
 	"codebase_stats":     true,
 	"codebase_read_more": true,
+	"dsinfo_parse":       true,
+	"dsinfo_list":        true,
+	"dsinfo_show":        true,
+	"dsinfo_delete":      true,
+	"dsinfo_use":         true,
 }
 
 // queryTools — codebase_query_* инструменты.
@@ -1494,6 +1500,94 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				return specsvc.ExecuteSpecHistory(ctx, db, name, change, product)
+			},
+		},
+		"dsinfo_parse": {
+			Definition: toolDefinition{Name: "dsinfo_parse", Description: "Parse a DiasoftSystemInfo CSV export (Diasoft 5NT system info) into a stored dsinfo profile. The file is detected by content (Windows-1251 CSV containing the «Продукты Digital Q» manifest and a «Модули» section with a FileName header), not by file name. Stores the product manifest (raw name, packet ref, normalized product_name/branch_key/hotfix_name), the module list (BPL/EXE with packet and hotfix names) and the full procedure table (object → module/packet/state, tens of thousands of rows). Idempotent: re-parsing identical file content returns the existing profile with reused=true. Returns profile metadata (db_server/db_name/client_alias) and row counts.", InputSchema: func() map[string]interface{} {
+				s := objectSchema(map[string]interface{}{"file_path": stringProp("Absolute path to the DiasoftSystemInfo CSV file (any name; content is sniffed)"), "name": stringProp("Optional profile name (default: file base name)")})
+				s["required"] = []string{"file_path"}
+				return s
+			}()},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				filePath, err := requiredString(args, "file_path")
+				if err != nil {
+					return nil, err
+				}
+				name, err := optionalString(args, "name")
+				if err != nil {
+					return nil, err
+				}
+				return dsinfosvc.ExecuteParse(ctx, db, dsinfosvc.ParseParams{FilePath: filePath, Name: name})
+			},
+		},
+		"dsinfo_list": {
+			Definition: toolDefinition{Name: "dsinfo_list", Description: "List stored dsinfo profiles, ordered by parsed_at descending. Each entry shows id, profile name, file path, metadata (db_server/db_name/client_alias), products/modules/procedures row counts and the active flag. Use it to pick a profile id for dsinfo_show/dsinfo_use/dsinfo_delete.", InputSchema: objectSchema(map[string]interface{}{"limit": intProp("Max profiles to return (default 100, max 1000)")})},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				limit := optionalLimit(args)
+				return dsinfosvc.ExecuteList(ctx, db, limit)
+			},
+		},
+		"dsinfo_show": {
+			Definition: toolDefinition{Name: "dsinfo_show", Description: "Show a stored dsinfo profile by id: profile metadata, product manifest and module list (each capped by limit, with truncated flags). The full procedure table is NOT dumped by default — only procedures_count is returned; pass at least one filter (module, packet or search) to get matching procedure rows (capped by limit). Filters: module — exact module name; packet — case-insensitive partial packet name; search — case-insensitive partial object_name. Unknown profile id returns an error.", InputSchema: func() map[string]interface{} {
+				s := objectSchema(map[string]interface{}{
+					"profile_id": intProp("Profile id (from dsinfo_list)"),
+					"module":     stringProp("Optional filter: exact module name of procedures"),
+					"packet":     stringProp("Optional filter: case-insensitive partial packet name"),
+					"search":     stringProp("Optional filter: case-insensitive partial procedure object name"),
+					"limit":      intProp("Max rows per section (default 100, max 1000)"),
+				})
+				s["required"] = []string{"profile_id"}
+				return s
+			}()},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				profileID, err := requiredInt(args, "profile_id")
+				if err != nil {
+					return nil, err
+				}
+				module, err := optionalString(args, "module")
+				if err != nil {
+					return nil, err
+				}
+				packet, err := optionalString(args, "packet")
+				if err != nil {
+					return nil, err
+				}
+				search, err := optionalString(args, "search")
+				if err != nil {
+					return nil, err
+				}
+				limit := optionalLimit(args)
+				return dsinfosvc.ExecuteShow(ctx, db, dsinfosvc.ShowParams{
+					ProfileID: int64(profileID),
+					Module:    module,
+					Packet:    packet,
+					Search:    search,
+					Limit:     limit,
+				})
+			},
+		},
+		"dsinfo_delete": {
+			Definition: toolDefinition{Name: "dsinfo_delete", Description: "Permanently delete a stored dsinfo profile by id (no use counter — deletion is final). Cascades to the profile's products, modules and procedures. If the deleted profile was the active one, the active reference is reset (response reports was_active/active_reset). Deleting a non-existent id returns deleted=false.", InputSchema: func() map[string]interface{} {
+				s := objectSchema(map[string]interface{}{"profile_id": intProp("Profile id to delete")})
+				s["required"] = []string{"profile_id"}
+				return s
+			}()},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				profileID, err := requiredInt(args, "profile_id")
+				if err != nil {
+					return nil, err
+				}
+				return dsinfosvc.ExecuteDelete(ctx, db, dsinfosvc.DeleteParams{ProfileID: int64(profileID)})
+			},
+		},
+		"dsinfo_use": {
+			Definition: toolDefinition{Name: "dsinfo_use", Description: "Get or set the active dsinfo profile (a singleton pointer stored in the database, visible to both CLI and MCP). With profile_id > 0, sets that profile as active; an unknown id is an error and changes nothing. Without profile_id, returns the currently active profile (active=null when none is set).", InputSchema: objectSchema(map[string]interface{}{"profile_id": intProp("Profile id to set as active (omit to show the current active profile)")})},
+			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+				profileID, err := optionalInt64(args, "profile_id")
+				if err != nil {
+					return nil, err
+				}
+				return dsinfosvc.ExecuteUse(ctx, db, dsinfosvc.UseParams{ProfileID: profileID})
 			},
 		},
 	}

@@ -59,6 +59,7 @@
 - **Review (проверка SQL перед деплоем)**: статический анализ SQL-файлов с детекцией deploy stoppers (использование внешних таблиц/процедур, небезопасные конструкции IF/EXISTS, отсутствие required hints, и т.д.)
 - **RTI-анализатор** (`codebase rti`): парсинг и анализ RTI-трейс логов Diasoft 5NT; извлечение вызовов процедур, параметров, контрольных точек, кодов ошибок, бизнес-лог блоков (`M_BUSINESSLOG_BLOCK_BEGIN/END`), checkpoint-временных меток, дампов таблиц (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`), клиентских событий (thick client d5nt: SQL blocks, recordset open, connection, BPL load, errors, memory); enrichment из индекса (PAS-файлы, DFM-формы, SQL-фрагменты); сохранение в БД для повторного анализа
 - **TRC-анализатор** (`codebase trc`): парсинг и анализ файлов SQL Server Profiler — бинарных `.trc`, XML-экспортов `.xml` и Extended Events `.xel`; декодирование событий (RPC:Completed, SQL:BatchCompleted, SP:StmtCompleted и др.), извлечение вызовов процедур и параметров из TextData, агрегация только завершённых вызовов `SP:Completed` (count/min/max/avg/total duration), список событий с раздельными matched/returned counts и limit, дерево вызовов по SPID с восстановлением вложенности через Starting/Completed пары, enrichment из индекса (путь к файлу и строки); сохранение в БД для повторного анализа
+- **DiasoftSystemInfo** (`codebase dsinfo`): парсер CSV-выгрузок DiasoftSystemInfo (детект по содержимому, WIN-1251, имя файла не канонично) — манифест продуктов Digital Q с нормализацией (`product_name`/`branch_key`/`hotfix_name`), клиентские модули (BPL/EXE → пакеты/хотфиксы) и полная таблица объектов БД (объект → модуль/пакет/state, ~62k строк) — основа точного резолва «процедура → пакет»; профили идемпотентны по SHA-256, активный профиль — singleton в БД; команды parse/list/show/delete/use (CLI и MCP)
 - **Кодировки**: детекция по содержимому для single-byte legacy-форматов (SQL, H, TPR, PAS, INC, JS, SMF, DFM, RPT) — CP866/WIN1251/UTF8: валидный/«почти валидный» UTF-8 определяется первым, иначе счёт маркерных диапазонов (включая артефакт-набор mojibake CP1251-кириллицы); карта расширений служит prior (ASCII-файлы и ничья счёта → prior). Детектированная кодировка сохраняется в `files.encoding`, число перекодировок печатается в сводке прогона (`Encoding refined: N`). `.t01` читается в CP866 по карте (генерируемые копии); MD — авто-детекция (UTF-8 приоритет, CP1251 fallback); XML — по declaration/валидности UTF-8; YAML — UTF-8
 
 ## Требования
@@ -840,6 +841,48 @@ codebase trc prune --keep-hours 24
 - `--keep-last N` — сколько последних сессий оставить (для `prune`; взаимоисключающе с `--keep-hours`)
 - `--keep-hours N` — оставить нетронутыми сессии за последние N часов (для `prune`, N > 0; удаляются сессии с `parsed_at` старше cutoff)
 
+### DiasoftSystemInfo (dsinfo)
+
+Парсер CSV-выгрузок DiasoftSystemInfo (снимок окружения Diasoft 5NT) и хранилище профилей. Имя файла не канонично — файл определяется по содержимому (WIN-1251 CSV с секциями «Продукты Digital Q» и «Модули» с заголовком `FileName;`). Профиль содержит манифест продуктов (`raw_name`, `packet_ref`, нормализованные `product_name`/`branch_key`/`hotfix_name`), список модулей (BPL/EXE с пакетами и хотфиксами) и полную таблицу объектов БД — основу для точного резолва «процедура → пакет».
+
+```bash
+# Парсинг файла и сохранение профиля (идемпотентно по SHA-256 + parser_version)
+codebase dsinfo parse path/to/DiasoftSystemInfo.csv
+codebase dsinfo parse path/to/file.csv --name "testdb2-октябрь"
+
+# Список профилей (по убыванию parsed_at, активный помечен *)
+codebase dsinfo list
+codebase dsinfo list --limit 10
+
+# Просмотр профиля: метаданные + манифест + модули
+codebase dsinfo show 1
+# Процедуры — только с фильтром (без фильтра возвращается только счётчик):
+codebase dsinfo show 1 --module MoneyMarket
+codebase dsinfo show 1 --packet FA-MoneyMarket --limit 20
+codebase dsinfo show 1 --search AdditionalDeal --limit 20
+
+# Активный профиль (singleton в БД, виден CLI и MCP)
+codebase dsinfo use 1     # назначить
+codebase dsinfo use       # показать текущий
+
+# Удаление (окончательное; активного — со сбросом активного на NULL)
+codebase dsinfo delete 1
+```
+
+Подкоманды и семантика:
+
+- **`parse`** — разобрать CSV и сохранить профиль. Идемпотентность: тот же SHA-256 содержимого + `parser_version` → тот же `profile_id` с `reused: true` (счётчик использования НЕ ведётся — в отличие от RTI/TRC сессий; удаление всегда окончательное). Секции «Установленные пакеты» и вторая «Модули» (формат параметров модулей) не разбираются; метаданные `db_server`/`db_name` (секция «Конфигурация») и `client_alias` (секция «Информация») сохраняются, их отсутствие — не ошибка
+- **`list`** — профили по убыванию `parsed_at` с метаданными окружения, счётчиками строк и пометкой активного (`*`)
+- **`show`** — метаданные + продукты и модули (обе секции ограничены `--limit`, def 100 / max 1000, ответ содержит флаги `truncated`); процедуры НЕ выгружаются без фильтра — только `procedures_count`. Фильтры: `--module` (точное имя модуля), `--packet` (частичное совпадение по пакету, case-insensitive), `--search` (частичное совпадение по имени объекта); комбинируются, строки ограничены `--limit`
+- **`use`** — назначить активный профиль (singleton-таблица `dsinfo_state`, id=1) или показать текущий; неизвестный id — ошибка без изменения состояния
+- **`delete`** — окончательное удаление с CASCADE дочерних строк; удаление активного профиля сбрасывает ссылку на NULL (FK `ON DELETE SET NULL`), ответ содержит `was_active`/`active_reset`
+
+`--json` — machine-readable envelope (`success`, `format_version`, `command`, `count`, `items`, `meta`); флаг ставится после группы: `codebase dsinfo parse f.csv --json`.
+
+> **Терминология**: «профиль dsinfo» — сохранённый снимок DiasoftSystemInfo (`dsinfo use/show/...`), а `--profile` MCP-сервера — подмножество регистрируемых инструментов (`codebase mcp --profile=query`). Это независимые понятия; dsinfo-инструменты MCP доступны во всех MCP-профилях.
+
+Ограничение текущей версии: dsinfo-профили пока **не потребляются** анализаторами (`query`/`rti`/`trc`/`review` не принимают профиль и не используют его данные) — парсер и хранилище подготовлены как основа для будущего резолва «процедура → пакет → продукт» (сопоставление с ветками продуктов).
+
 ### Review (проверка SQL перед деплоем)
 
 Статический анализ SQL-файлов для выявления проблем перед деплоем:
@@ -953,7 +996,7 @@ codebase mcp
 
 #### Профили инструментов (--profile)
 
-Флаг `--profile` позволяет зарегистрировать только подмножество инструментов, релевантное профилю. Без флага регистрируются все 64 инструмента (текущее поведение). Это решает проблему обрезки `tools/list` response некоторыми IDE MCP-клиентами при превышении лимита размера JSON-RPC сообщения.
+Флаг `--profile` позволяет зарегистрировать только подмножество инструментов, релевантное профилю. Без флага регистрируются все 70 инструментов (текущее поведение). Это решает проблему обрезки `tools/list` response некоторыми IDE MCP-клиентами при превышении лимита размера JSON-RPC сообщения.
 
 ```bash
 codebase mcp --profile=query
@@ -966,13 +1009,13 @@ codebase mcp --profile=review
 
 | Профиль | Инструментов | Размер `tools/list` | Описание |
 |---------|-------------|---------------------|----------|
-| (без флага) | 64 | ~42 KB | Все инструменты |
-| `query` | 39 | ~22 KB | Базовые + query инструменты (включая spec) |
-| `rti` | 16 | ~9 KB | Базовые + RTI инструменты |
-| `trc` | 16 | ~12 KB | Базовые + TRC инструменты |
-| `review` | 5 | ~3 KB | Базовые + review инструмент |
+| (без флага) | 70 | ~50 KB | Все инструменты |
+| `query` | 45 | ~26 KB | Базовые + query инструменты (включая spec) |
+| `rti` | 21 | ~13 KB | Базовые + RTI инструменты |
+| `trc` | 21 | ~16 KB | Базовые + TRC инструменты |
+| `review` | 10 | ~7 KB | Базовые + review инструмент |
 
-Базовые инструменты (`codebase_ping`, `codebase_health`, `codebase_stats`, `codebase_read_more`) доступны во всех профилях.
+Базовые инструменты (`codebase_ping`, `codebase_health`, `codebase_stats`, `codebase_read_more` и пять `dsinfo_*`) доступны во всех профилях.
 
 IDE может подключить несколько MCP-серверов на один бинарник с разными профилями:
 
@@ -1009,6 +1052,7 @@ profile=<name> tool=<name> args=<аргументы> duration=<d> duration_ms=<m
 - `codebase.query.*` для всех query-подкоманд CLI (включая spec-запросы)
 - `codebase_review_sql` — статический анализ SQL-файла (review rules)
 - `codebase_read_more` — пагинация MCP-ответов
+- `dsinfo_*` — управление профилями DiasoftSystemInfo (см. таблицу ниже)
 
 **Spec tools:**
 
@@ -1076,6 +1120,16 @@ profile=<name> tool=<name> args=<аргументы> duration=<d> duration_ms=<m
 | `codebase_trc_slow` | Медленные события (порог DurationMs) | `session_id` или `file_path`, опц. `threshold_ms` |
 | `codebase_trc_delete` | Удалить сессию: при `use_count > 1` декремент (`deleted=false`, `decremented=true`), окончательно при `use_count <= 1` или `hard=true` | `session_id` |
 | `codebase_trc_prune` | Удалить старые сессии, оставить N | `keep_last` |
+
+**DiasoftSystemInfo tools** (без префикса `codebase_`; входят в base-набор — доступны во всех профилях):
+
+| Tool | Описание | Обязательные параметры |
+|------|----------|------------------------|
+| `dsinfo_parse` | Парсинг CSV DiasoftSystemInfo (детект по содержимому, WIN-1251) и сохранение профиля; идемпотентно по SHA-256 — повторный parse того же содержимого возвращает `reused: true` и тот же `profile_id` | `file_path`, опц. `name` |
+| `dsinfo_list` | Список профилей по убыванию parsed_at: метаданные окружения (db_server/db_name/client_alias), счётчики строк, пометка активного | опц. `limit` |
+| `dsinfo_show` | Профиль: метаданные + манифест продуктов + модули (обе секции с `limit` и флагами truncated); процедуры только при наличии фильтра `module` (точное имя) / `packet` (ILIKE) / `search` (ILIKE по object_name) — иначе только `procedures_count` | `profile_id`, опц. `module`/`packet`/`search`/`limit` |
+| `dsinfo_delete` | Окончательное удаление профиля (CASCADE продуктов/модулей/процедур); активного — со сбросом (`was_active`/`active_reset`) | `profile_id` |
+| `dsinfo_use` | Назначить активный профиль (`profile_id`) или показать текущий (`active: null`, если не назначен) | опц. `profile_id` |
 
 Контракт формата:
 
@@ -1162,6 +1216,7 @@ CodeBase/
 │   ├── review.go                  # Review команда (проверка SQL перед деплоем)
 │   ├── rti.go                     # RTI-анализатор: parse/summary/tree/errors/slow/details/blog/client-tree/timeline/list/delete/prune
 │   ├── trc.go                     # TRC-анализатор: parse/summary/events/procedures/compare-procedures/spids/tree/errors/slow/list/delete/prune
+│   ├── dsinfo.go                  # DiasoftSystemInfo: parse/list/show/delete/use
 │   ├── stats.go                   # Команда stats
 │   ├── health.go                  # Команда health
 │   └── mcp.go                     # Команда запуска MCP сервера (с флагом --profile)
@@ -1241,6 +1296,11 @@ CodeBase/
 │   │   ├── utf16.go               # UTF-16LE декодирование для .xel
 │   │   ├── parse_to_db.go         # ParseToDB — связка парсинг + сохранение в БД
 │   │   └── store.go               # SaveSession, LoadEvents, ListSessions, DeleteSession, PruneSessions
+│   ├── dsinfo/                    # Парсер DiasoftSystemInfo CSV (WIN-1251, сниффинг по содержимому)
+│   │   ├── dsinfo.go              # Profile/Product/Module/Procedure, ParserVersion
+│   │   ├── parser.go              # ParseFile — state machine по секциям, метаданные окружения
+│   │   └── normalize.go           # NormalizeProduct — product_name/branch_key/hotfix_name
+│   ├── dsinfosvc/                 # Сервис dsinfo (CLI + MCP): ExecuteParse/List/Show/Delete/Use
 │   ├── mcp/                       # MCP stdio JSON-RPC transport, tools registry, handlers, пагинация
 │   │   ├── server.go              # MCP SDK server, stdio transport, tool dispatch
 │   │   ├── registry.go            # Registry всех MCP tools (query, RTI, TRC, review, health, stats), profile filtering
@@ -1282,6 +1342,7 @@ CodeBase/
 │       ├── db_products.go         # Продукты Diasoft (product catalog)
 │       ├── db_upsert_spec.go      # Upsert spec capabilities/changes, контейнеры capability (advisory lock)
 │       ├── api_store.go           # Persistence для API/DSArchitect сущностей
+│       ├── ds_info_store.go       # Профили DiasoftSystemInfo: CRUD, фильтры процедур, активный профиль
 │       └── testutil/              # Test utilities (Open, DSN для integration-тестов)
 ├── main.go                        # Точка входа приложения
 └── codebase.toml                  # Конфигурация
@@ -1337,6 +1398,11 @@ CodeBase/
 - `rti_client_events` — клиентские события (thick client d5nt): SQL blocks, recordset open, connection, BPL load, errors, memory; с enrichment-ссылкой на серверный вызов (`server_call_id`)
 - `trc_sessions` — сессии парсинга `.trc`/`.xml` файлов (file_path, file_size, total_events, provider/server/version metadata, `file_hash`/`parser_version` для reuse, счётчик использования `use_count`)
 - `trc_events` — декодированные события из `.trc`/`.xml` (event_class, event_name, text_data, procedure, spid, duration_ms, cpu, reads, writes, error, params JSONB, columns JSONB)
+- `dsinfo` — профили DiasoftSystemInfo: метаданные окружения (`db_server`/`db_name`/`client_alias`), `file_hash`+`parser_version` (partial unique — идемпотентность parse, без счётчика использования), счётчики продуктов/модулей/процедур
+- `dsinfo_products` — манифест «Продукты Digital Q»: raw_name, packet_ref, нормализованные product_name/branch_key/hotfix_name
+- `dsinfo_modules` — клиентские модули (BPL/EXE): версии продукта, packet_name, hotfix_name
+- `dsinfo_procedures` — объекты БД из секции «Процедуры»: объект → модуль/пакет/state/status (~62k строк на профиль; install_date хранится как текст)
+- `dsinfo_state` — singleton (id=1) со ссылкой на активный dsinfo-профиль (`active_dsinfo_id`, FK `ON DELETE SET NULL`)
 - `ds_return_codes` — справочник кодов возврата процедур
 - `ds_products` — каталог продуктов Diasoft (product catalog)
 - `relations` - Связи между сущностями
@@ -1510,6 +1576,7 @@ $env:CODEBASE_TEST_DSN = "postgres://postgres:123456@localhost:5435/postgres?ssl
 - [x] Алиасы kind-типов API-контрактов в `query relations`: `service`/`event`/`callback_event`/`used_service` нормализуются в `api_contract` (валидация + name-резолв + type-only SQL, `NormalizeRelationEntityType` в `internal/model`); name-фильтр покрывает все 17 entity-типов словаря (добавлены `dfm_form`, `spec_capability`, `spec_change`, `spec_requirement`, `spec_scenario`, `spec_usecase`); обновлено описание MCP-инструмента и справка флагов
 - [x] Fallback `query symbol --type report_form` по `form_name`/`form_class` (LEFT JOIN `report_forms`, активен только при явном типе, точный поиск регистронезависим) и расширение `query report-form` полем `form_class` — устранена асимметрия unified-индекса (TC-142)
 - [x] Счётчик использования RTI/TRC-сессий `use_count` (refcount): каждый успешный parse — +1 (fresh — вместе с хешем, reuse — атомарный acquire, победитель конфликта — +1), `delete` без `--hard` при `use_count > 1` декрементирует (сессия остаётся переиспользуемой), при `<= 1` удаляет окончательно; `delete --hard`/`hard=true` — всегда окончательно; `prune` игнорирует счётчик; `use_count` в ответах parse/list/delete
+- [x] Профили DiasoftSystemInfo (`dsinfo`): парсер по содержимому (WIN-1251, секции «Продукты Digital Q»/«Модули»/«Процедуры»), хранение в 5 таблицах с идемпотентным parse по SHA-256 (удаление окончательное, без use_count), CLI `dsinfo parse/list/show/delete/use` + MCP-инструменты `dsinfo_*`, активный профиль-указатель; анализаторами пока не потребляется (заготовка под резолв процедура→пакет→продукт)
 
 ## Лицензия
 

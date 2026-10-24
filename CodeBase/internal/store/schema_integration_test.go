@@ -39,6 +39,7 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		"spec_usecases", "spec_usecase_steps", "spec_changes", "spec_change_delta",
 		"spec_code_mentions", "spec_vocab", "spec_embeddings",
 		"desc_vocab", "desc_embeddings",
+		"dsinfo", "dsinfo_products", "dsinfo_modules", "dsinfo_procedures", "dsinfo_state",
 	}
 	for _, table := range requiredTables {
 		var exists bool
@@ -101,6 +102,15 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		"idx_relations_source_type_relation_id",
 		"idx_rti_sessions_file_hash",
 		"idx_trc_sessions_file_hash",
+		"idx_dsinfo_file_hash",
+		"idx_dsinfo_parsed_at",
+		"idx_dsinfo_products_profile",
+		"idx_dsinfo_modules_profile",
+		"idx_dsinfo_modules_module",
+		"idx_dsinfo_procedures_profile",
+		"idx_dsinfo_procedures_object",
+		"idx_dsinfo_procedures_packet",
+		"idx_dsinfo_procedures_module",
 	}
 	for _, idx := range requiredIndexes {
 		var exists bool
@@ -112,7 +122,7 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		}
 	}
 
-	for _, idx := range []string{"idx_spec_capabilities_config_name_unique", "idx_spec_changes_config_name_unique", "idx_rti_sessions_file_hash", "idx_trc_sessions_file_hash"} {
+	for _, idx := range []string{"idx_spec_capabilities_config_name_unique", "idx_spec_changes_config_name_unique", "idx_rti_sessions_file_hash", "idx_trc_sessions_file_hash", "idx_dsinfo_file_hash"} {
 		var unique bool
 		if err := db.QueryRow(`
 			SELECT i.indisunique
