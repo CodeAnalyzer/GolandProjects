@@ -8,6 +8,7 @@ import (
 
 	"github.com/codebase/internal/errs"
 	"github.com/codebase/internal/query"
+	"github.com/codebase/internal/store"
 )
 
 func TestResultCountAndNormalizeNilResults(t *testing.T) {
@@ -126,7 +127,8 @@ func TestClassifyQueryError(t *testing.T) {
 		{err: errs.ErrConfigNotLoaded, want: "config_error"},
 		{err: errors.New("required flag(s) name not set"), want: "invalid_arguments"},
 		{err: fmt.Errorf("%w: %w", errs.ErrDBConnect, errors.New("connection refused")), want: "database_unavailable"},
-		{err: fmt.Errorf("%w: %w", errs.ErrSchemaInit, errors.New("boom")), want: "schema_init_failed"},
+		{err: fmt.Errorf("%w: %w", store.ErrSchemaNotInitialized, errors.New("boom")), want: "schema_not_initialized"},
+		{err: fmt.Errorf("%w: %w", store.ErrSchemaUpdateRequired, errors.New("boom")), want: "schema_update_required"},
 		{err: fmt.Errorf("%w: %w", errs.ErrQueryFailed, errors.New("bad sql")), want: "query_failed"},
 		{err: errs.ErrNoRelationFilters, want: "invalid_arguments"},
 		{err: fmt.Errorf("%w 'js', valid types: procedure", errs.ErrUnknownSymbolType), want: "invalid_arguments"},

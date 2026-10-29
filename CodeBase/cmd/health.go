@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -40,9 +41,9 @@ var healthCmd = &cobra.Command{
 	Short: "Check CLI and index readiness",
 	Long:  `Runs basic health checks for configuration, database connectivity, schema availability and index readiness.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		response, err := executeHealth()
+		response, err := executeHealth(cmd.Context())
 		if err != nil {
-			return handleHealthError(err)
+			return err
 		}
 		if healthOutputJSON {
 			return writeJSON(os.Stdout, response)
@@ -59,7 +60,7 @@ var healthCmd = &cobra.Command{
 	},
 }
 
-func executeHealth() (healthResponse, error) {
+func executeHealth(ctx context.Context) (healthResponse, error) {
 	cfg := config.Get()
 	if cfg == nil {
 		return healthResponse{}, errs.ErrConfigNotLoaded
@@ -69,8 +70,10 @@ func executeHealth() (healthResponse, error) {
 		return healthResponse{}, fmt.Errorf("%w: %w", errs.ErrDBConnect, err)
 	}
 	defer db.Close()
-	if err := db.InitSchema(); err != nil {
-		return healthResponse{}, fmt.Errorf("%w: %w", errs.ErrSchemaInit, err)
+	// Read-only политика: схема не создаётся, только проверяется готовность
+	// (readonly-schema-policy). Ошибка версии пробрасывается как есть.
+	if err := db.CheckSchemaVersion(ctx); err != nil {
+		return healthResponse{}, err
 	}
 	result, err := systemsvc.ExecuteHealth(db)
 	if err != nil {
@@ -94,13 +97,6 @@ func executeHealth() (healthResponse, error) {
 	return response, nil
 }
 
-func handleHealthError(err error) error {
-	if !healthOutputJSON {
-		return err
-	}
-	return writeHealthErrorResponse(err)
-}
-
 func writeHealthErrorResponse(err error) error {
 	response := healthErrorResponse{
 		Success:       false,
@@ -120,8 +116,10 @@ func classifyHealthError(err error) string {
 		return "config_error"
 	case errors.Is(err, errs.ErrDBConnect):
 		return "database_unavailable"
-	case errors.Is(err, errs.ErrSchemaInit):
-		return "schema_init_failed"
+	case errors.Is(err, store.ErrSchemaNotInitialized):
+		return "schema_not_initialized"
+	case errors.Is(err, store.ErrSchemaUpdateRequired):
+		return "schema_update_required"
 	case errors.Is(err, errs.ErrHealthCheckFailed):
 		return "health_check_failed"
 	case containsAny(err.Error(), "failed to ping default database", "failed to ping database", "connection refused", "dial tcp"):

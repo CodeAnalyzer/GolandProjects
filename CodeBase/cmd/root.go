@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/codebase/internal/config"
+	"github.com/codebase/internal/errs"
 	"github.com/codebase/internal/indexer"
 	"github.com/codebase/internal/mcp"
 	"github.com/codebase/internal/rti"
@@ -24,7 +26,7 @@ import (
 var (
 	appName        = "CodeBase"
 	version        = "0.9.4"
-	buildNumber    = "1646"
+	buildNumber    = "1650"
 	copyright      = "Copyright (c) 2026"
 	cfgFile        string
 	commandLogger  *log.Logger
@@ -78,30 +80,43 @@ func Execute() (err error) {
 	// Cobra сам разбирает args/flags и вызывает подходящую подкоманду.
 	err = rootCmd.ExecuteContext(ctx)
 	if err != nil {
+		// Machine-readable режимы: ошибка уходит в структурированный envelope,
+		// но возвращается как есть — deferred-логгер фиксирует status=error,
+		// main.go завершает процесс с кодом 1 (readonly-schema-policy). Дубля
+		// текста в stderr нет: SilenceErrors включён для machine-readable режимов.
 		if isQueryJSONMode(args) {
 			commandName := detectQueryCommandName(args)
 			if writeErr := writeQueryErrorResponse(commandName, err); writeErr != nil {
 				return writeErr
 			}
-			return nil
+			return err
 		}
 		if isStatsJSONMode(args) {
 			if writeErr := writeStatsErrorResponse(err); writeErr != nil {
 				return writeErr
 			}
-			return nil
+			return err
 		}
 		if isHealthJSONMode(args) {
 			if writeErr := writeHealthErrorResponse(err); writeErr != nil {
 				return writeErr
 			}
-			return nil
+			return err
 		}
 		if isReviewJSONMode(args) {
 			if writeErr := writeReviewErrorResponse(err); writeErr != nil {
 				return writeErr
 			}
-			return nil
+			return err
+		}
+		if isDsinfoJSONMode(args) {
+			// Ошибки уровня Cobra (неизвестный флаг/команда, неверные аргументы)
+			// не доходят до RunE — конверт пишется здесь, чтобы dsinfo --json
+			// не завершался молча (SilenceErrors включён machine-readable режимом).
+			if writeErr := writeDsinfoErrorResponse(detectDsinfoCommandName(args), err); writeErr != nil {
+				return writeErr
+			}
+			return err
 		}
 	}
 	return err
@@ -225,7 +240,41 @@ func isHealthJSONMode(args []string) bool {
 }
 
 func isMachineReadableMode(args []string) bool {
-	return isQueryJSONMode(args) || isStatsJSONMode(args) || isHealthJSONMode(args) || isReviewJSONMode(args) || isMCPMode(args)
+	return isQueryJSONMode(args) || isStatsJSONMode(args) || isHealthJSONMode(args) || isReviewJSONMode(args) || isMCPMode(args) || isDsinfoJSONMode(args)
+}
+
+func isDsinfoJSONMode(args []string) bool {
+	if len(args) == 0 || args[0] != "dsinfo" {
+		return false
+	}
+	for _, arg := range args[1:] {
+		if arg == "--json" {
+			return true
+		}
+	}
+	return false
+}
+
+func detectDsinfoCommandName(args []string) string {
+	if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+		return "dsinfo"
+	}
+	return "dsinfo " + args[1]
+}
+
+// writeDsinfoErrorResponse печатает machine-readable конверт ошибки dsinfo
+// и возвращает исходную ошибку наверх (exit code 1, лог status=error).
+func writeDsinfoErrorResponse(command string, err error) error {
+	response := dsinfoErrorResponse{
+		Success:       false,
+		FormatVersion: "1.0",
+		Command:       command,
+		Error:         dsinfoErrorBody{Code: classifyDsinfoError(err), Message: err.Error()},
+	}
+	if writeErr := writeJSON(os.Stdout, response); writeErr != nil {
+		return writeErr
+	}
+	return err
 }
 
 func isMCPMode(args []string) bool {
@@ -310,22 +359,57 @@ func applyQueryLimit(limit int) int {
 	return limit
 }
 
-// openDB opens a DB connection from config. Returns nil if config or DB unavailable.
-func openDB() *store.DB {
-	cfg := config.Get()
-	if cfg == nil {
-		return nil
-	}
-	db, err := store.NewDB(cfg.DB)
-	if err != nil {
-		return nil
-	}
-	return db
-}
-
 // closeDB safely closes a DB connection. No-op if db is nil.
 func closeDB(db *store.DB) {
 	if db != nil {
 		db.Close()
+	}
+}
+
+// openDBReady открывает БД и выполняет read-only проверку готовности схемы
+// (readonly-schema-policy: команды, кроме init/update, не выполняют DDL).
+// Ошибки типизированы — конфиг/подключение/схема; команда пробрасывает их в ответ.
+func openDBReady(ctx context.Context) (*store.DB, error) {
+	if ctx == nil {
+		// Прямые вызовы (тесты) могут передать nil — RunE в Cobra всегда
+		// получает контекст от ExecuteContext.
+		ctx = context.Background()
+	}
+	cfg := config.Get()
+	if cfg == nil {
+		return nil, errs.ErrConfigNotLoaded
+	}
+	db, err := store.NewDB(cfg.DB)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errs.ErrDBConnect, err)
+	}
+	if err := db.CheckSchemaVersion(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+// openDBOptional — вариант для команд rti/trc с файловым режимом: БД
+// желательна, но необязательна. Схема не готова при доступной БД —
+// типизированная ошибка; БД/конфиг недоступны — (nil, nil): прежний
+// offline-режим (сервисный слой разбирает файл без сохранения).
+func openDBOptional(ctx context.Context) (*store.DB, error) {
+	db, err := openDBReady(ctx)
+	if err == nil {
+		return db, nil
+	}
+	switch {
+	case errors.Is(err, store.ErrSchemaNotInitialized), errors.Is(err, store.ErrSchemaUpdateRequired):
+		// Схема не готова при доступной БД — жёсткая различимая ошибка.
+		return nil, err
+	case errors.Is(err, errs.ErrDBConnect), errors.Is(err, errs.ErrConfigNotLoaded):
+		// БД/конфиг недоступны — прежний offline-режим: rtisvc/trcsvc
+		// разбирают файл без сохранения (warning «database unavailable»).
+		return nil, nil
+	default:
+		// Прочие сбои проверки схемы (таймаут, конфликт, отмена) — наружу,
+		// а не молчаливый offline-разбор.
+		return nil, err
 	}
 }

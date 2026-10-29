@@ -19,7 +19,7 @@ func (db *DB) CheckSchemaVersion(ctx context.Context) error {
 	`, CurrentSchemaVersion).Scan(&current); err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == "42P01" {
-			return fmt.Errorf("%w: expected schema marker %q", ErrSchemaNotInitialized, CurrentSchemaVersion)
+			return fmt.Errorf("%w: expected schema marker %q; run codebase init", ErrSchemaNotInitialized, CurrentSchemaVersion)
 		}
 		return fmt.Errorf("schema compatibility check failed: %w", err)
 	}
@@ -40,5 +40,5 @@ func (db *DB) CheckSchemaVersion(ctx context.Context) error {
 	} else if err != nil {
 		return fmt.Errorf("schema compatibility check failed: %w", err)
 	}
-	return fmt.Errorf("%w: expected schema marker %q, found %q", ErrSchemaUpdateRequired, CurrentSchemaVersion, latest)
+	return fmt.Errorf("%w: expected schema marker %q, found %q; run codebase update", ErrSchemaUpdateRequired, CurrentSchemaVersion, latest)
 }

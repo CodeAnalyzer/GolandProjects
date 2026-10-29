@@ -648,6 +648,24 @@ codebase query spec config --product fa-cards --include-hierarchy true --depth 2
 - ошибки возвращаются в structured JSON format (структурированном JSON-формате)
 - пустые результаты стабильно возвращаются как пустые массивы `[]`, а не `null`
 - `format_version` зафиксирован как `1.0`
+- **ошибка → ненулевой exit code** (начиная с build 1650; BREAKING для скриптов,
+  полагавшихся на 0): envelope c `success: false` сохраняется, текст ошибки не
+  дублируется в stderr; командный лог фиксирует `status=error` с текстом
+
+### Готовность схемы (read-only команды)
+
+Схему БД создают только `codebase init` и `codebase update`. Все остальные
+команды (`query`, `stats`, `health`, `review`, `rti`, `trc`, `dsinfo`, MCP)
+выполняют read-only проверку версии схемы и **не создают и не изменяют** объекты
+БД — это исключает deadlocks блокировок при параллельных запусках.
+
+- Если схема не создана или маркер версии устарел (например, после обновления
+  бинарника), команда завершается ошибкой `schema not initialized` /
+  `schema update required` с подсказкой выполнить `codebase init` или
+  `codebase update`.
+- **После обновления CodeBase выполните один раз `codebase update`** — он
+  применит миграции схемы (одноразовый DDL-проход); до этого read-only команды
+  возвращают описанную ошибку.
 
 ### Статистика
 

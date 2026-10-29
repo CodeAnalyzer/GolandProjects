@@ -129,7 +129,10 @@ var rtiPruneCmd = &cobra.Command{
 
 func runRTIParse(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := rtisvc.ExecuteParse(ctx, db, args[0], rtisvc.ParseOptions{Name: rtiSessionName})
 	if err != nil {
@@ -157,7 +160,10 @@ func rtiSource(args []string) rtisvc.SessionSource {
 
 func runRTISummary(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := rtisvc.ExecuteSummary(ctx, db, rtiSource(args))
 	if err != nil {
@@ -172,7 +178,10 @@ func runRTISummary(cmd *cobra.Command, args []string) error {
 
 func runRTITree(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := rtisvc.ExecuteTree(ctx, db, rtisvc.TreeParams{
 		Source:    rtiSource(args),
@@ -196,7 +205,10 @@ func runRTITree(cmd *cobra.Command, args []string) error {
 
 func runRTIClientTree(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	var filter rtisvc.TimelineFilter
 	if rtiPID > 0 {
@@ -229,7 +241,10 @@ func runRTIClientTree(cmd *cobra.Command, args []string) error {
 
 func runRTITimeline(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	var filter rtisvc.TimelineFilter
 	if rtiPID > 0 {
@@ -259,7 +274,10 @@ func runRTITimeline(cmd *cobra.Command, args []string) error {
 
 func runRTIErrors(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := rtisvc.ExecuteErrors(ctx, db, rtisvc.ErrorsParams{
 		Source:   rtiSource(args),
@@ -329,7 +347,10 @@ func runRTIDetails(cmd *cobra.Command, args []string) error {
 	if rtiProcedure == "" {
 		return fmt.Errorf("--proc is required for details command")
 	}
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := rtisvc.ExecuteDetails(ctx, db, rtisvc.DetailsParams{
 		Source:    rtiSource(args),
@@ -393,7 +414,10 @@ func runRTIBlog(cmd *cobra.Command, args []string) error {
 	if rtiProcedure == "" {
 		return fmt.Errorf("--proc is required for blog command")
 	}
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := rtisvc.ExecuteBlog(ctx, db, rtisvc.BlogParams{
 		Source:    rtiSource(args),
@@ -456,7 +480,10 @@ func joinStrings(ss []string, sep string) string {
 
 func runRTIList(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := rtisvc.ExecuteList(ctx, db, rtiListLimit)
 	if err != nil {
@@ -486,7 +513,10 @@ func runRTIDelete(cmd *cobra.Command, args []string) error {
 	if rtiSessionID <= 0 && rtiSessionName == "" {
 		return fmt.Errorf("either --session or --name is required for delete command")
 	}
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := rtisvc.ExecuteDelete(ctx, db, rtisvc.DeleteParams{
 		SessionID: rtiSessionID,
@@ -539,7 +569,10 @@ func runRTIPrune(cmd *cobra.Command, args []string) error {
 	if params.KeepLast != nil && *params.KeepLast < 0 {
 		return fmt.Errorf("--keep-last must be >= 0")
 	}
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := rtisvc.ExecutePrune(ctx, db, params)
 	if err != nil {
@@ -563,7 +596,10 @@ func runRTIPrune(cmd *cobra.Command, args []string) error {
 
 func runRTISlow(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := rtisvc.ExecuteSlow(ctx, db, rtisvc.SlowParams{
 		Source:      rtiSource(args),

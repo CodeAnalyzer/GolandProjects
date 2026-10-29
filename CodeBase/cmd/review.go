@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/codebase/internal/errs"
+	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/review"
 	"github.com/codebase/internal/reviewsvc"
 	"github.com/spf13/cobra"
@@ -52,7 +53,7 @@ var reviewCmd = &cobra.Command{
 		filePath := strings.TrimSpace(args[0])
 		opts, rawRules, err := buildReviewOptions(reviewRulesRaw, reviewMinSeverity)
 		if err != nil {
-			return handleReviewError(err)
+			return err
 		}
 		var progress *reviewProgress
 		if !reviewOutputJSON {
@@ -69,7 +70,7 @@ var reviewCmd = &cobra.Command{
 			progress.stop()
 		}
 		if err != nil {
-			return handleReviewError(err)
+			return err
 		}
 
 		if reviewOutputJSON {
@@ -128,13 +129,6 @@ func parseReviewRules(raw string) ([]review.RuleID, []string, error) {
 	return rules, rawParts, nil
 }
 
-func handleReviewError(err error) error {
-	if !reviewOutputJSON {
-		return err
-	}
-	return writeReviewErrorResponse(err)
-}
-
 func writeReviewErrorResponse(err error) error {
 	response := reviewErrorResponse{
 		Success:       false,
@@ -154,8 +148,10 @@ func classifyReviewError(err error) string {
 		return "config_error"
 	case errors.Is(err, errs.ErrDBConnect):
 		return "database_unavailable"
-	case errors.Is(err, errs.ErrSchemaInit):
-		return "schema_init_failed"
+	case errors.Is(err, store.ErrSchemaNotInitialized):
+		return "schema_not_initialized"
+	case errors.Is(err, store.ErrSchemaUpdateRequired):
+		return "schema_update_required"
 	case errors.Is(err, errs.ErrReviewFailed):
 		return "review_failed"
 	case containsAny(err.Error(), "required flag", "accepts", "unknown review rule"):

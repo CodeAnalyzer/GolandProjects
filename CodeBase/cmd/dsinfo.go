@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/codebase/internal/dsinfosvc"
+	"github.com/codebase/internal/errs"
 	"github.com/codebase/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -61,11 +63,16 @@ func printDsInfoSuccess(command string, count int, items interface{}, meta *dsin
 	})
 }
 
-// handleDsInfoError в --json-режиме печатает structured-ошибку вместо
-// текстового вывода cobra.
-func handleDsInfoError(command string, err error) error {
-	if !dsinfoOutputJSON {
-		return err
+// classifyDsinfoError возвращает machine-readable код ошибки для конверта
+// dsinfo (используется root-уровнем: cmd/root.go, writeDsinfoErrorResponse).
+func classifyDsinfoError(err error) string {
+	switch {
+	case errors.Is(err, store.ErrSchemaNotInitialized):
+		return "schema_not_initialized"
+	case errors.Is(err, store.ErrSchemaUpdateRequired):
+		return "schema_update_required"
+	case errors.Is(err, errs.ErrDBConnect), errors.Is(err, errs.ErrConfigNotLoaded):
+		return "database_unavailable"
 	}
 	code := "internal_error"
 	switch {
@@ -74,12 +81,7 @@ func handleDsInfoError(command string, err error) error {
 	case strings.Contains(err.Error(), "required"), strings.Contains(err.Error(), "invalid"):
 		code = "invalid_arguments"
 	}
-	return printJSON(dsinfoErrorResponse{
-		Success:       false,
-		FormatVersion: "1.0",
-		Command:       command,
-		Error:         dsinfoErrorBody{Code: code, Message: err.Error()},
-	})
+	return code
 }
 
 var dsinfoCmd = &cobra.Command{
@@ -153,14 +155,17 @@ func printDsInfoMatching(m *dsinfosvc.MatchingResult) {
 
 func runDsInfoParse(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBReady(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := dsinfosvc.ExecuteParse(ctx, db, dsinfosvc.ParseParams{
 		FilePath: args[0],
 		Name:     dsinfoName,
 	})
 	if err != nil {
-		return handleDsInfoError("dsinfo parse", err)
+		return err
 	}
 	if dsinfoOutputJSON {
 		return printDsInfoSuccess("dsinfo parse", 1, result, nil)
@@ -181,11 +186,14 @@ func runDsInfoParse(cmd *cobra.Command, args []string) error {
 
 func runDsInfoList(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBReady(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := dsinfosvc.ExecuteList(ctx, db, dsinfoListLimit)
 	if err != nil {
-		return handleDsInfoError("dsinfo list", err)
+		return err
 	}
 	if dsinfoOutputJSON {
 		items := result.Profiles
@@ -215,10 +223,13 @@ func runDsInfoList(cmd *cobra.Command, args []string) error {
 func runDsInfoShow(cmd *cobra.Command, args []string) error {
 	id, err := parseDsInfoID(args[0])
 	if err != nil {
-		return handleDsInfoError("dsinfo show", err)
+		return err
 	}
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBReady(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := dsinfosvc.ExecuteShow(ctx, db, dsinfosvc.ShowParams{
 		ProfileID: id,
@@ -228,7 +239,7 @@ func runDsInfoShow(cmd *cobra.Command, args []string) error {
 		Limit:     dsinfoLimit,
 	})
 	if err != nil {
-		return handleDsInfoError("dsinfo show", err)
+		return err
 	}
 	if dsinfoOutputJSON {
 		meta := &dsinfoResponseMeta{Limit: result.Limit}
@@ -301,14 +312,17 @@ func runDsInfoShow(cmd *cobra.Command, args []string) error {
 func runDsInfoDelete(cmd *cobra.Command, args []string) error {
 	id, err := parseDsInfoID(args[0])
 	if err != nil {
-		return handleDsInfoError("dsinfo delete", err)
+		return err
 	}
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBReady(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := dsinfosvc.ExecuteDelete(ctx, db, dsinfosvc.DeleteParams{ProfileID: id})
 	if err != nil {
-		return handleDsInfoError("dsinfo delete", err)
+		return err
 	}
 	if dsinfoOutputJSON {
 		return printDsInfoSuccess("dsinfo delete", 1, result, nil)
@@ -326,15 +340,18 @@ func runDsInfoUse(cmd *cobra.Command, args []string) error {
 		var err error
 		id, err = parseDsInfoID(args[0])
 		if err != nil {
-			return handleDsInfoError("dsinfo use", err)
+			return err
 		}
 	}
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBReady(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := dsinfosvc.ExecuteUse(ctx, db, dsinfosvc.UseParams{ProfileID: id})
 	if err != nil {
-		return handleDsInfoError("dsinfo use", err)
+		return err
 	}
 	if dsinfoOutputJSON {
 		return printDsInfoSuccess("dsinfo use", 1, result, nil)

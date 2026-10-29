@@ -62,6 +62,9 @@ func TestClientEventsFK_MigratesLegacyConstraint(t *testing.T) {
 		t.Fatalf("degraded confdeltype = %q, want 'a' (NO ACTION)", rule)
 	}
 
+	// Легаси-БД предыдущей версии: сброс маркера (см. fast-path InitSchemaCtx).
+	testutil.ResetSchemaVersion(t, db)
+
 	if err := db.InitSchemaCtx(context.Background()); err != nil {
 		t.Fatalf("InitSchemaCtx after degrade: %v", err)
 	}

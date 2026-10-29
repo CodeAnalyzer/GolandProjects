@@ -71,7 +71,13 @@ post-processing → spec-профили → LSA.
   sidecar-модель `spec_lsa_model.bin` + `spec_lsa_state.json`; `stats_snapshot`.
 - **Machine-readable contract**: `--json` envelope (`success`, `format_version=1.0`,
   `command`, `count`, `items`, `meta`), `--summary`, `--ndjson`; banner подавляется,
-  ошибки — structured JSON, пустые результаты — `[]`.
+  ошибки — structured JSON, пустые результаты — `[]`; при ошибке exit code
+  ненулевой во всех режимах, лог пишет `status=error`.
+- **Схема БД**: DDL выполняют только `init`/`update` (`InitSchemaCtx` с fast-path
+  по маркеру версии); остальные команды идут через read-only `CheckSchemaVersion`.
+  Любое изменение DDL-списка `internal/store/db_schema.go` требует bump
+  `CurrentSchemaVersion` — иначе fast-path молча пропустит применение нового DDL
+  на существующих БД (readonly-schema-policy).
 - **RTI**: HRTI hash-decoding (TDsHash, M1=3, M2=102); **TRC**: content sniffing
   `.trc`/`.xml`/`.xel`.
 - Если `--config` не задан, `codebase.toml` ищется **рядом с executable**.

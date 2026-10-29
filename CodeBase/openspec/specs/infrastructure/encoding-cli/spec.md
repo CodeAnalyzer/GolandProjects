@@ -197,13 +197,46 @@
 
 ### Requirement: Логирование CLI-команд
 
-Система SHALL логировать все CLI-команды в файл `codebase_YYYYMMDD.log` (один файл на день) с информацией: started_at, command, duration, status, error. Логирование включено по умолчанию.
+Система SHALL логировать все CLI-команды в файл `codebase_YYYYMMDD.log` (один файл на день) с информацией: started_at, command, duration, status, error. Логирование включено по умолчанию. Статус и текст ошибки SHALL отражать фактический результат выполнения команды во всех режимах вывода, включая machine-readable (`--json`, `--ndjson`, `--summary`), где ошибка дополнительно конвертируется в структурированный envelope: отказ команды SHALL фиксироваться записью `status=error` с однострочным текстом ошибки, успешное выполнение — записью `status=success`.
 
 #### Scenario: Логирование команды
 
 - **GIVEN** включённое логирование (`logging.command_enabled = true`)
 - **WHEN** выполняется `codebase init`
 - **THEN** в файл `codebase_YYYYMMDD.log` записана информация о команде: started_at, command, duration, status
+
+#### Scenario: Ошибка в machine-readable режиме фиксируется в логе
+
+- **GIVEN** включённое логирование и режим `--json`
+- **WHEN** команда завершается ошибкой (например, `pq: deadlock detected` при запросе к БД)
+- **THEN** в лог записана `status=error` с однострочным текстом исходной ошибки
+- **AND** запись `status=success` с пустым текстом ошибки не создана
+
+### Requirement: Код завершения при ошибке в machine-readable режиме
+
+Команда SHALL завершаться с ненулевым кодом возврата при ошибке независимо от режима вывода. В machine-readable режиме (`--json`, `--ndjson`, `--summary`) ошибка SHALL доставляться структурированным envelope (`success: false`), а текст ошибки SHALL NOT дублироваться в stderr. Успешное выполнение SHALL возвращать нулевой код возврата во всех режимах.
+
+#### Scenario: Ошибка в JSON-режиме
+
+- **GIVEN** выполняется команда в режиме `--json`
+- **WHEN** команда завершается ошибкой (например, ошибка подключения к БД)
+- **THEN** код возврата процесса ненулевой
+- **AND** stdout содержит валидный envelope с `success: false` и описанием ошибки
+- **AND** текст ошибки не продублирован в stderr
+
+#### Scenario: Успех в JSON-режиме
+
+- **GIVEN** выполняется команда в режиме `--json`
+- **WHEN** команда завершается успешно
+- **THEN** код возврата процесса нулевой
+- **AND** stdout содержит валидный envelope с `success: true`
+
+#### Scenario: Ошибка в текстовом режиме
+
+- **GIVEN** выполняется команда без machine-readable флагов
+- **WHEN** команда завершается ошибкой
+- **THEN** код возврата процесса ненулевой
+- **AND** сообщение об ошибке выведено пользователю
 
 ### Requirement: Логирование ошибок индексатора
 
@@ -334,5 +367,6 @@
 - Лог-файлы ошибок индексатора: `indexer_errors_YYYYMMDD_HHMMSS.log` (на каждый запуск)
 - Конфиг ищется рядом с executable, а не в текущем рабочем каталоге
 - `systemsvc` — общий execution-слой для `health`/`stats` (CLI + MCP), закреплён за этой capability (отдельная capability `infrastructure/health-stats` НЕ заводится — health checks и так описаны здесь). Аналогично `querysvc`/`reviewsvc`/`rtisvc`/`trcsvc`, устраняет дублирование оркестрации между CLI и MCP
-- `systemsvc.ExecuteHealth`/`ExecuteStats` на текущий момент используют `context.Background()` (не принимают ctx) — дешёвые синхронные операции, отмена не критична (см. `mcp-transport-tools`)
+- `systemsvc.ExecuteHealth`/`ExecuteStats` принимают `context.Context` (прокидывается из CLI `cmd.Context()`, MCP-передача аналогична) — отмена Ctrl+C доходит до проверки схемы и запросов
+- Machine-readable контракт ошибок (exit code 1 + `status=error` в логе + различимые коды схемы) — доработка «readonly-schema-policy» (`Bug-reports/BUG-query-deadlock-init-schema-ddl-20261026.md`); BREAKING для скриптов, полагавшихся на exit 0 при ошибке
 - Sentinel-ошибки `internal/errs` используются по всему коду для классификации через `errors.Is` (доработка «sentinel-errors-refactor») — устраняет string-matching в обработке ошибок

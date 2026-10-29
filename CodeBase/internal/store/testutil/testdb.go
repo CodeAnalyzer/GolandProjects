@@ -36,6 +36,16 @@ func OpenEmpty(t *testing.T) *store.DB {
 	return OpenEmptyHandles(t, 1)[0]
 }
 
+// ResetSchemaVersion удаляет актуальный маркер версии схемы — эмуляция БД
+// предыдущей версии для тестов миграций: fast-path InitSchemaCtx пропускает
+// полный проход, пока маркер актуален.
+func ResetSchemaVersion(t *testing.T, db *store.DB) {
+	t.Helper()
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version = $1`, store.CurrentSchemaVersion); err != nil {
+		t.Fatalf("reset schema version marker: %v", err)
+	}
+}
+
 // ConfigFor returns connection settings for the temporary database behind db.
 func ConfigFor(t *testing.T, db *store.DB) config.DBConfig {
 	t.Helper()

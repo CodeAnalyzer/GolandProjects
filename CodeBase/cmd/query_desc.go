@@ -27,7 +27,8 @@ non-empty description is represented by the contract (kind=service).`,
 			return q.SearchDescriptions(ctx, descSearchText, descSearchKinds, limit)
 		})
 		if err != nil {
-			return handleQueryError("query desc-search", err)
+			// Конверт machine-readable ошибки — на root-уровне (cmd/root.go).
+			return err
 		}
 		output, ok := results.(*query.DescriptionSearchOutput)
 		if !ok {

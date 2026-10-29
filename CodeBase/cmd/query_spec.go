@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/codebase/internal/specsvc"
@@ -42,7 +43,7 @@ var querySpecSearchCmd = &cobra.Command{
 	Short: "Two-layer spec search (exact tsvector/trgm + semantic LSA)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runSpecCommand("query spec search", map[string]string{
+		return runSpecCommand(ctx, "query spec search", map[string]string{
 			"query":   specSearchQuery,
 			"product": specSearchProduct,
 			"level":   specSearchLevel,
@@ -58,7 +59,7 @@ var querySpecByCodeCmd = &cobra.Command{
 	Short: "Find specs referencing a code entity by name",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runSpecCommand("query spec by-code", map[string]string{
+		return runSpecCommand(ctx, "query spec by-code", map[string]string{
 			"name": specByCodeName,
 		}, func(db *store.DB) (interface{}, error) {
 			return specsvc.ExecuteSpecByCode(ctx, db, specByCodeName, limit)
@@ -71,7 +72,7 @@ var querySpecDepsCmd = &cobra.Command{
 	Short: "Capability dependency tree (depends_on_capability)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runSpecCommand("query spec deps", map[string]string{
+		return runSpecCommand(ctx, "query spec deps", map[string]string{
 			"name":      specDepsName,
 			"product":   specDepsProduct,
 			"direction": specDepsDirection,
@@ -87,7 +88,7 @@ var querySpecUsecaseCmd = &cobra.Command{
 	Short: "Usecase with steps and involved entities, or list usecases by product",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runSpecCommand("query spec usecase", map[string]string{
+		return runSpecCommand(ctx, "query spec usecase", map[string]string{
 			"name":    specUsecaseName,
 			"product": specUsecaseProduct,
 		}, func(db *store.DB) (interface{}, error) {
@@ -101,7 +102,7 @@ var querySpecCoverageCmd = &cobra.Command{
 	Short: "Covered code entities grouped by capability",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runSpecCommand("query spec coverage", map[string]string{
+		return runSpecCommand(ctx, "query spec coverage", map[string]string{
 			"product": specCoverageProduct,
 			"name":    specCoverageName,
 			"kind":    specCoverageKind,
@@ -116,7 +117,7 @@ var querySpecHistoryCmd = &cobra.Command{
 	Short: "Change history for a capability or capabilities modified by a change",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runSpecCommand("query spec history", map[string]string{
+		return runSpecCommand(ctx, "query spec history", map[string]string{
 			"name":    specHistoryName,
 			"change":  specHistoryChange,
 			"product": specHistoryProduct,
@@ -131,7 +132,7 @@ var querySpecConfigCmd = &cobra.Command{
 	Short: "Product profile, stats, and capability hierarchy",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runSpecCommand("query spec config", map[string]string{
+		return runSpecCommand(ctx, "query spec config", map[string]string{
 			"product":           specConfigProduct,
 			"include_hierarchy": fmt.Sprintf("%t", specConfigHierarchy),
 			"depth":             fmt.Sprintf("%d", specConfigDepth),
@@ -188,21 +189,16 @@ func init() {
 }
 
 // runSpecCommand — аналог runQueryCommand, но для spec-запросов через store.DB напрямую.
-func runSpecCommand(commandName string, filters map[string]string, run func(db *store.DB) (interface{}, error)) error {
-	result, err := executeSpecQuery(run)
+func runSpecCommand(ctx context.Context, commandName string, filters map[string]string, run func(db *store.DB) (interface{}, error)) error {
+	result, err := executeSpecQuery(ctx, run)
 	if err != nil {
-		return handleSpecError(commandName, err)
+		// Machine-readable конверт пишется на root-уровне (cmd/root.go);
+		// ошибка пробрасывается как есть (readonly-schema-policy).
+		return err
 	}
 	return printResults(commandName, filters, result)
 }
 
-func executeSpecQuery(run func(db *store.DB) (interface{}, error)) (interface{}, error) {
-	return specsvcExecute(run)
-}
-
-func handleSpecError(commandName string, err error) error {
-	if !outputJSON {
-		return err
-	}
-	return writeQueryErrorResponse(commandName, err)
+func executeSpecQuery(ctx context.Context, run func(db *store.DB) (interface{}, error)) (interface{}, error) {
+	return specsvcExecute(ctx, run)
 }

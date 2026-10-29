@@ -162,7 +162,10 @@ func trcSource(args []string) trcsvc.SessionSource {
 
 func runTRCParse(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := trcsvc.ExecuteParse(ctx, db, args[0], trcsvc.ParseOptions{Name: trcSessionName})
 	if err != nil {
@@ -183,7 +186,10 @@ func runTRCParse(cmd *cobra.Command, args []string) error {
 
 func runTRCSummary(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := trcsvc.ExecuteSummary(ctx, db, trcSource(args))
 	if err != nil {
@@ -288,7 +294,10 @@ func formatTRCEventsHeader(result *trcsvc.EventsResult) string {
 
 func runTRCEvents(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 
 	spids, err := parseSPIDCSV(trcSPIDsRaw, "--spids")
@@ -385,7 +394,10 @@ func printEventViewLine(v trcsvc.TRCEventView) {
 
 func runTRCProcedures(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 
 	spids, err := parseSPIDCSV(trcSPIDsRaw, "--spids")
@@ -429,7 +441,10 @@ func runTRCProcedures(cmd *cobra.Command, args []string) error {
 
 func runTRCCompareProcedures(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 
 	compareSPIDs, err := parseSPIDCSV(trcCompareSPIDsRaw, "--compare-spids")
@@ -494,7 +509,10 @@ func derefFloat(v *float64) float64 {
 
 func runTRCSpids(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 
 	spids, err := parseSPIDCSV(trcSPIDsRaw, "--spids")
@@ -543,7 +561,10 @@ func runTRCSpids(cmd *cobra.Command, args []string) error {
 
 func runTRCTree(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := trcsvc.ExecuteTree(ctx, db, trcsvc.TreeParams{
 		Source:    trcSource(args),
@@ -568,7 +589,10 @@ func runTRCTree(cmd *cobra.Command, args []string) error {
 
 func runTRCErrors(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := trcsvc.ExecuteErrors(ctx, db, trcsvc.ErrorsParams{
 		Source: trcSource(args),
@@ -593,7 +617,10 @@ func runTRCErrors(cmd *cobra.Command, args []string) error {
 
 func runTRCSlow(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := trcsvc.ExecuteSlow(ctx, db, trcsvc.SlowParams{
 		Source:      trcSource(args),
@@ -619,7 +646,10 @@ func runTRCSlow(cmd *cobra.Command, args []string) error {
 
 func runTRCList(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := trcsvc.ExecuteList(ctx, db, trcListLimit)
 	if err != nil {
@@ -649,7 +679,10 @@ func runTRCDelete(cmd *cobra.Command, args []string) error {
 	if trcSessionID <= 0 && trcSessionName == "" {
 		return fmt.Errorf("either --session or --name is required for delete command")
 	}
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := trcsvc.ExecuteDelete(ctx, db, trcsvc.DeleteParams{
 		SessionID: trcSessionID,
@@ -702,7 +735,10 @@ func runTRCPrune(cmd *cobra.Command, args []string) error {
 	if params.KeepLast != nil && *params.KeepLast < 0 {
 		return fmt.Errorf("--keep-last must be >= 0")
 	}
-	db := openDB()
+	db, dbErr := openDBOptional(ctx)
+	if dbErr != nil {
+		return dbErr
+	}
 	defer closeDB(db)
 	result, err := trcsvc.ExecutePrune(ctx, db, params)
 	if err != nil {

@@ -40,7 +40,7 @@ func TestPrepareMCPDatabase_MissingSchemaRecommendsInit(t *testing.T) {
 	if !errors.Is(err, store.ErrSchemaNotInitialized) {
 		t.Fatalf("error = %v, want ErrSchemaNotInitialized", err)
 	}
-	if !strings.Contains(err.Error(), "codebase init --config <path>") {
+	if !strings.Contains(err.Error(), "run codebase init") {
 		t.Fatalf("error = %v, want init recommendation", err)
 	}
 	var exists bool
@@ -65,7 +65,7 @@ func TestPrepareMCPDatabase_OutdatedSchemaRecommendsUpdate(t *testing.T) {
 	if !errors.Is(err, store.ErrSchemaUpdateRequired) {
 		t.Fatalf("error = %v, want ErrSchemaUpdateRequired", err)
 	}
-	if !strings.Contains(err.Error(), "codebase update --config <path>") {
+	if !strings.Contains(err.Error(), "run codebase update") {
 		t.Fatalf("error = %v, want update recommendation", err)
 	}
 	if strings.Contains(err.Error(), cfg.Password) && cfg.Password != "" {

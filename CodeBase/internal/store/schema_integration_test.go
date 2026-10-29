@@ -178,6 +178,10 @@ func TestInitSchema_BackfillsSessionName(t *testing.T) {
 		t.Fatalf("insert legacy trc session: %v", err)
 	}
 
+	// Легаси-БД предыдущей версии: сбрасываем маркер, иначе fast-path
+	// пропустит проход и backfill не выполнится.
+	testutil.ResetSchemaVersion(t, db)
+
 	if err := db.InitSchemaCtx(ctx); err != nil {
 		t.Fatalf("InitSchemaCtx: %v", err)
 	}
@@ -433,6 +437,9 @@ func TestInitSchema_BackfillsSpecUsecaseStepFileID(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO spec_usecase_steps (usecase_id, step_text) VALUES ($1, 'step')`, usecaseID); err != nil {
 		t.Fatalf("insert legacy step: %v", err)
 	}
+
+	// Легаси-БД предыдущей версии: сбрасываем маркер (см. fast-path InitSchemaCtx).
+	testutil.ResetSchemaVersion(t, db)
 
 	if err := db.InitSchemaCtx(context.Background()); err != nil {
 		t.Fatalf("InitSchema migration: %v", err)

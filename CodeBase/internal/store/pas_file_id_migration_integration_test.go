@@ -68,7 +68,8 @@ func TestInitSchema_PASFileIDMigration(t *testing.T) {
 		t.Fatalf("insert orphan field: %v", err)
 	}
 
-	// Миграция
+	// Миграция (легаси-БД предыдущей версии: сброс маркера из-за fast-path)
+	testutil.ResetSchemaVersion(t, db)
 	if err := db.InitSchemaCtx(context.Background()); err != nil {
 		t.Fatalf("InitSchema migration: %v", err)
 	}

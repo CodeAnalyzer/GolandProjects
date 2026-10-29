@@ -135,3 +135,101 @@ func TestCheckSchemaVersion_CurrentDatabase(t *testing.T) {
 		t.Fatalf("CheckSchemaVersion: %v", err)
 	}
 }
+
+// TestInitSchema_FastPathNotBlockedByReader: на схеме с актуальным маркером
+// InitSchemaCtx возвращается немедленно, не ожидая завершения читающей
+// транзакции, удерживающей AccessShare на files (инвариант readonly-schema-policy
+// — сценарий, который ранее давал deadlock).
+func TestInitSchema_FastPathNotBlockedByReader(t *testing.T) {
+	handles := testutil.OpenEmptyHandles(t, 2)
+	if err := handles[0].InitSchema(); err != nil {
+		t.Fatalf("InitSchema: %v", err)
+	}
+
+	ctx := context.Background()
+	tx, err := handles[1].BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin reader tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// AccessShare на files удерживается до конца теста (Scan материализует запрос).
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM files`).Scan(new(int)); err != nil {
+		t.Fatalf("reader select: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- handles[0].InitSchemaCtx(ctx) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("InitSchemaCtx on current schema: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("InitSchemaCtx blocked by reader holding AccessShare on files")
+	}
+}
+
+// TestInitSchema_ConcurrentOnStaleSchema: два конкурентных InitSchemaCtx на
+// неактуальной схеме — первый выполняет полный проход, второй после получения
+// advisory-lock обнаруживает актуальный маркер (double-check) и завершается
+// без повторного DDL.
+func TestInitSchema_ConcurrentOnStaleSchema(t *testing.T) {
+	handles := testutil.OpenEmptyHandles(t, 2)
+	if err := handles[0].InitSchema(); err != nil {
+		t.Fatalf("InitSchema: %v", err)
+	}
+	testutil.ResetSchemaVersion(t, handles[0])
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, db := range handles {
+		wg.Add(1)
+		go func(db *store.DB) {
+			defer wg.Done()
+			<-start
+			errs <- db.InitSchemaCtx(context.Background())
+		}(db)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent InitSchemaCtx on stale schema: %v", err)
+		}
+	}
+
+	var exists bool
+	if err := handles[0].QueryRow(`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)`, store.CurrentSchemaVersion).Scan(&exists); err != nil {
+		t.Fatalf("check current marker: %v", err)
+	}
+	if !exists {
+		t.Fatal("current schema marker was not recorded")
+	}
+}
+
+// TestInitSchema_RepeatRunSkipsDDL: повторный InitSchemaCtx на актуальной
+// схеме — fast-path без DDL (регресс: не должен пересоздавать/чистить объекты).
+func TestInitSchema_RepeatRunSkipsDDL(t *testing.T) {
+	db := testutil.Open(t)
+	// Маркер-свидетель: fast-path не выполняет statement'ы, поэтому строка
+	// останется на месте, а repeat-проход завершится мгновенно.
+	if _, err := db.Exec(`INSERT INTO scan_runs (root_path, status) VALUES ('sentinel', 'done')`); err != nil {
+		t.Fatalf("insert sentinel: %v", err)
+	}
+	started := time.Now()
+	if err := db.InitSchemaCtx(context.Background()); err != nil {
+		t.Fatalf("repeat InitSchemaCtx: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("repeat InitSchemaCtx took %s, want fast-path", elapsed)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM scan_runs WHERE root_path = 'sentinel'`).Scan(&n); err != nil {
+		t.Fatalf("check sentinel: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("sentinel rows = %d, want 1", n)
+	}
+}

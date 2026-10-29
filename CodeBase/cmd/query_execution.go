@@ -25,12 +25,14 @@ func runQueryCommand(ctx context.Context, spec queryCommandSpec) error {
 		err     error
 	)
 	if spec.withoutProfile {
-		results, err = executeQueryPlain(spec.run)
+		results, err = executeQueryPlain(ctx, spec.run)
 	} else {
 		results, err = executeQuery(ctx, spec.run)
 	}
 	if err != nil {
-		return handleQueryError(spec.commandName, err)
+		// Machine-readable конверт пишется на root-уровне (cmd/root.go);
+		// ошибка пробрасывается как есть (readonly-schema-policy).
+		return err
 	}
 	return printResults(spec.commandName, spec.filters, results)
 }
@@ -41,8 +43,8 @@ func executeQuery(ctx context.Context, run func(q *query.Query) (interface{}, er
 
 // executeQueryPlain выполняет команду без контекста профиля (границы
 // применения: callers/relations/inspect не выбирают копию сущности).
-func executeQueryPlain(run func(q *query.Query) (interface{}, error)) (interface{}, error) {
-	return querysvc.Execute(run)
+func executeQueryPlain(ctx context.Context, run func(q *query.Query) (interface{}, error)) (interface{}, error) {
+	return querysvc.ExecuteCtx(ctx, run)
 }
 
 // resolveQueryProfile разрешает контекст профиля dsinfo по цепочке
@@ -109,13 +111,6 @@ func boolFilterValue(enabled bool) string {
 		return ""
 	}
 	return "true"
-}
-
-func handleQueryError(commandName string, err error) error {
-	if !outputJSON {
-		return err
-	}
-	return writeQueryErrorResponse(commandName, err)
 }
 
 func writeQueryErrorResponse(commandName string, err error) error {
@@ -354,8 +349,10 @@ func classifyQueryError(err error) string {
 		return "invalid_arguments"
 	case errors.Is(err, errs.ErrDBConnect):
 		return "database_unavailable"
-	case errors.Is(err, errs.ErrSchemaInit):
-		return "schema_init_failed"
+	case errors.Is(err, store.ErrSchemaNotInitialized):
+		return "schema_not_initialized"
+	case errors.Is(err, store.ErrSchemaUpdateRequired):
+		return "schema_update_required"
 	case errors.Is(err, errs.ErrQueryFailed):
 		return "query_failed"
 	case containsAny(err.Error(), "required flag(s)", "unknown flag:", "accepts 0 arg(s)", "unknown command"):

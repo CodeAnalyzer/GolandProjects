@@ -38,8 +38,10 @@ func ExecuteCtx(ctx context.Context, path string, opts review.Options, onProgres
 	}
 	defer db.Close()
 
-	if err := db.InitSchema(); err != nil {
-		return nil, fmt.Errorf("%w: %w", errs.ErrSchemaInit, err)
+	// Read-only политика: схема не создаётся, только проверяется готовность
+	// (readonly-schema-policy). Ошибка версии пробрасывается как есть.
+	if err := db.CheckSchemaVersion(ctx); err != nil {
+		return nil, err
 	}
 
 	return ExecuteWithCtx(ctx, db, path, opts, onProgress)

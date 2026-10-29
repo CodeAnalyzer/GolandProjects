@@ -249,7 +249,13 @@ func TestFilesIsGenerated_BackfillIdempotent(t *testing.T) {
 	}
 	canonicalFile := insertProductFile(t, db, scanID, 0, "/repo/fa-contracts/Consumer/SERVER/Accrual/OldCanonical.sql")
 
-	// Повторная инициализация схемы применяет идемпотентный backfill
+	// Повторная инициализация схемы применяет идемпотентный backfill.
+	// Эмуляция БД до backfill-миграции: сбрасываем маркер версии схемы и
+	// маркер files_is_generated_backfill_v1 — иначе fast-path пропустит проход.
+	testutil.ResetSchemaVersion(t, db)
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version = 'files_is_generated_backfill_v1'`); err != nil {
+		t.Fatalf("reset backfill marker: %v", err)
+	}
 	if err := db.InitSchema(); err != nil {
 		t.Fatalf("InitSchema (backfill): %v", err)
 	}

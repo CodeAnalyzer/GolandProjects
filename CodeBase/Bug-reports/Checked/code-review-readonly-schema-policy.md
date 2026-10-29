@@ -1,0 +1,25 @@
+Code review: readonly-schema-policy
+
+Проверено: дельты и tasks, internal/store/db_schema.go, internal/store/db_schema_version.go, querysvc/reviewsvc, все cmd/* call-site'ы, новые интеграционные тесты, README/AGENTS. Прогнано: go vet ./... — чисто, go test ./cmd/ ./internal/querysvc/ — ok, openspec validate --all --strict — 34 passed / 0 failed.
+
+Заключение
+Архитектурно изменение корректное и качественно сделано: fast-path действительно убирает DDL/advisory-lock в установившемся режиме, double-check под локом реализован верно (rollback через defer, to_regclass защищает от 42P01), backfill вынесен в именованную миграцию, контракт «exit code 1 + status=error» реализован через возврат исходной ошибки, все 29 call-site'ов openDB() переключены без остатков. Но архивировать change в текущем виде нельзя — есть одно прямое нарушение собственной дельты-спеки и один дефект machine-readable контракта.
+
+Блокирующие замечания
+B1. Нет подсказки codebase init/codebase update в CLI-диагностике (нарушение ADDED-требования и сценариев).
+Спека требует «диагностикой, указывающей выполнить codebase init или codebase update» (spec.md:71, 84–85, 92–93, 107). Фактически CheckSchemaVersion отдаёт только schema not initialized: expected schema marker "codebase_schema_v3" / schema update required: ... (internal/store/db_schema_version.go:22,43) — подсказки нет. Обёртка с подсказкой есть только в internal/mcp/server.go:79-82; openDBReady (cmd/root.go:341) и querysvc/reviewsvc/stats/health/query_spec_exec пробрасывают ошибку как есть. При этом tasks 2.2/3.2 отмечены [x] с verify-критерием именно про «… run codebase init», а README (строки ~660) утверждает, что подсказка есть. Design D4 («store-ошибки уже человекочитаемы и содержат подсказку «run codebase update»») фактически неверен.
+Фикс: обернуть в openDBReady/runtime-путях по образцу MCP (или добавить hint в саму CheckSchemaVersion).
+
+B2. Новые различимые ошибки схемы в machine-readable режиме маппятся в internal_error.
+Конвертеры всё ещё проверяют errs.ErrSchemaInit, который больше нигде не генерируется: cmd/query_execution.go:352, cmd/stats.go:323, cmd/health.go:119, cmd/review.go:150. В результате query --json на пустой/устаревшей БД отдаёт "code": "internal_error" вместо различимого кода, а dsinfo — тоже internal_error (cmd/dsinfo.go:71-76). Это противоречит смыслу «различимая ошибка» и делает errs.ErrSchemaInit мёртвым кодом. Нужны ветки errors.Is(err, store.ErrSchemaNotInitialized) / store.ErrSchemaUpdateRequired (напр. schema_not_initialized, schema_update_required).
+
+Неблокирующие замечания
+Тихая потеря ошибок в dsinfo --json. isDsinfoJSONMode добавлен в isMachineReadableMode (cmd/root.go:233-247), т.е. включается SilenceErrors, но в Execute() нет ветки для dsinfo (строки 82–112). Ошибки уровня Cobra (неизвестный флаг, неверное число аргументов, неизвестная подкоманда) дают пустой stdout, пустой stderr и exit 1 — регресс относительно прежнего поведения (раньше Cobra печатала в stderr). Нужна ветка envelope для dsinfo в root (или не глобальный SilenceErrors).
+Устаревший комментарий и незакрытая часть D7. db_schema.go:1243-1245 утверждает, что statements pas_entities_file_id_v1 «выполняются в общем списке при каждом InitSchema» — после fast-path неверно. В версионно-гейтованом списке остались регулярные data-фиксы: DELETE/UPDATE pas_classes|pas_methods|pas_fields (345–355), UPDATE rti_sessions/trc_sessions (674–675), UPDATE spec_usecase_steps (933). После v3 они больше никогда не повторятся — это согласуется с новой политикой, но расходится с обоснованием D7; стоит либо вынести в именованные миграции, либо явно задокументировать в комментарии.
+Проглоченные ошибки double-check. db_schema.go:1219-1224: scanErr/checkErr игнорируются, при отменённом контексте код продолжит к DDL вместо возврата ctx.Err(). Низкий риск, но лучше пробрасывать не-nil ошибку (особенно cancellation).
+context.Background() вместо cmd.Context() в cmd/stats.go, cmd/health.go, cmd/query_spec_exec.go и querysvc.Execute — Ctrl+C не отменяет проверку схемы (в остальных местах ctx уже прокинут).
+Расхождение tasks с реальным покрытием: 2.3 (тест stats/health на пустой БД) — теста нет; 2.5 («10 повторов без deadlock») — реализовано иначе (один lock-инвариант-тест); 4.1 (exit code для query/stats/health/review) — только ручной smoke и обновлённый unit-тест dsinfo. Ветка double-check в TestInitSchema_ConcurrentOnStaleSchema race-зависима и детерминированно не покрыта.
+openDBOptional для rti/trc глушит в (nil, nil) все не-schema ошибки, включая таймауты/deadlock подключения — при сбое проверки схемы rti/trc молча уйдут в offline-разбор файла. Прежнее поведение сохранено, но для deadlock-сценария это неочевидно.
+
+Что стоит сохранить как есть
+Fast-path и double-check, to_regclass-подход, вынос backfill в applyMigrationTx, правки интеграционных тестов через ResetSchemaVersion (семантика InitSchemaCtx осознанно изменилась), маппинг exit-code/status=error, bump build 1650, «Итог smoke» в tasks — всё корректно и подтверждено валидаторами/тестами.

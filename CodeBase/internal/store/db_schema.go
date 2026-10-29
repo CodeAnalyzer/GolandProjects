@@ -6,12 +6,26 @@ import (
 	"fmt"
 )
 
-const CurrentSchemaVersion = "codebase_schema_v2"
+// CurrentSchemaVersion — маркер актуальной версии схемы в schema_migrations.
+// КОНТРАКТ: любое изменение DDL-списка InitSchemaCtx (колонки, индексы,
+// ограничения, миграции) требует bump этой версии — иначе fast-path
+// пропустит проход и новое DDL молча не применится на существующих БД.
+const CurrentSchemaVersion = "codebase_schema_v3"
 
 const schemaInitLockKey = "codebase/schema-init"
 
 // InitSchema создаёт схему БД если она не существует
 func (db *DB) InitSchemaCtx(ctx context.Context) error {
+	// Fast-path: на БД с актуальным маркером версии DDL не выполняется и
+	// advisory-lock не берётся — повторные init/update и read-only проверки
+	// не конкурируют за DDL-блокировки (readonly-schema-policy).
+	if err := db.CheckSchemaVersion(ctx); err == nil {
+		return nil
+	}
+	// Из-за fast-path полный список выполняется только при создании схемы и
+	// на переходах версии схемы (легаси-апгрейды). Data-фиксы в списке
+	// (backfill-UPDATE/DELETE) — это ремонты легаси-БД: на свежей БД они
+	// no-op (легаси-данных не бывает), на актуальной схеме — не выполняются.
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS scan_runs (
 			id BIGSERIAL PRIMARY KEY,
@@ -84,13 +98,10 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		// БД (CREATE TABLE IF NOT EXISTS не расширяет существующую таблицу).
 		`ALTER TABLE files ADD COLUMN IF NOT EXISTS ds_product_branch_id BIGINT REFERENCES ds_products_branch(id) ON DELETE SET NULL`,
 		// Признак генерируемой копии (*/UPLOAD/*, *.t01): файлы индексируются
-		// как обычно, но депriorитизируются в name-based lookup'ах.
+		// как обычно, но деприоритизируются в name-based lookup'ах.
+		// Backfill существующих записей — однократная именованная миграция
+		// files_is_generated_backfill_v1 (см. после основного списка).
 		`ALTER TABLE files ADD COLUMN IF NOT EXISTS is_generated BOOLEAN NOT NULL DEFAULT FALSE`,
-		// Backfill для уже проиндексированных файлов: pre-filter по mtime+size
-		// пропускает неизменённые файлы, поэтому флаг заполняется миграцией.
-		// Идемпотентно: фильтр NOT is_generated ограничивает повторный запуск пустым множеством.
-		`UPDATE files SET is_generated = TRUE
-		 WHERE (rel_path ~* '/UPLOAD/' OR extension = 't01') AND NOT is_generated`,
 		`CREATE TABLE IF NOT EXISTS symbols (
 			id BIGSERIAL PRIMARY KEY,
 			file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -1203,17 +1214,47 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, schemaInitLockKey); err != nil {
 		return fmt.Errorf("acquire schema init lock: %w", err)
 	}
+	// Double-check: пока ожидали блокировку, другой процесс мог выполнить
+	// полный проход — тогда завершаемся без повторного DDL (откат транзакции
+	// освобождает advisory-lock). Существование schema_migrations проверяется
+	// через to_regclass: прямое SELECT по отсутствующей таблице прервало бы
+	// транзакцию (42P01), и весь последующий DDL игнорировался бы.
+	var migTable *string
+	if scanErr := tx.QueryRowContext(ctx, `SELECT to_regclass('schema_migrations')::text`).Scan(&migTable); scanErr != nil {
+		// Отмена контекста или сбой соединения — наружу, а не продолжение к DDL.
+		return fmt.Errorf("schema version double-check: %w", scanErr)
+	}
+	if migTable != nil {
+		var schemaCurrent bool
+		if checkErr := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)`, CurrentSchemaVersion).Scan(&schemaCurrent); checkErr != nil {
+			return fmt.Errorf("schema version double-check: %w", checkErr)
+		}
+		if schemaCurrent {
+			return nil
+		}
+	}
 	for _, stmt := range statements {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("failed to initialize schema: %w", err)
 		}
 	}
+	// files_is_generated_backfill_v1: однократный backfill is_generated для
+	// записей, проиндексированных до введения флага. Новые записи получают
+	// признак от индексатора при вставке; повторные прогоны — no-op по маркеру,
+	// таблица files не сканируется при каждом InitSchema.
+	if err := applyMigrationTx(ctx, tx, "files_is_generated_backfill_v1", []string{
+		`UPDATE files SET is_generated = TRUE
+		 WHERE (rel_path ~* '/UPLOAD/' OR extension = 't01') AND NOT is_generated`,
+	}); err != nil {
+		return fmt.Errorf("failed to apply migration files_is_generated_backfill_v1: %w", err)
+	}
 	if err := applyMigrationTx(ctx, tx, "spec_search_vectors_weighted_v1", specSearchVectorUpdateStatements("")); err != nil {
 		return fmt.Errorf("failed to apply migration spec_search_vectors_weighted_v1: %w", err)
 	}
 	// pas_entities_file_id_v1: маркер трассировки применения денормализации
-	// file_id на pas_classes/pas_methods/pas_fields — сами statements
-	// идемпотентны и выполняются в общем списке выше при каждом InitSchema
+	// file_id на pas_classes/pas_methods/pas_fields — statements находятся
+	// в общем списке выше и выполняются на переходах версии схемы
+	// (легаси-апгрейды); на актуальной схеме fast-path их пропускает
 	if err := applyMigrationTx(ctx, tx, "pas_entities_file_id_v1", nil); err != nil {
 		return fmt.Errorf("failed to record migration pas_entities_file_id_v1: %w", err)
 	}

@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -75,14 +74,9 @@ func prepareMCPDatabase(ctx context.Context, cfg config.DBConfig) (*store.DB, er
 	}
 	if err := db.CheckSchemaVersion(ctx); err != nil {
 		_ = db.Close()
-		switch {
-		case errors.Is(err, store.ErrSchemaNotInitialized):
-			return nil, fmt.Errorf("database schema is not initialized; run codebase init --config <path>: %w", err)
-		case errors.Is(err, store.ErrSchemaUpdateRequired):
-			return nil, fmt.Errorf("database schema update is required; run codebase update --config <path>: %w", err)
-		default:
-			return nil, fmt.Errorf("schema compatibility check failure: %w", err)
-		}
+		// Подсказка «run codebase init/update» входит в саму ошибку
+		// CheckSchemaVersion — здесь не дублируется.
+		return nil, err
 	}
 	return db, nil
 }

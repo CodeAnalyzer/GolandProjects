@@ -77,7 +77,8 @@ func TestClassifyStatsError(t *testing.T) {
 	}{
 		{err: errs.ErrConfigNotLoaded, want: "config_error"},
 		{err: fmt.Errorf("%w: %w", errs.ErrDBConnect, errors.New("connection refused")), want: "database_unavailable"},
-		{err: fmt.Errorf("%w: %w", errs.ErrSchemaInit, errors.New("boom")), want: "schema_init_failed"},
+		{err: fmt.Errorf("%w: %w", store.ErrSchemaNotInitialized, errors.New("boom")), want: "schema_not_initialized"},
+		{err: fmt.Errorf("%w: %w", store.ErrSchemaUpdateRequired, errors.New("boom")), want: "schema_update_required"},
 		{err: fmt.Errorf("%w: %w", errs.ErrStatsFailed, errors.New("db error")), want: "stats_query_failed"},
 		{err: errors.New("other"), want: "internal_error"},
 	}
@@ -95,7 +96,8 @@ func TestClassifyHealthError(t *testing.T) {
 	}{
 		{err: errs.ErrConfigNotLoaded, want: "config_error"},
 		{err: errors.New("failed to ping database: connection refused"), want: "database_unavailable"},
-		{err: fmt.Errorf("%w: %w", errs.ErrSchemaInit, errors.New("boom")), want: "schema_init_failed"},
+		{err: fmt.Errorf("%w: %w", store.ErrSchemaNotInitialized, errors.New("boom")), want: "schema_not_initialized"},
+		{err: fmt.Errorf("%w: %w", store.ErrSchemaUpdateRequired, errors.New("boom")), want: "schema_update_required"},
 		{err: fmt.Errorf("%w: %w", errs.ErrHealthCheckFailed, errors.New("boom")), want: "health_check_failed"},
 		{err: errors.New("other"), want: "internal_error"},
 	}

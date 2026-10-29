@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -102,9 +103,9 @@ var statsCmd = &cobra.Command{
 	Short: "Index summary",
 	Long:  `Displays statistics on indexed files and entities.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		stats, err := executeStats()
+		stats, err := executeStats(cmd.Context())
 		if err != nil {
-			return handleStatsError(err)
+			return err
 		}
 
 		if statsOutputJSON {
@@ -205,7 +206,7 @@ var statsCmd = &cobra.Command{
 	},
 }
 
-func executeStats() (*store.Stats, error) {
+func executeStats(ctx context.Context) (*store.Stats, error) {
 	cfg := config.Get()
 	if cfg == nil {
 		return nil, errs.ErrConfigNotLoaded
@@ -215,8 +216,10 @@ func executeStats() (*store.Stats, error) {
 		return nil, fmt.Errorf("%w: %w", errs.ErrDBConnect, err)
 	}
 	defer db.Close()
-	if err := db.InitSchema(); err != nil {
-		return nil, fmt.Errorf("%w: %w", errs.ErrSchemaInit, err)
+	// Read-only политика: схема не создаётся, только проверяется готовность
+	// (readonly-schema-policy). Ошибка версии пробрасывается как есть.
+	if err := db.CheckSchemaVersion(ctx); err != nil {
+		return nil, err
 	}
 	return systemsvc.ExecuteStats(db)
 }
@@ -298,13 +301,6 @@ func buildStatsResponse(stats *store.Stats) statsResponse {
 	return response
 }
 
-func handleStatsError(err error) error {
-	if !statsOutputJSON {
-		return err
-	}
-	return writeStatsErrorResponse(err)
-}
-
 func writeStatsErrorResponse(err error) error {
 	response := statsErrorResponse{
 		Success:       false,
@@ -324,8 +320,10 @@ func classifyStatsError(err error) string {
 		return "config_error"
 	case errors.Is(err, errs.ErrDBConnect):
 		return "database_unavailable"
-	case errors.Is(err, errs.ErrSchemaInit):
-		return "schema_init_failed"
+	case errors.Is(err, store.ErrSchemaNotInitialized):
+		return "schema_not_initialized"
+	case errors.Is(err, store.ErrSchemaUpdateRequired):
+		return "schema_update_required"
 	case errors.Is(err, errs.ErrStatsFailed):
 		return "stats_query_failed"
 	case containsAny(err.Error(), "connection refused", "dial tcp"):
