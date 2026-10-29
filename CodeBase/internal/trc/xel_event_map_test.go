@@ -15,12 +15,12 @@ func TestXELEventMapGenerated_NoCollisions(t *testing.T) {
 	//    совпадать внутри пары и не должны путаться между уровнями
 	//    (SP:Stmt vs SQL:Stmt vs SP/module).
 	type pair struct {
-		starting    string
-		completed   string
-		startClass  int
-		compClass   int
-		startName   string
-		compName    string
+		starting   string
+		completed  string
+		startClass int
+		compClass  int
+		startName  string
+		compName   string
 	}
 	pairs := []pair{
 		{"sp_statement_starting", "sp_statement_completed", 44, 45, "SP:StmtStarting", "SP:StmtCompleted"},

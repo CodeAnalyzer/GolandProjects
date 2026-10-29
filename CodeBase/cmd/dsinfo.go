@@ -134,6 +134,23 @@ var dsinfoUseCmd = &cobra.Command{
 	RunE:  runDsInfoUse,
 }
 
+// printDsInfoMatching печатает таблицу сопоставления манифеста профиля с
+// проиндексированными ветками (человекочитаемый режим).
+func printDsInfoMatching(m *dsinfosvc.MatchingResult) {
+	if m == nil {
+		return
+	}
+	fmt.Printf("\nMatching: %s\n", m.Summary)
+	for _, item := range m.Items {
+		used := item.MatchedBranchKey
+		if used == "" {
+			used = "-"
+		}
+		fmt.Printf("  %4d  %-44s  %-28s -> %-28s  %s\n",
+			item.LineNo, item.RawName, item.RequestedBranchKey, used, item.Status)
+	}
+}
+
 func runDsInfoParse(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	db := openDB()
@@ -158,6 +175,7 @@ func runDsInfoParse(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Server: %s  DB: %s  Alias: %s\n", result.DBServer, result.DBName, result.ClientAlias)
 	fmt.Printf("  Products: %d  Modules: %d  Procedures: %d\n",
 		result.ProductsCount, result.ModulesCount, result.ProceduresCount)
+	printDsInfoMatching(result.Matching)
 	return nil
 }
 
@@ -246,6 +264,7 @@ func runDsInfoShow(cmd *cobra.Command, args []string) error {
 	if result.ProductsTruncated {
 		fmt.Printf("  ... truncated (limit %d of %d, use --limit)\n", result.Limit, p.ProductsCount)
 	}
+	printDsInfoMatching(result.Matching)
 
 	fmt.Printf("\nModules (%d):\n", len(result.Modules))
 	for _, m := range result.Modules {

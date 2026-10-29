@@ -23,13 +23,13 @@ var (
 
 // Parser H-файлов парсер
 type Parser struct {
-	defineRe    *regexp.Regexp
-	emptyDefineRe *regexp.Regexp
-	includeRe   *regexp.Regexp
-	commentRe   *regexp.Regexp
-	macroRe     *regexp.Regexp
-	emptyMacroRe *regexp.Regexp
-	constRe     *regexp.Regexp
+	defineRe           *regexp.Regexp
+	emptyDefineRe      *regexp.Regexp
+	includeRe          *regexp.Regexp
+	commentRe          *regexp.Regexp
+	macroRe            *regexp.Regexp
+	emptyMacroRe       *regexp.Regexp
+	constRe            *regexp.Regexp
 	constWithCommentRe *regexp.Regexp
 }
 

@@ -22,7 +22,7 @@ func makeEventsWithProc(n int) []TRCEvent {
 			EventClass: 10,
 			EventName:  "RPC:Completed",
 			Columns: map[int]any{
-				1: fmt.Sprintf("exec %s @Param1=value%d, @Param2=value%d", proc, i, i+1),
+				1:  fmt.Sprintf("exec %s @Param1=value%d, @Param2=value%d", proc, i, i+1),
 				13: int64(i * 1000),
 			},
 		}

@@ -72,7 +72,7 @@ func TestFindLatestSQLColumnDefinitionType_ProductScope(t *testing.T) {
 
 	// С контекстом fa-contracts тип разрешается из своего продукта, а не из
 	// более свежей ADP-копии fa-reports
-	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "pConsQtyListRight", "QtyType", reviewFileID, contractsProductID)
+	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "pConsQtyListRight", "QtyType", reviewFileID, store.LookupScope{ProductID: contractsProductID})
 	if err != nil {
 		t.Fatalf("FindLatestSQLColumnDefinitionType: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestFindLatestSQLColumnDefinitionType_SameFileTier(t *testing.T) {
 	insertColumnDef(t, db, reviewFileID, "#Rest", "RestCol", "DSBIGMONEY")
 	insertColumnDef(t, db, otherFileID, "#Rest", "RestCol", "DSMONEY")
 
-	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "#Rest", "RestCol", reviewFileID, contractsProductID)
+	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "#Rest", "RestCol", reviewFileID, store.LookupScope{ProductID: contractsProductID})
 	if err != nil {
 		t.Fatalf("FindLatestSQLColumnDefinitionType: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestFindLatestSQLColumnDefinitionType_SameFileTier(t *testing.T) {
 	}
 
 	// Без файлового яруса (productID only) побеждает более свежее same-product
-	got, err = db.FindLatestSQLColumnDefinitionType(ctx, "#Rest", "RestCol", 0, contractsProductID)
+	got, err = db.FindLatestSQLColumnDefinitionType(ctx, "#Rest", "RestCol", 0, store.LookupScope{ProductID: contractsProductID})
 	if err != nil {
 		t.Fatalf("FindLatestSQLColumnDefinitionType: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestFindLatestSQLColumnDefinitionType_GlobalFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateDSProductIDByName fa-payments: %v", err)
 	}
-	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "pConsQtyListRight", "QtyType", 0, paymentsProductID)
+	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "pConsQtyListRight", "QtyType", 0, store.LookupScope{ProductID: paymentsProductID})
 	if err != nil {
 		t.Fatalf("FindLatestSQLColumnDefinitionType: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestFindLatestSQLColumnDefinitionType_ZeroContextLegacy(t *testing.T) {
 	ctx := context.Background()
 
 	// Нулевой контекст воспроизводит прежнее поведение: глобальный latest-wins
-	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "pConsQtyListRight", "QtyType", 0, 0)
+	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "pConsQtyListRight", "QtyType", 0, store.LookupScope{})
 	if err != nil {
 		t.Fatalf("FindLatestSQLColumnDefinitionType: %v", err)
 	}
@@ -173,4 +173,141 @@ func TestBatchFindColumnDefinitionTypes_ProductScope(t *testing.T) {
 	if got := legacy["pconsqtylistright|qtytype"]; got != "DSINT_KEY" {
 		t.Fatalf("batch legacy type = %q, want DSINT_KEY", got)
 	}
+}
+
+// insertBranchFile вставляет файл, привязанный к продукту и ветке.
+func insertBranchFile(t *testing.T, db *store.DB, scanID int64, productID, branchID int64, path string) int64 {
+	t.Helper()
+	var id int64
+	err := db.QueryRow(`
+		INSERT INTO files (scan_run_id, ds_product_id, ds_product_branch_id, path, rel_path, extension, size_bytes, hash_sha256, modified_at, encoding, language)
+		VALUES ($1, NULLIF($2, 0), NULLIF($3, 0), $4, $4, 'sql', 1, $5, $6, 'CP866', 'SQL')
+		RETURNING id
+	`, scanID, productID, branchID, path, path, time.Now()).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert file %s: %v", path, err)
+	}
+	return id
+}
+
+// insertProcDirect вставляет процедуру напрямую, возвращает id.
+func insertProcDirect(t *testing.T, db *store.DB, fileID int64, procName string) int64 {
+	t.Helper()
+	var id int64
+	if err := db.QueryRow(
+		`INSERT INTO sql_procedures (file_id, proc_name, line_start, line_end) VALUES ($1, $2, 1, 2) RETURNING id`,
+		fileID, procName,
+	).Scan(&id); err != nil {
+		t.Fatalf("insert procedure %s: %v", procName, err)
+	}
+	return id
+}
+
+// seedTierLookupFixture создаёт продукт fa-tier (develop default + SP-линия) и
+// fa-tier-other; процедуры: MyProc в develop и SP (SP вставлена позже —
+// больший id), OnlyInSP — только в SP, UTIL_X — только в другом продукте.
+func seedTierLookupFixture(t *testing.T, db *store.DB) (productID, otherProductID, devBranchID, spBranchID, devMyProcID, spMyProcID, spOnlyID, otherUtilID int64) {
+	t.Helper()
+	ctx := context.Background()
+	scanID, err := db.CreateScanRun(ctx, "/repo")
+	if err != nil {
+		t.Fatalf("CreateScanRun: %v", err)
+	}
+	productID, err = db.GetOrCreateDSProductIDByName(ctx, "fa-tier")
+	if err != nil {
+		t.Fatalf("GetOrCreateDSProductIDByName fa-tier: %v", err)
+	}
+	otherProductID, err = db.GetOrCreateDSProductIDByName(ctx, "fa-tier-other")
+	if err != nil {
+		t.Fatalf("GetOrCreateDSProductIDByName fa-tier-other: %v", err)
+	}
+
+	insertBranch := func(product int64, name, key, path string, isDefault bool) int64 {
+		var id int64
+		if err := db.QueryRow(`
+			INSERT INTO ds_products_branch (ds_product_id, branch_name, branch_key, path, is_default)
+			VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+			product, name, key, path, isDefault).Scan(&id); err != nil {
+			t.Fatalf("insert branch %s: %v", key, err)
+		}
+		return id
+	}
+	devBranchID = insertBranch(productID, "develop", "develop", "/repo/fa-tier/develop", true)
+	spBranchID = insertBranch(productID, "FA-Tier-11-01-7-SP", "fa-tier-11-01-7", "/repo/fa-tier-11017", false)
+	otherBranchID := insertBranch(otherProductID, "develop", "develop", "/repo/fa-tier-other/develop", true)
+
+	// Порядок вставки: develop-копии раньше, SP-копии позже (больший id).
+	devFile := insertBranchFile(t, db, scanID, productID, devBranchID, "/repo/fa-tier/develop/MyProcDev.sql")
+	spFile := insertBranchFile(t, db, scanID, productID, spBranchID, "/repo/fa-tier-11017/MyProcSP.sql")
+	otherFile := insertBranchFile(t, db, scanID, otherProductID, otherBranchID, "/repo/fa-tier-other/develop/UtilX.sql")
+
+	devMyProcID = insertProcDirect(t, db, devFile, "TIER_MyProc")
+	spOnlyID = insertProcDirect(t, db, spFile, "TIER_OnlyInSP")
+	spMyProcID = insertProcDirect(t, db, spFile, "TIER_MyProc")
+	otherUtilID = insertProcDirect(t, db, otherFile, "TIER_UTIL_X")
+	return
+}
+
+// TestFindLatestSQLProcedureIDsByNames_TierScope проверяет трёхъярусное
+// ограничение кандидатов (D4 среза branch-aware-lookup): ветка источника →
+// default-ветка продукта → другие продукты; чужие ветки того же продукта
+// исключаются.
+func TestFindLatestSQLProcedureIDsByNames_TierScope(t *testing.T) {
+	db := testutil.Open(t)
+	productID, otherProductID, devBranchID, spBranchID, devMyProcID, spMyProcID, spOnlyID, otherUtilID := seedTierLookupFixture(t, db)
+	ctx := context.Background()
+
+	// Scope SP-ветки: своя копия MyProc побеждает develop (branch_match > id).
+	ids, err := db.FindLatestSQLProcedureIDsByNames(ctx, []string{"TIER_MyProc"}, store.LookupScope{ProductID: productID, BranchID: spBranchID})
+	if err != nil {
+		t.Fatalf("FindLatestSQLProcedureIDsByNames (SP scope): %v", err)
+	}
+	if ids["tier_myproc"] != spMyProcID {
+		t.Fatalf("SP scope: tier_myproc = %d, want SP copy %d", ids["tier_myproc"], spMyProcID)
+	}
+
+	// Scope develop-ветки: develop-копия; OnlyInSP не резолвится (чужая ветка
+	// того же продукта исключена из кандидатов).
+	ids, err = db.FindLatestSQLProcedureIDsByNames(ctx, []string{"TIER_MyProc", "TIER_OnlyInSP"}, store.LookupScope{ProductID: productID, BranchID: devBranchID})
+	if err != nil {
+		t.Fatalf("FindLatestSQLProcedureIDsByNames (develop scope): %v", err)
+	}
+	if ids["tier_myproc"] != devMyProcID {
+		t.Fatalf("develop scope: tier_myproc = %d, want develop copy %d", ids["tier_myproc"], devMyProcID)
+	}
+	if ids["tier_onlyinsp"] != 0 {
+		t.Fatalf("develop scope: tier_onlyinsp = %d, want 0 (чужая ветка исключена)", ids["tier_onlyinsp"])
+	}
+
+	// Scope без ветки (productID only): default-ветка + другие продукты.
+	ids, err = db.FindLatestSQLProcedureIDsByNames(ctx, []string{"TIER_MyProc"}, store.LookupScope{ProductID: productID})
+	if err != nil {
+		t.Fatalf("FindLatestSQLProcedureIDsByNames (product scope): %v", err)
+	}
+	if ids["tier_myproc"] != devMyProcID {
+		t.Fatalf("product scope: tier_myproc = %d, want develop copy %d", ids["tier_myproc"], devMyProcID)
+	}
+
+	// Третий ярус: общая утилита другого продукта резолвится.
+	ids, err = db.FindLatestSQLProcedureIDsByNames(ctx, []string{"TIER_UTIL_X"}, store.LookupScope{ProductID: productID, BranchID: devBranchID})
+	if err != nil {
+		t.Fatalf("FindLatestSQLProcedureIDsByNames (tier3): %v", err)
+	}
+	if ids["tier_util_x"] != otherUtilID {
+		t.Fatalf("tier3: tier_util_x = %d, want other product copy %d", ids["tier_util_x"], otherUtilID)
+	}
+
+	// Нулевой scope: глобальное поведение без продуктово-веточных
+	// предпочтений, но с приоритетом default-ветки (ось D2/D3) — develop-копия.
+	ids, err = db.FindLatestSQLProcedureIDsByNames(ctx, []string{"TIER_MyProc", "TIER_OnlyInSP"}, store.LookupScope{})
+	if err != nil {
+		t.Fatalf("FindLatestSQLProcedureIDsByNames (zero scope): %v", err)
+	}
+	if ids["tier_myproc"] != devMyProcID {
+		t.Fatalf("zero scope: tier_myproc = %d, want default-branch copy %d", ids["tier_myproc"], devMyProcID)
+	}
+	if ids["tier_onlyinsp"] != spOnlyID {
+		t.Fatalf("zero scope: tier_onlyinsp = %d, want %d", ids["tier_onlyinsp"], spOnlyID)
+	}
+	_ = otherProductID
 }

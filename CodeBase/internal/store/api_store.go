@@ -210,9 +210,31 @@ func (db *DB) FindAPIContractIDsByFile(ctx context.Context, fileID int64) (map[s
 	return result, rows.Err()
 }
 
-func (db *DB) FindLatestAPIContractIDByNameAndKind(ctx context.Context, name string, kind string) (int64, error) {
+// FindLatestAPIContractIDByNameAndKind возвращает id контракта (name, kind),
+// выбранного по приоритету not_generated → ветка scope → продукт scope →
+// default-ветка → id. При ненулевом ProductID кандидаты ограничены ярусами
+// scope (scopeTierFilter).
+func (db *DB) FindLatestAPIContractIDByNameAndKind(ctx context.Context, name string, kind string, scope LookupScope) (int64, error) {
 	var id int64
-	err := db.QueryRowContext(ctx, `SELECT id FROM api_contracts WHERE LOWER(contract_name)=LOWER($1) AND LOWER(contract_kind)=LOWER($2) ORDER BY id DESC LIMIT 1`, strings.TrimSpace(name), strings.TrimSpace(kind)).Scan(&id)
+	err := db.QueryRowContext(ctx, `
+		SELECT c.id
+		FROM api_contracts c
+		JOIN files f ON f.id = c.file_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+		WHERE LOWER(c.contract_name)=LOWER($1)
+		  AND LOWER(c.contract_kind)=LOWER($2)
+		  AND (
+			    ($4 <> 0 AND f.ds_product_branch_id = $4)
+			 OR (f.ds_product_id = $3 AND (br.id IS NULL OR br.is_default))
+			 OR ($3 = 0 OR COALESCE(f.ds_product_id, 0) <> $3)
+		  )
+		ORDER BY (NOT f.is_generated) DESC,
+		         (COALESCE(f.ds_product_branch_id = $4, FALSE)) DESC,
+		         (COALESCE(f.ds_product_id = $3, FALSE)) DESC,
+		         (COALESCE(br.is_default, FALSE)) DESC,
+		         c.id DESC
+		LIMIT 1
+	`, strings.TrimSpace(name), strings.TrimSpace(kind), scope.ProductID, scope.BranchID).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -227,8 +249,8 @@ type APIContractNameKind struct {
 
 // FindLatestAPIContractIDsByNamesAndKinds загружает API контракты одним запросом
 // и строит in-memory map для batch-resolve. Заменяет N+1 вызовов
-// FindLatestAPIContractIDByNameAndKind.
-func (db *DB) FindLatestAPIContractIDsByNamesAndKinds(ctx context.Context, pairs []APIContractNameKind) (map[string]int64, error) {
+// FindLatestAPIContractIDByNameAndKind; приоритет кандидатов — как там.
+func (db *DB) FindLatestAPIContractIDsByNamesAndKinds(ctx context.Context, pairs []APIContractNameKind, scope LookupScope) (map[string]int64, error) {
 	type nkKey struct{ name, kind string }
 	unique := make(map[nkKey]struct{})
 	names := make([]string, 0)
@@ -252,12 +274,26 @@ func (db *DB) FindLatestAPIContractIDsByNamesAndKinds(ctx context.Context, pairs
 		return result, nil
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, LOWER(contract_name) AS name_key, LOWER(contract_kind) AS kind_key
-		FROM api_contracts
-		WHERE LOWER(contract_name) = ANY($1)
-		  AND LOWER(contract_kind) = ANY($2)
-		ORDER BY id DESC
-	`, pq.Array(names), pq.Array(kinds))
+		SELECT DISTINCT ON (name_key, kind_key) name_key, kind_key, id
+		FROM (
+			SELECT LOWER(c.contract_name) AS name_key, LOWER(c.contract_kind) AS kind_key, c.id AS id,
+			       (NOT f.is_generated) AS not_generated,
+			       COALESCE(f.ds_product_branch_id = $4, FALSE) AS branch_match,
+			       COALESCE(f.ds_product_id = $3, FALSE) AS product_match,
+			       COALESCE(br.is_default, FALSE) AS default_branch
+			FROM api_contracts c
+			JOIN files f ON f.id = c.file_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+			WHERE LOWER(c.contract_name) = ANY($1)
+			  AND LOWER(c.contract_kind) = ANY($2)
+			  AND (
+				    ($4 <> 0 AND f.ds_product_branch_id = $4)
+				 OR (f.ds_product_id = $3 AND (br.id IS NULL OR br.is_default))
+				 OR ($3 = 0 OR COALESCE(f.ds_product_id, 0) <> $3)
+			  )
+		) AS contracts
+		ORDER BY name_key, kind_key, not_generated DESC, branch_match DESC, product_match DESC, default_branch DESC, id DESC
+	`, pq.Array(names), pq.Array(kinds), scope.ProductID, scope.BranchID)
 	if err != nil {
 		return nil, err
 	}
@@ -265,24 +301,44 @@ func (db *DB) FindLatestAPIContractIDsByNamesAndKinds(ctx context.Context, pairs
 	for rows.Next() {
 		var id int64
 		var nameKey, kindKey string
-		if err := rows.Scan(&id, &nameKey, &kindKey); err != nil {
+		if err := rows.Scan(&nameKey, &kindKey, &id); err != nil {
 			return nil, err
 		}
-		mapKey := nameKey + "|" + kindKey
-		if _, exists := result[mapKey]; !exists {
-			result[mapKey] = id
-		}
+		result[nameKey+"|"+kindKey] = id
 	}
 	return result, rows.Err()
 }
 
-func (db *DB) FindLatestAPIContractIDByNameKindAndOwnerModule(ctx context.Context, name string, kind string, ownerModule string) (int64, error) {
+// FindLatestAPIContractIDByNameKindAndOwnerModule ищет контракт по имени, виду и
+// модулю-владельцу; при неудаче (или пустом модуле) — fallback на
+// FindLatestAPIContractIDByNameAndKind. Обе ветки учитывают scope и ярусы
+// кандидатов (scopeTierFilter).
+func (db *DB) FindLatestAPIContractIDByNameKindAndOwnerModule(ctx context.Context, name string, kind string, ownerModule string, scope LookupScope) (int64, error) {
 	trimmedName := strings.TrimSpace(name)
 	trimmedKind := strings.TrimSpace(kind)
 	trimmedOwnerModule := strings.TrimSpace(ownerModule)
 	if trimmedOwnerModule != "" {
 		var id int64
-		err := db.QueryRowContext(ctx, `SELECT id FROM api_contracts WHERE LOWER(contract_name)=LOWER($1) AND LOWER(contract_kind)=LOWER($2) AND LOWER(owner_module)=LOWER($3) ORDER BY id DESC LIMIT 1`, trimmedName, trimmedKind, trimmedOwnerModule).Scan(&id)
+		err := db.QueryRowContext(ctx, `
+			SELECT c.id
+			FROM api_contracts c
+			JOIN files f ON f.id = c.file_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+			WHERE LOWER(c.contract_name)=LOWER($1)
+			  AND LOWER(c.contract_kind)=LOWER($2)
+			  AND LOWER(c.owner_module)=LOWER($3)
+			  AND (
+				    ($5 <> 0 AND f.ds_product_branch_id = $5)
+				 OR (f.ds_product_id = $4 AND (br.id IS NULL OR br.is_default))
+				 OR ($4 = 0 OR COALESCE(f.ds_product_id, 0) <> $4)
+			  )
+			ORDER BY (NOT f.is_generated) DESC,
+			         (COALESCE(f.ds_product_branch_id = $5, FALSE)) DESC,
+			         (COALESCE(f.ds_product_id = $4, FALSE)) DESC,
+			         (COALESCE(br.is_default, FALSE)) DESC,
+			         c.id DESC
+			LIMIT 1
+		`, trimmedName, trimmedKind, trimmedOwnerModule, scope.ProductID, scope.BranchID).Scan(&id)
 		if err == nil {
 			return id, nil
 		}
@@ -290,7 +346,7 @@ func (db *DB) FindLatestAPIContractIDByNameKindAndOwnerModule(ctx context.Contex
 			return 0, err
 		}
 	}
-	return db.FindLatestAPIContractIDByNameAndKind(ctx, trimmedName, trimmedKind)
+	return db.FindLatestAPIContractIDByNameAndKind(ctx, trimmedName, trimmedKind, scope)
 }
 
 func (db *DB) FindAPIContractsByKind(ctx context.Context, kind string) ([]*model.APIContract, error) {
@@ -325,8 +381,10 @@ type EventContractLookup struct {
 
 // FindLatestEventContractIDsByNames загружает event-контракты одним запросом
 // и строит in-memory map для batch-resolve. Заменяет N+1 вызовов
-// FindLatestAPIContractIDByNameKindAndOwnerModule.
-func (db *DB) FindLatestEventContractIDsByNames(ctx context.Context, names []string) (*EventContractLookup, error) {
+// FindLatestAPIContractIDByNameKindAndOwnerModule. Приоритет копий контракта:
+// not_generated → ветка scope → продукт scope → default-ветка → id; при
+// ненулевом ProductID кандидаты ограничены ярусами scope (scopeTierFilter).
+func (db *DB) FindLatestEventContractIDsByNames(ctx context.Context, names []string, scope LookupScope) (*EventContractLookup, error) {
 	normalizedNames := make([]string, 0, len(names))
 	seenNames := make(map[string]struct{})
 	for _, n := range names {
@@ -352,12 +410,30 @@ func (db *DB) FindLatestEventContractIDsByNames(ctx context.Context, names []str
 	// Загружаем все event-контракты, у которых contract_name входит в names.
 	// owner_module может быть любым (включая пустой), поэтому не фильтруем по modules.
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, LOWER(contract_name) AS name_key, COALESCE(LOWER(owner_module), '') AS module_key
-		FROM api_contracts
-		WHERE LOWER(contract_kind) = 'event'
-		  AND LOWER(contract_name) = ANY($1)
-		ORDER BY id DESC
-	`, pq.Array(normalizedNames))
+		SELECT id, name_key, module_key
+		FROM (
+			SELECT c.id AS id, LOWER(c.contract_name) AS name_key, COALESCE(LOWER(c.owner_module), '') AS module_key,
+			       (NOT f.is_generated) AS not_generated,
+			       COALESCE(f.ds_product_branch_id = $2, FALSE) AS branch_match,
+			       COALESCE(f.ds_product_id = $3, FALSE) AS product_match,
+			       COALESCE(br.is_default, FALSE) AS default_branch
+			FROM api_contracts c
+			JOIN files f ON f.id = c.file_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+			WHERE LOWER(c.contract_kind) = 'event'
+			  AND LOWER(c.contract_name) = ANY($1)
+			  AND (
+				    ($2 <> 0 AND f.ds_product_branch_id = $2)
+				 OR (f.ds_product_id = $3 AND (br.id IS NULL OR br.is_default))
+				 OR ($3 = 0 OR COALESCE(f.ds_product_id, 0) <> $3)
+			  )
+		) AS events
+		-- Приоритет осей — перед module_key: fallback ByName выбирает лучшую
+		-- копию по ветке/продукту/default, а не по алфавитному порядку модуля;
+		-- для ByNameAndModule первая встреченная строка пары (name, module) в
+		-- этом порядке остаётся лучшей копией этой пары.
+		ORDER BY name_key, not_generated DESC, branch_match DESC, product_match DESC, default_branch DESC, module_key, id DESC
+	`, pq.Array(normalizedNames), scope.BranchID, scope.ProductID)
 	if err != nil {
 		return nil, err
 	}

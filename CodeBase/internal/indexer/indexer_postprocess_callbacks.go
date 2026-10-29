@@ -19,28 +19,42 @@ func (idx *Indexer) postProcessCallbackEventRelations(ctx context.Context, colle
 		return
 	}
 
-	// Collect unique event names from callbacks for batch-resolve.
-	eventNames := make([]string, 0, len(callbacks))
-	for _, cb := range callbacks {
-		if cb == nil {
-			continue
-		}
-		name := strings.TrimSpace(cb.UsedObjectName)
-		if name != "" {
-			eventNames = append(eventNames, name)
-		}
-	}
-
-	lookup, err := idx.db.FindLatestEventContractIDsByNames(ctx, eventNames)
+	// Scope ветки источника: callback-контракты группируются по (product,
+	// branch) своего файла; event-имена резолвятся в scope группы.
+	contractIDs := collectEntityIDs(callbacks, func(c *model.APIContract) int64 { return c.ID })
+	scopes, err := idx.db.EntityFileScopes(ctx, "api_contracts", contractIDs)
 	if err != nil {
-		idx.logError("<post-processing>", "Error batch-loading event contracts: %v", err)
+		idx.logError("<post-processing>", "Error loading callback contract scopes: %v", err)
 		collector.Add(func(stats *model.ScanStats) {
 			stats.Errors++
 		})
 		return
 	}
+	groups := groupByScope(callbacks, scopes, func(c *model.APIContract) int64 { return c.ID })
 
-	relations := buildCallbackEventRelations(callbacks, lookup)
+	var relations []*model.Relation
+	for scope, group := range groups {
+		// Collect unique event names from callbacks for batch-resolve.
+		eventNames := make([]string, 0, len(group))
+		for _, cb := range group {
+			if cb == nil {
+				continue
+			}
+			name := strings.TrimSpace(cb.UsedObjectName)
+			if name != "" {
+				eventNames = append(eventNames, name)
+			}
+		}
+		lookup, err := idx.db.FindLatestEventContractIDsByNames(ctx, eventNames, scope)
+		if err != nil {
+			idx.logError("<post-processing>", "Error batch-loading event contracts (scope %+v): %v", scope, err)
+			collector.Add(func(stats *model.ScanStats) {
+				stats.Errors++
+			})
+			continue
+		}
+		relations = append(relations, buildCallbackEventRelations(group, lookup)...)
+	}
 
 	localStats := &model.ScanStats{}
 	if err := idx.saveRelations(ctx, relations, "<post-processing>", localStats); err != nil {

@@ -80,18 +80,18 @@ type RTICallShort struct {
 // RTIClientEventShort — краткий формат клиентского события без тяжёлых
 // полей (BPL, Connection, SQL, Memory, ErrorText, RawBody).
 type RTIClientEventShort struct {
-	ID           int64   `json:"id"`
+	ID           int64     `json:"id"`
 	Timestamp    time.Time `json:"timestamp"`
-	Level        string  `json:"level"`
-	Category     string  `json:"category"`
-	ClassName    string  `json:"class_name"`
-	MethodName   string  `json:"method_name"`
-	PID          int     `json:"pid"`
-	SeqNo        int     `json:"seq_no"`
-	Line         int     `json:"line"`
-	Kind         string  `json:"kind"`
-	ElapsedMs    int     `json:"elapsed_ms,omitempty"`
-	ServerCallID *int64  `json:"server_call_id,omitempty"`
+	Level        string    `json:"level"`
+	Category     string    `json:"category"`
+	ClassName    string    `json:"class_name"`
+	MethodName   string    `json:"method_name"`
+	PID          int       `json:"pid"`
+	SeqNo        int       `json:"seq_no"`
+	Line         int       `json:"line"`
+	Kind         string    `json:"kind"`
+	ElapsedMs    int       `json:"elapsed_ms,omitempty"`
+	ServerCallID *int64    `json:"server_call_id,omitempty"`
 }
 
 // ToShortCall преобразует RTICall в краткий формат.

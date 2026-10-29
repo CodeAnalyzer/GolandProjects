@@ -45,6 +45,7 @@ type querySuccessResponse struct {
 	Items         interface{}       `json:"items"`
 	Summary       interface{}       `json:"summary,omitempty"`
 	Meta          queryResponseMeta `json:"meta"`
+	Warnings      []string          `json:"warnings,omitempty"`
 }
 
 type queryErrorBody struct {
@@ -62,7 +63,11 @@ type queryErrorResponse struct {
 type queryCommandSpec struct {
 	commandName string
 	filters     map[string]string
-	run         func(q *query.Query) (interface{}, error)
+	// withoutProfile — команда не выполняет выбор копии сущности
+	// (callers/relations/inspect): контекст профиля dsinfo не применяется,
+	// предупреждения не добавляются (границы — dsinfo-integration).
+	withoutProfile bool
+	run            func(q *query.Query) (interface{}, error)
 }
 
 type querySummary struct {

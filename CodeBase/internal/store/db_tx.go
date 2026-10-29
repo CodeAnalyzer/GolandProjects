@@ -25,7 +25,6 @@ func (db *DB) withCopyInTxCtx(ctx context.Context, fn func(tx *sql.Tx) error) (e
 	return fn(tx)
 }
 
-
 // WithBatchTxCtx выполняет fn с DB-обёрткой, у которой все batch-вставки
 // (и exec) идут в одной транзакции: один COMMIT на файл вместо COMMIT
 // на каждый BatchInsert*. Commit при успехе, rollback при ошибке.
@@ -56,7 +55,6 @@ func (db *DB) ExecContext(ctx context.Context, query string, args ...interface{}
 	}
 	return db.DB.ExecContext(ctx, query, args...)
 }
-
 
 // Query выполняет SELECT в boundTx, если она задана, иначе напрямую.
 // Это критично для Фазы 3: SELECT должен видеть незафиксированные INSERT'ы

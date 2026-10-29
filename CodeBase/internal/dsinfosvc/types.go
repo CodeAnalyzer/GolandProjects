@@ -14,18 +14,19 @@ type ParseParams struct {
 
 // ParseResult — результат парсинга DiasoftSystemInfo с сохранением профиля.
 type ParseResult struct {
-	ProfileID       int64  `json:"profile_id"`
-	Reused          bool   `json:"reused"`
-	FilePath        string `json:"file_path"`
-	SessionName     string `json:"session_name"`
-	FileHash        string `json:"file_hash"`
-	ParserVersion   int    `json:"parser_version"`
-	DBServer        string `json:"db_server"`
-	DBName          string `json:"db_name"`
-	ClientAlias     string `json:"client_alias"`
-	ProductsCount   int    `json:"products_count"`
-	ModulesCount    int    `json:"modules_count"`
-	ProceduresCount int    `json:"procedures_count"`
+	ProfileID       int64           `json:"profile_id"`
+	Reused          bool            `json:"reused"`
+	FilePath        string          `json:"file_path"`
+	SessionName     string          `json:"session_name"`
+	FileHash        string          `json:"file_hash"`
+	ParserVersion   int             `json:"parser_version"`
+	DBServer        string          `json:"db_server"`
+	DBName          string          `json:"db_name"`
+	ClientAlias     string          `json:"client_alias"`
+	ProductsCount   int             `json:"products_count"`
+	ModulesCount    int             `json:"modules_count"`
+	ProceduresCount int             `json:"procedures_count"`
+	Matching        *MatchingResult `json:"matching,omitempty"`
 }
 
 // ListResult — список профилей (по убыванию parsed_at, активный помечен).
@@ -56,6 +57,19 @@ type ShowResult struct {
 	ProceduresCount    int                         `json:"procedures_count"`
 	ProceduresFiltered bool                        `json:"procedures_filtered"`
 	Limit              int                         `json:"limit"`
+	Matching           *MatchingResult             `json:"matching,omitempty"`
+}
+
+// MatchingResult — сопоставление манифеста профиля на проиндексированные
+// продукты и релизные линии. Вычисляется на лету при parse/show; снимок
+// профиля не изменяется.
+type MatchingResult struct {
+	ProfileID       int64                      `json:"profile_id"`
+	Items           []store.DsInfoProductMatch `json:"items"`
+	ProductsMatched int                        `json:"products_matched"`
+	ProductsTotal   int                        `json:"products_total"`
+	BranchesMissing int                        `json:"branches_missing"`
+	Summary         string                     `json:"summary"`
 }
 
 // DeleteParams — параметры dsinfo delete (окончательное удаление).

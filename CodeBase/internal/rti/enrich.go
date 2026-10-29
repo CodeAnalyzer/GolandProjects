@@ -15,13 +15,16 @@ type ProcedureLookup interface {
 
 // ProcedureEnrichment — результат обогащения процедуры данными из CodeBase
 type ProcedureEnrichment struct {
-	Procedure  string               `json:"procedure"`
-	SourceFile string               `json:"source_file,omitempty"`
-	LineNumber int                  `json:"line_number,omitempty"`
-	LineStart  int                  `json:"line_start,omitempty"`
-	LineEnd    int                  `json:"line_end,omitempty"`
+	Procedure  string                 `json:"procedure"`
+	SourceFile string                 `json:"source_file,omitempty"`
+	LineNumber int                    `json:"line_number,omitempty"`
+	LineStart  int                    `json:"line_start,omitempty"`
+	LineEnd    int                    `json:"line_end,omitempty"`
+	Product    string                 `json:"product,omitempty"`
+	BranchUsed string                 `json:"branch_used,omitempty"`
+	BranchRequested string            `json:"branch_requested,omitempty"`
 	Params     []query.SQLParamResult `json:"params,omitempty"`
-	Found      bool                 `json:"found"`
+	Found      bool                   `json:"found"`
 }
 
 // EnrichCalls обогащает вызовы данными из CodeBase DB.
@@ -58,6 +61,9 @@ func EnrichProcedure(ctx context.Context, q ProcedureLookup, procName string) (*
 		SourceFile: proc.File,
 		LineStart:  proc.LineStart,
 		LineEnd:    proc.LineEnd,
+		Product:    proc.Product,
+		BranchUsed: proc.BranchUsed,
+		BranchRequested: proc.BranchRequested,
 		Params:     proc.Params,
 		Found:      true,
 	}

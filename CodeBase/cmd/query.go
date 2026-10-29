@@ -9,6 +9,8 @@ func init() {
 	queryCmd.PersistentFlags().BoolVar(&outputNDJSON, "ndjson", false, "output as NDJSON")
 	queryCmd.PersistentFlags().BoolVar(&outputSummary, "summary", false, "output summary only")
 	queryCmd.PersistentFlags().IntVar(&limit, "limit", 100, "max results to return")
+	queryCmd.PersistentFlags().Int64Var(&analysisDsInfoID, "dsinfo", 0,
+		"dsinfo profile id for branch-aware analysis (0 = CODEBASE_DSINFO_ID / active profile)")
 
 	querySymbolCmd.Flags().StringVar(&symbolName, "name", "", "symbol name to search (exact by default)")
 	querySymbolCmd.Flags().StringVar(&symbolType, "type", "", "symbol type: canonical (procedure, table, method, function, form, component, ...) or alias (sql_procedure, pas_method, api_contract, ...); unknown type is an error")

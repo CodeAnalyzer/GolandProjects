@@ -10,11 +10,14 @@ import (
 )
 
 // FindLatestSQLProcedureIDsByNames возвращает map нижнего имени процедуры -> id.
-// При ненулевом productID кандидат выбирается по приоритету: не-генерируемый
-// источник (не UPLOAD/.t01), затем источник указанного продукта, затем самый
-// свежий по id. Нулевой productID валиден — продуктовое предпочтение не
-// применяется, приоритет не-копий сохраняется.
-func (db *DB) FindLatestSQLProcedureIDsByNames(ctx context.Context, procNames []string, productID int64) (map[string]int64, error) {
+// Кандидат выбирается по приоритету: не-генерируемый источник (не UPLOAD/.t01),
+// совпадение ветки scope, совпадение продукта scope, default-ветка (is_default),
+// затем самый свежий по id. Нулевой scope валиден — продуктово-веточные
+// предпочтения не применяются, приоритет не-копий и default-ветки сохраняется.
+// При ненулевом ProductID множество кандидатов ограничено ярусами scope
+// (scopeTierFilter): ветка источника → default-ветка продукта → другие
+// продукты; копии остальных веток того же продукта исключаются.
+func (db *DB) FindLatestSQLProcedureIDsByNames(ctx context.Context, procNames []string, scope LookupScope) (map[string]int64, error) {
 	normalized := make([]string, 0, len(procNames))
 	seen := make(map[string]struct{}, len(procNames))
 	for _, procName := range procNames {
@@ -38,13 +41,21 @@ func (db *DB) FindLatestSQLProcedureIDsByNames(ctx context.Context, procNames []
 		FROM (
 			SELECT LOWER(p.proc_name) AS proc_key, p.id AS id,
 			       (NOT f.is_generated) AS not_generated,
-			       COALESCE(f.ds_product_id = $2, FALSE) AS product_match
+			       COALESCE(f.ds_product_branch_id = $3, FALSE) AS branch_match,
+			       COALESCE(f.ds_product_id = $2, FALSE) AS product_match,
+			       COALESCE(br.is_default, FALSE) AS default_branch
 			FROM sql_procedures p
 			JOIN files f ON f.id = p.file_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
 			WHERE LOWER(p.proc_name) = ANY($1)
+			  AND (
+				    ($3 <> 0 AND f.ds_product_branch_id = $3)
+				 OR (f.ds_product_id = $2 AND (br.id IS NULL OR br.is_default))
+				 OR ($2 = 0 OR COALESCE(f.ds_product_id, 0) <> $2)
+			  )
 		) AS procedures
-		ORDER BY proc_key, not_generated DESC, product_match DESC, id DESC
-	`, pq.Array(normalized), productID)
+		ORDER BY proc_key, not_generated DESC, branch_match DESC, product_match DESC, default_branch DESC, id DESC
+	`, pq.Array(normalized), scope.ProductID, scope.BranchID)
 	if err != nil {
 		return nil, err
 	}
@@ -103,8 +114,8 @@ func (db *DB) FindSQLProcedureIDsByFile(ctx context.Context, fileID int64) (map[
 // FindLatestSQLTableIDsByNames возвращает map нижнего имени таблицы -> последний id.
 // Один SQL-запрос вместо N вызовов скалярного lookup.
 // Приоритет кандидатов как в FindLatestSQLProcedureIDsByNames:
-// не-генерируемый источник → указанный продукт → самый свежий по id.
-func (db *DB) FindLatestSQLTableIDsByNames(ctx context.Context, tableNames []string, productID int64) (map[string]int64, error) {
+// не-генерируемый источник → ветка scope → продукт scope → default-ветка → id.
+func (db *DB) FindLatestSQLTableIDsByNames(ctx context.Context, tableNames []string, scope LookupScope) (map[string]int64, error) {
 	normalized := make([]string, 0, len(tableNames))
 	seen := make(map[string]struct{})
 	for _, name := range tableNames {
@@ -127,13 +138,21 @@ func (db *DB) FindLatestSQLTableIDsByNames(ctx context.Context, tableNames []str
 		FROM (
 			SELECT LOWER(t.table_name) AS table_key, t.id AS id,
 			       (NOT f.is_generated) AS not_generated,
-			       COALESCE(f.ds_product_id = $2, FALSE) AS product_match
+			       COALESCE(f.ds_product_branch_id = $3, FALSE) AS branch_match,
+			       COALESCE(f.ds_product_id = $2, FALSE) AS product_match,
+			       COALESCE(br.is_default, FALSE) AS default_branch
 			FROM sql_tables t
 			JOIN files f ON f.id = t.file_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
 			WHERE LOWER(t.table_name) = ANY($1)
+			  AND (
+				    ($3 <> 0 AND f.ds_product_branch_id = $3)
+				 OR (f.ds_product_id = $2 AND (br.id IS NULL OR br.is_default))
+				 OR ($2 = 0 OR COALESCE(f.ds_product_id, 0) <> $2)
+			  )
 		) AS tables
-		ORDER BY table_key, not_generated DESC, product_match DESC, id DESC
-	`, pq.Array(normalized), productID)
+		ORDER BY table_key, not_generated DESC, branch_match DESC, product_match DESC, default_branch DESC, id DESC
+	`, pq.Array(normalized), scope.ProductID, scope.BranchID)
 	if err != nil {
 		return nil, err
 	}
@@ -150,25 +169,28 @@ func (db *DB) FindLatestSQLTableIDsByNames(ctx context.Context, tableNames []str
 }
 
 // FindLatestSQLColumnDefinitionType возвращает тип колонки таблицы. При
-// ненулевых fileID/productID определение выбирается по трёхуровневому приоритету:
-// определение из указанного файла, затем из указанного продукта, затем самое
-// свежее глобальное (id DESC). Нулевой контекст сохраняет прежнее поведение —
-// глобальный latest-wins.
-func (db *DB) FindLatestSQLColumnDefinitionType(ctx context.Context, tableName string, columnName string, fileID, productID int64) (string, error) {
+// ненулевом контексте определение выбирается по приоритету: определение из
+// указанного файла, затем ветка scope, продукт scope, default-ветка, затем
+// самое свежее глобальное (id DESC). Нулевой контекст сохраняет прежнее
+// поведение — глобальный latest-wins (с предпочтением default-ветки).
+func (db *DB) FindLatestSQLColumnDefinitionType(ctx context.Context, tableName string, columnName string, fileID int64, scope LookupScope) (string, error) {
 	var dataType string
 	err := db.QueryRowContext(ctx, `
 		SELECT scd.data_type
 		FROM sql_column_definitions scd
 		JOIN files f ON f.id = scd.file_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
 		WHERE LOWER(scd.table_name) = LOWER($1)
 		  AND LOWER(scd.column_name) = LOWER($2)
 		  AND TRIM(COALESCE(scd.data_type, '')) <> ''
 		  AND scd.data_type <> 'DSUNKNOWN'
 		ORDER BY (scd.file_id = $3) DESC,
+		         (COALESCE(f.ds_product_branch_id = $5, FALSE)) DESC,
 		         (COALESCE(f.ds_product_id = $4, FALSE)) DESC,
+		         (COALESCE(br.is_default, FALSE)) DESC,
 		         scd.id DESC
 		LIMIT 1
-	`, strings.TrimSpace(tableName), strings.TrimSpace(columnName), fileID, productID).Scan(&dataType)
+	`, strings.TrimSpace(tableName), strings.TrimSpace(columnName), fileID, scope.ProductID, scope.BranchID).Scan(&dataType)
 	if err != nil {
 		return "", err
 	}

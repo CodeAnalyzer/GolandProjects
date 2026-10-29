@@ -13,7 +13,7 @@ var querySymbolCmd = &cobra.Command{
 	Short: "Search entity by name (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query symbol",
 			filters: map[string]string{
 				"name": symbolName,
@@ -32,12 +32,13 @@ var queryInspectCmd = &cobra.Command{
 	Short: "Inspect entity with related graph context",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query inspect",
 			filters: map[string]string{
 				"name": inspectName,
 				"type": inspectType,
 			},
+			withoutProfile: true,
 			run: func(q *query.Query) (interface{}, error) {
 				return querysvc.RunInspectQuery(ctx, q, inspectName, inspectType, limit)
 			},
@@ -50,7 +51,7 @@ var queryRelationsCmd = &cobra.Command{
 	Short: "Search relations between indexed entities",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query relations",
 			filters: map[string]string{
 				"source_type":   relationSourceType,
@@ -59,6 +60,7 @@ var queryRelationsCmd = &cobra.Command{
 				"target_name":   relationTargetName,
 				"relation_type": relationType,
 			},
+			withoutProfile: true,
 			run: func(q *query.Query) (interface{}, error) {
 				return q.SearchRelations(ctx, relationSourceType, relationSourceName, relationTargetType, relationTargetName, relationType, limit)
 			},
@@ -71,7 +73,7 @@ var queryTableCmd = &cobra.Command{
 	Short: "Search table information",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query table",
 			filters: map[string]string{
 				"name": tableName,
@@ -89,7 +91,7 @@ var queryTableSchemaCmd = &cobra.Command{
 	Short: "Search table schema definitions",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query table-schema",
 			filters: map[string]string{
 				"name": tableName,
@@ -106,7 +108,7 @@ var queryTableIndexCmd = &cobra.Command{
 	Short: "Search SQL table index definitions",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query table-index",
 			filters: map[string]string{
 				"name": tableIndexName,
@@ -124,7 +126,7 @@ var queryProcedureCmd = &cobra.Command{
 	Short: "Show SQL procedure details",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query procedure",
 			filters: map[string]string{
 				"name": procedureName,
@@ -141,11 +143,12 @@ var queryCallersCmd = &cobra.Command{
 	Short: "Search procedure callers",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query callers",
 			filters: map[string]string{
 				"procedure": procedureName,
 			},
+			withoutProfile: true,
 			run: func(q *query.Query) (interface{}, error) {
 				return q.FindCallers(ctx, procedureName, limit)
 			},
@@ -158,7 +161,7 @@ var queryMethodsCmd = &cobra.Command{
 	Short: "Search methods working with table",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query methods",
 			filters: map[string]string{
 				"table": tableName,
@@ -175,7 +178,7 @@ var queryMethodCmd = &cobra.Command{
 	Short: "Search PAS methods by name",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query method",
 			filters: map[string]string{
 				"name": methodName,
@@ -193,7 +196,7 @@ var queryFormCmd = &cobra.Command{
 	Short: "Search DFM forms (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query form",
 			filters: map[string]string{
 				"name": formName,
@@ -211,7 +214,7 @@ var queryFormComponentCmd = &cobra.Command{
 	Short: "Search DFM form components (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query form-component",
 			filters: map[string]string{
 				"name": formComponentName,
@@ -229,7 +232,7 @@ var querySQLFragmentCmd = &cobra.Command{
 	Short: "Search SQL query fragments by text",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query sql-fragment",
 			filters: map[string]string{
 				"text": queryFragmentText,
@@ -246,7 +249,7 @@ var queryReportFormCmd = &cobra.Command{
 	Short: "Search report forms (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query report-form",
 			filters: map[string]string{
 				"name": reportFormName,
@@ -264,7 +267,7 @@ var queryReportFieldCmd = &cobra.Command{
 	Short: "Search TPR report fields (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query report-field",
 			filters: map[string]string{
 				"name": reportFieldName,
@@ -282,7 +285,7 @@ var queryReportParamCmd = &cobra.Command{
 	Short: "Search report params and report controls (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query report-param",
 			filters: map[string]string{
 				"name": reportParamName,
@@ -300,7 +303,7 @@ var queryVBFunctionCmd = &cobra.Command{
 	Short: "Search VBScript function (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query vb-function",
 			filters: map[string]string{
 				"name": vbFuncName,
@@ -318,7 +321,7 @@ var queryJSFunctionCmd = &cobra.Command{
 	Short: "Search JS function (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query js-function",
 			filters: map[string]string{
 				"name": jsFuncName,
@@ -336,7 +339,7 @@ var querySMFInstrumentCmd = &cobra.Command{
 	Short: "Search SMF instrument (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query smf-instrument",
 			filters: map[string]string{
 				"name": smfInstrName,
@@ -355,7 +358,7 @@ var querySMFTypeCmd = &cobra.Command{
 	Long:  `Search SMF instruments by type: instrument_model or mass_operation`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query smf-type",
 			filters: map[string]string{
 				"type": smfType,
@@ -373,7 +376,7 @@ var queryRetCodeCmd = &cobra.Command{
 	Long:  `Search ds_return_codes by numeric ret_code (exact) or by message text fragment (case-insensitive partial match).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query retcode",
 			filters: map[string]string{
 				"code":    fmt.Sprintf("%d", retCode),

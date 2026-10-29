@@ -15,7 +15,10 @@ type TRCProcAgg struct {
 	MaxMs     int64   `json:"max_ms"`
 	AvgMs     float64 `json:"avg_ms"`
 	// Enriched fields (заполняются из CodeBase, см. enrich.go)
-	SourceFile string `json:"source_file,omitempty"`
+	SourceFile      string `json:"source_file,omitempty"`
+	Product         string `json:"product,omitempty"`
+	BranchUsed      string `json:"branch_used,omitempty"`
+	BranchRequested string `json:"branch_requested,omitempty"`
 }
 
 // EventSPID возвращает SPID события из декодированной колонки 12.
@@ -137,6 +140,9 @@ func EnrichAggregates(aggs []TRCProcAgg, enrichMap map[string]*ProcedureEnrichme
 	for i := range aggs {
 		if enrich, ok := enrichMap[aggs[i].Procedure]; ok && enrich != nil && enrich.Found {
 			aggs[i].SourceFile = enrich.SourceFile
+			aggs[i].Product = enrich.Product
+			aggs[i].BranchUsed = enrich.BranchUsed
+			aggs[i].BranchRequested = enrich.BranchRequested
 		}
 	}
 }
@@ -168,12 +174,12 @@ type FocusMetrics struct {
 // PeerMetrics — метрики процедуры в одном peer SPID; отсутствие вызовов
 // отличимо от валидной нулевой длительности через nullable min/max/avg.
 type PeerMetrics struct {
-	SPID    int       `json:"spid"`
-	Count   int64     `json:"count"`
-	TotalMs int64     `json:"total_ms"`
-	MinMs   *int64    `json:"min_ms"`
-	MaxMs   *int64    `json:"max_ms"`
-	AvgMs   *float64  `json:"avg_ms"`
+	SPID    int      `json:"spid"`
+	Count   int64    `json:"count"`
+	TotalMs int64    `json:"total_ms"`
+	MinMs   *int64   `json:"min_ms"`
+	MaxMs   *int64   `json:"max_ms"`
+	AvgMs   *float64 `json:"avg_ms"`
 }
 
 // CombinedMetrics — взвешенные метрики по сырым вызовам всех peer вместе:

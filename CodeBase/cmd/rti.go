@@ -178,6 +178,7 @@ func runRTITree(cmd *cobra.Command, args []string) error {
 		Source:    rtiSource(args),
 		Procedure: rtiProcedure,
 		MaxDepth:  rtiMaxDepth,
+		DsinfoID:  analysisDsInfoID,
 	})
 	if err != nil {
 		return err
@@ -189,6 +190,7 @@ func runRTITree(cmd *cobra.Command, args []string) error {
 		return printJSON(result)
 	}
 	fmt.Print(rti.FormatTreeEnriched(result.Tree, result.Enrichment))
+	printRTIWarnings(result.Warnings)
 	return nil
 }
 
@@ -260,8 +262,9 @@ func runRTIErrors(cmd *cobra.Command, args []string) error {
 	db := openDB()
 	defer closeDB(db)
 	result, err := rtisvc.ExecuteErrors(ctx, db, rtisvc.ErrorsParams{
-		Source: rtiSource(args),
-		Limit:  applyQueryLimit(rtiLimit),
+		Source:   rtiSource(args),
+		Limit:    applyQueryLimit(rtiLimit),
+		DsinfoID: analysisDsInfoID,
 	})
 	if err != nil {
 		return err
@@ -304,7 +307,21 @@ func runRTIErrors(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+	printRTIWarnings(result.Warnings)
 	return nil
+}
+
+// printRTIWarnings печатает предупреждения enrichment о несовпадении линий
+// профиля с фактически выбранной веткой.
+func printRTIWarnings(warnings []string) {
+	if len(warnings) == 0 {
+		return
+	}
+	fmt.Println()
+	fmt.Println("Warnings:")
+	for _, warning := range warnings {
+		fmt.Printf("  - %s\n", warning)
+	}
 }
 
 func runRTIDetails(cmd *cobra.Command, args []string) error {
@@ -318,6 +335,7 @@ func runRTIDetails(cmd *cobra.Command, args []string) error {
 		Source:    rtiSource(args),
 		Procedure: rtiProcedure,
 		Limit:     applyQueryLimit(rtiLimit),
+		DsinfoID:  analysisDsInfoID,
 	})
 	if err != nil {
 		return err
@@ -332,6 +350,12 @@ func runRTIDetails(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Calls in log: %d\n", result.Count)
 	if result.Enrichment != nil && result.Enrichment.Found {
 		fmt.Printf("Source: %s:%d-%d\n", result.Enrichment.SourceFile, result.Enrichment.LineStart, result.Enrichment.LineEnd)
+		if result.Enrichment.Product != "" {
+			fmt.Printf("Product: %s\n", result.Enrichment.Product)
+		}
+		if result.Enrichment.BranchUsed != "" {
+			fmt.Printf("Branch: %s\n", result.Enrichment.BranchUsed)
+		}
 		if len(result.Enrichment.Params) > 0 {
 			fmt.Println("Parameters:")
 			for _, p := range result.Enrichment.Params {
@@ -360,6 +384,7 @@ func runRTIDetails(cmd *cobra.Command, args []string) error {
 			fmt.Printf("    Params: %d\n", len(c.Params))
 		}
 	}
+	printRTIWarnings(result.Warnings)
 	return nil
 }
 
@@ -544,6 +569,7 @@ func runRTISlow(cmd *cobra.Command, args []string) error {
 		Source:      rtiSource(args),
 		ThresholdMs: rtiSlowThreshold,
 		Limit:       applyQueryLimit(rtiLimit),
+		DsinfoID:    analysisDsInfoID,
 	})
 	if err != nil {
 		return err
@@ -592,6 +618,7 @@ func runRTISlow(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+	printRTIWarnings(result.Warnings)
 	return nil
 }
 
@@ -637,6 +664,8 @@ func printJSON(v interface{}) error {
 
 func init() {
 	rtiCmd.PersistentFlags().BoolVar(&rtiOutputJSON, "json", false, "output as JSON")
+	rtiCmd.PersistentFlags().Int64Var(&analysisDsInfoID, "dsinfo", 0,
+		"dsinfo profile id for branch-aware enrichment (0 = CODEBASE_DSINFO_ID / active profile)")
 	rtiTreeCmd.Flags().StringVar(&rtiProcedure, "proc", "", "root procedure name (default: first NestLevel=1)")
 	rtiTreeCmd.Flags().IntVar(&rtiMaxDepth, "depth", 0, "max tree depth (0 = unlimited)")
 	rtiDetailsCmd.Flags().StringVar(&rtiProcedure, "proc", "", "procedure name (required)")

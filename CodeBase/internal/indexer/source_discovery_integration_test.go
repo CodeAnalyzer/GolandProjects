@@ -1,4 +1,4 @@
-﻿//go:build integration
+//go:build integration
 
 package indexer
 
@@ -19,7 +19,7 @@ import (
 func newDiscoveryIndexer(t *testing.T, root string, patterns []string) *Indexer {
 	t.Helper()
 	return &Indexer{
-		db:   testutil.Open(t),
+		db: testutil.Open(t),
 		config: &config.Config{Indexer: config.IndexerConfig{
 			Parallel:        1,
 			BatchSize:       100,
@@ -62,10 +62,10 @@ func gitRun(t *testing.T, dir string, args ...string) {
 }
 
 type branchRowInfo struct {
-	id          int64
-	branchKey   string
-	branchName  string
-	isDefault   bool
+	id         int64
+	branchKey  string
+	branchName string
+	isDefault  bool
 }
 
 func productBranchRows(t *testing.T, idx *Indexer, productName string) []branchRowInfo {

@@ -120,7 +120,7 @@ func TestDeleteFilesByPaths_CascadesPASEntities(t *testing.T) {
 
 	for _, table := range []string{"pas_units", "pas_classes", "pas_methods", "pas_fields"} {
 		var n int
-		if err := db.QueryRow(`SELECT count(*) FROM ` + table + ` WHERE file_id = $1`, fileID).Scan(&n); err != nil {
+		if err := db.QueryRow(`SELECT count(*) FROM `+table+` WHERE file_id = $1`, fileID).Scan(&n); err != nil {
 			t.Fatalf("count %s: %v", table, err)
 		}
 		if n != 0 {

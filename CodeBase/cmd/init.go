@@ -56,7 +56,7 @@ Arguments:
   root_path - project root directory (defaults to config)`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-	ctx := cmd.Context()
+		ctx := cmd.Context()
 		// Путь можно передать либо аргументом CLI, либо через --path,
 		// либо взять из конфигурации как fallback.
 		if len(args) > 0 {

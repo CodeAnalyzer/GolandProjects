@@ -46,3 +46,75 @@ func TestGitBranchMatchesManifest(t *testing.T) {
 		t.Fatalf("hotfixName = %q, want FA-Contracts-11-01-7-HF008", hotfix)
 	}
 }
+
+func TestNumericTokens(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"sup/11-01-7", "11|01|7"},
+		{"fa-contracts-11-01-7", "11|01|7"},
+		{"develop", ""},
+		{"prj/novikom-persform", ""},
+		{"fa-contracts-ext-9-01-553-pkg", "9|01|553"},
+		{"fa-ftfns440reqprocadapter-11-01-11", "11|01|11"},
+		{"fa-ftfns440reqprocadapter", ""},
+	}
+	for _, tc := range cases {
+		tokens := NumericTokens(tc.in)
+		got := ""
+		for i, token := range tokens {
+			if i > 0 {
+				got += "|"
+			}
+			got += token
+		}
+		if got != tc.want {
+			t.Fatalf("NumericTokens(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestNumericTailMatches(t *testing.T) {
+	cases := []struct {
+		requested string
+		candidate string
+		want      bool
+	}{
+		{"fa-contracts-11-01-7", "sup/11-01-7", true},
+		{"fa-contracts-11-01-7", "fa-contracts-11-01-7", true},
+		{"fa-contracts-ext-9-01-553", "fa-contracts-ext-9-01-553", true},
+		{"fa-contracts-11-01-7", "fa-contracts-11-01-6", false},
+		{"fa-contracts-11-01-7", "develop", false},
+		{"fa-commonfiles", "develop", false},
+		{"fa-commonfiles", "sup/11-01-7", false},
+		{"fa-contracts-11-01-7", "fa-contracts-11-01-7-hotfix-2", false},
+		{"fa-ftfns440reqprocadapter-11-01-11", "sup/11-01-11", true},
+		{"fa-ftfns440reqprocadapter-11-01-11", "sup/11-01-7", false},
+	}
+	for _, tc := range cases {
+		if got := NumericTailMatches(tc.requested, tc.candidate); got != tc.want {
+			t.Fatalf("NumericTailMatches(%q, %q) = %v, want %v", tc.requested, tc.candidate, got, tc.want)
+		}
+	}
+}
+
+func TestCompareVersion(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"fa-contracts-11-01-7", "fa-contracts-11-01-6", 1},
+		{"fa-contracts-11-01-7", "fa-contracts-11-01-7", 0},
+		{"fa-contracts-9-01-553", "fa-contracts-11-01-7", -1},
+		{"fa-contracts-11-01", "fa-contracts-11-01-7", -1},
+		{"develop", "fa-contracts-11-01-7", -1},
+		{"develop", "master", 0},
+		{"fa-contracts-11-01-07", "fa-contracts-11-01-7", 0},
+	}
+	for _, tc := range cases {
+		if got := CompareVersion(tc.a, tc.b); got != tc.want {
+			t.Fatalf("CompareVersion(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+}

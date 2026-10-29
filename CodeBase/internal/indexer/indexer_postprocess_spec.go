@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/codebase/internal/model"
+	"github.com/codebase/internal/store"
 )
 
 // postProcessSpecCodeMentions резолвит spec_code_mentions в relations
@@ -27,21 +28,24 @@ func (idx *Indexer) postProcessSpecCodeMentions(ctx context.Context, collector *
 		return
 	}
 
-	// 1. Группируем упоминания по продукту файла спеки (0 = продукт не определён):
-	// одно имя может резолвиться по-разному для спек разных продуктов.
-	groups := make(map[int64][]*model.SpecCodeMention)
+	// 1. Группируем упоминания по scope файла спеки (продукт, ветка; 0 = не
+	// определён): одно имя может резолвиться по-разному для спек разных
+	// веток и продуктов.
+	groups := make(map[specMentionScope][]*model.SpecCodeMention)
 	for _, m := range mentions {
 		if m == nil {
 			continue
 		}
-		groups[m.ProductID] = append(groups[m.ProductID], m)
+		key := specMentionScope{ProductID: m.ProductID, BranchID: m.BranchID}
+		groups[key] = append(groups[key], m)
 	}
 
 	// 2. Для каждой группы — batch-resolve имён в ID сущностей
-	// с приоритетом: не-генерируемый источник → свой продукт → свежий по id.
-	lookups := make(map[int64]*specMentionLookup, len(groups))
-	for productID, group := range groups {
-		lookups[productID] = idx.resolveSpecMentionGroup(ctx, productID, group)
+	// с приоритетом: не-генерируемый источник → своя ветка → свой продукт →
+	// default-ветка → свежий по id.
+	lookups := make(map[specMentionScope]*specMentionLookup, len(groups))
+	for key, group := range groups {
+		lookups[key] = idx.resolveSpecMentionGroup(ctx, store.LookupScope{ProductID: key.ProductID, BranchID: key.BranchID}, group)
 	}
 
 	// 3. Строим relations
@@ -62,10 +66,16 @@ func (idx *Indexer) postProcessSpecCodeMentions(ctx context.Context, collector *
 	collector.Add(func(stats *model.ScanStats) { mergeScanStats(stats, localStats) })
 }
 
-// resolveSpecMentionGroup выполняет batch-lookup всех kind одной продуктовой
-// группы упоминаний. productID — продукт файлов спек группы (0 = без
-// продуктового предпочтения).
-func (idx *Indexer) resolveSpecMentionGroup(ctx context.Context, productID int64, mentions []*model.SpecCodeMention) *specMentionLookup {
+// specMentionScope — ключ группы упоминаний: (продукт, ветка) файла спеки.
+type specMentionScope struct {
+	ProductID int64
+	BranchID  int64
+}
+
+// resolveSpecMentionGroup выполняет batch-lookup всех kind одной группы
+// упоминаний. scope — (продукт, ветка) файлов спек группы (нули — без
+// продуктово-веточных предпочтений).
+func (idx *Indexer) resolveSpecMentionGroup(ctx context.Context, scope store.LookupScope, mentions []*model.SpecCodeMention) *specMentionLookup {
 	lookup := &specMentionLookup{}
 
 	procNames := collectMentionNamesByKind(mentions, "procedure")
@@ -80,35 +90,35 @@ func (idx *Indexer) resolveSpecMentionGroup(ctx context.Context, productID int64
 	unknownNames := collectMentionNamesByKind(mentions, "unknown")
 
 	if len(procNames) > 0 {
-		ids, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, procNames, productID)
+		ids, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, procNames, scope)
 		if err != nil {
 			idx.logError("<post-processing>", "Error resolving procedure names for spec mentions: %v", err)
 		}
 		lookup.Procedures = ids
 	}
 	if len(tableNames) > 0 {
-		ids, err := idx.db.FindLatestSQLTableIDsByNames(ctx, tableNames, productID)
+		ids, err := idx.db.FindLatestSQLTableIDsByNames(ctx, tableNames, scope)
 		if err != nil {
 			idx.logError("<post-processing>", "Error resolving table names for spec mentions: %v", err)
 		}
 		lookup.Tables = ids
 	}
 	if len(formNames) > 0 {
-		ids, err := idx.db.FindDFMFormIDsByNames(ctx, formNames, productID)
+		ids, err := idx.db.FindDFMFormIDsByNames(ctx, formNames, scope)
 		if err != nil {
 			idx.logError("<post-processing>", "Error resolving form names for spec mentions: %v", err)
 		}
 		lookup.Forms = ids
 	}
 	if len(smfNames) > 0 {
-		ids, err := idx.db.FindSMFInstrumentIDsByNames(ctx, smfNames, productID)
+		ids, err := idx.db.FindSMFInstrumentIDsByNames(ctx, smfNames, scope)
 		if err != nil {
 			idx.logError("<post-processing>", "Error resolving SMF names for spec mentions: %v", err)
 		}
 		lookup.SMF = ids
 	}
 	if len(methodNames) > 0 {
-		ids, err := idx.db.FindPASMethodIDsByNames(ctx, methodNames, productID)
+		ids, err := idx.db.FindPASMethodIDsByNames(ctx, methodNames, scope)
 		if err != nil {
 			idx.logError("<post-processing>", "Error resolving method names for spec mentions: %v", err)
 		}
@@ -121,7 +131,7 @@ func (idx *Indexer) resolveSpecMentionGroup(ctx context.Context, productID int64
 			}
 		}
 		if len(missedMethods) > 0 {
-			formIDs, err := idx.db.FindDFMFormIDsByNames(ctx, missedMethods, productID)
+			formIDs, err := idx.db.FindDFMFormIDsByNames(ctx, missedMethods, scope)
 			if err != nil {
 				idx.logError("<post-processing>", "Error resolving method fallback form names for spec mentions: %v", err)
 			} else {
@@ -131,14 +141,14 @@ func (idx *Indexer) resolveSpecMentionGroup(ctx context.Context, productID int64
 	}
 	if len(apiNames) > 0 || len(eventNames) > 0 {
 		apiEventNames := append(append([]string{}, apiNames...), eventNames...)
-		ids, err := idx.db.FindAPIContractIDsByNames(ctx, apiEventNames, productID)
+		ids, err := idx.db.FindAPIContractIDsByNames(ctx, apiEventNames, scope)
 		if err != nil {
 			idx.logError("<post-processing>", "Error resolving API names for spec mentions: %v", err)
 		}
 		lookup.APIs = ids
 	}
 	if len(reportNames) > 0 {
-		ids, err := idx.db.FindReportFormIDsByNames(ctx, reportNames, productID)
+		ids, err := idx.db.FindReportFormIDsByNames(ctx, reportNames, scope)
 		if err != nil {
 			idx.logError("<post-processing>", "Error resolving report names for spec mentions: %v", err)
 		}
@@ -153,7 +163,7 @@ func (idx *Indexer) resolveSpecMentionGroup(ctx context.Context, productID int64
 	}
 	if len(unknownNames) > 0 {
 		// Second-chance: unknown-имена, совпавшие с процедурами (строчные rpt_*_proc)
-		ids, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, unknownNames, productID)
+		ids, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, unknownNames, scope)
 		if err != nil {
 			idx.logError("<post-processing>", "Error second-chance resolving unknown names for spec mentions: %v", err)
 		}
@@ -203,8 +213,8 @@ func collectMentionNamesByKind(mentions []*model.SpecCodeMention, kind string) [
 }
 
 // buildSpecMentionRelations строит relations (references_code) из mentions.
-// Резолв выполняется в lookup-карте своей продуктовой группы.
-func buildSpecMentionRelations(mentions []*model.SpecCodeMention, lookups map[int64]*specMentionLookup) []*model.Relation {
+// Резолв выполняется в lookup-карте своей группы scope.
+func buildSpecMentionRelations(mentions []*model.SpecCodeMention, lookups map[specMentionScope]*specMentionLookup) []*model.Relation {
 	var relations []*model.Relation
 	seen := map[string]struct{}{}
 
@@ -234,7 +244,7 @@ func buildSpecMentionRelations(mentions []*model.SpecCodeMention, lookups map[in
 		if m == nil {
 			continue
 		}
-		lookup := lookups[m.ProductID]
+		lookup := lookups[specMentionScope{ProductID: m.ProductID, BranchID: m.BranchID}]
 		if lookup == nil {
 			continue
 		}

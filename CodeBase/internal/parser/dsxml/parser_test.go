@@ -325,8 +325,8 @@ func TestParseFile_CP1251WithoutDeclaration(t *testing.T) {
 
 func TestIsAPIModulePath(t *testing.T) {
 	cases := []struct {
-		path  string
-		want  bool
+		path string
+		want bool
 	}{
 		{"fa-administrator/API_AccrualCore/DSArchitectData/BObject/AccrualCore_PTbl/Table/pAccrual_Detail.xml", true},
 		{"fa-administrator/Administrator/DSArchitectData/BObject/Administrator_PTbl/Table/pPortObject.xml", false},

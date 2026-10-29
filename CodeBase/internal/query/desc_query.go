@@ -14,14 +14,17 @@ import (
 // DescriptionSearchResult — запись выдачи поиска по описаниям процедур
 // и API-контрактов.
 type DescriptionSearchResult struct {
-	Kind        string  `json:"kind"`                  // procedure | service | event | callback_event | used_service
-	Name        string  `json:"name"`                  // имя процедуры или контракта
-	File        string  `json:"file,omitempty"`        // rel_path исходника
-	LineStart   int     `json:"line_start"`            // строка начала сущности
-	Rank        float64 `json:"rank"`                  // exact: ts_rank (имя A / описание B); semantic: cosine
-	Source      string  `json:"source"`                // exact | semantic
-	Snippet     string  `json:"snippet"`               // exact: ts_headline; semantic: embed_text
-	Description string  `json:"description,omitempty"` // полное описание (очищенное)
+	Kind            string  `json:"kind"`                  // procedure | service | event | callback_event | used_service
+	Name            string  `json:"name"`                  // имя процедуры или контракта
+	File            string  `json:"file,omitempty"`        // rel_path исходника
+	LineStart       int     `json:"line_start"`            // строка начала сущности
+	Rank            float64 `json:"rank"`                  // exact: ts_rank (имя A / описание B); semantic: cosine
+	Source          string  `json:"source"`                // exact | semantic
+	Snippet         string  `json:"snippet"`               // exact: ts_headline; semantic: embed_text
+	Description     string  `json:"description,omitempty"` // полное описание (очищенное)
+	Product         string  `json:"product,omitempty"`     // продукт exact-хита (веточные копии схлопнуты)
+	BranchUsed      string  `json:"branch_used,omitempty"` // ветка, из которой взят exact-хит
+	BranchRequested string  `json:"branch_requested,omitempty"`
 }
 
 // DescriptionSearchOutput — результат гибридного поиска по описаниям.
@@ -99,19 +102,25 @@ func (q *Query) SearchDescriptions(ctx context.Context, text string, kinds []str
 	}
 
 	// Объединение: exact-хиты первыми (по убыванию ранга), затем semantic
-	// (по убыванию cosine); дубликаты одной сущности в разных слоях схлопываются.
-	seen := make(map[string]bool, len(exact)+len(semantic))
+	// (по убыванию cosine); дубликаты одной сущности в разных слоях
+	// схлопываются. При коллизии одноимённых сущностей разных продуктов
+	// предпочитается копия продукта профиля dsinfo (если он задан).
+	profileProducts := q.profileProductSet()
+	seen := make(map[string]int, len(exact)+len(semantic))
 	combined := make([]DescriptionSearchResult, 0, len(exact)+len(semantic))
 	for _, group := range [][]DescriptionSearchResult{exact, semantic} {
 		for _, item := range group {
 			key := item.Kind + "\x00" + item.Name
-			if seen[key] {
+			if idx, ok := seen[key]; ok {
+				if profileProducts[item.Product] && !profileProducts[combined[idx].Product] {
+					combined[idx] = item
+				}
 				continue
 			}
-			seen[key] = true
 			if len(combined) >= limit {
 				break
 			}
+			seen[key] = len(combined)
 			combined = append(combined, item)
 		}
 	}
@@ -131,47 +140,74 @@ func (q *Query) searchDescriptionsExact(ctx context.Context, text string, kinds 
 
 	// ts_headline дорог — применяется только к отсечённым LIMIT-ом топ-строкам
 	// каждой ветки UNION (limit+1 на сторону для детекции усечения), а не ко
-	// всем совпадениям.
+	// всем совпадениям. Каждая ветка дедупится двухфазно: фаза 1 выбирает
+	// ветку для (имя, продукт) приоритетом default-ветки (зеркало правила
+	// LSA-корпуса), фаза 2 возвращает строки выбранной ветки; затем ветка
+	// ранжируется по ts_rank.
+	procedureBranch := q.chosenBranchQuery(
+		[]branchKeyPair{
+			{Expr: "p.proc_name", Alias: "name_key"},
+			{Expr: "COALESCE(f.ds_product_id, 0)", Alias: "product_key"},
+		},
+		"p.id",
+		`'procedure'::text AS kind,
+		 p.proc_name AS name,
+		 f.rel_path AS file,
+		 p.line_start AS line_start,
+		 ts_rank(p.search_vector, tq.tsq) AS rank,
+		 'exact'::text AS source,
+		 coalesce(p.description, '') AS description,
+		 tq.tsq AS tsq`,
+		`sql_procedures p
+		JOIN files f ON f.id = p.file_id`+fileBranchJoin("f")+`
+		CROSS JOIN (SELECT plainto_tsquery('russian', $1) AS tsq) tq`,
+		`p.search_vector @@ plainto_tsquery('russian', $1)
+		   `+strings.ReplaceAll(descSearchDisplaceFilter, "{alias}", "p"),
+		`p.proc_name, p.id`,
+	)
+	contractBranch := q.chosenBranchQuery(
+		[]branchKeyPair{
+			{Expr: "c.contract_name", Alias: "name_key"},
+			{Expr: "lower(c.contract_kind)", Alias: "kind_key"},
+			{Expr: "COALESCE(f.ds_product_id, 0)", Alias: "product_key"},
+		},
+		"c.id",
+		`lower(c.contract_kind) AS kind,
+		 c.contract_name AS name,
+		 f.rel_path AS file,
+		 c.line_start AS line_start,
+		 ts_rank(c.search_vector, tq.tsq) AS rank,
+		 'exact'::text AS source,
+		 coalesce(c.short_description, '') || ' ' || coalesce(c.full_description, '') AS description,
+		 tq.tsq AS tsq`,
+		`api_contracts c
+		JOIN files f ON f.id = c.file_id`+fileBranchJoin("f")+`
+		CROSS JOIN (SELECT plainto_tsquery('russian', $1) AS tsq) tq`,
+		`c.search_vector @@ plainto_tsquery('russian', $1)`,
+		`c.contract_name, lower(c.contract_kind), c.id`,
+	)
+
 	query := fmt.Sprintf(`
-		SELECT kind, name, file, line_start, rank, source, description,
+		SELECT kind, name, file, line_start, rank, source, description, product, branch_used,
 		       ts_headline('russian', description, tsq,
 		                   'MaxWords=35, MinWords=15, MaxFragments=2, StartSel=<<, StopSel=>>') AS snippet
 		FROM (
-			(SELECT 'procedure'::text AS kind,
-			       p.proc_name AS name,
-			       f.rel_path AS file,
-			       p.line_start AS line_start,
-			       ts_rank(p.search_vector, tq.tsq) AS rank,
-			       'exact'::text AS source,
-			       coalesce(p.description, '') AS description,
-			       tq.tsq AS tsq
-			FROM sql_procedures p
-			JOIN files f ON f.id = p.file_id
-			CROSS JOIN (SELECT plainto_tsquery('russian', $1) AS tsq) tq
-			WHERE p.search_vector @@ plainto_tsquery('russian', $1)
-			  `+strings.ReplaceAll(descSearchDisplaceFilter, "{alias}", "p")+`
-			ORDER BY rank DESC, name
+			(SELECT * FROM (
+				%s
+			) branch_proc
+			ORDER BY rank DESC, name, line_start
 			LIMIT $2)
 
 			UNION ALL
 
-			(SELECT lower(c.contract_kind) AS kind,
-			       c.contract_name AS name,
-			       f.rel_path AS file,
-			       c.line_start AS line_start,
-			       ts_rank(c.search_vector, tq.tsq) AS rank,
-			       'exact'::text AS source,
-			       coalesce(c.short_description, '') || ' ' || coalesce(c.full_description, '') AS description,
-			       tq.tsq AS tsq
-			FROM api_contracts c
-			JOIN files f ON f.id = c.file_id
-			CROSS JOIN (SELECT plainto_tsquery('russian', $1) AS tsq) tq
-			WHERE c.search_vector @@ plainto_tsquery('russian', $1)
-			ORDER BY rank DESC, name
+			(SELECT * FROM (
+				%s
+			) branch_contract
+			ORDER BY rank DESC, name, line_start
 			LIMIT $2)
 		) res%s
 		ORDER BY rank DESC, name
-		LIMIT $4`, kindFilter)
+		LIMIT $4`, procedureBranch, contractBranch, kindFilter)
 
 	outerLimitParam := "$3"
 	if kindFilter != "" {
@@ -195,9 +231,10 @@ func (q *Query) searchDescriptionsExact(ctx context.Context, text string, kinds 
 	for rows.Next() {
 		var item DescriptionSearchResult
 		if err := rows.Scan(&item.Kind, &item.Name, &item.File, &item.LineStart,
-			&item.Rank, &item.Source, &item.Description, &item.Snippet); err != nil {
+			&item.Rank, &item.Source, &item.Description, &item.Product, &item.BranchUsed, &item.Snippet); err != nil {
 			return nil, false, fmt.Errorf("desc search scan: %w", err)
 		}
+		item.BranchRequested = q.branchRequested(item.Product)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {

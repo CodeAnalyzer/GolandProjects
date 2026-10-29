@@ -206,7 +206,7 @@ func TestBuildSpecRelationsPreservesSourcesAndUsecaseTargets(t *testing.T) {
 		{SourceType: "spec_scenario", SourceID: 42, MentionName: "API_A", MentionKind: "api", LineNumber: 18},
 	}
 	lookup := &specMentionLookup{Procedures: map[string]int64{"proca": 101}, APIs: map[string]int64{"api_a": 102}}
-	relations := buildSpecMentionRelations(mentions, map[int64]*specMentionLookup{0: lookup})
+	relations := buildSpecMentionRelations(mentions, map[specMentionScope]*specMentionLookup{{}: lookup})
 	if len(relations) != 2 || relations[0].SourceID != 41 || relations[1].SourceID != 42 {
 		t.Fatalf("spec mention relations = %+v", relations)
 	}
@@ -248,7 +248,7 @@ func TestBuildSpecMentionRelations_NewKinds(t *testing.T) {
 		MethodForms:  map[string]int64{"rpportfolio_f": 204},
 		UnknownProcs: map[string]int64{"r8938_prc": 205},
 	}
-	relations := buildSpecMentionRelations(mentions, map[int64]*specMentionLookup{0: lookup})
+	relations := buildSpecMentionRelations(mentions, map[specMentionScope]*specMentionLookup{{}: lookup})
 
 	byKey := map[string]*model.Relation{}
 	for _, r := range relations {

@@ -57,6 +57,7 @@ type SummaryResult struct {
 type TreeResult struct {
 	Tree       *rti.RTITreeNode                    `json:"tree"`
 	Enrichment map[string]*rti.ProcedureEnrichment `json:"enrichment,omitempty"`
+	Warnings   []string                            `json:"warnings,omitempty"`
 }
 
 // RTICallSlim — RTICall без тяжёлых BLog-полей в JSON.
@@ -75,6 +76,7 @@ type ErrorsResult struct {
 	ClientErrorCount int                                 `json:"client_error_count"`
 	ClientEnrichment map[string]*rti.ClientEnrichment    `json:"client_enrichment,omitempty"`
 	Limit            int                                 `json:"limit"`
+	Warnings         []string                            `json:"warnings,omitempty"`
 }
 
 // SlowResult — медленные вызовы.
@@ -87,6 +89,7 @@ type SlowResult struct {
 	ClientEnrichment map[string]*rti.ClientEnrichment    `json:"client_enrichment,omitempty"`
 	Threshold        int                                 `json:"threshold"`
 	Limit            int                                 `json:"limit"`
+	Warnings         []string                            `json:"warnings,omitempty"`
 }
 
 // DetailsResult — детали процедуры.
@@ -95,6 +98,7 @@ type DetailsResult struct {
 	Calls      []*rti.RTICall           `json:"calls"`
 	Count      int                      `json:"count"`
 	Enrichment *rti.ProcedureEnrichment `json:"enrichment,omitempty"`
+	Warnings   []string                 `json:"warnings,omitempty"`
 }
 
 // BlogCallItem — выжимка BLog-данных из вызова.
@@ -163,8 +167,9 @@ type PruneResult struct {
 
 // ErrorsParams — параметры для ExecuteErrors.
 type ErrorsParams struct {
-	Source SessionSource
-	Limit  int
+	Source   SessionSource
+	Limit    int
+	DsinfoID int64
 }
 
 // SlowParams — параметры для ExecuteSlow.
@@ -172,6 +177,7 @@ type SlowParams struct {
 	Source      SessionSource
 	ThresholdMs int
 	Limit       int
+	DsinfoID    int64
 }
 
 // TreeParams — параметры для ExecuteTree.
@@ -179,6 +185,7 @@ type TreeParams struct {
 	Source    SessionSource
 	Procedure string
 	MaxDepth  int
+	DsinfoID  int64
 }
 
 // DetailsParams — параметры для ExecuteDetails.
@@ -186,6 +193,7 @@ type DetailsParams struct {
 	Source    SessionSource
 	Procedure string
 	Limit     int
+	DsinfoID  int64
 }
 
 // BlogParams — параметры для ExecuteBlog.

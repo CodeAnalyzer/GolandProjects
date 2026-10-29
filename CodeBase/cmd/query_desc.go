@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/codebase/internal/query"
-	"github.com/codebase/internal/querysvc"
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +23,7 @@ description matches (weights A/B). A procedure implementing a contract with a
 non-empty description is represented by the contract (kind=service).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		results, err := querysvc.Execute(func(q *query.Query) (interface{}, error) {
+		results, err := executeQuery(ctx, func(q *query.Query) (interface{}, error) {
 			return q.SearchDescriptions(ctx, descSearchText, descSearchKinds, limit)
 		})
 		if err != nil {
@@ -60,8 +59,11 @@ func printDescriptionResults(commandName string, filters map[string]string, outp
 		items = []query.DescriptionSearchResult{}
 	}
 
+	warnings := query.CollectBranchWarnings(items)
 	if outputNDJSON {
-		return writeNDJSON(os.Stdout, items)
+		err := writeNDJSON(os.Stdout, items)
+		printQueryWarnings(warnings, os.Stderr)
+		return err
 	}
 
 	if outputJSON {
@@ -78,6 +80,7 @@ func printDescriptionResults(commandName string, filters map[string]string, outp
 				HasMore:      output.HasMore,
 				SemanticMeta: output.SemanticMeta,
 			},
+			Warnings: warnings,
 		}
 		if outputSummary {
 			response.Summary = buildQuerySummary(items)
@@ -86,12 +89,15 @@ func printDescriptionResults(commandName string, filters map[string]string, outp
 	}
 
 	if outputSummary {
-		return writeJSON(os.Stdout, buildQuerySummary(items))
+		err := writeJSON(os.Stdout, buildQuerySummary(items))
+		printQueryWarnings(warnings, os.Stderr)
+		return err
 	}
 
 	if output.HasMore {
 		fmt.Fprintf(os.Stdout, "(truncated at --limit %d, use --limit to get more)\n", limit)
 	}
 	fmt.Printf("%+v\n", items)
+	printQueryWarnings(warnings, os.Stderr)
 	return nil
 }

@@ -310,7 +310,7 @@ func buildToolRegistryForProfile(db *store.DB, profile string) (map[string]regis
 }
 
 func buildToolRegistry(db *store.DB) map[string]registeredTool {
-	return map[string]registeredTool{
+	registry := map[string]registeredTool{
 		"codebase_read_more": {
 			Definition: toolDefinition{
 				Name: "codebase_read_more",
@@ -405,7 +405,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				typeName, _ := optionalString(args, "type")
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchSymbol(ctx, name, typeName, like, limit)
 				})
 			},
@@ -419,7 +419,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchTable(ctx, name, like, limit)
 				})
 			},
@@ -432,7 +432,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchTableSchema(ctx, name, limit)
 				})
 			},
@@ -446,7 +446,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchSQLTableIndex(ctx, name, like, limit)
 				})
 			},
@@ -458,7 +458,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if err != nil {
 					return nil, err
 				}
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return querysvc.ProcedureResultItems(q.GetProcedureResult(ctx, name))
 				})
 			},
@@ -471,7 +471,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOptPlain(db, func(q *query.Query) (interface{}, error) {
 					return q.FindCallers(ctx, name, limit)
 				})
 			},
@@ -484,7 +484,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.FindMethodsByTable(ctx, table, limit)
 				})
 			},
@@ -498,7 +498,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.FindPASMethodsByName(ctx, name, like, limit)
 				})
 			},
@@ -512,7 +512,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchDFMForm(ctx, name, like, limit)
 				})
 			},
@@ -526,7 +526,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchDFMComponent(ctx, name, like, limit)
 				})
 			},
@@ -539,7 +539,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchQueryFragment(ctx, text, limit)
 				})
 			},
@@ -553,7 +553,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				targetName, _ := optionalString(args, "target_name")
 				relationType, _ := optionalString(args, "relation_type")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOptPlain(db, func(q *query.Query) (interface{}, error) {
 					return q.SearchRelations(ctx, sourceType, sourceName, targetType, targetName, relationType, limit)
 				})
 			},
@@ -567,7 +567,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				typeName, _ := optionalString(args, "type")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOptPlain(db, func(q *query.Query) (interface{}, error) {
 					return querysvc.RunInspectQuery(ctx, q, name, typeName, limit)
 				})
 			},
@@ -581,7 +581,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchJSFunction(ctx, name, like, limit)
 				})
 			},
@@ -595,7 +595,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchSMFInstrument(ctx, name, like, limit)
 				})
 			},
@@ -608,7 +608,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchSMFByType(ctx, smfType, limit)
 				})
 			},
@@ -622,7 +622,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchReportForm(ctx, name, like, limit)
 				})
 			},
@@ -636,7 +636,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchReportField(ctx, name, like, limit)
 				})
 			},
@@ -650,7 +650,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchReportParam(ctx, name, like, limit)
 				})
 			},
@@ -664,7 +664,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchVBFunction(ctx, name, like, limit)
 				})
 			},
@@ -678,7 +678,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchAPIContract(ctx, name, like, limit)
 				})
 			},
@@ -692,7 +692,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchAPITable(ctx, name, like, limit)
 				})
 			},
@@ -706,7 +706,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchAPITableIndex(ctx, name, like, limit)
 				})
 			},
@@ -720,7 +720,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				like, _ := optionalBool(args, "like")
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchAPIParam(ctx, name, like, limit)
 				})
 			},
@@ -733,7 +733,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchAPIImplementations(ctx, name, limit)
 				})
 			},
@@ -746,7 +746,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchAPIPublishers(ctx, eventName, limit)
 				})
 			},
@@ -759,7 +759,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchAPIConsumers(ctx, name, limit)
 				})
 			},
@@ -776,7 +776,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					return nil, err
 				}
 				limit := optionalLimit(args)
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					return q.SearchDescriptions(ctx, text, kinds, limit)
 				})
 			},
@@ -784,7 +784,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 		"codebase_query_retcode": {
 			Definition: toolDefinition{Name: "codebase_query_retcode", Description: "Look up return code descriptions from ds_return_codes. Supports two modes: (1) search by ret_code (integer) — returns a single match with message, proc_name, module_id; (2) search by message text fragment (string, case-insensitive ILIKE) — returns all matching codes. Use when you need to decode a numeric return value from a stored procedure or find which error code corresponds to an error message.", InputSchema: objectSchema(map[string]interface{}{"ret_code": intProp("Return code to look up (exact match)"), "message": stringProp("Message text fragment to search (case-insensitive partial match)"), "limit": intProp("Max results for message search (default 50)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-				return runQueryOpt(db, func(q *query.Query) (interface{}, error) {
+				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
 					retCode, err := optionalInt64(args, "ret_code")
 					if err != nil {
 						return nil, err
@@ -841,16 +841,21 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_rti_tree": {
-			Definition: toolDefinition{Name: "codebase_rti_tree", Description: "Build and return a call tree from an RTI session. The tree shows nested procedure calls with elapsed time, return values, module info, and source file locations (enriched from CodeBase index). If procedure is omitted, auto-selects the root call with the most descendants.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "procedure": stringProp("Root procedure name (default: auto-select)"), "max_depth": intProp("Max tree depth (0 = unlimited)")})},
+			Definition: toolDefinition{Name: "codebase_rti_tree", Description: "Build and return a call tree from an RTI session. The tree shows nested procedure calls with elapsed time, return values, module info, and source file locations (enriched from CodeBase index). If procedure is omitted, auto-selects the root call with the most descendants.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "procedure": stringProp("Root procedure name (default: auto-select)"), "max_depth": intProp("Max tree depth (0 = unlimited)"), "dsinfo_id": intProp("Deployment profile id for enrichment (falls back to env/active profile)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				procName, _ := optionalString(args, "procedure")
 				maxDepth, _ := optionalInt(args, "max_depth")
 				sessionID, _ := optionalInt64(args, "session_id")
 				filePath, _ := optionalString(args, "file_path")
+				dsinfoID, dsinfoErr := optionalInt(args, "dsinfo_id")
+				if dsinfoErr != nil {
+					return nil, dsinfoErr
+				}
 				result, err := rtisvc.ExecuteTree(ctx, db, rtisvc.TreeParams{
 					Source:    rtisvc.SessionSource{SessionID: sessionID, FilePath: filePath},
 					Procedure: procName,
 					MaxDepth:  maxDepth,
+					DsinfoID:  int64(dsinfoID),
 				})
 				if err != nil {
 					return nil, err
@@ -862,33 +867,43 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_rti_errors": {
-			Definition: toolDefinition{Name: "codebase_rti_errors", Description: "Find all calls with non-zero RetVal in an RTI session. Returns server errors (procedure name, line number, return value, error context, elapsed time, nest level, module info, error code description, source file) and client errors (ClassName.MethodName, error text, source file from CodeBase enrichment).", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "limit": intProp("Maximum number of errors to return (default 100, max 1000)")})},
+			Definition: toolDefinition{Name: "codebase_rti_errors", Description: "Find all calls with non-zero RetVal in an RTI session. Returns server errors (procedure name, line number, return value, error context, elapsed time, nest level, module info, error code description, source file) and client errors (ClassName.MethodName, error text, source file from CodeBase enrichment).", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "limit": intProp("Maximum number of errors to return (default 100, max 1000)"), "dsinfo_id": intProp("Deployment profile id for enrichment (falls back to env/active profile)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				limit, _ := optionalInt(args, "limit")
 				sessionID, _ := optionalInt64(args, "session_id")
 				filePath, _ := optionalString(args, "file_path")
+				dsinfoID, dsinfoErr := optionalInt(args, "dsinfo_id")
+				if dsinfoErr != nil {
+					return nil, dsinfoErr
+				}
 				return rtisvc.ExecuteErrors(ctx, db, rtisvc.ErrorsParams{
-					Source: rtisvc.SessionSource{SessionID: sessionID, FilePath: filePath},
-					Limit:  limit,
+					Source:   rtisvc.SessionSource{SessionID: sessionID, FilePath: filePath},
+					Limit:    limit,
+					DsinfoID: int64(dsinfoID),
 				})
 			},
 		},
 		"codebase_rti_slow": {
-			Definition: toolDefinition{Name: "codebase_rti_slow", Description: "Find the slowest calls in an RTI session above a threshold. Returns server calls sorted by elapsed time descending, and client SQL blocks sorted by duration. Includes enrichment data (source files, SQL origin) from CodeBase index.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "threshold_ms": intProp("Minimum elapsed milliseconds (default 100)"), "limit": intProp("Maximum number of calls to return (default 100, max 1000)")})},
+			Definition: toolDefinition{Name: "codebase_rti_slow", Description: "Find the slowest calls in an RTI session above a threshold. Returns server calls sorted by elapsed time descending, and client SQL blocks sorted by duration. Includes enrichment data (source files, SQL origin) from CodeBase index.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "threshold_ms": intProp("Minimum elapsed milliseconds (default 100)"), "limit": intProp("Maximum number of calls to return (default 100, max 1000)"), "dsinfo_id": intProp("Deployment profile id for enrichment (falls back to env/active profile)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				threshold, _ := optionalInt(args, "threshold_ms")
 				limit, _ := optionalInt(args, "limit")
 				sessionID, _ := optionalInt64(args, "session_id")
 				filePath, _ := optionalString(args, "file_path")
+				dsinfoID, dsinfoErr := optionalInt(args, "dsinfo_id")
+				if dsinfoErr != nil {
+					return nil, dsinfoErr
+				}
 				return rtisvc.ExecuteSlow(ctx, db, rtisvc.SlowParams{
 					Source:      rtisvc.SessionSource{SessionID: sessionID, FilePath: filePath},
 					ThresholdMs: threshold,
 					Limit:       limit,
+					DsinfoID:    int64(dsinfoID),
 				})
 			},
 		},
 		"codebase_rti_details": {
-			Definition: toolDefinition{Name: "codebase_rti_details", Description: "Get enriched details for a specific procedure in an RTI session: source file path, line range, parameter definitions (name, type, direction) from CodeBase index, all call instances with timing, return values, error descriptions, and context.", InputSchema: objectSchema(map[string]interface{}{"procedure": stringProp("Procedure name"), "session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "limit": intProp("Maximum number of call instances to return (default 100, max 1000)")})},
+			Definition: toolDefinition{Name: "codebase_rti_details", Description: "Get enriched details for a specific procedure in an RTI session: source file path, line range, parameter definitions (name, type, direction) from CodeBase index, all call instances with timing, return values, error descriptions, and context.", InputSchema: objectSchema(map[string]interface{}{"procedure": stringProp("Procedure name"), "session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .rti file"), "limit": intProp("Maximum number of call instances to return (default 100, max 1000)"), "dsinfo_id": intProp("Deployment profile id for enrichment (falls back to env/active profile)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				procName, err := requiredString(args, "procedure")
 				if err != nil {
@@ -897,10 +912,15 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				limit, _ := optionalInt(args, "limit")
 				sessionID, _ := optionalInt64(args, "session_id")
 				filePath, _ := optionalString(args, "file_path")
+				dsinfoID, dsinfoErr := optionalInt(args, "dsinfo_id")
+				if dsinfoErr != nil {
+					return nil, dsinfoErr
+				}
 				result, err := rtisvc.ExecuteDetails(ctx, db, rtisvc.DetailsParams{
 					Source:    rtisvc.SessionSource{SessionID: sessionID, FilePath: filePath},
 					Procedure: procName,
 					Limit:     limit,
+					DsinfoID:  int64(dsinfoID),
 				})
 				if err != nil {
 					return nil, err
@@ -1151,7 +1171,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_trc_procedures": {
-			Definition: toolDefinition{Name: "codebase_trc_procedures", Description: "Aggregate completed procedure calls from a trc session: call count, min/max/avg/total duration, enriched with source file location. By default aggregates only SP:Completed events with a non-empty procedure name; pass event_names (e.g. [\"RPC:Completed\"] or [\"SP:Completed\",\"RPC:Completed\",\"SQL:BatchCompleted\"]) to aggregate an explicit set of event classes — durations of different levels overlap, so totals are not wall-clock time. spids restricts aggregation to specific SPIDs. group_by_spid=true returns (spid, procedure) groups, excluding events without SPID. top limits the result after aggregation (0 or omitted = all, max 1000); sort_by: total_ms (default), avg_ms, max_ms, count with deterministic procedure/spid tie-breakers. Uses server-side SQL aggregation when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spids": intSliceProp("Optional SPID filter (positive integers)"), "event_names": stringSliceProp("Optional explicit set of event names to aggregate (default: SP:Completed only)"), "top": intProp("Max procedures to return after aggregation (0 = all, max 1000)"), "sort_by": stringProp("Sort metric: total_ms (default), avg_ms, max_ms, count"), "group_by_spid": boolProp("Group aggregates by (spid, procedure) instead of procedure only")})},
+			Definition: toolDefinition{Name: "codebase_trc_procedures", Description: "Aggregate completed procedure calls from a trc session: call count, min/max/avg/total duration, enriched with source file location. By default aggregates only SP:Completed events with a non-empty procedure name; pass event_names (e.g. [\"RPC:Completed\"] or [\"SP:Completed\",\"RPC:Completed\",\"SQL:BatchCompleted\"]) to aggregate an explicit set of event classes — durations of different levels overlap, so totals are not wall-clock time. spids restricts aggregation to specific SPIDs. group_by_spid=true returns (spid, procedure) groups, excluding events without SPID. top limits the result after aggregation (0 or omitted = all, max 1000); sort_by: total_ms (default), avg_ms, max_ms, count with deterministic procedure/spid tie-breakers. Uses server-side SQL aggregation when session_id is provided.", InputSchema: objectSchema(map[string]interface{}{"session_id": intProp("Saved session ID"), "file_path": stringProp("Or: path to .trc file"), "spids": intSliceProp("Optional SPID filter (positive integers)"), "event_names": stringSliceProp("Optional explicit set of event names to aggregate (default: SP:Completed only)"), "top": intProp("Max procedures to return after aggregation (0 = all, max 1000)"), "sort_by": stringProp("Sort metric: total_ms (default), avg_ms, max_ms, count"), "group_by_spid": boolProp("Group aggregates by (spid, procedure) instead of procedure only"), "dsinfo_id": intProp("Deployment profile id for enrichment (falls back to env/active profile)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				spids, err := optionalIntSlice(args, "spids")
 				if err != nil {
@@ -1181,6 +1201,10 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if err != nil {
 					return nil, err
 				}
+				dsinfoID, err := optionalInt(args, "dsinfo_id")
+				if err != nil {
+					return nil, err
+				}
 				return trcsvc.ExecuteProcedures(ctx, db, trcsvc.ProceduresParams{
 					Source:      trcsvc.SessionSource{SessionID: sessionID, FilePath: filePath},
 					SPIDs:       spids,
@@ -1188,6 +1212,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 					Top:         top,
 					SortBy:      sortBy,
 					GroupBySPID: groupBySPID,
+					DsinfoID:    int64(dsinfoID),
 				})
 			},
 		},
@@ -1591,9 +1616,92 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 	}
+	addProfileSchema(registry)
+	return registry
 }
 
-func runQueryOpt(db *store.DB, run func(q *query.Query) (interface{}, error)) (interface{}, error) {
+// profileAwareQueryTools — query-инструменты, выполняющие выбор копии
+// сущности: только они принимают dsinfo_id. Инструменты вне границ
+// (callers/relations/inspect, spec) параметр не получают — границы
+// зафиксированы в dsinfo-analysis/dsinfo-resolution.
+var profileAwareQueryTools = map[string]bool{
+	"codebase_query_symbol":          true,
+	"codebase_query_table":           true,
+	"codebase_query_table_schema":    true,
+	"codebase_query_table_index":     true,
+	"codebase_query_procedure":       true,
+	"codebase_query_methods":         true,
+	"codebase_query_method":          true,
+	"codebase_query_form":            true,
+	"codebase_query_form_component":  true,
+	"codebase_query_sql_fragment":    true,
+	"codebase_query_js_function":     true,
+	"codebase_query_smf_instrument":  true,
+	"codebase_query_smf_type":        true,
+	"codebase_query_report_form":     true,
+	"codebase_query_report_field":    true,
+	"codebase_query_report_param":    true,
+	"codebase_query_vb_function":     true,
+	"codebase_query_api_contract":    true,
+	"codebase_query_api_table":       true,
+	"codebase_query_api_table_index": true,
+	"codebase_query_api_param":       true,
+	"codebase_query_api_impl":        true,
+	"codebase_query_api_publishers":  true,
+	"codebase_query_api_consumers":   true,
+	"codebase_query_desc_search":     true,
+	"codebase_query_retcode":         true,
+}
+
+// addProfileSchema добавляет необязательный dsinfo_id в схемы инструментов,
+// учитывающих профиль развёртывания.
+func addProfileSchema(registry map[string]registeredTool) {
+	for name := range profileAwareQueryTools {
+		rt, ok := registry[name]
+		if !ok {
+			continue
+		}
+		props, ok := rt.Definition.InputSchema["properties"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		props["dsinfo_id"] = intProp("Deployment profile id (dsinfo). Falls back to CODEBASE_DSINFO_ID or the active profile.")
+	}
+}
+
+// runQueryOpt выполняет query-инструмент с контекстом профиля dsinfo
+// (параметр dsinfo_id; границы применения — dsinfo-analysis/dsinfo-resolution)
+// и добавляет warnings верхнего уровня.
+func runQueryOpt(ctx context.Context, db *store.DB, args map[string]interface{}, run func(q *query.Query) (interface{}, error)) (interface{}, error) {
+	dsinfoID, err := optionalInt(args, "dsinfo_id")
+	if err != nil {
+		return nil, err
+	}
+	resolver := func(ctx context.Context, db *store.DB) (*query.ProfileContext, error) {
+		return querysvc.ResolveQueryProfile(ctx, db, int64(dsinfoID))
+	}
+	var items interface{}
+	if db != nil {
+		items, err = querysvc.ExecuteWithDB(ctx, db, resolver, run)
+	} else {
+		items, err = querysvc.ExecuteWithProfile(ctx, resolver, run)
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]interface{}{
+		"count": resultCount(items),
+		"items": normalizeNilResults(items),
+	}
+	if warnings := query.CollectBranchWarnings(items); len(warnings) > 0 {
+		out["warnings"] = warnings
+	}
+	return out, nil
+}
+
+// runQueryOptPlain выполняет query-инструмент без контекста профиля:
+// callers/relations/inspect не выбирают копию сущности.
+func runQueryOptPlain(db *store.DB, run func(q *query.Query) (interface{}, error)) (interface{}, error) {
 	var items interface{}
 	var err error
 	if db != nil {

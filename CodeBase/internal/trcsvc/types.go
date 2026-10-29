@@ -120,6 +120,7 @@ func (r EventsResult) MarshalJSON() ([]byte, error) {
 type ProceduresResult struct {
 	Procedures []trc.TRCProcAgg `json:"procedures"`
 	Count      int              `json:"count"`
+	Warnings   []string         `json:"warnings,omitempty"`
 }
 
 // TreeResult — деревья вызовов по SPID.
@@ -201,6 +202,7 @@ type ProceduresParams struct {
 	Top         int
 	SortBy      string
 	GroupBySPID bool
+	DsinfoID    int64
 }
 
 // TreeParams — параметры для ExecuteTree.

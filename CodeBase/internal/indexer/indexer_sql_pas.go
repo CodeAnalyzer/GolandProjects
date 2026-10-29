@@ -19,12 +19,12 @@ import (
 
 // Precompiled regexps for indexer_sql_pas (static patterns).
 var (
-	reIdxAliasFromJoin    = regexp.MustCompile(`(?i)\b(?:from|join)\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_]*)\b`)
-	reIdxAsAliasSuffix    = regexp.MustCompile(`(?i)\bas\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*$`)
-	reIdxStripAsAlias     = regexp.MustCompile(`(?i)\s+as\s+[A-Za-z_#][A-Za-z0-9_#]*\s*$`)
-	reIdxDirectColRef     = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*$`)
-	reIdxIsnullCoalesce   = regexp.MustCompile(`(?i)^\s*(?:isnull|coalesce)\s*\(`)
-	reIdxQualifiedColRef  = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)`)
+	reIdxAliasFromJoin   = regexp.MustCompile(`(?i)\b(?:from|join)\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_]*)\b`)
+	reIdxAsAliasSuffix   = regexp.MustCompile(`(?i)\bas\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*$`)
+	reIdxStripAsAlias    = regexp.MustCompile(`(?i)\s+as\s+[A-Za-z_#][A-Za-z0-9_#]*\s*$`)
+	reIdxDirectColRef    = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*$`)
+	reIdxIsnullCoalesce  = regexp.MustCompile(`(?i)^\s*(?:isnull|coalesce)\s*\(`)
+	reIdxQualifiedColRef = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)`)
 )
 
 // parseSQLFile парсит SQL-файл с использованием batch-вставки
@@ -480,7 +480,7 @@ func (idx *Indexer) enrichSelectIntoDataTypes(ctx context.Context, result *sqlpa
 			}
 			continue
 		}
-		resolvedType, err := idx.db.FindLatestSQLColumnDefinitionType(ctx, resolvedTable, sourceColumn, 0, 0)
+		resolvedType, err := idx.db.FindLatestSQLColumnDefinitionType(ctx, resolvedTable, sourceColumn, 0, store.LookupScope{})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				typeCache[typeKey] = ""

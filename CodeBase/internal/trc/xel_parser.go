@@ -137,8 +137,8 @@ func decodeXELSQLBatchCompletedData(data []byte, p int) (xelSQLBatchCompletedDat
 	p += 4
 	// Проверяем тег до дорогого UTF-16 декодирования: при вызове на
 	// несинхронизированной позиции (см. tryDecodeActionThenDataEvent) мисматч
-// тега позволяет отбросить кандидата, не тратя O(len) на декодирование
-// потенциально огромной "длины" из гарбажа.
+	// тега позволяет отбросить кандидата, не тратя O(len) на декодирование
+	// потенциально огромной "длины" из гарбажа.
 	if d.TypeTag != xelBatchTypeTag {
 		return xelSQLBatchCompletedData{}, fmt.Errorf("xel: sql_batch_completed TypeTag=0x%X, ожидалось 0x%X", d.TypeTag, xelBatchTypeTag)
 	}
@@ -363,7 +363,7 @@ func tryDecodeActionThenDataEvent(data []byte, dataGapStart int, fields []xelAct
 			EventName:  EventClassName(xeEventNameToClass["sql_batch_completed"]),
 			Columns:    map[int]any{},
 		}
-		e.Columns[1] = bd.BatchText   // TextData
+		e.Columns[1] = bd.BatchText // TextData
 		e.Columns[13] = int64(bd.Duration)
 		e.Columns[18] = int32(bd.CPUTime)
 		e.Columns[16] = int64(bd.LogicalReads)

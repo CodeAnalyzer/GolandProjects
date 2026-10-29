@@ -52,7 +52,7 @@ func TestInitIndexesPASFileFillsFileID(t *testing.T) {
 		if total == 0 {
 			t.Fatalf("%s: no rows for %s", tc.table, tc.filter)
 		}
-		if err := idx.db.QueryRow(`SELECT count(*) FROM ` + tc.table + ` WHERE ` + tc.filter + ` AND file_id = $1`, fileID).Scan(&withFile); err != nil {
+		if err := idx.db.QueryRow(`SELECT count(*) FROM `+tc.table+` WHERE `+tc.filter+` AND file_id = $1`, fileID).Scan(&withFile); err != nil {
 			t.Fatalf("count %s with file_id: %v", tc.table, err)
 		}
 		if total != withFile {

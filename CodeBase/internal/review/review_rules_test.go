@@ -1338,7 +1338,7 @@ func TestHasExplicitConversion_DetectsConvertAndCast(t *testing.T) {
 		{"convert(varchar(10), col)", "varchar", true},
 		{"CONVERT(DATE, col)", "date", true},
 		{"convert(int, col)", "smalldatetime", false}, // convert к int не относится к smalldatetime
-		{"col", "smalldatetime", false},              // нет convert
+		{"col", "smalldatetime", false},               // нет convert
 
 		// convert() cases - эквивалентные типы (для datetime)
 		{"convert(smalldatetime, col)", "dsoperday", true}, // smalldatetime эквивалентен DSOPERDAY
@@ -5710,10 +5710,10 @@ func TestParseSelectAssignStatement_WithFrom(t *testing.T) {
 
 func TestLiteralFitsType(t *testing.T) {
 	cases := []struct {
-		name     string
-		literal  string
-		target   string
-		want     bool
+		name    string
+		literal string
+		target  string
+		want    bool
 	}{
 		{name: "8 fits tinyint", literal: "8", target: "DSTINYINT", want: true},
 		{name: "255 fits tinyint", literal: "255", target: "dstinyint", want: true},
@@ -5961,7 +5961,6 @@ func TestEnrichVariableTypesFromAPI_DoesNotOverwriteExisting(t *testing.T) {
 		t.Fatalf("existing type should not be changed, got %q", vt["agreementdate"])
 	}
 }
-
 
 func TestFindMatchingParen(t *testing.T) {
 	cases := []struct {

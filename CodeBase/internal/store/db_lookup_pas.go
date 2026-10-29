@@ -8,16 +8,29 @@ import (
 	"github.com/lib/pq"
 )
 
-// FindLatestPASClassIDByName возвращает последний id класса по имени.
-func (db *DB) FindLatestPASClassIDByName(ctx context.Context, className string) (int64, error) {
+// FindLatestPASClassIDByName возвращает id класса по имени, выбранного по
+// приоритету not_generated → ветка scope → продукт scope → default-ветка → id.
+// При ненулевом ProductID кандидаты ограничены ярусами scope (scopeTierFilter).
+func (db *DB) FindLatestPASClassIDByName(ctx context.Context, className string, scope LookupScope) (int64, error) {
 	var id int64
 	err := db.QueryRowContext(ctx, `
-		SELECT id
-		FROM pas_classes
-		WHERE LOWER(class_name) = LOWER($1)
-		ORDER BY id DESC
+		SELECT pc.id
+		FROM pas_classes pc
+		JOIN files f ON f.id = pc.file_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+		WHERE LOWER(pc.class_name) = LOWER($1)
+		  AND (
+			    ($3 <> 0 AND f.ds_product_branch_id = $3)
+			 OR (f.ds_product_id = $2 AND (br.id IS NULL OR br.is_default))
+			 OR ($2 = 0 OR COALESCE(f.ds_product_id, 0) <> $2)
+		  )
+		ORDER BY (NOT f.is_generated) DESC,
+		         (COALESCE(f.ds_product_branch_id = $3, FALSE)) DESC,
+		         (COALESCE(f.ds_product_id = $2, FALSE)) DESC,
+		         (COALESCE(br.is_default, FALSE)) DESC,
+		         pc.id DESC
 		LIMIT 1
-	`, strings.TrimSpace(className)).Scan(&id)
+	`, strings.TrimSpace(className), scope.ProductID, scope.BranchID).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -25,9 +38,10 @@ func (db *DB) FindLatestPASClassIDByName(ctx context.Context, className string) 
 	return id, nil
 }
 
-// FindLatestPASClassIDsByNames возвращает map нижнего имени класса -> последний id.
-// Один SQL-запрос вместо N вызовов FindLatestPASClassIDByName.
-func (db *DB) FindLatestPASClassIDsByNames(ctx context.Context, classNames []string) (map[string]int64, error) {
+// FindLatestPASClassIDsByNames возвращает map нижнего имени класса -> id.
+// Один SQL-запрос вместо N вызовов FindLatestPASClassIDByName; приоритет
+// кандидатов — как в FindLatestPASClassIDByName.
+func (db *DB) FindLatestPASClassIDsByNames(ctx context.Context, classNames []string, scope LookupScope) (map[string]int64, error) {
 	normalized := make([]string, 0, len(classNames))
 	seen := make(map[string]struct{})
 	for _, name := range classNames {
@@ -48,12 +62,23 @@ func (db *DB) FindLatestPASClassIDsByNames(ctx context.Context, classNames []str
 	rows, err := db.QueryContext(ctx, `
 		SELECT DISTINCT ON (class_key) class_key, id
 		FROM (
-			SELECT LOWER(class_name) AS class_key, id
-			FROM pas_classes
-			WHERE LOWER(class_name) = ANY($1)
+			SELECT LOWER(pc.class_name) AS class_key, pc.id AS id,
+			       (NOT f.is_generated) AS not_generated,
+			       COALESCE(f.ds_product_branch_id = $3, FALSE) AS branch_match,
+			       COALESCE(f.ds_product_id = $2, FALSE) AS product_match,
+			       COALESCE(br.is_default, FALSE) AS default_branch
+			FROM pas_classes pc
+			JOIN files f ON f.id = pc.file_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+			WHERE LOWER(pc.class_name) = ANY($1)
+			  AND (
+				    ($3 <> 0 AND f.ds_product_branch_id = $3)
+				 OR (f.ds_product_id = $2 AND (br.id IS NULL OR br.is_default))
+				 OR ($2 = 0 OR COALESCE(f.ds_product_id, 0) <> $2)
+			  )
 		) AS classes
-		ORDER BY class_key, id DESC
-	`, pq.Array(normalized))
+		ORDER BY class_key, not_generated DESC, branch_match DESC, product_match DESC, default_branch DESC, id DESC
+	`, pq.Array(normalized), scope.ProductID, scope.BranchID)
 	if err != nil {
 		return nil, err
 	}

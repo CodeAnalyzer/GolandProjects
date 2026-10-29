@@ -237,3 +237,32 @@
 - **WHEN** вызывается `codebase_query_spec_config` с `include_hierarchy = true`
 - **THEN** узел `billing` имеет `is_container = true`, `title = ""`
 - **AND** узел `billing/invoicing` имеет `is_container = false` и непустой `title`
+
+### Requirement: Дедупликация копий из веток в spec-навигации
+
+Спек-навигация (`spec_by_code`, `spec_coverage`, `spec_usecase`,
+`spec_deps`, `spec_history`) SHALL возвращать не более одной записи на
+capability одного продукта: записи, отличающиеся только веткой одного
+продукта (checkout'ы релизных линий со своими `openspec/`), схлопываются
+по приоритету default-ветки, выбранная запись SHALL сообщать
+использованную конфигурацию/ветку. Записи разных продуктов остаются
+отдельными. `spec_config` SHALL перечислять все конфигурации продукта
+(включая конфигурации релизных линий) с пометкой default.
+
+#### Scenario: Покрытие без дублей веток
+
+- **GIVEN** capability `contract-lifecycle` покрыта кодом в spec-конфигурациях develop и `11-01-7` одного продукта
+- **WHEN** выполняется `spec_coverage` продукта
+- **THEN** capability `contract-lifecycle` встречается в ответе один раз (конфигурация develop)
+
+#### Scenario: Спеки по коду без дублей веток
+
+- **GIVEN** процедура `MyProc` упомянута в spec-файлах конфигураций develop и `11-01-7` одного продукта
+- **WHEN** выполняется `spec_by_code` для `MyProc`
+- **THEN** возвращена одна запись capability с develop-конфигурацией, без дублирующей строки той же capability
+
+#### Scenario: Конфигурации продукта перечислены
+
+- **GIVEN** у продукта spec-конфигурации develop, `11-01-6` и `11-01-7`
+- **WHEN** выполняется `spec_config` продукта
+- **THEN** ответ перечисляет все три конфигурации с пометкой default у develop

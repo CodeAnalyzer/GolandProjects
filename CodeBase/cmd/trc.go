@@ -403,6 +403,7 @@ func runTRCProcedures(cmd *cobra.Command, args []string) error {
 		Top:         trcTop,
 		SortBy:      trcSortBy,
 		GroupBySPID: trcGroupBySPID,
+		DsinfoID:    analysisDsInfoID,
 	})
 	if err != nil {
 		return err
@@ -725,6 +726,8 @@ func runTRCPrune(cmd *cobra.Command, args []string) error {
 
 func init() {
 	trcCmd.PersistentFlags().BoolVar(&trcOutputJSON, "json", false, "output as JSON")
+	trcCmd.PersistentFlags().Int64Var(&analysisDsInfoID, "dsinfo", 0,
+		"dsinfo profile id for branch-aware enrichment (0 = CODEBASE_DSINFO_ID / active profile)")
 
 	trcEventsCmd.Flags().Int64Var(&trcSessionID, "session", 0, "load from saved session ID instead of file")
 	trcEventsCmd.Flags().IntVar(&trcSPID, "spid", 0, "legacy SPID filter (0 = all); mutually exclusive with --spids")

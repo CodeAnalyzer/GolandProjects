@@ -12,6 +12,7 @@ import (
 
 	"github.com/codebase/internal/config"
 	"github.com/codebase/internal/specfts"
+	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/store/testutil"
 )
 
@@ -85,7 +86,7 @@ func TestInitMiniTree_BuildsCallsAndCallbacks(t *testing.T) {
 		t.Fatalf("Init errors = %d", stats.Errors)
 	}
 
-	ids, err := idx.db.FindLatestSQLProcedureIDsByNames(context.Background(), []string{"CallerA", "CalleeB"}, 0)
+	ids, err := idx.db.FindLatestSQLProcedureIDsByNames(context.Background(), []string{"CallerA", "CalleeB"}, store.LookupScope{})
 	if err != nil {
 		t.Fatalf("lookup procs: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestUpdateOnlyModified_RebuildsStableRelations(t *testing.T) {
 	if _, err := idx.Update(root, true, 1); err != nil {
 		t.Fatalf("Update modified: %v", err)
 	}
-	ids2, err := idx.db.FindLatestSQLProcedureIDsByNames(context.Background(), []string{"CallerA"}, 0)
+	ids2, err := idx.db.FindLatestSQLProcedureIDsByNames(context.Background(), []string{"CallerA"}, store.LookupScope{})
 	if err != nil {
 		t.Fatalf("lookup after modify: %v", err)
 	}

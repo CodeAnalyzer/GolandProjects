@@ -44,7 +44,7 @@ func ExecuteParse(ctx context.Context, db *store.DB, p ParseParams) (*ParseResul
 	if existing, err := db.FindDsInfoProfileByHash(ctx, fileHash, dsinfo.ParserVersion); err != nil {
 		return nil, err
 	} else if existing != nil {
-		return parseResultFromSummary(existing, true), nil
+		return parseResultFromSummary(ctx, db, existing, true)
 	}
 
 	profile, err := dsinfo.ParseFile(p.FilePath)
@@ -67,10 +67,10 @@ func ExecuteParse(ctx context.Context, db *store.DB, p ParseParams) (*ParseResul
 		if err != nil {
 			return nil, err
 		}
-		return parseResultFromSummary(existing, true), nil
+		return parseResultFromSummary(ctx, db, existing, true)
 	}
 
-	return &ParseResult{
+	result := &ParseResult{
 		ProfileID:       id,
 		Reused:          false,
 		FilePath:        profile.FilePath,
@@ -83,12 +83,16 @@ func ExecuteParse(ctx context.Context, db *store.DB, p ParseParams) (*ParseResul
 		ProductsCount:   profile.ProductsCount(),
 		ModulesCount:    profile.ModulesCount(),
 		ProceduresCount: profile.ProceduresCount(),
-	}, nil
+	}
+	if result.Matching, err = ResolveProfile(ctx, db, id); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // parseResultFromSummary собирает ParseResult по существующему профилю.
-func parseResultFromSummary(s *store.DsInfoProfileSummary, reused bool) *ParseResult {
-	return &ParseResult{
+func parseResultFromSummary(ctx context.Context, db *store.DB, s *store.DsInfoProfileSummary, reused bool) (*ParseResult, error) {
+	result := &ParseResult{
 		ProfileID:       s.ID,
 		Reused:          reused,
 		FilePath:        s.FilePath,
@@ -102,6 +106,52 @@ func parseResultFromSummary(s *store.DsInfoProfileSummary, reused bool) *ParseRe
 		ModulesCount:    s.ModulesCount,
 		ProceduresCount: s.ProceduresCount,
 	}
+	var err error
+	if result.Matching, err = ResolveProfile(ctx, db, s.ID); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// ResolveProfile сопоставляет манифест профиля с проиндексированными
+// продуктами и релизными линиями (точный branch_key, затем fallback по
+// числовым токенам хвоста) и агрегирует итог. Снимок профиля не изменяется.
+func ResolveProfile(ctx context.Context, db *store.DB, dsinfoID int64) (*MatchingResult, error) {
+	if db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+	if dsinfoID <= 0 {
+		return nil, fmt.Errorf("profile_id is required")
+	}
+	items, err := db.LoadDsInfoProductMatches(ctx, dsinfoID)
+	if err != nil {
+		return nil, err
+	}
+	// Сводка считается по продуктам, а не по строкам манифеста: у одного
+	// продукта может быть несколько пакетов/линий (fa-contracts-ext).
+	products := make(map[string]struct{}, len(items))
+	matchedProducts := make(map[string]struct{}, len(items))
+	missing := 0
+	for _, item := range items {
+		products[item.ProductName] = struct{}{}
+		switch item.Status {
+		case store.DsInfoMatchOK:
+			matchedProducts[item.ProductName] = struct{}{}
+		case store.DsInfoMatchBranchNotIndexed:
+			missing++
+		}
+	}
+	matched := len(matchedProducts)
+	total := len(products)
+	return &MatchingResult{
+		ProfileID:       dsinfoID,
+		Items:           items,
+		ProductsMatched: matched,
+		ProductsTotal:   total,
+		BranchesMissing: missing,
+		Summary: fmt.Sprintf("matched %d/%d products; %d branches missing",
+			matched, total, missing),
+	}, nil
 }
 
 // ExecuteList возвращает список профилей по убыванию parsed_at.
@@ -152,6 +202,9 @@ func ExecuteShow(ctx context.Context, db *store.DB, p ShowParams) (*ShowResult, 
 		ModulesTruncated:   len(modules) < profile.ModulesCount,
 		ProceduresFiltered: false,
 		Limit:              limit,
+	}
+	if result.Matching, err = ResolveProfile(ctx, db, p.ProfileID); err != nil {
+		return nil, err
 	}
 
 	filter := store.DsInfoProcedureFilter{Module: p.Module, Packet: p.Packet, Search: p.Search}

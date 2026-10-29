@@ -9,10 +9,24 @@ import (
 	"time"
 
 	"github.com/codebase/internal/query"
+	"github.com/codebase/internal/querysvc"
 	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/trc"
 	"github.com/codebase/internal/util"
 )
+
+// queryWithProfile создаёт query с контекстом профиля dsinfo для
+// обогащения агрегаций процедур.
+func queryWithProfile(ctx context.Context, db *store.DB, dsinfoID int64) (*query.Query, error) {
+	pc, err := querysvc.ResolveQueryProfile(ctx, db, dsinfoID)
+	if err != nil {
+		return nil, err
+	}
+	if pc == nil {
+		return query.New(db), nil
+	}
+	return query.New(db, query.WithProfile(pc)), nil
+}
 
 // resolveSession загружает данные из БД (session_id > 0) или парсит файл.
 // Возвращает events, parseResult (для file-mode).
@@ -490,12 +504,18 @@ func ExecuteProcedures(ctx context.Context, db *store.DB, p ProceduresParams) (*
 			return nil, err
 		}
 		if len(aggs) > 0 {
-			enrichProcedureAggregates(ctx, query.New(db), aggs)
+			q, err := queryWithProfile(ctx, db, p.DsinfoID)
+			if err != nil {
+				return nil, err
+			}
+			enrichProcedureAggregates(ctx, q, aggs)
 		}
-		return &ProceduresResult{
+		result := &ProceduresResult{
 			Procedures: aggs,
 			Count:      len(aggs),
-		}, nil
+		}
+		result.Warnings = query.CollectBranchWarnings(result)
+		return result, nil
 	}
 
 	events, _, err := resolveSession(ctx, db, p.Source)
@@ -504,13 +524,18 @@ func ExecuteProcedures(ctx context.Context, db *store.DB, p ProceduresParams) (*
 	}
 	aggs := trc.AggregateByProcedure(events, opts)
 	if db != nil && len(aggs) > 0 {
-		q := query.New(db)
+		q, err := queryWithProfile(ctx, db, p.DsinfoID)
+		if err != nil {
+			return nil, err
+		}
 		enrichProcedureAggregates(ctx, q, aggs)
 	}
-	return &ProceduresResult{
+	result := &ProceduresResult{
 		Procedures: aggs,
 		Count:      len(aggs),
-	}, nil
+	}
+	result.Warnings = query.CollectBranchWarnings(result)
+	return result, nil
 }
 
 // ExecuteTree строит деревья вызовов по SPID.

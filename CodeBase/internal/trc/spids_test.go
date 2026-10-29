@@ -90,10 +90,10 @@ func TestSummarizeSPIDs_TimeFilter(t *testing.T) {
 	from := base.Add(30 * time.Minute)
 	to := base.Add(90 * time.Minute)
 	events := []TRCEvent{
-		spidsEvent(728, "SP:Completed", 1, map[int]any{14: sysTime(t, base)}),                   // до from
-		spidsEvent(728, "SP:Completed", 2, map[int]any{14: sysTime(t, base.Add(time.Hour))}),    // внутри
-		spidsEvent(728, "SP:Completed", 4, map[int]any{14: sysTime(t, base.Add(2*time.Hour))}),  // после to
-		spidsEvent(728, "SP:Completed", 8, nil),                                            // без времени
+		spidsEvent(728, "SP:Completed", 1, map[int]any{14: sysTime(t, base)}),                  // до from
+		spidsEvent(728, "SP:Completed", 2, map[int]any{14: sysTime(t, base.Add(time.Hour))}),   // внутри
+		spidsEvent(728, "SP:Completed", 4, map[int]any{14: sysTime(t, base.Add(2*time.Hour))}), // после to
+		spidsEvent(728, "SP:Completed", 8, nil),                                                // без времени
 	}
 	res := SummarizeSPIDs(events, SpidsOptions{TimeFrom: &from, TimeTo: &to})
 	if len(res) != 1 || res[0].EventCount != 1 || res[0].MaxDurationMs != 2 {

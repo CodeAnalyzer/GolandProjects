@@ -96,12 +96,12 @@ func TestIncrementalParentTracker_NoSPID_RootEvent(t *testing.T) {
 // при вложенных вызовах процедур.
 func TestIncrementalParentTracker_NestedCalls(t *testing.T) {
 	events := []TRCEvent{
-		makeTestEvent("RPC:Starting", 51),    // idx=0, depth=1, parent=-1
-		makeTestEvent("SP:Starting", 51),     // idx=1, depth=2, parent=0
-		makeTestEvent("SP:StmtStarting", 51), // idx=2, depth=3, parent=1
+		makeTestEvent("RPC:Starting", 51),     // idx=0, depth=1, parent=-1
+		makeTestEvent("SP:Starting", 51),      // idx=1, depth=2, parent=0
+		makeTestEvent("SP:StmtStarting", 51),  // idx=2, depth=3, parent=1
 		makeTestEvent("SP:StmtCompleted", 51), // idx=3, depth=3, parent=1
-		makeTestEvent("SP:Completed", 51),    // idx=4, depth=2, parent=0
-		makeTestEvent("RPC:Completed", 51),   // idx=5, depth=1, parent=-1
+		makeTestEvent("SP:Completed", 51),     // idx=4, depth=2, parent=0
+		makeTestEvent("RPC:Completed", 51),    // idx=5, depth=1, parent=-1
 	}
 
 	tracker := NewIncrementalParentTracker()

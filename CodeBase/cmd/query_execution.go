@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,23 +12,52 @@ import (
 	"github.com/codebase/internal/errs"
 	"github.com/codebase/internal/query"
 	"github.com/codebase/internal/querysvc"
+	"github.com/codebase/internal/store"
 )
 
-func runQueryCommand(spec queryCommandSpec) error {
-	results, err := executeQuery(spec.run)
+// analysisDsInfoID — явный профиль dsinfo для команд анализа (--dsinfo).
+// 0 — использовать цепочку env/активный профиль.
+var analysisDsInfoID int64
+
+func runQueryCommand(ctx context.Context, spec queryCommandSpec) error {
+	var (
+		results interface{}
+		err     error
+	)
+	if spec.withoutProfile {
+		results, err = executeQueryPlain(spec.run)
+	} else {
+		results, err = executeQuery(ctx, spec.run)
+	}
 	if err != nil {
 		return handleQueryError(spec.commandName, err)
 	}
 	return printResults(spec.commandName, spec.filters, results)
 }
 
-func executeQuery(run func(q *query.Query) (interface{}, error)) (interface{}, error) {
+func executeQuery(ctx context.Context, run func(q *query.Query) (interface{}, error)) (interface{}, error) {
+	return querysvc.ExecuteWithProfile(ctx, resolveQueryProfile, run)
+}
+
+// executeQueryPlain выполняет команду без контекста профиля (границы
+// применения: callers/relations/inspect не выбирают копию сущности).
+func executeQueryPlain(run func(q *query.Query) (interface{}, error)) (interface{}, error) {
 	return querysvc.Execute(run)
 }
 
+// resolveQueryProfile разрешает контекст профиля dsinfo по цепочке
+// --dsinfo > CODEBASE_DSINFO_ID > активный профиль > отсутствие профиля и
+// переводит его в query.ProfileContext (карта линий + запрошенные линии).
+func resolveQueryProfile(ctx context.Context, db *store.DB) (*query.ProfileContext, error) {
+	return querysvc.ResolveQueryProfile(ctx, db, analysisDsInfoID)
+}
+
 func printResults(commandName string, filters map[string]string, results interface{}) error {
+	warnings := query.CollectBranchWarnings(results)
 	if outputNDJSON {
-		return writeNDJSON(os.Stdout, normalizeNilResults(results))
+		err := writeNDJSON(os.Stdout, normalizeNilResults(results))
+		printQueryWarnings(warnings, os.Stderr)
+		return err
 	}
 
 	if outputJSON {
@@ -43,6 +73,7 @@ func printResults(commandName string, filters map[string]string, results interfa
 			Count:         resultCount(results),
 			Items:         normalizeNilResults(results),
 			Meta:          meta,
+			Warnings:      warnings,
 		}
 		if outputSummary {
 			response.Summary = buildQuerySummary(results)
@@ -51,11 +82,26 @@ func printResults(commandName string, filters map[string]string, results interfa
 	}
 
 	if outputSummary {
-		return writeJSON(os.Stdout, buildQuerySummary(results))
+		err := writeJSON(os.Stdout, buildQuerySummary(results))
+		printQueryWarnings(warnings, os.Stderr)
+		return err
 	}
 
 	fmt.Printf("%+v\n", normalizeNilResults(results))
+	printQueryWarnings(warnings, os.Stderr)
 	return nil
+}
+
+// printQueryWarnings печатает предупреждения профиля (fallback линий) в
+// человекочитаемом/ndjson/summary режимах; в JSON они входят в конверт.
+func printQueryWarnings(warnings []string, out *os.File) {
+	if len(warnings) == 0 {
+		return
+	}
+	fmt.Fprintln(out, "Warnings:")
+	for _, warning := range warnings {
+		fmt.Fprintf(out, "  - %s\n", warning)
+	}
 }
 
 func boolFilterValue(enabled bool) string {

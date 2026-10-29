@@ -8,13 +8,13 @@ package trc
 type ColumnDataType int
 
 const (
-	TypeUnknown ColumnDataType = iota
-	TypeString                // nvarchar (UTF-16LE), по всей видимости length-prefixed
-	TypeInt32                 // 4-байтовое целое
-	TypeInt64                 // 8-байтовое целое (bigint)
-	TypeDateTime              // 8 байт, точная кодировка не подтверждена
-	TypeGUID                  // 16 байт, unverified
-	TypeBinary                // произвольная длина, unverified
+	TypeUnknown  ColumnDataType = iota
+	TypeString                  // nvarchar (UTF-16LE), по всей видимости length-prefixed
+	TypeInt32                   // 4-байтовое целое
+	TypeInt64                   // 8-байтовое целое (bigint)
+	TypeDateTime                // 8 байт, точная кодировка не подтверждена
+	TypeGUID                    // 16 байт, unverified
+	TypeBinary                  // произвольная длина, unverified
 )
 
 // ColumnDef — определение колонки трейса (см. Modifications/Data Columns.txt).

@@ -192,7 +192,7 @@ func TestDsInfoDeleteCascadeAndActive(t *testing.T) {
 	}
 	for _, table := range []string{"dsinfo_products", "dsinfo_modules", "dsinfo_procedures"} {
 		var n int
-		if err := db.QueryRow(`SELECT count(*) FROM `+table).Scan(&n); err != nil || n != 0 {
+		if err := db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&n); err != nil || n != 0 {
 			t.Fatalf("%s after delete = %d (err %v), want 0", table, n, err)
 		}
 	}

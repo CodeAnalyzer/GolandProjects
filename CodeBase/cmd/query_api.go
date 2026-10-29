@@ -6,11 +6,11 @@ import (
 )
 
 var (
-	apiContractName string
-	apiTableName    string
+	apiContractName   string
+	apiTableName      string
 	apiTableIndexName string
-	apiParamName    string
-	apiEventName    string
+	apiParamName      string
+	apiEventName      string
 )
 
 var queryAPIContractCmd = &cobra.Command{
@@ -18,9 +18,9 @@ var queryAPIContractCmd = &cobra.Command{
 	Short: "Search DSArchitect API contracts (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query api-contract",
-			filters: map[string]string{"name": apiContractName, "like": boolFilterValue(apiContractLikeSearch)},
+			filters:     map[string]string{"name": apiContractName, "like": boolFilterValue(apiContractLikeSearch)},
 			run: func(q *query.Query) (interface{}, error) {
 				return q.SearchAPIContract(ctx, apiContractName, apiContractLikeSearch, limit)
 			},
@@ -33,9 +33,9 @@ var queryAPITableCmd = &cobra.Command{
 	Short: "Search DSArchitect API tables (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query api-table",
-			filters: map[string]string{"name": apiTableName, "like": boolFilterValue(apiTableLikeSearch)},
+			filters:     map[string]string{"name": apiTableName, "like": boolFilterValue(apiTableLikeSearch)},
 			run: func(q *query.Query) (interface{}, error) {
 				return q.SearchAPITable(ctx, apiTableName, apiTableLikeSearch, limit)
 			},
@@ -48,9 +48,9 @@ var queryAPITableIndexCmd = &cobra.Command{
 	Short: "Search indexes of standalone DSArchitect API tables",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query api-table-index",
-			filters: map[string]string{"name": apiTableIndexName, "like": boolFilterValue(apiTableIndexLikeSearch)},
+			filters:     map[string]string{"name": apiTableIndexName, "like": boolFilterValue(apiTableIndexLikeSearch)},
 			run: func(q *query.Query) (interface{}, error) {
 				return q.SearchAPITableIndex(ctx, apiTableIndexName, apiTableIndexLikeSearch, limit)
 			},
@@ -63,9 +63,9 @@ var queryAPIParamCmd = &cobra.Command{
 	Short: "Search DSArchitect API params (exact by default)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query api-param",
-			filters: map[string]string{"name": apiParamName, "like": boolFilterValue(apiParamLikeSearch)},
+			filters:     map[string]string{"name": apiParamName, "like": boolFilterValue(apiParamLikeSearch)},
 			run: func(q *query.Query) (interface{}, error) {
 				return q.SearchAPIParam(ctx, apiParamName, apiParamLikeSearch, limit)
 			},
@@ -78,9 +78,9 @@ var queryAPIImplCmd = &cobra.Command{
 	Short: "Show SQL implementations of API contracts",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query api-impl",
-			filters: map[string]string{"name": apiContractName},
+			filters:     map[string]string{"name": apiContractName},
 			run: func(q *query.Query) (interface{}, error) {
 				return q.SearchAPIImplementations(ctx, apiContractName, limit)
 			},
@@ -93,9 +93,9 @@ var queryAPIPublishersCmd = &cobra.Command{
 	Short: "Show procedures publishing DSArchitect events",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query api-publishers",
-			filters: map[string]string{"event": apiEventName},
+			filters:     map[string]string{"event": apiEventName},
 			run: func(q *query.Query) (interface{}, error) {
 				return q.SearchAPIPublishers(ctx, apiEventName, limit)
 			},
@@ -108,9 +108,9 @@ var queryAPIConsumersCmd = &cobra.Command{
 	Short: "Show procedures consuming API contracts",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(queryCommandSpec{
+		return runQueryCommand(cmd.Context(), queryCommandSpec{
 			commandName: "query api-consumers",
-			filters: map[string]string{"name": apiContractName},
+			filters:     map[string]string{"name": apiContractName},
 			run: func(q *query.Query) (interface{}, error) {
 				return q.SearchAPIConsumers(ctx, apiContractName, limit)
 			},

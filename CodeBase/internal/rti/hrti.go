@@ -302,4 +302,3 @@ func decodeHRTIRow(row string) string {
 	}
 	return strings.Join(cells, "_|_")
 }
-

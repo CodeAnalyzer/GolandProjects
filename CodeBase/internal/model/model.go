@@ -773,8 +773,11 @@ type SpecCodeMention struct {
 	MentionKind string // procedure | api | table | form | smf | method | unknown
 	LineNumber  int
 	// ProductID — продукт файла спеки (files.ds_product_id), 0 если не определён;
-	// контекст приоритетного резолва упоминаний (свой продукт важнее чужого).
+	// BranchID — ветка файла спеки (files.ds_product_branch_id), 0 если не определена.
+	// Вместе образуют scope приоритетного резолва упоминаний (своя ветка/продукт
+	// важнее чужих; копии других веток того же продукта исключаются).
 	ProductID int64
+	BranchID  int64
 }
 
 // SpecVocabTerm — термин словаря полнотекстового слоя (LSA)

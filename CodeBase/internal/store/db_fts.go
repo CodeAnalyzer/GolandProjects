@@ -65,10 +65,10 @@ type DescLSADocRow struct {
 func hasArtifactRunes(s string) bool {
 	for _, r := range s {
 		if (r >= 0x2500 && r <= 0x259F) || // ─ │ ┌ ┘ █ ▀ ...
-				r == 0x0404 || r == 0x0454 || // Є є
-				r == 0x0407 || r == 0x0457 || // Ї ї
-				r == 0x040E || r == 0x045E || // Ў ў
-				r == 0x00A4 || r == 0x25A0 { // ¤ ■
+			r == 0x0404 || r == 0x0454 || // Є є
+			r == 0x0407 || r == 0x0457 || // Ї ї
+			r == 0x040E || r == 0x045E || // Ў ў
+			r == 0x00A4 || r == 0x25A0 { // ¤ ■
 			return true
 		}
 	}

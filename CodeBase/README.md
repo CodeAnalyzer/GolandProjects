@@ -228,10 +228,11 @@ FA/                            # root_path
   переиндексирует его, а прежняя линия теряет файлы.
 - Каталоги без `.git`/remote обрабатываются прежней эвристикой по имени.
 
-> **Предупреждение о порядке срезов.** Приоритет выбора копии сущности в
-> запросах (`branch_used`) вводится срезом `branch-aware-lookup`: до его
-> реализации запросы к продуктам с несколькими проиндексированными линиями
-> не детерминированы. Выполняйте срезы последовательно A → B → C.
+> **Какую копию показывают запросы.** Копии одной сущности из разных линий
+> схлопываются: по умолчанию выбирается копия default-ветки (`branch_used` в
+> результате), а `--dsinfo <id>` выбирает линию установленного профиля (см.
+> «Профиль развёртывания в анализе» ниже). Set-запросы без выбора копии
+> (`query callers`, `query relations`, `query inspect`) возвращают все копии.
 
 ### Запросы к индексу
 
@@ -746,7 +747,7 @@ codebase rti prune --keep-hours 24
 - **`tree`** — дерево вызовов с временами и кодами возврата
 - **`errors`** — вызовы с ненулевым ret_val + расшифровка кода из `ds_return_codes`; также клиентские ошибки (kind=error)
 - **`slow`** — вызовы медленнее порога (по умолчанию 100 мс); также медленные client SQL blocks
-- **`details`** — параметры, checkpoints, enrichment (путь к файлу и строки из индекса) для конкретной процедуры
+- **`details`** — параметры, checkpoints, enrichment (путь к файлу, строки, `product`/`branch_used`) для конкретной процедуры; `--dsinfo <id>` выбирает линию установленного профиля
 - **`blog`** — бизнес-лог процедуры: блоки с Enter/Exit и elapsed_ms, контрольные точки с timestamp, дампы таблиц с заголовками и строками
 - **`client-tree`** — дерево клиентских событий (thick client d5nt), сгруппированных по PID; enrichment из индекса (PAS-методы, DFM-формы, SQL-фрагменты)
 - **`timeline`** — единый хронологический timeline серверных вызовов и клиентских событий; enrichment клиентских событий из индекса
@@ -917,9 +918,55 @@ codebase dsinfo delete 1
 
 `--json` — machine-readable envelope (`success`, `format_version`, `command`, `count`, `items`, `meta`); флаг ставится после группы: `codebase dsinfo parse f.csv --json`.
 
+`parse` и `show` выводят таблицу сопоставления манифеста с проиндексированными линиями (продукт, запрошенная и фактическая линия, статус) и итог `matched N/M products; K branches missing`; в JSON — поле `matching`. Сопоставление пересчитывается при каждом выводе, поэтому после `codebase update` статусы обновляются без повторного разбора CSV.
+
 > **Терминология**: «профиль dsinfo» — сохранённый снимок DiasoftSystemInfo (`dsinfo use/show/...`), а `--profile` MCP-сервера — подмножество регистрируемых инструментов (`codebase mcp --profile=query`). Это независимые понятия; dsinfo-инструменты MCP доступны во всех MCP-профилях.
 
-Ограничение текущей версии: dsinfo-профили пока **не потребляются** анализаторами (`query`/`rti`/`trc`/`review` не принимают профиль и не используют его данные) — парсер и хранилище подготовлены как основа для будущего резолва «процедура → пакет → продукт» (сопоставление с ветками продуктов).
+#### Профиль развёртывания в анализе (`--dsinfo`)
+
+Профиль dsinfo — это снимок установленных в банке продуктов и линий; команды
+анализа используют его как контекст выбора ветки. Сопоставление с индексом
+вычисляется на лету и не изменяет снимок:
+
+- точное совпадение `(продукт, branch_key)` с `ds_products_branch`;
+- fallback по числовым токенам хвоста в пределах того же продукта:
+  манифест `fa-contracts-11-01-7` совпадает с индексной линией `sup/11-01-7`;
+  точное совпадение всегда приоритетнее;
+- статусы в таблице сопоставления (`dsinfo parse`/`show`): `ok`,
+  `branch_not_indexed`, `product_not_indexed`; итог — `matched N/M products;
+  K branches missing`.
+
+Цепочка выбора профиля: `--dsinfo <id>` (CLI) / `dsinfo_id` (MCP) >
+`CODEBASE_DSINFO_ID` > активный профиль (`dsinfo use`) > без профиля
+(default-ветка). Несуществующий id и некорректный env — ошибка.
+
+Приоритет копии при выборе: `not_generated` → `profile_match` (линия профиля
+для продукта) → `is_default` → больший id. Если запрошенная линия в индексе
+отсутствует, запрос показывает default-ветку продукта; элемент содержит
+`branch_requested` (линия манифеста) и `branch_used` (фактическая линия), а
+ответ — массив `warnings` (одна строка на продукт).
+
+Границы применения: профиль учитывают entity/API-запросы с выбором копии,
+поиск символов, лексический слой `query desc-search`, `query retcode` и
+enrichment RTI/TRC. Не учитывают: `query callers`, `query relations`,
+`query inspect`, команды `query spec ...` (остаются на default-конфигурации)
+и semantic-слой `desc-search`; флаг на них принимается, но результат не
+зависит от профиля, предупреждений не добавляется.
+
+```bash
+# Профиль на один вызов (или через CODEBASE_DSINFO_ID / dsinfo use)
+codebase query procedure --name MyProc --dsinfo 5
+codebase query table --name TA_CONTRACTS --dsinfo 5 --json
+codebase query desc-search --text "кредит" --dsinfo 5
+codebase rti details log.rti --proc MyProc --dsinfo 5
+codebase trc procedures log.trc --dsinfo 5
+```
+
+В MCP параметр `dsinfo_id` объявлен у query-инструментов, выбирающих копию
+(entity/API/retcode/desc/symbol), и у rti/trc-инструментов с обогащением
+(`codebase_rti_tree/errors/slow/details`, `codebase_trc_procedures`). У
+`codebase_query_callers/relations/inspect`, spec-инструментов и `dsinfo_*`
+параметра нет; warnings возвращаются в верхнем уровне результата.
 
 ### Review (проверка SQL перед деплоем)
 
@@ -1087,7 +1134,7 @@ profile=<name> tool=<name> args=<аргументы> duration=<d> duration_ms=<m
 - `codebase.ping` — проверка живости MCP-сервера
 - `codebase.health` — проверка готовности БД и индекса
 - `codebase.stats` — статистика индекса
-- `codebase.query.*` для всех query-подкоманд CLI (включая spec-запросы)
+- `codebase.query.*` для всех query-подкоманд CLI (включая spec-запросы); инструменты, выбирающие копию сущности, принимают `dsinfo_id`
 - `codebase_review_sql` — статический анализ SQL-файла (review rules)
 - `codebase_read_more` — пагинация MCP-ответов
 - `dsinfo_*` — управление профилями DiasoftSystemInfo (см. таблицу ниже)
@@ -1111,10 +1158,10 @@ profile=<name> tool=<name> args=<аргументы> duration=<d> duration_ms=<m
 | `codebase_rti_parse` | Парсинг `.rti`/`.hrti` файла и сохранение в БД; reuse того же содержимого, ответ содержит `use_count` | `file_path` |
 | `codebase_rti_list` | Список сохранённых сессий (с `use_count`) | — |
 | `codebase_rti_summary` | Сводка сессии | `session_id` или `file_path` |
-| `codebase_rti_tree` | Дерево вызовов | `session_id` или `file_path` |
-| `codebase_rti_errors` | Вызовы с ошибками (ret_val ≠ 0) | `session_id` или `file_path` |
-| `codebase_rti_slow` | Медленные вызовы | `session_id` или `file_path` |
-| `codebase_rti_details` | Детали процедуры с enrichment из индекса | `session_id` или `file_path`, `procedure` |
+| `codebase_rti_tree` | Дерево вызовов | `session_id` или `file_path`, опц. `dsinfo_id` |
+| `codebase_rti_errors` | Вызовы с ошибками (ret_val ≠ 0) | `session_id` или `file_path`, опц. `dsinfo_id` |
+| `codebase_rti_slow` | Медленные вызовы | `session_id` или `file_path`, опц. `dsinfo_id` |
+| `codebase_rti_details` | Детали процедуры с enrichment из индекса (`product`/`branch_used`) | `session_id` или `file_path`, `procedure`, опц. `dsinfo_id` |
 | `codebase_rti_blog` | Бизнес-лог процедуры: блоки/checkpoints/таблицы | `session_id` или `file_path`, `procedure` |
 | `codebase_rti_client_tree` | Дерево клиентских событий по PID | `session_id` или `file_path`, опц. `pid` |
 | `codebase_rti_timeline` | Единый timeline серверных и клиентских событий | `session_id` или `file_path`, опц. `time_from`/`time_to` |
@@ -1150,7 +1197,7 @@ profile=<name> tool=<name> args=<аргументы> duration=<d> duration_ms=<m
 | `codebase_trc_list` | Список сохранённых сессий (с `use_count`) | — |
 | `codebase_trc_summary` | Сводка сессии: total_events, метаданные | `session_id` или `file_path` |
 | `codebase_trc_events` | Декодированные события с server-side фильтрами и keyset-пагинацией; `filtered_count` на каждой странице, `total_count` только на первой, `has_more`/`next_after_id`, `format=full\|short` | `session_id` или `file_path`, опц. `spids[]`/`event_names[]`/`procedure`/`time_from`/`time_to`/`min_duration_ms`/`after_id`/`format`/`limit`; legacy `spid`/`event_name` нормализуются в массивы |
-| `codebase_trc_procedures` | Агрегация вызовов процедур (default `SP:Completed`) с enrichment, `spids[]`, `event_names[]`, `top`, `sort_by`, `group_by_spid` | `session_id` или `file_path`, опц. `spids[]`/`event_names[]`/`top`/`sort_by`/`group_by_spid` |
+| `codebase_trc_procedures` | Агрегация вызовов процедур (default `SP:Completed`) с enrichment (`product`/`branch_used`), `spids[]`, `event_names[]`, `top`, `sort_by`, `group_by_spid` | `session_id` или `file_path`, опц. `spids[]`/`event_names[]`/`top`/`sort_by`/`group_by_spid`/`dsinfo_id` |
 | `codebase_trc_compare_procedures` | Top-N процедур focus SPID vs те же процедуры в peer SPID: nullable peer-метрики, взвешенный `peer_combined`, ratios `avg/max/count_vs_peers`, warnings | `session_id` или `file_path`, `focus_spid`, `compare_spids[]`, опц. `event_names[]`/`top` (default 20)/`sort_by` |
 | `codebase_trc_spids` | Сводка активности SPID без сырых событий: счётчики, границы времени, ошибки, max duration, мода app/login/host | `session_id` или `file_path`, опц. `spids[]`/`time_from`/`time_to`/`sort_by`/`limit` |
 | `codebase_trc_tree` | Дерево вызовов по SPID с опц. фильтром по процедуре | `session_id` или `file_path`, опц. `spid`/`max_depth`/`limit`/`procedure` |

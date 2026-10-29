@@ -136,9 +136,9 @@ func TestSpecMentionPostProcessing_NewKinds(t *testing.T) {
 	insertMention(t, idx, fileID, capID, "OnAfterPerson_Update", "event", 11)
 	insertMention(t, idx, fileID, capID, "pAPI_Accrual_ObjDate", "api_table", 12)
 	insertMention(t, idx, fileID, capID, "RPPortfolio_f", "method", 13) // промах в pas_methods → dfm_forms
-	insertMention(t, idx, fileID, capID, "RealMethod", "method", 14)   // хит в pas_methods
-	insertMention(t, idx, fileID, capID, "r8938_prc", "unknown", 15)   // second-chance
-	insertMention(t, idx, fileID, capID, "f123_proc", "unknown", 16)   // без цели
+	insertMention(t, idx, fileID, capID, "RealMethod", "method", 14)    // хит в pas_methods
+	insertMention(t, idx, fileID, capID, "r8938_prc", "unknown", 15)    // second-chance
+	insertMention(t, idx, fileID, capID, "f123_proc", "unknown", 16)    // без цели
 
 	run := func() {
 		collector := &statsCollector{}
@@ -203,8 +203,8 @@ func TestSpecMentionGIVENScan(t *testing.T) {
 		t.Fatalf("write config.yaml: %v", err)
 	}
 	idx := &Indexer{
-		db:     db,
-		config: &config.Config{Indexer: config.IndexerConfig{Parallel: 1, BatchSize: 100, IncludePatterns: []string{"*.md", "*.yaml"}}},
+		db:          db,
+		config:      &config.Config{Indexer: config.IndexerConfig{Parallel: 1, BatchSize: 100, IncludePatterns: []string{"*.md", "*.yaml"}}},
 		errorLogger: log.New(io.Discard, "", 0),
 		shared:      newIndexerSharedState(),
 	}

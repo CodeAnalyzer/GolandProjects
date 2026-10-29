@@ -10,10 +10,25 @@ import (
 	"time"
 
 	"github.com/codebase/internal/query"
+	"github.com/codebase/internal/querysvc"
 	"github.com/codebase/internal/rti"
 	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/util"
 )
+
+// queryWithProfile создаёт query с контекстом профиля dsinfo для
+// enrichment-команд. Клиентское обогащение профиль не использует — там нет
+// выбора процедуры.
+func queryWithProfile(ctx context.Context, db *store.DB, dsinfoID int64) (*query.Query, error) {
+	pc, err := querysvc.ResolveQueryProfile(ctx, db, dsinfoID)
+	if err != nil {
+		return nil, err
+	}
+	if pc == nil {
+		return query.New(db), nil
+	}
+	return query.New(db, query.WithProfile(pc)), nil
+}
 
 // resolveSession загружает данные из БД (session_id > 0) или парсит файл.
 // Возвращает calls, clientEvents, parseResult (для file-mode).
@@ -251,9 +266,13 @@ func ExecuteTree(ctx context.Context, db *store.DB, p TreeParams) (*TreeResult, 
 	result := &TreeResult{Tree: tree}
 
 	if db != nil && tree != nil {
-		q := query.New(db)
+		q, err := queryWithProfile(ctx, db, p.DsinfoID)
+		if err != nil {
+			return nil, err
+		}
 		result.Enrichment = rti.EnrichCalls(ctx, q, calls)
 	}
+	result.Warnings = query.CollectBranchWarnings(result)
 
 	return result, nil
 }
@@ -307,7 +326,10 @@ func ExecuteErrors(ctx context.Context, db *store.DB, p ErrorsParams) (*ErrorsRe
 	}
 
 	if db != nil && (len(errorCalls) > 0 || len(clientErrors) > 0) {
-		q := query.New(db)
+		q, err := queryWithProfile(ctx, db, p.DsinfoID)
+		if err != nil {
+			return nil, err
+		}
 		if len(errorCalls) > 0 {
 			result.ServerEnrichment = rti.EnrichCalls(ctx, q, errorCalls)
 			codes := make([]int64, 0, len(errorCalls))
@@ -332,6 +354,7 @@ func ExecuteErrors(ctx context.Context, db *store.DB, p ErrorsParams) (*ErrorsRe
 			result.ClientEnrichment = rti.EnrichClientEvents(ctx, q, clientErrors)
 		}
 	}
+	result.Warnings = query.CollectBranchWarnings(result)
 
 	return result, nil
 }
@@ -395,7 +418,10 @@ func ExecuteSlow(ctx context.Context, db *store.DB, p SlowParams) (*SlowResult, 
 	}
 
 	if db != nil && (len(slowCalls) > 0 || len(slowClientSQL) > 0) {
-		q := query.New(db)
+		q, err := queryWithProfile(ctx, db, p.DsinfoID)
+		if err != nil {
+			return nil, err
+		}
 		if len(slowCalls) > 0 {
 			result.ServerEnrichment = rti.EnrichCalls(ctx, q, slowCalls)
 		}
@@ -403,6 +429,7 @@ func ExecuteSlow(ctx context.Context, db *store.DB, p SlowParams) (*SlowResult, 
 			result.ClientEnrichment = rti.EnrichClientEvents(ctx, q, slowClientSQL)
 		}
 	}
+	result.Warnings = query.CollectBranchWarnings(result)
 
 	return result, nil
 }
@@ -440,7 +467,10 @@ func ExecuteDetails(ctx context.Context, db *store.DB, p DetailsParams) (*Detail
 	}
 
 	if db != nil && len(calls) > 0 {
-		q := query.New(db)
+		q, err := queryWithProfile(ctx, db, p.DsinfoID)
+		if err != nil {
+			return nil, err
+		}
 		enrich, err := rti.EnrichProcedure(ctx, q, p.Procedure)
 		if err == nil {
 			result.Enrichment = enrich
@@ -463,6 +493,7 @@ func ExecuteDetails(ctx context.Context, db *store.DB, p DetailsParams) (*Detail
 			}
 		}
 	}
+	result.Warnings = query.CollectBranchWarnings(result)
 
 	return result, nil
 }

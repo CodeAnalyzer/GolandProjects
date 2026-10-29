@@ -66,10 +66,10 @@ func TestDecodeColumnValue_SystemTime(t *testing.T) {
 	binary.LittleEndian.PutUint16(raw[0:2], 2024)  // Year
 	binary.LittleEndian.PutUint16(raw[2:4], 6)     // Month
 	binary.LittleEndian.PutUint16(raw[4:6], 4)     // DayOfWeek
-	binary.LittleEndian.PutUint16(raw[6:8], 15)   // Day
-	binary.LittleEndian.PutUint16(raw[8:10], 10)  // Hour
-	binary.LittleEndian.PutUint16(raw[10:12], 30) // Minute
-	binary.LittleEndian.PutUint16(raw[12:14], 45) // Second
+	binary.LittleEndian.PutUint16(raw[6:8], 15)    // Day
+	binary.LittleEndian.PutUint16(raw[8:10], 10)   // Hour
+	binary.LittleEndian.PutUint16(raw[10:12], 30)  // Minute
+	binary.LittleEndian.PutUint16(raw[12:14], 45)  // Second
 	binary.LittleEndian.PutUint16(raw[14:16], 500) // Milliseconds
 
 	got, err := decodeColumnValue(14, raw)

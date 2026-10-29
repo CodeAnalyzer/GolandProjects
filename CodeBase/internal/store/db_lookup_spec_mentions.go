@@ -42,11 +42,11 @@ func (db *DB) ResolveSpecMentionSourceIDs(ctx context.Context) error {
 }
 
 // LoadAllSpecCodeMentions загружает все spec_code_mentions для постпроцессинга
-// вместе с продуктом файла спеки (контекст приоритетного резолва).
+// вместе с продуктом и веткой файла спеки (контекст приоритетного резолва).
 func (db *DB) LoadAllSpecCodeMentions(ctx context.Context) ([]*model.SpecCodeMention, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT m.id, m.file_id, m.source_type, m.source_id, m.mention_name, m.mention_kind, m.line_number,
-		       COALESCE(f.ds_product_id, 0)
+		       COALESCE(f.ds_product_id, 0), COALESCE(f.ds_product_branch_id, 0)
 		FROM spec_code_mentions m
 		JOIN files f ON f.id = m.file_id
 		ORDER BY m.id
@@ -59,7 +59,7 @@ func (db *DB) LoadAllSpecCodeMentions(ctx context.Context) ([]*model.SpecCodeMen
 	var result []*model.SpecCodeMention
 	for rows.Next() {
 		var r model.SpecCodeMention
-		if err := rows.Scan(&r.ID, &r.FileID, &r.SourceType, &r.SourceID, &r.MentionName, &r.MentionKind, &r.LineNumber, &r.ProductID); err != nil {
+		if err := rows.Scan(&r.ID, &r.FileID, &r.SourceType, &r.SourceID, &r.MentionName, &r.MentionKind, &r.LineNumber, &r.ProductID, &r.BranchID); err != nil {
 			return nil, err
 		}
 		result = append(result, &r)
@@ -100,11 +100,12 @@ func normalizeLookupNames(names []string) []string {
 }
 
 // lookupEntityIDsByNames — общий пакетный резолв имён сущности в id.
-// Приоритет кандидатов: не-генерируемый источник (не UPLOAD/.t01) → источник
-// указанного продукта → самый свежий по id. Нулевой productID валиден —
-// продуктовое предпочтение не применяется, приоритет не-копий сохраняется.
+// Приоритет кандидатов: не-генерируемый источник (не UPLOAD/.t01) → ветка
+// scope → продукт scope → default-ветка → самый свежий по id. Нулевой scope
+// валиден — продуктово-веточные предпочтения не применяются. При ненулевом
+// ProductID кандидаты ограничены ярусами scope (scopeTierFilter).
 // table/column передаются только из фиксированных мест вызова (не из ввода пользователя).
-func (db *DB) lookupEntityIDsByNames(ctx context.Context, table, column string, names []string, productID int64) (map[string]int64, error) {
+func (db *DB) lookupEntityIDsByNames(ctx context.Context, table, column string, names []string, scope LookupScope) (map[string]int64, error) {
 	normalized := normalizeLookupNames(names)
 	result := make(map[string]int64, len(normalized))
 	if len(normalized) == 0 {
@@ -115,14 +116,22 @@ func (db *DB) lookupEntityIDsByNames(ctx context.Context, table, column string, 
 		FROM (
 			SELECT LOWER(e.` + column + `) AS name_key, e.id AS id,
 			       (NOT f.is_generated) AS not_generated,
-			       COALESCE(f.ds_product_id = $2, FALSE) AS product_match
+			       COALESCE(f.ds_product_branch_id = $3, FALSE) AS branch_match,
+			       COALESCE(f.ds_product_id = $2, FALSE) AS product_match,
+			       COALESCE(br.is_default, FALSE) AS default_branch
 			FROM ` + table + ` e
 			JOIN files f ON f.id = e.file_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
 			WHERE LOWER(e.` + column + `) = ANY($1)
+			  AND (
+				    ($3 <> 0 AND f.ds_product_branch_id = $3)
+				 OR (f.ds_product_id = $2 AND (br.id IS NULL OR br.is_default))
+				 OR ($2 = 0 OR COALESCE(f.ds_product_id, 0) <> $2)
+			  )
 		) c
-		ORDER BY name_key, not_generated DESC, product_match DESC, id DESC
+		ORDER BY name_key, not_generated DESC, branch_match DESC, product_match DESC, default_branch DESC, id DESC
 	`
-	rows, err := db.QueryContext(ctx, query, pq.Array(normalized), productID)
+	rows, err := db.QueryContext(ctx, query, pq.Array(normalized), scope.ProductID, scope.BranchID)
 	if err != nil {
 		return nil, fmt.Errorf("find %s by names: %w", table, err)
 	}
@@ -139,28 +148,28 @@ func (db *DB) lookupEntityIDsByNames(ctx context.Context, table, column string, 
 }
 
 // FindDFMFormIDsByNames возвращает map[lower(name)]id для пакетного резолва.
-func (db *DB) FindDFMFormIDsByNames(ctx context.Context, names []string, productID int64) (map[string]int64, error) {
-	return db.lookupEntityIDsByNames(ctx, "dfm_forms", "form_name", names, productID)
+func (db *DB) FindDFMFormIDsByNames(ctx context.Context, names []string, scope LookupScope) (map[string]int64, error) {
+	return db.lookupEntityIDsByNames(ctx, "dfm_forms", "form_name", names, scope)
 }
 
 // FindSMFInstrumentIDsByNames возвращает map[lower(name)]id.
-func (db *DB) FindSMFInstrumentIDsByNames(ctx context.Context, names []string, productID int64) (map[string]int64, error) {
-	return db.lookupEntityIDsByNames(ctx, "smf_instruments", "instrument_name", names, productID)
+func (db *DB) FindSMFInstrumentIDsByNames(ctx context.Context, names []string, scope LookupScope) (map[string]int64, error) {
+	return db.lookupEntityIDsByNames(ctx, "smf_instruments", "instrument_name", names, scope)
 }
 
 // FindPASMethodIDsByNames возвращает map[lower(name)]id.
-func (db *DB) FindPASMethodIDsByNames(ctx context.Context, names []string, productID int64) (map[string]int64, error) {
-	return db.lookupEntityIDsByNames(ctx, "pas_methods", "method_name", names, productID)
+func (db *DB) FindPASMethodIDsByNames(ctx context.Context, names []string, scope LookupScope) (map[string]int64, error) {
+	return db.lookupEntityIDsByNames(ctx, "pas_methods", "method_name", names, scope)
 }
 
 // FindAPIContractIDsByNames возвращает map[lower(name)]id.
-func (db *DB) FindAPIContractIDsByNames(ctx context.Context, names []string, productID int64) (map[string]int64, error) {
-	return db.lookupEntityIDsByNames(ctx, "api_contracts", "contract_name", names, productID)
+func (db *DB) FindAPIContractIDsByNames(ctx context.Context, names []string, scope LookupScope) (map[string]int64, error) {
+	return db.lookupEntityIDsByNames(ctx, "api_contracts", "contract_name", names, scope)
 }
 
 // FindReportFormIDsByNames возвращает map[lower(report_name)]id для пакетного резолва.
-func (db *DB) FindReportFormIDsByNames(ctx context.Context, names []string, productID int64) (map[string]int64, error) {
-	return db.lookupEntityIDsByNames(ctx, "report_forms", "report_name", names, productID)
+func (db *DB) FindReportFormIDsByNames(ctx context.Context, names []string, scope LookupScope) (map[string]int64, error) {
+	return db.lookupEntityIDsByNames(ctx, "report_forms", "report_name", names, scope)
 }
 
 // FindAPIContractIDsByTableNames возвращает мультикарту lower(table_name) →

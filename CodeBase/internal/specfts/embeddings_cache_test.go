@@ -15,8 +15,8 @@ type testCacheRow struct {
 	FloatsLE []float32 `json:"-"`
 }
 
-func (r *testCacheRow) EmbeddingDim() int           { return r.Dim }
-func (r *testCacheRow) EmbeddingFloats() []float32  { return r.FloatsLE }
+func (r *testCacheRow) EmbeddingDim() int          { return r.Dim }
+func (r *testCacheRow) EmbeddingFloats() []float32 { return r.FloatsLE }
 func (r *testCacheRow) SetEmbedding(dim int, f []float32) {
 	r.Dim = dim
 	r.FloatsLE = f

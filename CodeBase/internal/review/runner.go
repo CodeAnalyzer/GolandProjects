@@ -18,17 +18,17 @@ import (
 )
 
 type Runner struct {
-	db              *store.DB
-	parser          *sqlparser.Parser
-	exec            *reviewExecContext
-	colTypeCache    map[string]string
-	colTypeMu       sync.Mutex
-	macroTypeCache  map[string]string
-	macroTypeMu     sync.Mutex
-	indexCandCache  map[string][]tableIndexCandidate
-	indexCandMu     sync.Mutex
+	db               *store.DB
+	parser           *sqlparser.Parser
+	exec             *reviewExecContext
+	colTypeCache     map[string]string
+	colTypeMu        sync.Mutex
+	macroTypeCache   map[string]string
+	macroTypeMu      sync.Mutex
+	indexCandCache   map[string][]tableIndexCandidate
+	indexCandMu      sync.Mutex
 	indexFieldsCache map[string][]string
-	onProgress      func(completed, total int)
+	onProgress       func(completed, total int)
 	// prewarm caches for batch-loaded DB data (nil = not prewarmed, fallback to per-call)
 	procParamsCache     map[string][]model.SQLParam
 	procProductIDCache  map[string]int64
@@ -329,8 +329,8 @@ func (r *Runner) fileContent(ctx context.Context, path string) ([]byte, error) {
 // reUpdateTable, reInsertTable, reFromJoinTable — лёгкие regex для извлечения имён
 // таблиц из SQL-фрагментов при предзагрузке кэша типов колонок.
 var (
-	reUpdateTable  = regexp.MustCompile(`(?i)^\s*update\s+(#?[a-z_][a-z0-9_#]*)`)
-	reInsertTable  = regexp.MustCompile(`(?i)^\s*insert\s+(?:into\s+)?(#?[a-z_][a-z0-9_#]*)`)
+	reUpdateTable   = regexp.MustCompile(`(?i)^\s*update\s+(#?[a-z_][a-z0-9_#]*)`)
+	reInsertTable   = regexp.MustCompile(`(?i)^\s*insert\s+(?:into\s+)?(#?[a-z_][a-z0-9_#]*)`)
 	reFromJoinTable = regexp.MustCompile(`(?i)\b(?:from|join)\s+(#?[a-z_][a-z0-9_#]*)`)
 )
 
@@ -413,7 +413,7 @@ func (r *Runner) cachedFindColumnDefinitionType(ctx context.Context, tableName, 
 	}
 	r.colTypeMu.Unlock()
 	fileID, productID := r.execContextIDs()
-	typeName, err := r.db.FindLatestSQLColumnDefinitionType(ctx, tableName, columnName, fileID, productID)
+	typeName, err := r.db.FindLatestSQLColumnDefinitionType(ctx, tableName, columnName, fileID, store.LookupScope{ProductID: productID})
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// Fallback: ищем тип в API-контрактах и business objects

@@ -11,14 +11,50 @@ import (
 )
 
 // postProcessFragmentRelations выполняет глобальный резолв всех накопленных
-// pending fragment refs: один FindLatestSQLTableIDsByNames + один
-// FindLatestSQLProcedureIDsByNames на все уникальные имена всех файлов.
+// pending fragment refs в scope ветки источника: фрагменты группируются по
+// (product, branch) файла, на каждую группу — один FindLatestSQLTableIDsByNames
+// + один FindLatestSQLProcedureIDsByNames (D4 среза branch-aware-lookup).
 func (idx *Indexer) postProcessFragmentRelations(ctx context.Context, collector *statsCollector) {
 	refs := idx.snapshotPendingFragmentRefs()
 	if len(refs) == 0 {
 		return
 	}
 
+	fragmentIDs := collectEntityIDs(refs, func(r *PendingFragmentRef) int64 { return r.FragmentID })
+	scopes, err := idx.db.EntityFileScopes(ctx, "query_fragments", fragmentIDs)
+	if err != nil {
+		idx.logError("<post-processing>", "Error loading fragment file scopes: %v", err)
+		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+		return
+	}
+	groups := groupByScope(refs, scopes, func(r *PendingFragmentRef) int64 { return r.FragmentID })
+
+	var relations []*model.Relation
+	for scope, group := range groups {
+		tableIDMap, procIDMap, err := idx.resolveFragmentRefNames(ctx, group, scope)
+		if err != nil {
+			idx.logError("<post-processing>", "Error resolving fragment refs (scope %+v): %v", scope, err)
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+			continue
+		}
+		relations = append(relations, buildFragmentRefRelations(group, tableIDMap, procIDMap)...)
+	}
+
+	localStats := &model.ScanStats{}
+	if err := idx.saveRelations(ctx, relations, "<post-processing>", localStats); err != nil {
+		collector.Add(func(stats *model.ScanStats) {
+			mergeScanStats(stats, localStats)
+		})
+		return
+	}
+	collector.Add(func(stats *model.ScanStats) {
+		mergeScanStats(stats, localStats)
+	})
+}
+
+// resolveFragmentRefNames собирает уникальные имена таблиц и процедур пачки
+// фрагментов и резолвит их batch-запросами в scope группы.
+func (idx *Indexer) resolveFragmentRefNames(ctx context.Context, refs []*PendingFragmentRef, scope store.LookupScope) (map[string]int64, map[string]int64, error) {
 	tableNameSet := make(map[string]struct{})
 	procNameSet := make(map[string]struct{})
 	for _, ref := range refs {
@@ -46,30 +82,15 @@ func (idx *Indexer) postProcessFragmentRelations(ctx context.Context, collector 
 		}
 	}
 
-	tableIDMap, err := idx.db.FindLatestSQLTableIDsByNames(ctx, tableNames, 0)
+	tableIDMap, err := idx.db.FindLatestSQLTableIDsByNames(ctx, tableNames, scope)
 	if err != nil {
-		idx.logError("<post-processing>", "Error resolving fragment table refs: %v", err)
-		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
-		return
+		return nil, nil, err
 	}
-	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, procNames, 0)
+	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, procNames, scope)
 	if err != nil {
-		idx.logError("<post-processing>", "Error resolving fragment proc refs: %v", err)
-		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
-		return
+		return nil, nil, err
 	}
-
-	relations := buildFragmentRefRelations(refs, tableIDMap, procIDMap)
-	localStats := &model.ScanStats{}
-	if err := idx.saveRelations(ctx, relations, "<post-processing>", localStats); err != nil {
-		collector.Add(func(stats *model.ScanStats) {
-			mergeScanStats(stats, localStats)
-		})
-		return
-	}
-	collector.Add(func(stats *model.ScanStats) {
-		mergeScanStats(stats, localStats)
-	})
+	return tableIDMap, procIDMap, nil
 }
 
 func buildFragmentRefRelations(refs []*PendingFragmentRef, tableIDMap map[string]int64, procIDMap map[string]int64) []*model.Relation {
@@ -125,35 +146,34 @@ func buildFragmentRefRelations(refs []*PendingFragmentRef, tableIDMap map[string
 	return relations
 }
 
-// postProcessJSCallRelations выполняет глобальный резолв JS procedure call refs.
+// postProcessJSCallRelations выполняет глобальный резолв JS procedure call refs
+// в scope ветки файла JS-функции.
 func (idx *Indexer) postProcessJSCallRelations(ctx context.Context, collector *statsCollector) {
 	refs := idx.snapshotPendingJSCallRefs()
 	if len(refs) == 0 {
 		return
 	}
 
-	procNameSet := make(map[string]struct{})
-	for _, ref := range refs {
-		if ref == nil {
-			continue
-		}
-		procNameSet[strings.ToLower(strings.TrimSpace(ref.ProcName))] = struct{}{}
-	}
-	procNames := make([]string, 0, len(procNameSet))
-	for name := range procNameSet {
-		if name != "" {
-			procNames = append(procNames, name)
-		}
-	}
-
-	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, procNames, 0)
+	sourceIDs := collectEntityIDs(refs, func(r *PendingJSCallRef) int64 { return r.SourceID })
+	scopes, err := idx.db.EntityFileScopes(ctx, "js_functions", sourceIDs)
 	if err != nil {
-		idx.logError("<post-processing>", "Error resolving JS call targets: %v", err)
+		idx.logError("<post-processing>", "Error loading JS function file scopes: %v", err)
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		return
 	}
+	groups := groupByScope(refs, scopes, func(r *PendingJSCallRef) int64 { return r.SourceID })
 
-	relations := buildJSCallRefRelations(refs, procIDMap)
+	var relations []*model.Relation
+	for scope, group := range groups {
+		procIDMap, err := resolveProcedureNames(ctx, idx.db, group, func(r *PendingJSCallRef) string { return r.ProcName }, scope)
+		if err != nil {
+			idx.logError("<post-processing>", "Error resolving JS call targets (scope %+v): %v", scope, err)
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+			continue
+		}
+		relations = append(relations, buildJSCallRefRelations(group, procIDMap)...)
+	}
+
 	localStats := &model.ScanStats{}
 	if err := idx.saveRelations(ctx, relations, "<post-processing>", localStats); err != nil {
 		collector.Add(func(stats *model.ScanStats) {
@@ -197,35 +217,36 @@ func buildJSCallRefRelations(refs []*PendingJSCallRef, procIDMap map[string]int6
 	return relations
 }
 
-// postProcessT01SubscriberRelations выполняет глобальный резолв T01 subscriber refs.
+// resolveProcedureNames перенесён в indexer_postprocess_scope.go (generic).
+
+// postProcessT01SubscriberRelations выполняет глобальный резолв T01 subscriber
+// refs в scope ветки файла процедуры-источника.
 func (idx *Indexer) postProcessT01SubscriberRelations(ctx context.Context, collector *statsCollector) {
 	refs := idx.snapshotPendingT01SubscriberRefs()
 	if len(refs) == 0 {
 		return
 	}
 
-	calleeNameSet := make(map[string]struct{})
-	for _, ref := range refs {
-		if ref == nil {
-			continue
-		}
-		calleeNameSet[strings.ToLower(strings.TrimSpace(ref.CalleeName))] = struct{}{}
-	}
-	calleeNames := make([]string, 0, len(calleeNameSet))
-	for name := range calleeNameSet {
-		if name != "" {
-			calleeNames = append(calleeNames, name)
-		}
-	}
-
-	calleeIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, calleeNames, 0)
+	sourceIDs := collectEntityIDs(refs, func(r *PendingT01SubscriberRef) int64 { return r.SourceID })
+	scopes, err := idx.db.EntityFileScopes(ctx, "sql_procedures", sourceIDs)
 	if err != nil {
-		idx.logError("<post-processing>", "Error resolving T01 subscriber targets: %v", err)
+		idx.logError("<post-processing>", "Error loading T01 source file scopes: %v", err)
 		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		return
 	}
+	groups := groupByScope(refs, scopes, func(r *PendingT01SubscriberRef) int64 { return r.SourceID })
 
-	relations := buildT01SubscriberRefRelations(refs, calleeIDMap)
+	var relations []*model.Relation
+	for scope, group := range groups {
+		calleeIDMap, err := resolveProcedureNames(ctx, idx.db, group, func(r *PendingT01SubscriberRef) string { return r.CalleeName }, scope)
+		if err != nil {
+			idx.logError("<post-processing>", "Error resolving T01 subscriber targets (scope %+v): %v", scope, err)
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+			continue
+		}
+		relations = append(relations, buildT01SubscriberRefRelations(group, calleeIDMap)...)
+	}
+
 	localStats := &model.ScanStats{}
 	if err := idx.saveRelations(ctx, relations, "<post-processing>", localStats); err != nil {
 		collector.Add(func(stats *model.ScanStats) {
@@ -269,13 +290,49 @@ func buildT01SubscriberRefRelations(refs []*PendingT01SubscriberRef, calleeIDMap
 	return relations
 }
 
-// postProcessAPIMacroRelations выполняет глобальный резолв API macro refs.
+// postProcessAPIMacroRelations выполняет глобальный резолв API macro refs
+// в scope ветки файла процедуры-источника.
 func (idx *Indexer) postProcessAPIMacroRelations(ctx context.Context, collector *statsCollector) {
 	refs := idx.snapshotPendingAPIMacroRefs()
 	if len(refs) == 0 {
 		return
 	}
 
+	sourceIDs := collectEntityIDs(refs, func(r *PendingAPIMacroRef) int64 { return r.SourceID })
+	scopes, err := idx.db.EntityFileScopes(ctx, "sql_procedures", sourceIDs)
+	if err != nil {
+		idx.logError("<post-processing>", "Error loading API macro source file scopes: %v", err)
+		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+		return
+	}
+	groups := groupByScope(refs, scopes, func(r *PendingAPIMacroRef) int64 { return r.SourceID })
+
+	var relations []*model.Relation
+	for scope, group := range groups {
+		contractIDMap, procIDMap, err := idx.resolveAPIMacroNames(ctx, group, scope)
+		if err != nil {
+			idx.logError("<post-processing>", "Error resolving API macro targets (scope %+v): %v", scope, err)
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+			continue
+		}
+		relations = append(relations, buildAPIMacroRefRelations(group, contractIDMap, procIDMap)...)
+	}
+
+	localStats := &model.ScanStats{}
+	if err := idx.saveRelations(ctx, relations, "<post-processing>", localStats); err != nil {
+		collector.Add(func(stats *model.ScanStats) {
+			mergeScanStats(stats, localStats)
+		})
+		return
+	}
+	collector.Add(func(stats *model.ScanStats) {
+		mergeScanStats(stats, localStats)
+	})
+}
+
+// resolveAPIMacroNames резолвит контрактные пары и имена процедур пачки
+// API-макросов batch-запросами в scope группы.
+func (idx *Indexer) resolveAPIMacroNames(ctx context.Context, refs []*PendingAPIMacroRef, scope store.LookupScope) (map[string]int64, map[string]int64, error) {
 	contractPairs := make([]store.APIContractNameKind, 0)
 	procNameSet := make(map[string]struct{})
 	for _, ref := range refs {
@@ -300,9 +357,9 @@ func (idx *Indexer) postProcessAPIMacroRelations(ctx context.Context, collector 
 		}
 	}
 
-	contractIDMap, err := idx.db.FindLatestAPIContractIDsByNamesAndKinds(ctx, contractPairs)
+	contractIDMap, err := idx.db.FindLatestAPIContractIDsByNamesAndKinds(ctx, contractPairs, scope)
 	if err != nil {
-		contractIDMap = map[string]int64{}
+		return nil, nil, err
 	}
 	procNames := make([]string, 0, len(procNameSet))
 	for name := range procNameSet {
@@ -310,22 +367,11 @@ func (idx *Indexer) postProcessAPIMacroRelations(ctx context.Context, collector 
 			procNames = append(procNames, name)
 		}
 	}
-	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, procNames, 0)
+	procIDMap, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, procNames, scope)
 	if err != nil {
-		procIDMap = map[string]int64{}
+		return nil, nil, err
 	}
-
-	relations := buildAPIMacroRefRelations(refs, contractIDMap, procIDMap)
-	localStats := &model.ScanStats{}
-	if err := idx.saveRelations(ctx, relations, "<post-processing>", localStats); err != nil {
-		collector.Add(func(stats *model.ScanStats) {
-			mergeScanStats(stats, localStats)
-		})
-		return
-	}
-	collector.Add(func(stats *model.ScanStats) {
-		mergeScanStats(stats, localStats)
-	})
+	return contractIDMap, procIDMap, nil
 }
 
 func buildAPIMacroRefRelations(refs []*PendingAPIMacroRef, contractIDMap map[string]int64, procIDMap map[string]int64) []*model.Relation {

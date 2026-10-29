@@ -9,29 +9,55 @@ import (
 	"github.com/codebase/internal/model"
 )
 
+// postProcessSQLProcedureCallRelations резолвит вызовы процедур в scope
+// ветки источника: pending-файлы группируются по (product, branch), каждая
+// группа резолвится одним batch-запросом (см. D4 среза branch-aware-lookup).
 func (idx *Indexer) postProcessSQLProcedureCallRelations(ctx context.Context, collector *statsCollector, parallel int) {
 	pending := idx.snapshotPendingSQLCalls()
 	if len(pending) == 0 {
 		return
 	}
 
-	calleeNames := collectUniqueSQLCallCalleeNames(pending)
-	targetIDs, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, calleeNames, 0)
+	fileIDs := collectEntityIDs(pending, func(p *PendingSQLCallFile) int64 { return p.FileID })
+	scopes, err := idx.db.EntityFileScopes(ctx, "files", fileIDs)
 	if err != nil {
-		idx.logError("<post-processing>", "Error resolving SQL procedure call targets: %v", err)
-		collector.Add(func(stats *model.ScanStats) {
-			stats.Errors++
-		})
+		idx.logError("<post-processing>", "Error loading source file scopes: %v", err)
+		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
 		return
 	}
+	groups := groupByScope(pending, scopes, func(p *PendingSQLCallFile) int64 { return p.FileID })
 
-	relations := buildSQLProcedureCallRelationsParallel(pending, targetIDs, parallel, func(count int) {
+	var merged []*model.Relation
+	seen := make(map[string]struct{})
+	reportProgress := func(count int) {
 		collector.Add(func(stats *model.ScanStats) {
 			stats.PostProcessed += count
 		})
-	})
+	}
+	for scope, group := range groups {
+		calleeNames := collectUniqueSQLCallCalleeNames(group)
+		targetIDs, err := idx.db.FindLatestSQLProcedureIDsByNames(ctx, calleeNames, scope)
+		if err != nil {
+			idx.logError("<post-processing>", "Error resolving SQL procedure call targets (scope %+v): %v", scope, err)
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+			continue
+		}
+		relations := buildSQLProcedureCallRelationsParallel(group, targetIDs, parallel, reportProgress)
+		for _, relation := range relations {
+			if relation == nil {
+				continue
+			}
+			key := relationDedupKey(relation)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, relation)
+		}
+	}
+
 	localStats := &model.ScanStats{}
-	if err := idx.saveRelations(ctx, relations, "<post-processing>", localStats); err != nil {
+	if err := idx.saveRelations(ctx, merged, "<post-processing>", localStats); err != nil {
 		collector.Add(func(stats *model.ScanStats) {
 			mergeScanStats(stats, localStats)
 		})

@@ -7,16 +7,30 @@ import (
 	"github.com/lib/pq"
 )
 
-// FindLatestDFMFormIDByClassName возвращает последний id DFM формы по имени класса формы.
-func (db *DB) FindLatestDFMFormIDByClassName(ctx context.Context, className string) (int64, error) {
+// FindLatestDFMFormIDByClassName возвращает id DFM формы по имени класса формы,
+// выбранной по приоритету not_generated → ветка scope → продукт scope →
+// default-ветка → id. При ненулевом ProductID кандидаты ограничены ярусами
+// scope (scopeTierFilter).
+func (db *DB) FindLatestDFMFormIDByClassName(ctx context.Context, className string, scope LookupScope) (int64, error) {
 	var id int64
 	err := db.QueryRowContext(ctx, `
-		SELECT id
-		FROM dfm_forms
-		WHERE LOWER(form_class) = LOWER($1)
-		ORDER BY id DESC
+		SELECT df.id
+		FROM dfm_forms df
+		JOIN files f ON f.id = df.file_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+		WHERE LOWER(df.form_class) = LOWER($1)
+		  AND (
+			    ($3 <> 0 AND f.ds_product_branch_id = $3)
+			 OR (f.ds_product_id = $2 AND (br.id IS NULL OR br.is_default))
+			 OR ($2 = 0 OR COALESCE(f.ds_product_id, 0) <> $2)
+		  )
+		ORDER BY (NOT f.is_generated) DESC,
+		         (COALESCE(f.ds_product_branch_id = $3, FALSE)) DESC,
+		         (COALESCE(f.ds_product_id = $2, FALSE)) DESC,
+		         (COALESCE(br.is_default, FALSE)) DESC,
+		         df.id DESC
 		LIMIT 1
-	`, className).Scan(&id)
+	`, strings.TrimSpace(className), scope.ProductID, scope.BranchID).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -42,9 +56,10 @@ func (db *DB) FindLatestDFMComponentIDByFormAndName(ctx context.Context, formID 
 	return id, nil
 }
 
-// FindLatestDFMFormIDsByClassNames возвращает map нижнего имени класса -> последний id DFM формы.
-// Один SQL-запрос вместо N вызовов FindLatestDFMFormIDByClassName.
-func (db *DB) FindLatestDFMFormIDsByClassNames(ctx context.Context, classNames []string) (map[string]int64, error) {
+// FindLatestDFMFormIDsByClassNames возвращает map нижнего имени класса -> id DFM формы.
+// Один SQL-запрос вместо N вызовов FindLatestDFMFormIDByClassName; приоритет
+// кандидатов — как в FindLatestDFMFormIDByClassName.
+func (db *DB) FindLatestDFMFormIDsByClassNames(ctx context.Context, classNames []string, scope LookupScope) (map[string]int64, error) {
 	normalized := make([]string, 0, len(classNames))
 	seen := make(map[string]struct{})
 	for _, name := range classNames {
@@ -65,12 +80,23 @@ func (db *DB) FindLatestDFMFormIDsByClassNames(ctx context.Context, classNames [
 	rows, err := db.QueryContext(ctx, `
 		SELECT DISTINCT ON (class_key) class_key, id
 		FROM (
-			SELECT LOWER(form_class) AS class_key, id
-			FROM dfm_forms
-			WHERE LOWER(form_class) = ANY($1)
+			SELECT LOWER(df.form_class) AS class_key, df.id AS id,
+			       (NOT f.is_generated) AS not_generated,
+			       COALESCE(f.ds_product_branch_id = $3, FALSE) AS branch_match,
+			       COALESCE(f.ds_product_id = $2, FALSE) AS product_match,
+			       COALESCE(br.is_default, FALSE) AS default_branch
+			FROM dfm_forms df
+			JOIN files f ON f.id = df.file_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+			WHERE LOWER(df.form_class) = ANY($1)
+			  AND (
+				    ($3 <> 0 AND f.ds_product_branch_id = $3)
+				 OR (f.ds_product_id = $2 AND (br.id IS NULL OR br.is_default))
+				 OR ($2 = 0 OR COALESCE(f.ds_product_id, 0) <> $2)
+			  )
 		) AS forms
-		ORDER BY class_key, id DESC
-	`, pq.Array(normalized))
+		ORDER BY class_key, not_generated DESC, branch_match DESC, product_match DESC, default_branch DESC, id DESC
+	`, pq.Array(normalized), scope.ProductID, scope.BranchID)
 	if err != nil {
 		return nil, err
 	}

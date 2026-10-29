@@ -20,7 +20,7 @@ func decodeUTF16LEBytes(b []byte) string {
 		if r >= 0xD800 && r <= 0xDBFF && i+1 < n {
 			r2 := rune(binary.LittleEndian.Uint16(b[(i+1)*2 : (i+1)*2+2]))
 			if r2 >= 0xDC00 && r2 <= 0xDFFF {
-				r = ((r-0xD800)<<10)|(r2-0xDC00) + 0x10000
+				r = ((r - 0xD800) << 10) | (r2 - 0xDC00) + 0x10000
 				i++
 			}
 		}

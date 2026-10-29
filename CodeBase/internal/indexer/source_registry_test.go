@@ -24,7 +24,7 @@ func TestSourceRegistryMatch(t *testing.T) {
 		{`/r/fa-contracts-11017extra/A.pas`, ``}, // без разделителя — не префикс
 		{`/r/other/lib.js`, `/r/other`},
 		{`/r/plain/file.sql`, ``},
-		{`/r/fa-contracts-1101`, ``},    // укороченный сегмент не матчится
+		{`/r/fa-contracts-1101`, ``},                       // укороченный сегмент не матчится
 		{`/r/fa-contracts-11017`, `/r/fa-contracts-11017`}, // сам каталог
 	}
 	for _, tc := range cases {

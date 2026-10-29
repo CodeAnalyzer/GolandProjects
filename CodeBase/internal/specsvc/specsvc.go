@@ -41,6 +41,7 @@ type SpecSearchHit struct {
 	Rank           float64 `json:"rank,omitempty"`
 	Source         string  `json:"source"` // tsvector | trgm | lsa
 	Product        string  `json:"product,omitempty"`
+	BranchUsed     string  `json:"branch_used,omitempty"`
 }
 
 // SpecByCodeResult — спеки, ссылающиеся на код-сущность.
@@ -58,6 +59,7 @@ type SpecByCodeHit struct {
 	SourceType     string `json:"source_type"`
 	SourceID       int64  `json:"source_id"`
 	Product        string `json:"product,omitempty"`
+	BranchUsed     string `json:"branch_used,omitempty"`
 	File           string `json:"file"`
 	LineNumber     int    `json:"line_number"`
 	LineStart      int    `json:"line_start,omitempty"`
@@ -71,6 +73,7 @@ type SpecDepsResult struct {
 	CapabilityName string        `json:"capability_name"`
 	Title          string        `json:"title"`
 	Product        string        `json:"product,omitempty"`
+	BranchUsed     string        `json:"branch_used,omitempty"`
 	Dependencies   []SpecDepNode `json:"dependencies"`
 }
 
@@ -79,6 +82,7 @@ type SpecDepNode struct {
 	CapabilityName string        `json:"capability_name"`
 	Title          string        `json:"title"`
 	Product        string        `json:"product,omitempty"`
+	BranchUsed     string        `json:"branch_used,omitempty"`
 	Confidence     string        `json:"confidence"`
 	LineNumber     int           `json:"line_number,omitempty"`
 	Depth          int           `json:"depth"`
@@ -98,6 +102,7 @@ type SpecUsecaseResult struct {
 	SourceDir      string                  `json:"source_dir"`
 	UsecaseKind    string                  `json:"usecase_kind"`
 	PageID         int64                   `json:"page_id,omitempty"`
+	BranchUsed     string                  `json:"branch_used,omitempty"`
 	Steps          []SpecUsecaseStep       `json:"steps,omitempty"`
 	Capabilities   []SpecUsecaseCapability `json:"capabilities,omitempty"`
 }
@@ -107,6 +112,7 @@ type SpecUsecaseCapability struct {
 	CapabilityName string `json:"capability_name"`
 	Title          string `json:"title"`
 	Product        string `json:"product,omitempty"`
+	BranchUsed     string `json:"branch_used,omitempty"`
 }
 
 type SpecUsecaseStep struct {
@@ -129,6 +135,7 @@ type SpecUsecaseListItem struct {
 	SourceDir   string `json:"source_dir"`
 	UsecaseKind string `json:"usecase_kind"`
 	PageID      int64  `json:"page_id,omitempty"`
+	BranchUsed  string `json:"branch_used,omitempty"`
 }
 
 // SpecCoverageResult — перечень покрытых код-сущностей, сгруппированных по capability.
@@ -163,6 +170,7 @@ type SpecHistoryResult struct {
 	ChangeName     string                  `json:"change_name,omitempty"`
 	Status         string                  `json:"status,omitempty"`
 	Product        string                  `json:"product,omitempty"`
+	BranchUsed     string                  `json:"branch_used,omitempty"`
 	Changes        []SpecHistoryEntry      `json:"changes"`
 	Capabilities   []SpecHistoryCapability `json:"capabilities,omitempty"`
 }
@@ -174,6 +182,7 @@ type SpecHistoryEntry struct {
 	ReqName    string `json:"requirement_name"`
 	BodyText   string `json:"body_text,omitempty"`
 	Source     string `json:"source,omitempty"`
+	BranchUsed string `json:"branch_used,omitempty"`
 	// Поля режима по change: имя capability, к которому относится delta-секция,
 	// и пометка skip_specs (связь извлечена из proposal, delta-требований нет).
 	CapabilityName string `json:"capability_name"`
@@ -186,13 +195,25 @@ type SpecHistoryCapability struct {
 	CapabilityName string `json:"capability_name"`
 	Title          string `json:"title"`
 	Product        string `json:"product,omitempty"`
+	BranchUsed     string `json:"branch_used,omitempty"`
 }
 
 // SpecConfigResult — профиль продукта, статистика и опциональная иерархия capabilities.
+// Configs перечисляет все spec-конфигурации продукта (включая конфигурации
+// релизных линий) с пометкой default.
 type SpecConfigResult struct {
 	Profile   SpecConfigProfile `json:"profile"`
 	Stats     SpecConfigStats   `json:"stats"`
+	Configs   []SpecConfigItem  `json:"configs,omitempty"`
 	Hierarchy []SpecConfigNode  `json:"hierarchy,omitempty"`
+}
+
+// SpecConfigItem — spec-конфигурация продукта в списке конфигураций.
+type SpecConfigItem struct {
+	ConfigID  int64  `json:"config_id"`
+	RootDir   string `json:"root_dir"`
+	Branch    string `json:"branch,omitempty"`
+	IsDefault bool   `json:"is_default"`
 }
 
 type SpecConfigProfile struct {
@@ -250,6 +271,21 @@ func ExecuteSpecConfig(ctx context.Context, db *store.DB, product string, includ
 		return nil, fmt.Errorf("spec config stats: %w", err)
 	}
 
+	configRows, err := db.LoadSpecConfigsByProduct(ctx, product)
+	if err != nil {
+		return nil, fmt.Errorf("spec config list: %w", err)
+	}
+	configs := make([]SpecConfigItem, 0, len(configRows))
+	for i := range configRows {
+		cr := &configRows[i]
+		configs = append(configs, SpecConfigItem{
+			ConfigID:  cr.ID,
+			RootDir:   cr.RootDir,
+			Branch:    cr.BranchKey,
+			IsDefault: cr.IsDefault,
+		})
+	}
+
 	result := &SpecConfigResult{
 		Profile: SpecConfigProfile{
 			ProductName:     profileRow.ProductName,
@@ -273,6 +309,7 @@ func ExecuteSpecConfig(ctx context.Context, db *store.DB, product string, includ
 			Usecases:     statsRow.Usecases,
 			Changes:      statsRow.Changes,
 		},
+		Configs: configs,
 	}
 
 	if !includeHierarchy {
@@ -406,18 +443,49 @@ func ExecuteSpecByCode(ctx context.Context, db *store.DB, name string, limit int
 	}
 
 	rows, err := db.QueryContext(ctx, `
+		WITH chosen AS (
+			SELECT DISTINCT ON (LOWER(cap.capability_name), m.source_type,
+			                    COALESCE(c.capability_name, req.requirement_name, s.scenario_name, uc.usecase_name, ''),
+			                    COALESCE(dp.product_name, ''))
+			       LOWER(cap.capability_name) AS capability_key,
+			       m.source_type AS source_type_key,
+			       COALESCE(c.capability_name, req.requirement_name, s.scenario_name, uc.usecase_name, '') AS artifact_key,
+			       COALESCE(dp.product_name, '') AS product_key,
+			       f.ds_product_branch_id AS branch_id
+			FROM spec_code_mentions m
+			JOIN files f ON f.id = m.file_id
+			LEFT JOIN spec_capabilities c ON m.source_type = 'spec_capability' AND c.id = m.source_id
+			LEFT JOIN spec_requirements req ON m.source_type = 'spec_requirement' AND req.id = m.source_id
+			LEFT JOIN spec_scenarios s ON m.source_type = 'spec_scenario' AND s.id = m.source_id
+			LEFT JOIN spec_requirements req_s ON s.requirement_id = req_s.id
+			LEFT JOIN spec_usecases uc ON m.source_type = 'spec_usecase' AND uc.id = m.source_id
+			LEFT JOIN relations ui ON m.source_type = 'spec_usecase'
+			     AND ui.relation_type = 'usecase_involves' AND ui.source_id = uc.id
+			     AND ui.target_type = 'spec_capability'
+			LEFT JOIN spec_capabilities cap ON cap.id = COALESCE(
+			    c.id, req.capability_id, req_s.capability_id, ui.target_id
+			)
+			LEFT JOIN ds_products dp ON dp.id = cap.ds_product_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+			WHERE LOWER(m.mention_name) = LOWER($1) AND cap.id IS NOT NULL
+			ORDER BY LOWER(cap.capability_name), m.source_type,
+			         COALESCE(c.capability_name, req.requirement_name, s.scenario_name, uc.usecase_name, ''),
+			         COALESCE(dp.product_name, ''),
+			         (NOT f.is_generated) DESC, COALESCE(br.is_default, FALSE) DESC, m.id DESC
+		)
 		SELECT m.source_type, m.source_id, m.mention_kind, m.line_number,
-		       cap.id, cap.capability_name, cap.title, COALESCE(dp.product_name, ''),
-		       COALESCE(f.rel_path, ''),
-		       COALESCE(c.line_start, req.line_start, s.line_start, uc.line_start, 0),
-		       COALESCE(c.line_end, req.line_end, s.line_end, uc.line_end, 0),
+		       cap.id, cap.capability_name, cap.title, COALESCE(dp.product_name, '') AS product,
+		       COALESCE(f.rel_path, '') AS file,
+		       COALESCE(c.line_start, req.line_start, s.line_start, uc.line_start, 0) AS line_start,
+		       COALESCE(c.line_end, req.line_end, s.line_end, uc.line_end, 0) AS line_end,
 		       CASE m.source_type
 		           WHEN 'spec_capability' THEN COALESCE(NULLIF(CONCAT_WS(' ', c.title, c.purpose, c.notes, c.related_code), ''), '')
 		           WHEN 'spec_requirement' THEN COALESCE(NULLIF(req.body_text, ''), req.requirement_name, '')
 		           WHEN 'spec_scenario' THEN COALESCE(NULLIF(CONCAT_WS(' ', s.given_text, s.when_text, s.then_text), ''), s.scenario_name, '')
 		           WHEN 'spec_usecase' THEN COALESCE(NULLIF(CONCAT_WS(' ', uc.description, uc.actors, uc.preconditions, uc.postconditions, uc.business_value, uc.architecture, uc.data_schema), ''), uc.title, uc.usecase_name, '')
 		           ELSE ''
-		       END
+		       END AS snippet,
+		       COALESCE(br.branch_key, '') AS branch_used
 		FROM spec_code_mentions m
 		JOIN files f ON f.id = m.file_id
 		LEFT JOIN spec_capabilities c ON m.source_type = 'spec_capability' AND c.id = m.source_id
@@ -432,8 +500,14 @@ func ExecuteSpecByCode(ctx context.Context, db *store.DB, name string, limit int
 		    c.id, req.capability_id, req_s.capability_id, ui.target_id
 		)
 		LEFT JOIN ds_products dp ON dp.id = cap.ds_product_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+		JOIN chosen ch ON ch.capability_key = LOWER(cap.capability_name)
+		             AND ch.source_type_key = m.source_type
+		             AND ch.artifact_key = COALESCE(c.capability_name, req.requirement_name, s.scenario_name, uc.usecase_name, '')
+		             AND ch.product_key = COALESCE(dp.product_name, '')
+		             AND ch.branch_id IS NOT DISTINCT FROM f.ds_product_branch_id
 		WHERE LOWER(m.mention_name) = LOWER($1) AND cap.id IS NOT NULL
-		ORDER BY cap.capability_name, m.line_number
+		ORDER BY cap.capability_name, m.line_number, m.id
 		LIMIT $2`, name, limit)
 	if err != nil {
 		return nil, fmt.Errorf("spec by-code query: %w", err)
@@ -446,7 +520,7 @@ func ExecuteSpecByCode(ctx context.Context, db *store.DB, name string, limit int
 		var mentionKind string
 		if err := rows.Scan(&hit.SourceType, &hit.SourceID, &mentionKind, &hit.LineNumber,
 			&hit.CapabilityID, &hit.CapabilityName, &hit.Title, &hit.Product,
-			&hit.File, &hit.LineStart, &hit.LineEnd, &hit.Snippet); err != nil {
+			&hit.File, &hit.LineStart, &hit.LineEnd, &hit.Snippet, &hit.BranchUsed); err != nil {
 			return nil, fmt.Errorf("spec by-code scan: %w", err)
 		}
 		key := fmt.Sprintf("%s|%d|%d", hit.SourceType, hit.SourceID, hit.LineNumber)
@@ -488,14 +562,18 @@ func ExecuteSpecDeps(ctx context.Context, db *store.DB, capabilityName string, d
 	}
 
 	var capID int64
-	var actualName, title, productName string
+	var actualName, title, productName, branchUsed string
 	err := db.QueryRowContext(ctx, `
-		SELECT c.id, c.capability_name, c.title, COALESCE(dp.product_name, '')
+		SELECT c.id, c.capability_name, c.title, COALESCE(dp.product_name, ''),
+		       COALESCE(br.branch_key, '')
 		FROM spec_capabilities c
+		JOIN files f ON f.id = c.file_id
 		LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
 		WHERE LOWER(c.capability_name) = LOWER($1)
 		  AND ($2 = '' OR dp.product_name = $2)
-		LIMIT 1`, capabilityName, productFilter).Scan(&capID, &actualName, &title, &productName)
+		ORDER BY (NOT f.is_generated) DESC, COALESCE(br.is_default, FALSE) DESC, c.id DESC
+		LIMIT 1`, capabilityName, productFilter).Scan(&capID, &actualName, &title, &productName, &branchUsed)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, errs.ErrSpecNotFound
@@ -508,6 +586,7 @@ func ExecuteSpecDeps(ctx context.Context, db *store.DB, capabilityName string, d
 		CapabilityName: actualName,
 		Title:          title,
 		Product:        productName,
+		BranchUsed:     branchUsed,
 		Dependencies:   make([]SpecDepNode, 0),
 	}
 
@@ -531,10 +610,12 @@ func buildDepTree(ctx context.Context, db *store.DB, capID int64, direction, pro
 	if direction == "depended_by" {
 		rows, err = db.QueryContext(ctx, `
 			SELECT r.source_id, c.capability_name, c.title, COALESCE(dp.product_name, ''),
-			       r.confidence, r.line_number
+			       COALESCE(br.branch_key, ''), r.confidence, r.line_number
 			FROM relations r
 			JOIN spec_capabilities c ON c.id = r.source_id
+			JOIN files f ON f.id = c.file_id
 			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
 			WHERE r.relation_type = 'depends_on_capability'
 			  AND r.source_type = 'spec_capability' AND r.target_type = 'spec_capability'
 			  AND r.target_id = $1 AND ($2 = '' OR dp.product_name = $2)
@@ -542,10 +623,12 @@ func buildDepTree(ctx context.Context, db *store.DB, capID int64, direction, pro
 	} else {
 		rows, err = db.QueryContext(ctx, `
 			SELECT r.target_id, c.capability_name, c.title, COALESCE(dp.product_name, ''),
-			       r.confidence, r.line_number
+			       COALESCE(br.branch_key, ''), r.confidence, r.line_number
 			FROM relations r
 			JOIN spec_capabilities c ON c.id = r.target_id
+			JOIN files f ON f.id = c.file_id
 			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
 			WHERE r.relation_type = 'depends_on_capability'
 			  AND r.source_type = 'spec_capability' AND r.target_type = 'spec_capability'
 			  AND r.source_id = $1 AND ($2 = '' OR dp.product_name = $2)
@@ -561,7 +644,7 @@ func buildDepTree(ctx context.Context, db *store.DB, capID int64, direction, pro
 		var node SpecDepNode
 		var conf sql.NullString
 		if err := rows.Scan(&node.CapabilityID, &node.CapabilityName, &node.Title,
-			&node.Product, &conf, &node.LineNumber); err != nil {
+			&node.Product, &node.BranchUsed, &conf, &node.LineNumber); err != nil {
 			return nil, fmt.Errorf("buildDepTree scan: %w", err)
 		}
 		node.Depth = depth
@@ -604,15 +687,19 @@ func ExecuteSpecUsecase(ctx context.Context, db *store.DB, name string, product 
 	var uc SpecUsecaseResult
 	if _, err := strconv.ParseInt(name, 10, 64); err == nil {
 		err := db.QueryRowContext(ctx, `
-			SELECT id, usecase_name, title, COALESCE(description, ''), COALESCE(actors, ''),
-			       COALESCE(preconditions, ''), COALESCE(postconditions, ''),
-			       COALESCE(business_value, ''), source_dir, usecase_kind, COALESCE(page_id, 0)
-			FROM spec_usecases
-			WHERE page_id = $1::bigint
+			SELECT su.id, su.usecase_name, su.title, COALESCE(su.description, ''), COALESCE(su.actors, ''),
+			       COALESCE(su.preconditions, ''), COALESCE(su.postconditions, ''),
+			       COALESCE(su.business_value, ''), su.source_dir, su.usecase_kind, COALESCE(su.page_id, 0),
+			       COALESCE(br.branch_key, '')
+			FROM spec_usecases su
+			JOIN files f ON f.id = su.file_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+			WHERE su.page_id = $1::bigint
+			ORDER BY (NOT f.is_generated) DESC, COALESCE(br.is_default, FALSE) DESC, su.id DESC
 			LIMIT 1`, name).Scan(
 			&uc.ID, &uc.UsecaseName, &uc.Title, &uc.Description, &uc.Actors,
 			&uc.Preconditions, &uc.Postconditions, &uc.BusinessValue,
-			&uc.SourceDir, &uc.UsecaseKind, &uc.PageID)
+			&uc.SourceDir, &uc.UsecaseKind, &uc.PageID, &uc.BranchUsed)
 		if err == nil {
 			return finishSpecUsecase(ctx, db, &uc)
 		}
@@ -623,20 +710,23 @@ func ExecuteSpecUsecase(ctx context.Context, db *store.DB, name string, product 
 	query := `
 		SELECT su.id, su.usecase_name, su.title, COALESCE(su.description, ''), COALESCE(su.actors, ''),
 		       COALESCE(su.preconditions, ''), COALESCE(su.postconditions, ''),
-		       COALESCE(su.business_value, ''), su.source_dir, su.usecase_kind, COALESCE(su.page_id, 0)
+		       COALESCE(su.business_value, ''), su.source_dir, su.usecase_kind, COALESCE(su.page_id, 0),
+		       COALESCE(br.branch_key, '')
 		FROM spec_usecases su
+		JOIN files f ON f.id = su.file_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
 		WHERE (su.usecase_name = $1 OR LOWER(su.usecase_name) = LOWER($1))`
 	args := []interface{}{name}
 	if product != "" {
 		query += ` AND EXISTS (SELECT 1 FROM spec_configs sc WHERE sc.id = su.spec_config_id AND LOWER(sc.product_name) = LOWER($2))`
 		args = append(args, product)
 	}
-	query += ` LIMIT 1`
+	query += ` ORDER BY (NOT f.is_generated) DESC, COALESCE(br.is_default, FALSE) DESC, su.id DESC LIMIT 1`
 
 	err := db.QueryRowContext(ctx, query, args...).Scan(
 		&uc.ID, &uc.UsecaseName, &uc.Title, &uc.Description, &uc.Actors,
 		&uc.Preconditions, &uc.Postconditions, &uc.BusinessValue,
-		&uc.SourceDir, &uc.UsecaseKind, &uc.PageID)
+		&uc.SourceDir, &uc.UsecaseKind, &uc.PageID, &uc.BranchUsed)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, errs.ErrSpecNotFound
@@ -675,10 +765,13 @@ func finishSpecUsecase(ctx context.Context, db *store.DB, uc *SpecUsecaseResult)
 	}
 
 	capRows, err := db.QueryContext(ctx, `
-		SELECT c.id, c.capability_name, c.title, COALESCE(dp.product_name, '')
+		SELECT c.id, c.capability_name, c.title, COALESCE(dp.product_name, ''),
+		       COALESCE(br.branch_key, '')
 		FROM relations r
 		JOIN spec_capabilities c ON c.id = r.target_id
+		JOIN files f ON f.id = c.file_id
 		LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
 		WHERE r.relation_type = 'usecase_involves'
 		  AND r.source_type = 'spec_usecase' AND r.source_id = $1
 		  AND r.target_type = 'spec_capability'
@@ -690,7 +783,7 @@ func finishSpecUsecase(ctx context.Context, db *store.DB, uc *SpecUsecaseResult)
 	for capRows.Next() {
 		var capability SpecUsecaseCapability
 		if err := capRows.Scan(&capability.ID, &capability.CapabilityName,
-			&capability.Title, &capability.Product); err != nil {
+			&capability.Title, &capability.Product, &capability.BranchUsed); err != nil {
 			return nil, fmt.Errorf("spec usecase capability scan: %w", err)
 		}
 		uc.Capabilities = append(uc.Capabilities, capability)
@@ -700,13 +793,35 @@ func finishSpecUsecase(ctx context.Context, db *store.DB, uc *SpecUsecaseResult)
 }
 
 // executeSpecUsecaseList возвращает список usecase'ов продукта.
+// Копии usecase'ов из разных веток одного продукта схлопываются
+// (DISTINCT ON по имени, приоритет default-ветки).
 func executeSpecUsecaseList(ctx context.Context, db *store.DB, product string) (*SpecUsecaseListResult, error) {
+	// Двухфазный дедуп: фаза 1 выбирает ветку для usecase, фаза 2 возвращает
+	// все usecase'ы выбранной ветки.
 	rows, err := db.QueryContext(ctx, `
-		SELECT su.id, su.usecase_name, COALESCE(su.title, ''), su.source_dir, su.usecase_kind, COALESCE(su.page_id, 0)
+		WITH chosen AS (
+			SELECT DISTINCT ON (su.usecase_name)
+			       su.usecase_name,
+			       f.ds_product_branch_id AS branch_id
+			FROM spec_usecases su
+			JOIN spec_configs sc ON sc.id = su.spec_config_id
+			JOIN files f ON f.id = su.file_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+			WHERE LOWER(sc.product_name) = LOWER($1)
+			ORDER BY su.usecase_name,
+			         (NOT f.is_generated) DESC, COALESCE(br.is_default, FALSE) DESC, su.id DESC
+		)
+		SELECT su.id, su.usecase_name, COALESCE(su.title, '') AS title, su.source_dir, su.usecase_kind,
+		       COALESCE(su.page_id, 0) AS page_id,
+		       COALESCE(br.branch_key, '') AS branch_used
 		FROM spec_usecases su
 		JOIN spec_configs sc ON sc.id = su.spec_config_id
+		JOIN files f ON f.id = su.file_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+		JOIN chosen ch ON ch.usecase_name = su.usecase_name
+		             AND ch.branch_id IS NOT DISTINCT FROM f.ds_product_branch_id
 		WHERE LOWER(sc.product_name) = LOWER($1)
-		ORDER BY su.usecase_name`, product)
+		ORDER BY su.usecase_name, su.id`, product)
 	if err != nil {
 		return nil, fmt.Errorf("spec usecase list: %w", err)
 	}
@@ -715,7 +830,7 @@ func executeSpecUsecaseList(ctx context.Context, db *store.DB, product string) (
 	result := &SpecUsecaseListResult{Product: product}
 	for rows.Next() {
 		var item SpecUsecaseListItem
-		if err := rows.Scan(&item.ID, &item.UsecaseName, &item.Title, &item.SourceDir, &item.UsecaseKind, &item.PageID); err != nil {
+		if err := rows.Scan(&item.ID, &item.UsecaseName, &item.Title, &item.SourceDir, &item.UsecaseKind, &item.PageID, &item.BranchUsed); err != nil {
 			return nil, fmt.Errorf("spec usecase list scan: %w", err)
 		}
 		result.Usecases = append(result.Usecases, item)
@@ -734,16 +849,34 @@ func ExecuteSpecCoverage(ctx context.Context, db *store.DB, product string, name
 	kind = strings.TrimSpace(kind)
 
 	// Шаг 1: получить список capability продукта (один лёгкий запрос).
-	capQuery := `SELECT c.id, c.capability_name, c.title
-		FROM spec_capabilities c
-		JOIN ds_products dp ON dp.id = c.ds_product_id
-		WHERE dp.product_name = $1`
+	// Двухфазный дедуп: фаза 1 выбирает ветку для имени capability, фаза 2
+	// возвращает все capability выбранной ветки.
+	filter := "WHERE dp.product_name = $1"
 	capArgs := []interface{}{product}
 	if name != "" {
-		capQuery += " AND LOWER(c.capability_name) = LOWER($2)"
+		filter += " AND LOWER(c.capability_name) = LOWER($2)"
 		capArgs = append(capArgs, name)
 	}
-	capQuery += " ORDER BY c.capability_name"
+	fromClause := `spec_capabilities c
+			JOIN ds_products dp ON dp.id = c.ds_product_id
+			JOIN files f ON f.id = c.file_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id`
+	capQuery := `
+		WITH chosen AS (
+			SELECT DISTINCT ON (LOWER(c.capability_name))
+			       LOWER(c.capability_name) AS name_key,
+			       f.ds_product_branch_id AS branch_id
+			FROM ` + fromClause + `
+			` + filter + `
+			ORDER BY LOWER(c.capability_name),
+			         (NOT f.is_generated) DESC, COALESCE(br.is_default, FALSE) DESC, c.id DESC
+		)
+		SELECT c.id, c.capability_name, c.title
+		FROM ` + fromClause + `
+		JOIN chosen ch ON ch.name_key = LOWER(c.capability_name)
+		             AND ch.branch_id IS NOT DISTINCT FROM f.ds_product_branch_id
+		` + filter + `
+		ORDER BY c.capability_name, c.id`
 
 	capRows, err := db.QueryContext(ctx, capQuery, capArgs...)
 	if err != nil {
@@ -954,19 +1087,50 @@ func ExecuteSpecHistory(ctx context.Context, db *store.DB, capabilityName string
 		Changes:        make([]SpecHistoryEntry, 0),
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT DISTINCT c.capability_name, COALESCE(dp.product_name, ''), sc.change_name, sc.status,
-		       COALESCE(d.section, ''), COALESCE(d.requirement_name, ''), COALESCE(d.body_text, ''),
-		       COALESCE(r.confidence, ''), COALESCE(d.line_start, 0), f.modified_at
+		WITH chosen AS (
+			SELECT DISTINCT ON (sc.change_name, COALESCE(d.section, ''), COALESCE(d.requirement_name, ''),
+			                    COALESCE(dp.product_name, ''))
+			       sc.change_name AS change_name_key,
+			       COALESCE(d.section, '') AS section_key,
+			       COALESCE(d.requirement_name, '') AS requirement_name_key,
+			       COALESCE(dp.product_name, '') AS product_key,
+			       f.ds_product_branch_id AS branch_id
+			FROM relations r
+			JOIN spec_changes sc ON r.source_type = 'spec_change' AND sc.id = r.source_id
+			JOIN files f ON f.id = sc.file_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+			JOIN spec_capabilities c ON r.target_type = 'spec_capability' AND c.id = r.target_id
+			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+			LEFT JOIN spec_change_delta d ON d.change_id = sc.id AND LOWER(d.capability_slug) = LOWER(c.capability_name)
+			WHERE r.relation_type = 'change_modifies'
+			  AND LOWER(c.capability_name) = LOWER($1)
+			  AND ($2 = '' OR dp.product_name = $2)
+			ORDER BY sc.change_name, COALESCE(d.section, ''), COALESCE(d.requirement_name, ''),
+			         COALESCE(dp.product_name, ''),
+			         (NOT f.is_generated) DESC, COALESCE(br.is_default, FALSE) DESC, r.id DESC
+		)
+		SELECT c.capability_name, COALESCE(dp.product_name, '') AS product, sc.change_name, sc.status,
+		       COALESCE(d.section, '') AS section, COALESCE(d.requirement_name, '') AS requirement_name,
+		       COALESCE(d.body_text, '') AS body_text,
+		       COALESCE(r.confidence, '') AS source, COALESCE(d.line_start, 0) AS line_start,
+		       f.modified_at,
+		       COALESCE(br.branch_key, '') AS branch_used
 		FROM relations r
 		JOIN spec_changes sc ON r.source_type = 'spec_change' AND sc.id = r.source_id
 		JOIN files f ON f.id = sc.file_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
 		JOIN spec_capabilities c ON r.target_type = 'spec_capability' AND c.id = r.target_id
 		LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
 		LEFT JOIN spec_change_delta d ON d.change_id = sc.id AND LOWER(d.capability_slug) = LOWER(c.capability_name)
+		JOIN chosen ch ON ch.change_name_key = sc.change_name
+		             AND ch.section_key = COALESCE(d.section, '')
+		             AND ch.requirement_name_key = COALESCE(d.requirement_name, '')
+		             AND ch.product_key = COALESCE(dp.product_name, '')
+		             AND ch.branch_id IS NOT DISTINCT FROM f.ds_product_branch_id
 		WHERE r.relation_type = 'change_modifies'
 		  AND LOWER(c.capability_name) = LOWER($1)
 		  AND ($2 = '' OR dp.product_name = $2)
-		ORDER BY f.modified_at, sc.change_name, COALESCE(d.section, ''), COALESCE(d.line_start, 0)`, capabilityName, productFilter)
+		ORDER BY f.modified_at, sc.change_name, COALESCE(d.section, ''), COALESCE(d.line_start, 0), r.id`, capabilityName, productFilter)
 	if err != nil {
 		return nil, fmt.Errorf("spec history query: %w", err)
 	}
@@ -977,7 +1141,7 @@ func ExecuteSpecHistory(ctx context.Context, db *store.DB, capabilityName string
 		var lineStart int
 		var modifiedAt interface{}
 		if err := rows.Scan(&result.CapabilityName, &result.Product, &entry.ChangeName, &entry.Status, &entry.Section,
-			&entry.ReqName, &entry.BodyText, &entry.Source, &lineStart, &modifiedAt); err != nil {
+			&entry.ReqName, &entry.BodyText, &entry.Source, &lineStart, &modifiedAt, &entry.BranchUsed); err != nil {
 			return nil, fmt.Errorf("spec history scan: %w", err)
 		}
 		result.Changes = append(result.Changes, entry)
@@ -993,12 +1157,37 @@ func executeSpecHistoryByChange(ctx context.Context, db *store.DB, changeName, p
 		Changes:      make([]SpecHistoryEntry, 0),
 	}
 	// 1. Summary-список затронутых capability (без delta-join).
+	// Копии capability из разных веток одного продукта схлопываются.
 	rows, err := db.QueryContext(ctx, `
-		SELECT DISTINCT sc.change_name, sc.status, c.id, c.capability_name, c.title, COALESCE(dp.product_name, '')
+		WITH chosen AS (
+			SELECT DISTINCT ON (c.capability_name, COALESCE(dp.product_name, ''))
+			       c.capability_name AS capability_name_key,
+			       COALESCE(dp.product_name, '') AS product_key,
+			       f.ds_product_branch_id AS branch_id
+			FROM relations r
+			JOIN spec_changes sc ON r.source_type = 'spec_change' AND sc.id = r.source_id
+			JOIN files f ON f.id = sc.file_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+			JOIN spec_capabilities c ON r.target_type = 'spec_capability' AND c.id = r.target_id
+			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+			WHERE r.relation_type = 'change_modifies'
+			  AND LOWER(sc.change_name) = LOWER($1)
+			  AND ($2 = '' OR dp.product_name = $2)
+			ORDER BY c.capability_name, COALESCE(dp.product_name, ''),
+			         (NOT f.is_generated) DESC, COALESCE(br.is_default, FALSE) DESC, c.id DESC
+		)
+		SELECT sc.change_name, sc.status, c.id, c.capability_name, c.title,
+		       COALESCE(dp.product_name, '') AS product,
+		       COALESCE(br.branch_key, '') AS branch_used
 		FROM relations r
 		JOIN spec_changes sc ON r.source_type = 'spec_change' AND sc.id = r.source_id
+		JOIN files f ON f.id = sc.file_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
 		JOIN spec_capabilities c ON r.target_type = 'spec_capability' AND c.id = r.target_id
 		LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+		JOIN chosen ch ON ch.capability_name_key = c.capability_name
+		             AND ch.product_key = COALESCE(dp.product_name, '')
+		             AND ch.branch_id IS NOT DISTINCT FROM f.ds_product_branch_id
 		WHERE r.relation_type = 'change_modifies'
 		  AND LOWER(sc.change_name) = LOWER($1)
 		  AND ($2 = '' OR dp.product_name = $2)
@@ -1009,7 +1198,7 @@ func executeSpecHistoryByChange(ctx context.Context, db *store.DB, changeName, p
 	for rows.Next() {
 		var capability SpecHistoryCapability
 		if err := rows.Scan(&result.ChangeName, &result.Status, &capability.CapabilityID,
-			&capability.CapabilityName, &capability.Title, &capability.Product); err != nil {
+			&capability.CapabilityName, &capability.Title, &capability.Product, &capability.BranchUsed); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("spec history by change scan: %w", err)
 		}
@@ -1025,18 +1214,50 @@ func executeSpecHistoryByChange(ctx context.Context, db *store.DB, changeName, p
 	// LEFT JOIN spec_change_delta: для change со skip_specs (нет delta-файла)
 	// возвращается одна строка с NULL delta-полями и confidence = 'proposal'.
 	deltaRows, err := db.QueryContext(ctx, `
+		WITH chosen AS (
+			SELECT DISTINCT ON (c.capability_name, COALESCE(d.section, ''), COALESCE(d.requirement_name, ''),
+			                    COALESCE(dp.product_name, ''))
+			       c.capability_name AS capability_name_key,
+			       COALESCE(d.section, '') AS section_key,
+			       COALESCE(d.requirement_name, '') AS requirement_name_key,
+			       COALESCE(dp.product_name, '') AS product_key,
+			       f.ds_product_branch_id AS branch_id
+			FROM relations r
+			JOIN spec_changes sc ON r.source_type = 'spec_change' AND sc.id = r.source_id
+			JOIN files f ON f.id = sc.file_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+			JOIN spec_capabilities c ON r.target_type = 'spec_capability' AND c.id = r.target_id
+			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+			LEFT JOIN spec_change_delta d ON d.change_id = sc.id AND LOWER(d.capability_slug) = LOWER(c.capability_name)
+			WHERE r.relation_type = 'change_modifies'
+			  AND LOWER(sc.change_name) = LOWER($1)
+			  AND ($2 = '' OR dp.product_name = $2)
+			ORDER BY c.capability_name, COALESCE(d.section, ''), COALESCE(d.requirement_name, ''),
+			         COALESCE(dp.product_name, ''),
+			         (NOT f.is_generated) DESC, COALESCE(br.is_default, FALSE) DESC, r.id DESC
+		)
 		SELECT sc.change_name, sc.status, c.capability_name,
-		       COALESCE(d.section, ''), COALESCE(d.requirement_name, ''), COALESCE(d.body_text, ''),
-		       COALESCE(r.confidence, '')
+		       COALESCE(d.section, '') AS section, COALESCE(d.requirement_name, '') AS requirement_name,
+		       COALESCE(d.body_text, '') AS body_text,
+		       COALESCE(r.confidence, '') AS confidence,
+		       COALESCE(d.line_start, 0) AS line_start,
+		       COALESCE(br.branch_key, '') AS branch_used
 		FROM relations r
 		JOIN spec_changes sc ON r.source_type = 'spec_change' AND sc.id = r.source_id
+		JOIN files f ON f.id = sc.file_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
 		JOIN spec_capabilities c ON r.target_type = 'spec_capability' AND c.id = r.target_id
 		LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
 		LEFT JOIN spec_change_delta d ON d.change_id = sc.id AND LOWER(d.capability_slug) = LOWER(c.capability_name)
+		JOIN chosen ch ON ch.capability_name_key = c.capability_name
+		             AND ch.section_key = COALESCE(d.section, '')
+		             AND ch.requirement_name_key = COALESCE(d.requirement_name, '')
+		             AND ch.product_key = COALESCE(dp.product_name, '')
+		             AND ch.branch_id IS NOT DISTINCT FROM f.ds_product_branch_id
 		WHERE r.relation_type = 'change_modifies'
 		  AND LOWER(sc.change_name) = LOWER($1)
 		  AND ($2 = '' OR dp.product_name = $2)
-		ORDER BY c.capability_name, c.id, COALESCE(d.section, ''), COALESCE(d.line_start, 0)`, changeName, product)
+		ORDER BY c.capability_name, COALESCE(d.section, ''), COALESCE(d.line_start, 0), r.id`, changeName, product)
 	if err != nil {
 		return nil, fmt.Errorf("spec history by change delta query: %w", err)
 	}
@@ -1045,8 +1266,9 @@ func executeSpecHistoryByChange(ctx context.Context, db *store.DB, changeName, p
 	for deltaRows.Next() {
 		var entry SpecHistoryEntry
 		var confidence string
+		var lineStart int
 		if err := deltaRows.Scan(&entry.ChangeName, &entry.Status, &entry.CapabilityName,
-			&entry.Section, &entry.ReqName, &entry.BodyText, &confidence); err != nil {
+			&entry.Section, &entry.ReqName, &entry.BodyText, &confidence, &lineStart, &entry.BranchUsed); err != nil {
 			return nil, fmt.Errorf("spec history by change delta scan: %w", err)
 		}
 		// confidence хранит источник связи: 'delta' (из delta-файла) или
@@ -1075,39 +1297,70 @@ func normalizeHistorySelectors(capabilityName, changeName string) (string, strin
 }
 
 // searchSpecExact — tsvector поиск по сущностям спек.
+// Копии артефактов из разных веток одного продукта схлопываются:
+// DISTINCT ON (level, name_key, продукт) с приоритетом default-ветки.
 func searchSpecExact(ctx context.Context, db *store.DB, query, product, level string, limit int) ([]SpecSearchHit, error) {
 	rows, err := db.QueryContext(ctx, `
 		WITH artifacts AS (
 			SELECT c.id AS entity_id, c.id AS capability_id, c.capability_name,
+			       c.capability_name AS name_key,
 			       'capability'::text AS level, c.title, COALESCE(c.purpose, '') AS purpose,
 			       c.line_start, c.line_end,
 			       CONCAT_WS(' ', c.title, c.purpose, c.notes) AS snippet,
-			       c.search_vector, c.ds_product_id
+			       c.search_vector, c.ds_product_id, c.file_id
 			FROM spec_capabilities c
 			UNION ALL
-			SELECT req.id, c.id, c.capability_name, 'requirement', req.requirement_name, '',
-			       req.line_start, req.line_end, req.body_text, req.search_vector, c.ds_product_id
+			SELECT req.id, c.id, c.capability_name,
+			       c.capability_name || '|' || req.requirement_name,
+			       'requirement', req.requirement_name, '',
+			       req.line_start, req.line_end, req.body_text, req.search_vector, c.ds_product_id, req.file_id
 			FROM spec_requirements req JOIN spec_capabilities c ON c.id = req.capability_id
 			UNION ALL
-			SELECT s.id, c.id, c.capability_name, 'scenario', s.scenario_name, '',
+			SELECT s.id, c.id, c.capability_name,
+			       c.capability_name || '|' || s.scenario_name,
+			       'scenario', s.scenario_name, '',
 			       s.line_start, s.line_end,
-			       CONCAT_WS(' ', s.given_text, s.when_text, s.then_text), s.search_vector, c.ds_product_id
+			       CONCAT_WS(' ', s.given_text, s.when_text, s.then_text), s.search_vector, c.ds_product_id, s.file_id
 			FROM spec_scenarios s
 			JOIN spec_requirements req ON req.id = s.requirement_id
 			JOIN spec_capabilities c ON c.id = req.capability_id
 			UNION ALL
-			SELECT uc.id, 0, uc.usecase_name, 'usecase', uc.title, '',
+			SELECT uc.id, 0, uc.usecase_name, uc.usecase_name,
+			       'usecase', uc.title, '',
 			       uc.line_start, uc.line_end,
 			       CONCAT_WS(' ', uc.description, uc.actors, uc.preconditions, uc.postconditions),
-			       uc.search_vector, cfg.ds_product_id
+			       uc.search_vector, cfg.ds_product_id, uc.file_id
 			FROM spec_usecases uc JOIN spec_configs cfg ON cfg.id = uc.spec_config_id
+		)
+		, chosen AS (
+			SELECT DISTINCT ON (a.level, a.name_key, COALESCE(dp.product_name, ''))
+			       a.level AS level_key,
+			       a.name_key,
+			       COALESCE(dp.product_name, '') AS product_key,
+			       f.ds_product_branch_id AS branch_id
+			FROM artifacts a
+			JOIN files f ON f.id = a.file_id
+			LEFT JOIN ds_products dp ON dp.id = a.ds_product_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+			WHERE a.search_vector @@ plainto_tsquery('russian', $1)
+			  AND ($2 = '' OR dp.product_name = $2)
+			  AND ($3 = '' OR LOWER(a.level) = LOWER($3))
+			ORDER BY a.level, a.name_key, COALESCE(dp.product_name, ''),
+			         (NOT f.is_generated) DESC, COALESCE(br.is_default, FALSE) DESC, a.entity_id DESC
 		)
 		SELECT a.capability_id, a.capability_name, a.entity_id, a.level, a.title, a.purpose,
 		       a.line_start, a.line_end, a.snippet,
 		       ts_rank(a.search_vector, plainto_tsquery('russian', $1)) AS rank,
-		       COALESCE(dp.product_name, '')
+		       COALESCE(dp.product_name, '') AS product,
+		       COALESCE(br.branch_key, '') AS branch_used
 		FROM artifacts a
+		JOIN files f ON f.id = a.file_id
 		LEFT JOIN ds_products dp ON dp.id = a.ds_product_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+		JOIN chosen ch ON ch.level_key = a.level
+		             AND ch.name_key = a.name_key
+		             AND ch.product_key = COALESCE(dp.product_name, '')
+		             AND ch.branch_id IS NOT DISTINCT FROM f.ds_product_branch_id
 		WHERE a.search_vector @@ plainto_tsquery('russian', $1)
 		  AND ($2 = '' OR dp.product_name = $2)
 		  AND ($3 = '' OR LOWER(a.level) = LOWER($3))
@@ -1123,7 +1376,7 @@ func searchSpecExact(ctx context.Context, db *store.DB, query, product, level st
 		var hit SpecSearchHit
 		if err := rows.Scan(&hit.CapabilityID, &hit.CapabilityName, &hit.EntityID, &hit.Level,
 			&hit.Title, &hit.Purpose, &hit.LineStart, &hit.LineEnd, &hit.Snippet,
-			&hit.Rank, &hit.Product); err != nil {
+			&hit.Rank, &hit.Product, &hit.BranchUsed); err != nil {
 			return nil, err
 		}
 		hit.Source = "tsvector"
@@ -1133,6 +1386,8 @@ func searchSpecExact(ctx context.Context, db *store.DB, query, product, level st
 }
 
 // searchSpecTrgm — trgm поиск по индексируемым именам и code mentions.
+// Копии артефактов из разных веток одного продукта схлопываются:
+// DISTINCT ON (level, name_key, продукт) с приоритетом default-ветки.
 func searchSpecTrgm(ctx context.Context, db *store.DB, query, product, level string, limit int) ([]SpecSearchHit, error) {
 	rows, err := db.QueryContext(ctx, `
 		WITH trgm_hits AS (
@@ -1140,7 +1395,8 @@ func searchSpecTrgm(ctx context.Context, db *store.DB, query, product, level str
 			       c.title, COALESCE(c.purpose, '') AS purpose, c.line_start, c.line_end,
 			       CONCAT_WS(' ', c.title, c.purpose, c.notes, c.related_code) AS snippet,
 			       similarity(c.related_code, $1) AS rank,
-			       COALESCE(dp.product_name, '') AS product
+			       COALESCE(dp.product_name, '') AS product,
+			       c.capability_name AS name_key, c.file_id
 			FROM spec_capabilities c
 			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
 			WHERE c.related_code % $1
@@ -1148,7 +1404,8 @@ func searchSpecTrgm(ctx context.Context, db *store.DB, query, product, level str
 			SELECT c.id, c.capability_name, req.id, 'requirement', req.requirement_name, '',
 			       req.line_start, req.line_end, req.body_text,
 			       similarity(req.body_text, $1),
-			       COALESCE(dp.product_name, '')
+			       COALESCE(dp.product_name, ''),
+			       c.capability_name || '|' || req.requirement_name, req.file_id
 			FROM spec_requirements req
 			JOIN spec_capabilities c ON c.id = req.capability_id
 			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
@@ -1158,7 +1415,8 @@ func searchSpecTrgm(ctx context.Context, db *store.DB, query, product, level str
 			       s.line_start, s.line_end,
 			       CONCAT_WS(' ', s.given_text, s.when_text, s.then_text),
 			       similarity(s.scenario_name || ' ' || COALESCE(s.given_text, '') || ' ' || COALESCE(s.when_text, '') || ' ' || COALESCE(s.then_text, ''), $1),
-			       COALESCE(dp.product_name, '')
+			       COALESCE(dp.product_name, ''),
+			       c.capability_name || '|' || s.scenario_name, s.file_id
 			FROM spec_scenarios s
 			JOIN spec_requirements req ON req.id = s.requirement_id
 			JOIN spec_capabilities c ON c.id = req.capability_id
@@ -1169,7 +1427,8 @@ func searchSpecTrgm(ctx context.Context, db *store.DB, query, product, level str
 			       CONCAT_WS(' ', uc.description, uc.actors, uc.preconditions, uc.postconditions,
 			                     uc.business_value, uc.architecture, uc.data_schema),
 			       similarity(uc.usecase_name || ' ' || uc.title || ' ' || COALESCE(uc.description, '') || ' ' || COALESCE(uc.actors, '') || ' ' || COALESCE(uc.preconditions, '') || ' ' || COALESCE(uc.postconditions, '') || ' ' || COALESCE(uc.business_value, '') || ' ' || COALESCE(uc.architecture, '') || ' ' || COALESCE(uc.data_schema, ''), $1),
-			       COALESCE(dp.product_name, '')
+			       COALESCE(dp.product_name, ''),
+			       uc.usecase_name, uc.file_id
 			FROM spec_usecases uc
 			JOIN spec_configs cfg ON cfg.id = uc.spec_config_id
 			LEFT JOIN ds_products dp ON dp.id = cfg.ds_product_id
@@ -1178,7 +1437,8 @@ func searchSpecTrgm(ctx context.Context, db *store.DB, query, product, level str
 			SELECT c.id, c.capability_name, c.id, 'capability', c.title, COALESCE(c.purpose, ''), c.line_start, c.line_end,
 			       CONCAT_WS(' ', c.title, c.purpose, c.notes, c.related_code),
 			       CASE WHEN LOWER(m.mention_name) = LOWER($1) THEN 1.0 ELSE similarity(m.mention_name, $1) END,
-			       COALESCE(dp.product_name, '')
+			       COALESCE(dp.product_name, ''),
+			       c.capability_name, c.file_id
 			FROM spec_code_mentions m
 			JOIN spec_capabilities c ON m.source_type = 'spec_capability' AND c.id = m.source_id
 			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
@@ -1187,7 +1447,8 @@ func searchSpecTrgm(ctx context.Context, db *store.DB, query, product, level str
 			SELECT c.id, c.capability_name, req.id, 'requirement', req.requirement_name, '', req.line_start, req.line_end,
 			       req.body_text,
 			       CASE WHEN LOWER(m.mention_name) = LOWER($1) THEN 1.0 ELSE similarity(m.mention_name, $1) END,
-			       COALESCE(dp.product_name, '')
+			       COALESCE(dp.product_name, ''),
+			       c.capability_name || '|' || req.requirement_name, req.file_id
 			FROM spec_code_mentions m
 			JOIN spec_requirements req ON m.source_type = 'spec_requirement' AND req.id = m.source_id
 			JOIN spec_capabilities c ON c.id = req.capability_id
@@ -1197,7 +1458,8 @@ func searchSpecTrgm(ctx context.Context, db *store.DB, query, product, level str
 			SELECT c.id, c.capability_name, s.id, 'scenario', s.scenario_name, '', s.line_start, s.line_end,
 			       CONCAT_WS(' ', s.given_text, s.when_text, s.then_text),
 			       CASE WHEN LOWER(m.mention_name) = LOWER($1) THEN 1.0 ELSE similarity(m.mention_name, $1) END,
-			       COALESCE(dp.product_name, '')
+			       COALESCE(dp.product_name, ''),
+			       c.capability_name || '|' || s.scenario_name, s.file_id
 			FROM spec_code_mentions m
 			JOIN spec_scenarios s ON m.source_type = 'spec_scenario' AND s.id = m.source_id
 			JOIN spec_requirements req ON req.id = s.requirement_id
@@ -1209,19 +1471,41 @@ func searchSpecTrgm(ctx context.Context, db *store.DB, query, product, level str
 			       CONCAT_WS(' ', uc.description, uc.actors, uc.preconditions, uc.postconditions,
 			                     uc.business_value, uc.architecture, uc.data_schema),
 			       CASE WHEN LOWER(m.mention_name) = LOWER($1) THEN 1.0 ELSE similarity(m.mention_name, $1) END,
-			       COALESCE(dp.product_name, '')
+			       COALESCE(dp.product_name, ''),
+			       uc.usecase_name, uc.file_id
 			FROM spec_code_mentions m
 			JOIN spec_usecases uc ON m.source_type = 'spec_usecase' AND uc.id = m.source_id
 			JOIN spec_configs cfg ON cfg.id = uc.spec_config_id
 			LEFT JOIN ds_products dp ON dp.id = cfg.ds_product_id
 			WHERE m.source_type = 'spec_usecase' AND (LOWER(m.mention_name) = LOWER($1) OR m.mention_name % $1)
 		)
-		SELECT capability_id, capability_name, entity_id, level, title, purpose, line_start, line_end,
-		       snippet, rank, product
-		FROM trgm_hits
-		WHERE ($2 = '' OR product = $2)
-		  AND ($3 = '' OR LOWER(level) = LOWER($3))
-		ORDER BY rank DESC, level, entity_id
+		, chosen AS (
+			SELECT DISTINCT ON (th.level, th.name_key, th.product)
+			       th.level AS level_key,
+			       th.name_key,
+			       th.product AS product_key,
+			       f.ds_product_branch_id AS branch_id
+			FROM trgm_hits th
+			JOIN files f ON f.id = th.file_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+			WHERE ($2 = '' OR th.product = $2)
+			  AND ($3 = '' OR LOWER(th.level) = LOWER($3))
+			ORDER BY th.level, th.name_key, th.product,
+			         (NOT f.is_generated) DESC, COALESCE(br.is_default, FALSE) DESC, th.rank DESC, th.entity_id DESC
+		)
+		SELECT th.capability_id, th.capability_name, th.entity_id, th.level, th.title, th.purpose,
+		       th.line_start, th.line_end, th.snippet, th.rank, th.product,
+		       COALESCE(br.branch_key, '') AS branch_used
+		FROM trgm_hits th
+		JOIN files f ON f.id = th.file_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+		JOIN chosen ch ON ch.level_key = th.level
+		             AND ch.name_key = th.name_key
+		             AND ch.product_key = th.product
+		             AND ch.branch_id IS NOT DISTINCT FROM f.ds_product_branch_id
+		WHERE ($2 = '' OR th.product = $2)
+		  AND ($3 = '' OR LOWER(th.level) = LOWER($3))
+		ORDER BY th.rank DESC, th.level, th.entity_id
 		LIMIT $4`, query, product, level, limit)
 	if err != nil {
 		return nil, err
@@ -1233,7 +1517,7 @@ func searchSpecTrgm(ctx context.Context, db *store.DB, query, product, level str
 		var hit SpecSearchHit
 		if err := rows.Scan(&hit.CapabilityID, &hit.CapabilityName, &hit.EntityID, &hit.Level,
 			&hit.Title, &hit.Purpose, &hit.LineStart, &hit.LineEnd, &hit.Snippet,
-			&hit.Rank, &hit.Product); err != nil {
+			&hit.Rank, &hit.Product, &hit.BranchUsed); err != nil {
 			return nil, err
 		}
 		hit.Source = "trgm"

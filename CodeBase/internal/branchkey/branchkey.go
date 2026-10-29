@@ -13,6 +13,7 @@ package branchkey
 import (
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // hotfixRegexp — признак хотфикс-пакета в ссылке манифеста
@@ -79,6 +80,101 @@ func NormalizeProduct(rawName, packetRef string) (productName, branchKey, hotfix
 		hotfixName = packetRef
 	}
 	return productName, branchKey, hotfixName
+}
+
+// NumericTokens возвращает последовательность числовых сегментов строки:
+// сегменты выделяются по не-алфанумерическим разделителям, и в результат
+// попадают только целиком числовые сегменты. Цифры внутри буквенных токенов
+// (например, «ftfns440reqprocadapter») игнорируются — иначе версия продукта
+// с цифрами в имени ломала бы fallback-сопоставление.
+// Пример: sup/11-01-7 → ["11","01","7"];
+// fa-ftfns440reqprocadapter-11-01-11 → ["11","01","11"].
+func NumericTokens(s string) []string {
+	var tokens []string
+	var cur strings.Builder
+	flush := func() {
+		if cur.Len() > 0 {
+			if isNumericToken(cur.String()) {
+				tokens = append(tokens, cur.String())
+			}
+			cur.Reset()
+		}
+	}
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			cur.WriteRune(r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return tokens
+}
+
+// CompareVersion сравнивает версии линий по числовым сегментам: большее
+// значение первого различающегося сегмента — старшая версия; при равном
+// префиксе более длинная последовательность считается старшей
+// (11-01-7 > 11-01). Строки без версии равны между собой и младше любой
+// версии. Возвращает -1, 0 или 1.
+func CompareVersion(a, b string) int {
+	at, bt := NumericTokens(a), NumericTokens(b)
+	n := len(at)
+	if len(bt) < n {
+		n = len(bt)
+	}
+	for i := 0; i < n; i++ {
+		if c := compareNumericSegment(at[i], bt[i]); c != 0 {
+			return c
+		}
+	}
+	switch {
+	case len(at) < len(bt):
+		return -1
+	case len(at) > len(bt):
+		return 1
+	}
+	return 0
+}
+
+// compareNumericSegment сравнивает числовые сегменты без учёта ведущих нулей.
+func compareNumericSegment(a, b string) int {
+	at := strings.TrimLeft(a, "0")
+	bt := strings.TrimLeft(b, "0")
+	if len(at) != len(bt) {
+		if len(at) < len(bt) {
+			return -1
+		}
+		return 1
+	}
+	switch {
+	case at < bt:
+		return -1
+	case at > bt:
+		return 1
+	}
+	return 0
+}
+
+// NumericTailMatches сообщает, совпадает ли последовательность числовых
+// токенов requested с хвостом последовательности токенов candidate.
+// Используется как fallback-матчинг линии манифеста на нестандартное имя
+// git-ветки: fa-contracts-11-01-7 ↔ sup/11-01-7.
+//
+// Пустая последовательность requested (у продукта нет версии) не совпадает
+// ни с чем: без информации о версии fallback не применяется.
+func NumericTailMatches(requested, candidate string) bool {
+	want := NumericTokens(requested)
+	got := NumericTokens(candidate)
+	if len(want) == 0 || len(got) < len(want) {
+		return false
+	}
+	tail := got[len(got)-len(want):]
+	for i := range want {
+		if want[i] != tail[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // NormalizeBranchKey вычисляет ключ релизной линии из имени git-ветки:

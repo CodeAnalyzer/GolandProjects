@@ -85,7 +85,7 @@ func TestFindLatestSQLProcedureIDsByNames_CanonicalBeatsUploadCopy(t *testing.T)
 
 	// С продуктовым контекстом и без — побеждает канонический источник
 	for _, productID := range []int64{contractsProductID, 0} {
-		ids, err := db.FindLatestSQLProcedureIDsByNames(ctx, []string{"BaseAlg_ConsMinRest"}, productID)
+		ids, err := db.FindLatestSQLProcedureIDsByNames(ctx, []string{"BaseAlg_ConsMinRest"}, store.LookupScope{ProductID: productID})
 		if err != nil {
 			t.Fatalf("lookup (product=%d): %v", productID, err)
 		}
@@ -123,7 +123,7 @@ func TestFindLatestSQLProcedureIDsByNames_SplitByProduct(t *testing.T) {
 		t.Fatalf("other proc id: %v", err)
 	}
 
-	ids, err := db.FindLatestSQLProcedureIDsByNames(ctx, []string{"BaseAlgAmrtCostSinglePmnt"}, contractsProductID)
+	ids, err := db.FindLatestSQLProcedureIDsByNames(ctx, []string{"BaseAlgAmrtCostSinglePmnt"}, store.LookupScope{ProductID: contractsProductID})
 	if err != nil {
 		t.Fatalf("lookup contracts: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestFindLatestSQLProcedureIDsByNames_SplitByProduct(t *testing.T) {
 		t.Fatalf("contracts lookup = %d, want own-product %d", got, contractsProcID)
 	}
 
-	ids, err = db.FindLatestSQLProcedureIDsByNames(ctx, []string{"BaseAlgAmrtCostSinglePmnt"}, otherProductID)
+	ids, err = db.FindLatestSQLProcedureIDsByNames(ctx, []string{"BaseAlgAmrtCostSinglePmnt"}, store.LookupScope{ProductID: otherProductID})
 	if err != nil {
 		t.Fatalf("lookup other: %v", err)
 	}

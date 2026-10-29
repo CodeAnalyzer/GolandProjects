@@ -75,10 +75,10 @@ func newIndexerSharedState() *indexerSharedState {
 		pendingSQLCalls:          make([]*PendingSQLCallFile, 0),
 		pendingFragmentRefs:      make([]*PendingFragmentRef, 0),
 		pendingJSCallRefs:        make([]*PendingJSCallRef, 0),
-		pendingT01SubscriberRefs:  make([]*PendingT01SubscriberRef, 0),
-		pendingAPIMacroRefs:       make([]*PendingAPIMacroRef, 0),
-		dsProductCache:            make(map[string]int64),
-		sourceRegistry:            newSourceRegistry(),
+		pendingT01SubscriberRefs: make([]*PendingT01SubscriberRef, 0),
+		pendingAPIMacroRefs:      make([]*PendingAPIMacroRef, 0),
+		dsProductCache:           make(map[string]int64),
+		sourceRegistry:           newSourceRegistry(),
 	}
 }
 
@@ -218,13 +218,13 @@ func (idx *Indexer) processFilesWorkerPoolInit(ctx context.Context, parallel int
 					if !ok {
 						return
 					}
-				collector.Add(func(stats *model.ScanStats) { stats.FilesScanned++ })
-				if file.EncodingRefined {
-					collector.Add(func(stats *model.ScanStats) { stats.EncodingRefined++ })
-				}
+					collector.Add(func(stats *model.ScanStats) { stats.FilesScanned++ })
+					if file.EncodingRefined {
+						collector.Add(func(stats *model.ScanStats) { stats.EncodingRefined++ })
+					}
 
-				saveStart := time.Now()
-				fileID, err := idx.saveFileCtx(ctx, file, scanRunID)
+					saveStart := time.Now()
+					fileID, err := idx.saveFileCtx(ctx, file, scanRunID)
 					saveElapsed := time.Since(saveStart).Milliseconds()
 					collector.Add(func(stats *model.ScanStats) { stats.SaveMs += saveElapsed })
 					if err != nil {

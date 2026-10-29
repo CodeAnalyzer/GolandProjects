@@ -25,11 +25,11 @@ type trackerFrame struct {
 // интервальным алгоритмом при flush (переполнение буфера, смена SPID,
 // завершение парсинга).
 type IncrementalParentTracker struct {
-	stacks           map[int][]trackerFrame       // spid -> stack (normal mode)
-	idx              int                          // счётчик событий (0-based)
-	completedOnly    map[int]bool                 // spid -> true если в completed-only режиме
-	pendingCompleted map[int][]*TRCEvent          // spid -> буфер Completed-событий
-	seenStarting     map[int]bool                 // spid -> хотя бы один Starting был обработан
+	stacks           map[int][]trackerFrame // spid -> stack (normal mode)
+	idx              int                    // счётчик событий (0-based)
+	completedOnly    map[int]bool           // spid -> true если в completed-only режиме
+	pendingCompleted map[int][]*TRCEvent    // spid -> буфер Completed-событий
+	seenStarting     map[int]bool           // spid -> хотя бы один Starting был обработан
 }
 
 // NewIncrementalParentTracker создаёт новый трекер.

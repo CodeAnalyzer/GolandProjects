@@ -25,6 +25,9 @@ type ProcedureEnrichment struct {
 	SourceFile string                 `json:"source_file,omitempty"`
 	LineStart  int                    `json:"line_start,omitempty"`
 	LineEnd    int                    `json:"line_end,omitempty"`
+	Product    string                 `json:"product,omitempty"`
+	BranchUsed string                 `json:"branch_used,omitempty"`
+	BranchRequested string            `json:"branch_requested,omitempty"`
 	Params     []query.SQLParamResult `json:"params,omitempty"`
 	Found      bool                   `json:"found"`
 }
@@ -43,6 +46,9 @@ func EnrichProcedure(ctx context.Context, q ProcedureLookup, procName string) (*
 		SourceFile: proc.File,
 		LineStart:  proc.LineStart,
 		LineEnd:    proc.LineEnd,
+		Product:    proc.Product,
+		BranchUsed: proc.BranchUsed,
+		BranchRequested: proc.BranchRequested,
 		Params:     proc.Params,
 		Found:      true,
 	}, nil

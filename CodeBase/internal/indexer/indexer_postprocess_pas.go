@@ -73,45 +73,24 @@ func (idx *Indexer) postProcessPASPending(ctx context.Context, collector *statsC
 	idx.shared.pendingFields = idx.shared.pendingFields[:0]
 	idx.shared.pendingMu.Unlock()
 
-	// Collect unique class names from all pending items for batch-resolve.
-	classNameSet := make(map[string]struct{})
-	for _, p := range pendingClasses {
-		classNameSet[strings.ToLower(strings.TrimSpace(p.ClassName))] = struct{}{}
-	}
-	for _, p := range pendingMethods {
-		classNameSet[strings.ToLower(strings.TrimSpace(p.ClassName))] = struct{}{}
-	}
-	for _, p := range pendingFields {
-		classNameSet[strings.ToLower(strings.TrimSpace(p.ClassName))] = struct{}{}
-	}
-	classNames := make([]string, 0, len(classNameSet))
-	for name := range classNameSet {
-		if name != "" {
-			classNames = append(classNames, name)
-		}
-	}
-
-	// Batch-resolve PAS class IDs.
-	classIDMap, err := idx.db.FindLatestPASClassIDsByNames(ctx, classNames)
-	if err != nil {
-		idx.logError("<post-processing>", "Error batch-resolving PAS class IDs: %v", err)
-		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+	// Scope ветки источника: классы/методы/поля группируются по (product,
+	// branch) своего файла; имена классов резолвятся в scope группы.
+	classScopes := idx.loadEntityScopes(ctx, collector, "pas_classes", collectEntityIDs(pendingClasses, func(p *PendingClass) int64 { return p.ClassID }))
+	methodScopes := idx.loadEntityScopes(ctx, collector, "pas_methods", collectEntityIDs(pendingMethods, func(p *PendingMethod) int64 { return p.MethodID }))
+	fieldScopes := idx.loadEntityScopes(ctx, collector, "pas_fields", collectEntityIDs(pendingFields, func(p *PendingField) int64 { return p.FieldID }))
+	if classScopes == nil || methodScopes == nil || fieldScopes == nil {
 		return
 	}
 
-	// Batch-resolve DFM form IDs by class names.
-	dfmFormIDMap, err := idx.db.FindLatestDFMFormIDsByClassNames(ctx, classNames)
-	if err != nil {
-		idx.logError("<post-processing>", "Error batch-resolving DFM form IDs: %v", err)
-		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
-		return
-	}
+	// Batch-resolve PAS class IDs + DFM form IDs per scope.
+	classIDByScope, dfmFormIDByScope := idx.resolvePASClassTargets(ctx, collector,
+		pendingClasses, classScopes, pendingMethods, methodScopes, pendingFields, fieldScopes)
 
 	// Process pending classes: link to DFM forms (batch).
 	classDFMPairs := make([]store.PASUpdatePair, 0, len(pendingClasses))
 	for _, pending := range pendingClasses {
-		classKey := strings.ToLower(strings.TrimSpace(pending.ClassName))
-		dfmFormID := dfmFormIDMap[classKey]
+		scope := classScopes[pending.ClassID]
+		dfmFormID := dfmFormIDByScope[scope][strings.ToLower(strings.TrimSpace(pending.ClassName))]
 		if dfmFormID == 0 {
 			continue
 		}
@@ -127,8 +106,8 @@ func (idx *Indexer) postProcessPASPending(ctx context.Context, collector *statsC
 	// Process pending methods: link to classes (batch).
 	methodClassPairs := make([]store.PASUpdatePair, 0, len(pendingMethods))
 	for _, pending := range pendingMethods {
-		classKey := strings.ToLower(strings.TrimSpace(pending.ClassName))
-		classID := classIDMap[classKey]
+		scope := methodScopes[pending.MethodID]
+		classID := classIDByScope[scope][strings.ToLower(strings.TrimSpace(pending.ClassName))]
 		if classID == 0 {
 			idx.logError(pending.FilePath, "Warning: class %s not found for PAS method %s during post-processing", pending.ClassName, pending.MethodName)
 			continue
@@ -145,8 +124,8 @@ func (idx *Indexer) postProcessPASPending(ctx context.Context, collector *statsC
 	// Process pending fields: link to classes (batch).
 	fieldClassPairs := make([]store.PASUpdatePair, 0, len(pendingFields))
 	for _, pending := range pendingFields {
-		classKey := strings.ToLower(strings.TrimSpace(pending.ClassName))
-		classID := classIDMap[classKey]
+		scope := fieldScopes[pending.FieldID]
+		classID := classIDByScope[scope][strings.ToLower(strings.TrimSpace(pending.ClassName))]
 		if classID == 0 {
 			idx.logError(pending.FilePath, "Warning: class %s not found for PAS field %s during post-processing", pending.ClassName, pending.FieldName)
 			continue
@@ -201,4 +180,72 @@ func (idx *Indexer) postProcessPASPending(ctx context.Context, collector *statsC
 			}
 		}
 	}
+}
+
+// loadEntityScopes загружает scope файлов сущностей; при ошибке логирует и
+// возвращает nil.
+func (idx *Indexer) loadEntityScopes(ctx context.Context, collector *statsCollector, table string, ids []int64) map[int64]store.LookupScope {
+	scopes, err := idx.db.EntityFileScopes(ctx, table, ids)
+	if err != nil {
+		idx.logError("<post-processing>", "Error loading %s file scopes: %v", table, err)
+		collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+		return nil
+	}
+	return scopes
+}
+
+// resolvePASClassTargets резолвит id PAS-классов и DFM-форм по именам классов
+// отдельно для каждой scope-группы pending-элементов. Возвращает карты
+// scope → (lower(name) → id); nil при ошибке загрузки scopes.
+func (idx *Indexer) resolvePASClassTargets(
+	ctx context.Context, collector *statsCollector,
+	pendingClasses []*PendingClass, classScopes map[int64]store.LookupScope,
+	pendingMethods []*PendingMethod, methodScopes map[int64]store.LookupScope,
+	pendingFields []*PendingField, fieldScopes map[int64]store.LookupScope,
+) (map[store.LookupScope]map[string]int64, map[store.LookupScope]map[string]int64) {
+	// Собираем уникальные имена классов по каждой scope-группе.
+	namesByScope := make(map[store.LookupScope]map[string]struct{})
+	addNames := func(scope store.LookupScope, className string) {
+		key := strings.ToLower(strings.TrimSpace(className))
+		if key == "" {
+			return
+		}
+		if namesByScope[scope] == nil {
+			namesByScope[scope] = make(map[string]struct{})
+		}
+		namesByScope[scope][key] = struct{}{}
+	}
+	for _, p := range pendingClasses {
+		addNames(classScopes[p.ClassID], p.ClassName)
+	}
+	for _, p := range pendingMethods {
+		addNames(methodScopes[p.MethodID], p.ClassName)
+	}
+	for _, p := range pendingFields {
+		addNames(fieldScopes[p.FieldID], p.ClassName)
+	}
+
+	classIDByScope := make(map[store.LookupScope]map[string]int64, len(namesByScope))
+	dfmFormIDByScope := make(map[store.LookupScope]map[string]int64, len(namesByScope))
+	for scope, nameSet := range namesByScope {
+		names := make([]string, 0, len(nameSet))
+		for name := range nameSet {
+			names = append(names, name)
+		}
+		classIDMap, err := idx.db.FindLatestPASClassIDsByNames(ctx, names, scope)
+		if err != nil {
+			idx.logError("<post-processing>", "Error batch-resolving PAS class IDs (scope %+v): %v", scope, err)
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+			continue
+		}
+		dfmFormIDMap, err := idx.db.FindLatestDFMFormIDsByClassNames(ctx, names, scope)
+		if err != nil {
+			idx.logError("<post-processing>", "Error batch-resolving DFM form IDs (scope %+v): %v", scope, err)
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+			continue
+		}
+		classIDByScope[scope] = classIDMap
+		dfmFormIDByScope[scope] = dfmFormIDMap
+	}
+	return classIDByScope, dfmFormIDByScope
 }

@@ -180,8 +180,8 @@ func isReviewJSONMode(args []string) bool {
 var spinnerFrames = []string{"|", "/", "-", "\\"}
 
 type reviewProgress struct {
-	filePath string
-	mu       sync.Mutex
+	filePath  string
+	mu        sync.Mutex
 	completed int
 	total     int
 	stopCh    chan struct{}

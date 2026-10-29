@@ -278,48 +278,48 @@ func (w *Walker) WalkParallelCtx(ctx context.Context, workers int) (<-chan FileI
 					if !ok {
 						return
 					}
-				content, err := os.ReadFile(task.path)
-				if err != nil {
+					content, err := os.ReadFile(task.path)
+					if err != nil {
+						select {
+						case errorsChan <- fmt.Errorf("failed to read %s: %w", task.path, err):
+						case <-ctx.Done():
+							return
+						}
+						continue
+					}
+					hash := computeHashBytes(content)
+					encoding, language := getEncodingAndLanguage(task.ext)
+					encodingRefined := false
+					if task.ext == "md" {
+						// Markdown: кодировка определяется по содержимому (UTF-8 приоритет, CP1251 fallback)
+						encoding = string(encpkg.DetectMarkdownEncoding(content))
+					} else if isContentDetectedExt(task.ext) {
+						// Single-byte legacy-форматы: детекция по содержимому,
+						// карта расширений служит prior (ASCII → prior, tie → prior).
+						prior := encpkg.Encoding(encoding)
+						detected := encpkg.DetectFromBytesWithPrior(content, prior)
+						if detected != prior {
+							encoding = string(detected)
+							encodingRefined = true
+						}
+					}
 					select {
-					case errorsChan <- fmt.Errorf("failed to read %s: %w", task.path, err):
+					case filesChan <- FileInfo{
+						Path:            filepath.ToSlash(task.path),
+						RelPath:         task.relPath,
+						Extension:       task.ext,
+						Size:            task.info.Size(),
+						Hash:            hash,
+						ModifiedAt:      task.info.ModTime(),
+						Encoding:        encoding,
+						Language:        language,
+						IsGenerated:     isGeneratedFile(task.relPath, task.ext),
+						EncodingRefined: encodingRefined,
+						Content:         content,
+					}:
 					case <-ctx.Done():
 						return
 					}
-					continue
-				}
-				hash := computeHashBytes(content)
-				encoding, language := getEncodingAndLanguage(task.ext)
-				encodingRefined := false
-				if task.ext == "md" {
-					// Markdown: кодировка определяется по содержимому (UTF-8 приоритет, CP1251 fallback)
-					encoding = string(encpkg.DetectMarkdownEncoding(content))
-				} else if isContentDetectedExt(task.ext) {
-					// Single-byte legacy-форматы: детекция по содержимому,
-					// карта расширений служит prior (ASCII → prior, tie → prior).
-					prior := encpkg.Encoding(encoding)
-					detected := encpkg.DetectFromBytesWithPrior(content, prior)
-					if detected != prior {
-						encoding = string(detected)
-						encodingRefined = true
-					}
-				}
-				select {
-				case filesChan <- FileInfo{
-					Path:            filepath.ToSlash(task.path),
-					RelPath:         task.relPath,
-					Extension:       task.ext,
-					Size:            task.info.Size(),
-					Hash:            hash,
-					ModifiedAt:      task.info.ModTime(),
-					Encoding:        encoding,
-					Language:        language,
-					IsGenerated:     isGeneratedFile(task.relPath, task.ext),
-					EncodingRefined: encodingRefined,
-					Content:         content,
-				}:
-				case <-ctx.Done():
-					return
-				}
 				}
 			}
 		}()

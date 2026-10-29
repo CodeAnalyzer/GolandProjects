@@ -19,11 +19,11 @@ var (
 )
 
 type Parser struct {
-	objectRe       *regexp.Regexp
-	componentKVRe  *regexp.Regexp
-	quotedValueRe  *regexp.Regexp
-	functionStart  *regexp.Regexp
-	hugeBoxNameRe  *regexp.Regexp
+	objectRe      *regexp.Regexp
+	componentKVRe *regexp.Regexp
+	quotedValueRe *regexp.Regexp
+	functionStart *regexp.Regexp
+	hugeBoxNameRe *regexp.Regexp
 }
 
 type ParseResult struct {
@@ -62,7 +62,7 @@ func (p *Parser) ParseFile(path string) (*ParseResult, error) {
 func (p *Parser) ParseContent(content string, path string) (*ParseResult, error) {
 	lines := strings.Split(content, "\n")
 	result := &ParseResult{
-		Form: &model.ReportForm{ReportName: reportNameFromPath(path), ReportType: "rpt", LineStart: 1, LineEnd: len(lines)},
+		Form:      &model.ReportForm{ReportName: reportNameFromPath(path), ReportType: "rpt", LineStart: 1, LineEnd: len(lines)},
 		Params:    make([]*model.ReportParam, 0),
 		Functions: make([]*model.VBFunction, 0),
 		Fragments: make([]*model.QueryFragment, 0),

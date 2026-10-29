@@ -16,24 +16,25 @@ type SpecConfigProfileRow struct {
 
 // SpecConfigFullProfileRow — полный профиль spec_config для MCP-инструмента spec_config.
 type SpecConfigFullProfileRow struct {
-	ID             int64
-	ProductName    string
-	SchemaName     string
-	RootDir        string
-	UsecaseLayout  string
-	IDStyle        string
-	CrossRefStyle  string
-	NormativeLang  string
-	Traceability   string
-	HasChanges     bool
-	HasAudit       bool
+	ID              int64
+	ProductName     string
+	SchemaName      string
+	RootDir         string
+	UsecaseLayout   string
+	IDStyle         string
+	CrossRefStyle   string
+	NormativeLang   string
+	Traceability    string
+	HasChanges      bool
+	HasAudit        bool
 	HasADR          bool
 	CoverageMetrics bool
-	ContextText    string
+	ContextText     string
 }
 
 // LoadSpecConfigProfileByProduct загружает полный профиль spec_config по имени продукта.
-// Возвращает sql.ErrNoRows, если продукт не найден.
+// При нескольких конфигурациях продукта (релизные ветки со своими openspec/)
+// выбирается конфигурация default-ветки. Возвращает sql.ErrNoRows, если продукт не найден.
 func (db *DB) LoadSpecConfigProfileByProduct(ctx context.Context, product string) (*SpecConfigFullProfileRow, error) {
 	var r SpecConfigFullProfileRow
 	var rootDir, schemaName, contextText sql.NullString
@@ -54,8 +55,10 @@ func (db *DB) LoadSpecConfigProfileByProduct(ctx context.Context, product string
 		       sc.context_text
 		FROM spec_configs sc
 		JOIN ds_products dp ON dp.id = sc.ds_product_id
+		JOIN files f ON f.id = sc.file_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
 		WHERE dp.product_name = $1
-		ORDER BY sc.id DESC
+		ORDER BY (NOT f.is_generated) DESC, COALESCE(br.is_default, FALSE) DESC, sc.id DESC
 		LIMIT 1`, product).Scan(
 		&r.ID, &r.ProductName, &schemaName, &rootDir,
 		&r.UsecaseLayout, &r.IDStyle, &r.CrossRefStyle, &r.NormativeLang,
@@ -70,10 +73,50 @@ func (db *DB) LoadSpecConfigProfileByProduct(ctx context.Context, product string
 	return &r, nil
 }
 
+// SpecConfigBranchRow — spec-конфигурация продукта в списке конфигураций.
+type SpecConfigBranchRow struct {
+	ID        int64
+	RootDir   string
+	BranchKey string
+	IsDefault bool
+}
+
+// LoadSpecConfigsByProduct перечисляет все spec-конфигурации продукта
+// (включая конфигурации релизных линий) с пометкой default-ветки.
+func (db *DB) LoadSpecConfigsByProduct(ctx context.Context, product string) ([]SpecConfigBranchRow, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT sc.id,
+		       COALESCE(sc.root_dir, ''),
+		       COALESCE(br.branch_key, ''),
+		       COALESCE(br.is_default, FALSE)
+		FROM spec_configs sc
+		JOIN ds_products dp ON dp.id = sc.ds_product_id
+		JOIN files f ON f.id = sc.file_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+		WHERE dp.product_name = $1
+		ORDER BY COALESCE(br.is_default, FALSE) DESC, sc.id`, product)
+	if err != nil {
+		return nil, fmt.Errorf("load spec_configs by product: %w", err)
+	}
+	defer rows.Close()
+
+	var result []SpecConfigBranchRow
+	for rows.Next() {
+		var r SpecConfigBranchRow
+		var storedRootDir string
+		if err := rows.Scan(&r.ID, &storedRootDir, &r.BranchKey, &r.IsDefault); err != nil {
+			return nil, err
+		}
+		r.RootDir = strings.ReplaceAll(storedRootDir, `\`, "/")
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
 // SpecConfigStatsRow — счётчики сущностей продукта.
 type SpecConfigStatsRow struct {
 	Capabilities int
-	Requirements  int
+	Requirements int
 	Scenarios    int
 	Usecases     int
 	Changes      int
