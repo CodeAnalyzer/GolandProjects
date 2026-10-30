@@ -379,3 +379,46 @@ func TestDiscovery_RemovedDirCleansBranch(t *testing.T) {
 		t.Fatalf("after removal: %+v, want only develop", branches)
 	}
 }
+
+// TestDiscovery_DefaultMarkIndependentOfDirOrder — маркировка default-ветки
+// не зависит от порядка каталогов продукта: клиентский каталог
+// (fa-contracts-ext-check-save-pti) в побайтовом порядке ReadDir идёт раньше
+// develop-каталога (fa-contracts-ext-develop). До фикса метка ставилась при
+// обработке первого каталога продукта и либо не находила строку develop
+// (первый скан), либо затиралась её собственным upsert-ом
+// (ON CONFLICT (path) сбрасывает is_default). Два прогона: первый скан на
+// пустой БД и установившийся — в обоих develop помечен is_default.
+func TestDiscovery_DefaultMarkIndependentOfDirOrder(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git is not in PATH")
+	}
+	ctx := context.Background()
+	root := t.TempDir()
+	seedGitSource(t, root, "fa-contracts-ext-check-save-pti", "fa-contracts-ext", "prj/CHECK_SAVE_PTI", "CREATE PROCEDURE PtiProc AS RETURN 0\n")
+	seedGitSource(t, root, "fa-contracts-ext-develop", "fa-contracts-ext", "develop", "CREATE PROCEDURE DevelopProc AS RETURN 1\n")
+
+	idx := newDiscoveryIndexer(t, root, []string{"*.sql"})
+	checkDefault := func(stage string) {
+		t.Helper()
+		branches := productBranchRows(t, idx, "fa-contracts-ext")
+		if len(branches) != 2 {
+			t.Fatalf("%s: fa-contracts-ext branches = %d rows (%+v), want 2", stage, len(branches), branches)
+		}
+		for _, b := range branches {
+			want := b.branchKey == "develop"
+			if b.isDefault != want {
+				t.Fatalf("%s: line %s is_default = %v, want %v", stage, b.branchKey, b.isDefault, want)
+			}
+		}
+	}
+
+	if _, err := idx.UpdateCtx(ctx, root, true, 1); err != nil {
+		t.Fatalf("update #1 (first scan): %v", err)
+	}
+	checkDefault("first scan")
+
+	if _, err := idx.UpdateCtx(ctx, root, true, 1); err != nil {
+		t.Fatalf("update #2 (steady state): %v", err)
+	}
+	checkDefault("steady state")
+}

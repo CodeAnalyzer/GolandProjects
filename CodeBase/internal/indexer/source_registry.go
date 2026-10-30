@@ -118,7 +118,7 @@ func (idx *Indexer) discoverGitSources(ctx context.Context, rootPath string, det
 	}
 
 	bindings := make([]sourceEntry, 0, len(entries))
-	markedProducts := make(map[int64]struct{})
+	discoveredProducts := make(map[int64]struct{})
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -148,12 +148,7 @@ func (idx *Indexer) discoverGitSources(ctx context.Context, rootPath string, det
 			idx.logError(dir, "Source discovery branch upsert: %v", err)
 			continue
 		}
-		if _, done := markedProducts[productID]; !done {
-			if err := idx.db.SetDefaultBranch(ctx, productID, defaultBranch); err != nil {
-				idx.logError(dir, "Source discovery default mark: %v", err)
-			}
-			markedProducts[productID] = struct{}{}
-		}
+		discoveredProducts[productID] = struct{}{}
 		bindings = append(bindings, sourceEntry{
 			// Нормализация как в walker (filepath.ToSlash): пути файлов и
 			// префиксы источников в одной нотации.
@@ -164,6 +159,17 @@ func (idx *Indexer) discoverGitSources(ctx context.Context, rootPath string, det
 			},
 			ProductName: src.Product,
 		})
+	}
+
+	// Маркировка default-ветки — после upsertов всех линий продуктов:
+	// UpsertDSProductBranch на path-конфликте сбрасывает is_default, поэтому
+	// метка, поставленная до upsertа строки default-ветки, была бы затёрта
+	// (develop-чекаут не обязан сортироваться первым среди каталогов
+	// продукта, побайтовый порядок: ...-ZAPK < ...-check-save-pti < ...-develop).
+	for productID := range discoveredProducts {
+		if err := idx.db.SetDefaultBranch(ctx, productID, defaultBranch); err != nil {
+			idx.logError(rootPath, "Source discovery default mark: %v", err)
+		}
 	}
 
 	idx.shared.sourceRegistry.set(bindings)
