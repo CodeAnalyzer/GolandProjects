@@ -73,11 +73,13 @@ type statsEntitiesSummary struct {
 }
 
 type statsLastScanSummary struct {
-	RunID    int64  `json:"run_id"`
-	Started  string `json:"started,omitempty"`
-	Finished string `json:"finished,omitempty"`
-	Status   string `json:"status,omitempty"`
-	Errors   int    `json:"errors"`
+	RunID           int64  `json:"run_id"`
+	Started         string `json:"started,omitempty"`
+	Finished        string `json:"finished,omitempty"`
+	Status          string `json:"status,omitempty"`
+	Errors          int    `json:"errors"`
+	EncodingRefined int    `json:"encoding_refined,omitempty"`
+	XMLSkipped      int    `json:"xml_skipped,omitempty"`
 }
 
 type statsResponse struct {
@@ -201,6 +203,8 @@ var statsCmd = &cobra.Command{
 		fmt.Printf("  Started:         %s\n", stats.LastScanStarted)
 		fmt.Printf("  Finished:        %s\n", stats.LastScanFinished)
 		fmt.Printf("  Status:          %s\n", stats.LastScanStatus)
+		fmt.Printf("  Encoding refined: %d\n", stats.LastScanEncodingRefined)
+		fmt.Printf("  XML skipped:     %d\n", stats.LastScanXMLSkipped)
 
 		return nil
 	},
@@ -287,9 +291,11 @@ func buildStatsResponse(stats *store.Stats) statsResponse {
 			DescLSAGenerations: stats.DescLSAGenerations,
 		},
 		LastScan: statsLastScanSummary{
-			RunID:  stats.LastScanID,
-			Status: stats.LastScanStatus,
-			Errors: stats.Errors,
+			RunID:           stats.LastScanID,
+			Status:          stats.LastScanStatus,
+			Errors:          stats.Errors,
+			EncodingRefined: stats.LastScanEncodingRefined,
+			XMLSkipped:      stats.LastScanXMLSkipped,
 		},
 	}
 	if !stats.LastScanStarted.IsZero() {

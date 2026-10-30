@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Table>
+	<ParamName>pAPI_DFA_BfrMassDelPmnt</ParamName>
+	<TypeName/>
+	<WsParamName>DigitalFinancialAssetMassInsertPaymentList</WsParamName>
+	<RusName>Список удаляемых выплат и их параметров по цифровым финансовым активам</RusName>
+	<Description>Список удаляемых  выплат и их параметров по цифровым финансовым активам</Description>
+	<HaveSemaphoreTbl>0</HaveSemaphoreTbl>
+	<Fields>
+		<Field>
+			<ParamOrder>1</ParamOrder>
+			<ParamName>PaymentID</ParamName>
+			<TypeName>DSIDENTIFIER</TypeName>
+			<WsParamName/>
+			<RusName>Идентификатор выплаты</RusName>
+			<Description>Идентификатор выплаты</Description>
+			<IsIdentity>0</IsIdentity>
+			<Prec>0</Prec>
+			<Scale>0</Scale>
+		</Field>
+		<Field>
+			<ParamOrder>2</ParamOrder>
+			<ParamName>DigitalFinancialAssetID</ParamName>
+			<TypeName>DSIDENTIFIER</TypeName>
+			<WsParamName/>
+			<RusName>Идентификатор цифрового финансового актива</RusName>
+			<Description>Идентификатор цифрового финансового актива, к которому относится выплата.</Description>
+			<IsIdentity>0</IsIdentity>
+			<Prec>0</Prec>
+			<Scale>0</Scale>
+		</Field>
+	</Fields>
+	<Indexses>
+		<Index>
+			<IndexName>XPKpAPI_DFA_BfrMassDelPmnt</IndexName>
+			<IndexFields>SPID, PaymentID</IndexFields>
+			<IndexType>3</IndexType>
+			<IsClustered>0</IsClustered>
+			<FieldList>
+				<Field>
+					<FieldName>SPID</FieldName>
+				</Field>
+				<Field>
+					<FieldName>PaymentID</FieldName>
+				</Field>
+			</FieldList>
+	<Indexses>
+		<Index>
+			<IndexName>XPKpAPI_DFA_BfrMassDelPmnt</IndexName>
+			<IndexFields>SPID, PaymentID</IndexFields>
+			<IndexType>3</IndexType>
+			<IsClustered>0</IsClustered>
+			<FieldList>
+				<Field>
+					<FieldName>SPID</FieldName>
+				</Field>
+				<Field>
+					<FieldName>PaymentID</FieldName>
+				</Field>
+			</FieldList>
+		</Index>
+	</Indexses>
+</Table>

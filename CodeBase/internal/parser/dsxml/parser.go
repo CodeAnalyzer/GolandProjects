@@ -35,6 +35,19 @@ type ParseResult struct {
 	InternalPTableColumns     []*model.SQLColumnDefinition
 	InternalPTableIndexes     []*model.SQLIndexDefinition
 	InternalPTableIndexFields []*model.SQLIndexDefinitionField
+	// Skipped — файл корректно пропущен (graceful-skip): корневой элемент не
+	// соответствует ожиданию path-ветки (message/fasdocument, неизвестный
+	// корень, известный корень вне своей ветки). Не ошибка: файл
+	// индексируется без DSArchitect-сущностей; индексер считает такие файлы
+	// отдельным счётчиком ScanStats.XMLSkipped.
+	Skipped bool
+	// Recovered — файл содержал некорректную вложенность (ошибка
+	// «element closed by»): парсер автозакрыл незакрытые элементы до
+	// совпадающего закрывающего тега и разобрал исправленный контент.
+	// Не ошибка: файл индексируется; индексер пишет предупреждение в лог.
+	Recovered    bool
+	SkipReason   string
+	RecoveryNote string
 }
 
 type objectXML struct {
@@ -141,6 +154,54 @@ type standaloneIndexFieldXML struct {
 	FieldName string `xml:"FieldName"`
 }
 
+// flexBool — булев признак в смешанной записи InfoPath event-формата:
+// строковой (true/false, у table) и числовой (1/0, у field).
+type flexBool bool
+
+func (f *flexBool) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var s string
+	if err := d.DecodeElement(&s, &start); err != nil {
+		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "1", "t":
+		*f = true
+	default:
+		*f = false
+	}
+	return nil
+}
+
+// eventXML — контракт-событие в InfoPath-формате (корень <event>, kebab-теги;
+// fa-ratings). retvals/contexts/return-resultset/output-params/module-depend —
+// секции без сущностей (в api_contracts нет соответствующих колонок) —
+// не парсятся.
+type eventXML struct {
+	XMLName           xml.Name        `xml:"event"`
+	Name              string          `xml:"name"`
+	ShortDescription  string          `xml:"descr-short"`
+	FullDescription   string          `xml:"description"`
+	Implemented       flexBool        `xml:"implemented"`
+	ArchitectApproval string          `xml:"architect-approval"`
+	InputTables       []eventTableXML `xml:"input-tables>table"`
+	OutputTables      []eventTableXML `xml:"output-tables>table"`
+}
+
+type eventTableXML struct {
+	Name        string          `xml:"name"`
+	Description string          `xml:"description"`
+	Required    flexBool        `xml:"required"`
+	Fields      []eventFieldXML `xml:"fields>field"`
+}
+
+type eventFieldXML struct {
+	Name        string   `xml:"name"`
+	NameRus     string   `xml:"name-rus"`
+	TypeName    string   `xml:"type"`
+	Description string   `xml:"description"`
+	Required    flexBool `xml:"required"`
+}
+
 func NewParser() *Parser { return &Parser{} }
 
 func xmlCharsetReader(charset string, input io.Reader) (io.Reader, error) {
@@ -148,6 +209,11 @@ func xmlCharsetReader(charset string, input io.Reader) (io.Reader, error) {
 	case "windows-1251", "cp1251", "windows1251":
 		return transform.NewReader(input, charmap.Windows1251.NewDecoder()), nil
 	case "utf-8", "utf8", "":
+		return input, nil
+	case "utf-16", "utf-16le", "utf-16be", "ucs-2", "cp866", "ibm866":
+		// Контент уже предекодирован в UTF-8 на шаге DetectXMLEncoding
+		// (декларация в тексте файла остаётся прежней, и декодер обращается
+		// к CharsetReader) — pass-through без повторного транскодирования.
 		return input, nil
 	default:
 		return nil, fmt.Errorf("unsupported xml charset: %s", charset)
@@ -216,18 +282,54 @@ func (p *Parser) ParseContent(path string, content string) (*ParseResult, error)
 	}
 	rootName, err := xmlRootName(content)
 	if err != nil {
-		return nil, err
+		// Синтаксическая ошибка XML остаётся ошибкой файла — не skip.
+		// Единственное исключение — recovery (группа E): некорректная
+		// вложенность «element closed by» лечится автозакрытием открытых
+		// элементов до совпадающего закрывающего тега; если исправленный
+		// контент всё равно не разбирается — наружу уходит исходная ошибка.
+		if fixed, fixes, ok := recoverUnclosedElements(content); ok {
+			if fixedRoot, fixedErr := xmlRootName(fixed); fixedErr == nil {
+				content = fixed
+				rootName = fixedRoot
+				res.Recovered = true
+				res.RecoveryNote = fmt.Sprintf("auto-closed %d unclosed element(s) before matching close tag", fixes)
+			} else {
+				return nil, err
+			}
+		} else {
+			return nil, err
+		}
 	}
-	if rootName == "message" {
-		return res, nil
-	}
-	if rootName == "fasdocument" {
+	if rootName == "message" || rootName == "fasdocument" {
+		res.Skipped = true
+		res.SkipReason = fmt.Sprintf("unsupported root element <%s>", rootName)
 		return res, nil
 	}
 	cleanPath := filepath.ToSlash(path)
 	kind, businessObject := classifyPath(cleanPath)
+	isTablePath := strings.Contains(cleanPath, "/BObject/") && strings.Contains(cleanPath, "/Table/")
+	isParamPath := strings.Contains(cleanPath, "/BObject/") && strings.Contains(cleanPath, "/Param/")
+	// Graceful-skip: корень должен соответствовать ожиданию выбранной по
+	// пути ветки разбора (default: object/event/message/fasdocument;
+	// /Table/: table; /Param/: param). Несоответствие или неизвестный
+	// корень — пустой результат без ошибки (дрейф формата не роняет прогон).
+	if isTablePath && rootName != "table" {
+		res.Skipped = true
+		res.SkipReason = fmt.Sprintf("root element <%s> does not match /Table/ path branch", rootName)
+		return res, nil
+	}
+	if isParamPath && rootName != "param" {
+		res.Skipped = true
+		res.SkipReason = fmt.Sprintf("root element <%s> does not match /Param/ path branch", rootName)
+		return res, nil
+	}
+	if !isTablePath && !isParamPath && rootName != "object" && rootName != "event" {
+		res.Skipped = true
+		res.SkipReason = fmt.Sprintf("unknown root element <%s>", rootName)
+		return res, nil
+	}
 	switch {
-	case strings.Contains(cleanPath, "/BObject/") && strings.Contains(cleanPath, "/Table/"):
+	case isTablePath:
 		var table standaloneTableXML
 		if err := unmarshalXML(content, &table); err != nil {
 			return nil, fmt.Errorf("failed to parse standalone table xml: %w", err)
@@ -338,7 +440,7 @@ func (p *Parser) ParseContent(path string, content string) (*ParseResult, error)
 			}
 		}
 		return res, nil
-	case strings.Contains(cleanPath, "/BObject/") && strings.Contains(cleanPath, "/Param/"):
+	case isParamPath:
 		var param standaloneParamXML
 		if err := unmarshalXML(content, &param); err != nil {
 			return nil, fmt.Errorf("failed to parse standalone param xml: %w", err)
@@ -356,6 +458,58 @@ func (p *Parser) ParseContent(path string, content string) (*ParseResult, error)
 		res.Symbols = append(res.Symbols, &model.Symbol{SymbolName: strings.TrimSpace(param.ParamName), SymbolType: "api_param", EntityType: "xml", LineNumber: 1, Signature: strings.TrimSpace(param.ParamName)})
 		return res, nil
 	default:
+		if rootName == "event" {
+			var ev eventXML
+			if err := unmarshalXML(content, &ev); err != nil {
+				return nil, fmt.Errorf("failed to parse event xml: %w", err)
+			}
+			contract := &model.APIContract{
+				BusinessObject:   businessObject,
+				ContractName:     strings.TrimSpace(ev.Name),
+				ContractKind:     kind,
+				Implemented:      bool(ev.Implemented),
+				OwnerModule:      ownerModuleFromPath(cleanPath),
+				ShortDescription: strings.TrimSpace(ev.ShortDescription),
+				FullDescription:  strings.TrimSpace(ev.FullDescription),
+				LineStart:        1,
+				LineEnd:          1,
+			}
+			// architect-approval="OK" → числовой флаг objectXML (1).
+			if strings.EqualFold(strings.TrimSpace(ev.ArchitectApproval), "OK") {
+				contract.ArchApproval = 1
+			}
+			res.Contracts = append(res.Contracts, contract)
+			res.Symbols = append(res.Symbols, &model.Symbol{SymbolName: contract.ContractName, SymbolType: kind, EntityType: "xml", LineNumber: 1, Signature: contract.ContractName})
+			appendEventTables := func(direction string, items []eventTableXML) {
+				for order, item := range items {
+					tableName := strings.TrimSpace(item.Name)
+					res.Tables = append(res.Tables, &model.APIContractTable{
+						Direction:   direction,
+						TableName:   tableName,
+						Required:    bool(item.Required),
+						Description: strings.TrimSpace(item.Description),
+						ParamOrder:  order + 1,
+						LineNumber:  1,
+					})
+					for fieldOrder, field := range item.Fields {
+						res.TableFields = append(res.TableFields, &model.APIContractTableField{
+							ParentTableName: tableName,
+							ParentDirection: direction,
+							FieldName:       strings.TrimSpace(field.Name),
+							TypeName:        strings.TrimSpace(field.TypeName),
+							Required:        bool(field.Required),
+							RusName:         strings.TrimSpace(field.NameRus),
+							Description:     strings.TrimSpace(field.Description),
+							ParamOrder:      fieldOrder + 1,
+							LineNumber:      1,
+						})
+					}
+				}
+			}
+			appendEventTables("input", ev.InputTables)
+			appendEventTables("output", ev.OutputTables)
+			return res, nil
+		}
 		var obj objectXML
 		if err := unmarshalXML(content, &obj); err != nil {
 			return nil, fmt.Errorf("failed to parse object xml: %w", err)

@@ -84,6 +84,8 @@ type Stats struct {
 	LastScanStarted    time.Time
 	LastScanFinished   time.Time
 	LastScanStatus     string
+	LastScanEncodingRefined int // метрика последнего прогона (scan_runs.encoding_refined)
+	LastScanXMLSkipped      int // метрика последнего прогона (scan_runs.xml_skipped)
 }
 
 // dsnValueEscaper экранирует спецсимволы внутри закавыченного DSN-значения.

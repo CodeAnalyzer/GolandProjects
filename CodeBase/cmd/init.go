@@ -130,6 +130,7 @@ Arguments:
 		fmt.Printf("\nStats:\n")
 		fmt.Printf("  Files scanned:  %d\n", stats.FilesScanned)
 		fmt.Printf("  Encoding refined: %d\n", stats.EncodingRefined)
+		fmt.Printf("  XML skipped:    %d\n", stats.XMLSkipped)
 		fmt.Printf("  Files indexed:  %d\n", stats.FilesIndexed)
 		fmt.Printf("  SQL files:      %d\n", stats.SQLFiles)
 		fmt.Printf("  PAS files:      %d\n", stats.PASFiles)

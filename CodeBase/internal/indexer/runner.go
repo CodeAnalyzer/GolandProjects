@@ -145,7 +145,7 @@ errorLoopInit:
 		defer cancel()
 		status = "canceled"
 	}
-	if err := idx.db.UpdateScanRun(finalizeCtx, scanRunID, stats.FilesScanned, stats.FilesIndexed, stats.Errors, status); err != nil {
+	if err := idx.db.UpdateScanRun(finalizeCtx, scanRunID, stats.FilesScanned, stats.FilesIndexed, stats.Errors, stats.EncodingRefined, stats.XMLSkipped, status); err != nil {
 		return nil, fmt.Errorf("failed to finalize scan run: %w", err)
 	}
 	if ctx.Err() != nil {
@@ -349,7 +349,7 @@ errorLoopUpdate:
 		defer cancel()
 		status = "canceled"
 	}
-	if err := idx.db.UpdateScanRun(finalizeCtx, scanRunID, stats.FilesScanned, stats.FilesIndexed, stats.Errors, status); err != nil {
+	if err := idx.db.UpdateScanRun(finalizeCtx, scanRunID, stats.FilesScanned, stats.FilesIndexed, stats.Errors, stats.EncodingRefined, stats.XMLSkipped, status); err != nil {
 		return nil, fmt.Errorf("failed to finalize scan run: %w", err)
 	}
 	if ctx.Err() != nil {

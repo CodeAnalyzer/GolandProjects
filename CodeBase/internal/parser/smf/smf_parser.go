@@ -265,11 +265,24 @@ func (p *Parser) ParseBytes(data []byte, path string) (*ParseResult, error) {
 	var err error
 	decoded := false
 
-	for _, enc := range encodings {
-		content, err = codeencoding.DecodeBytes(data, enc)
-		if err == nil && p.isValidEncoding(content) {
+	// UTF-16 (BOM/NUL) и UTF-8 BOM — пре-детект первой попыткой, до перебора
+	// однобайтовых кодировок: walk-воркер контент SMF не декодирует, а
+	// UTF-16-байты (≤0x7F с NUL) невидимы для валидаторов ниже.
+	if enc, ok := codeencoding.DetectBOMOrUTF16(data); ok {
+		if c, derr := codeencoding.DecodeBytes(data, enc); derr == nil {
+			content = c
+			err = nil
 			decoded = true
-			break
+		}
+	}
+
+	if !decoded {
+		for _, enc := range encodings {
+			content, err = codeencoding.DecodeBytes(data, enc)
+			if err == nil && p.isValidEncoding(content) {
+				decoded = true
+				break
+			}
 		}
 	}
 

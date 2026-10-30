@@ -10,7 +10,7 @@ import (
 // КОНТРАКТ: любое изменение DDL-списка InitSchemaCtx (колонки, индексы,
 // ограничения, миграции) требует bump этой версии — иначе fast-path
 // пропустит проход и новое DDL молча не применится на существующих БД.
-const CurrentSchemaVersion = "codebase_schema_v3"
+const CurrentSchemaVersion = "codebase_schema_v4"
 
 const schemaInitLockKey = "codebase/schema-init"
 
@@ -35,8 +35,16 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			status TEXT NOT NULL,
 			files_scanned INTEGER NOT NULL DEFAULT 0,
 			files_indexed INTEGER NOT NULL DEFAULT 0,
-			errors_count INTEGER NOT NULL DEFAULT 0
+			errors_count INTEGER NOT NULL DEFAULT 0,
+			encoding_refined INTEGER NOT NULL DEFAULT 0,
+			xml_skipped INTEGER NOT NULL DEFAULT 0
 		)`,
+		// scan_runs-метрики прогонa (v4): кодировка уточнена детекцией по
+		// содержимому / XML-файлы с graceful-skip. ADD COLUMN IF NOT EXISTS —
+		// идемпотентный апгрейд существующих БД (CREATE TABLE выше новые
+		// таблицы не трогает).
+		`ALTER TABLE scan_runs ADD COLUMN IF NOT EXISTS encoding_refined INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE scan_runs ADD COLUMN IF NOT EXISTS xml_skipped INTEGER NOT NULL DEFAULT 0`,
 		`CREATE TABLE IF NOT EXISTS stats_snapshot (
 			id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
 			payload JSONB NOT NULL,

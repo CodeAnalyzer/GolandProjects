@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/transform"
 )
 
@@ -19,7 +20,79 @@ const (
 	CP866   Encoding = "CP866"
 	WIN1251 Encoding = "WIN1251"
 	UTF8    Encoding = "UTF8"
+	UTF16LE Encoding = "UTF16LE"
+	UTF16BE Encoding = "UTF16BE"
 )
+
+// Параметры NUL-эвристики UTF-16 без BOM: окно сканирования и пороги.
+// NUL в UTF-16 порождают только ASCII-сегменты (латиница/пробелы/переводы
+// строк): в LE младший байт 0x00 лежит на нечётных смещениях, в BE — на
+// чётных. Кириллица U+04xx имеет второй байт 0x04 (не NUL), поэтому чисто
+// кириллический UTF-16 без BOM порог может не пройти — ограничение эвристики.
+const (
+	utf16NULWindow       = 4096 // сколько первых байтов сканировать
+	utf16NULDensityPct   = 30   // минимальная доля NUL в окне, %
+	utf16NULParityPct    = 90   // минимальная доля NUL на позициях одной чётности, %
+)
+
+// DetectBOMOrUTF16 — единый BOM/NUL-детект UTF-16 (и UTF-8 BOM), применяемый
+// раньше всех однобайтовых эвристик: UTF-16LE-файл с кириллицей состоит из
+// байтов ≤ 0x7F, поэтому эвристики CP866/CP1251/UTF-8 и utf8.Valid его увидеть
+// не могут. Возвращает (кодировка, true), если файл распознан как UTF-16 или
+// UTF-8 с BOM; иначе ("", false) — детекция продолжается прежними правилами.
+//
+//	BOM FF FE → UTF16LE; BOM FE FF → UTF16BE; BOM EF BB BF → UTF8
+//	без BOM   → NUL-плотность ≥30% в первых 4096 байтах при ≥90% NUL
+//	           на одной чётности (нечётные смещения → LE, чётные → BE)
+func DetectBOMOrUTF16(data []byte) (Encoding, bool) {
+	if len(data) >= 2 {
+		if data[0] == 0xFF && data[1] == 0xFE {
+			return UTF16LE, true
+		}
+		if data[0] == 0xFE && data[1] == 0xFF {
+			return UTF16BE, true
+		}
+	}
+	if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
+		return UTF8, true
+	}
+	return detectUTF16ByNUL(data)
+}
+
+// detectUTF16ByNUL распознаёт UTF-16 без BOM по плотности и чётности NUL-байтов
+// в префиксе буфера (см. константы utf16NUL*).
+func detectUTF16ByNUL(data []byte) (Encoding, bool) {
+	window := data
+	if len(window) > utf16NULWindow {
+		window = window[:utf16NULWindow]
+	}
+	if len(window) < 4 {
+		return "", false
+	}
+	total, odd, even := 0, 0, 0
+	for i, b := range window {
+		if b == 0 {
+			total++
+			if i%2 == 1 {
+				odd++
+			} else {
+				even++
+			}
+		}
+	}
+	if total == 0 || total*100/len(window) < utf16NULDensityPct {
+		return "", false
+	}
+	// ≥90% NUL на одной чётности: в LE NUL — младший байт ASCII-пары
+	// (нечётные смещения), в BE — старший (чётные).
+	if odd*100 >= total*utf16NULParityPct {
+		return UTF16LE, true
+	}
+	if even*100 >= total*utf16NULParityPct {
+		return UTF16BE, true
+	}
+	return "", false
+}
 
 // DetectEncoding определяет кодировку файла по расширению
 func DetectEncoding(ext string) Encoding {
@@ -33,29 +106,18 @@ func DetectEncoding(ext string) Encoding {
 	}
 }
 
-// ReadFile читает файл с правильной кодировкой и возвращает UTF-8 строку
+// ReadFile читает файл с правильной кодировкой и возвращает UTF-8 строку.
+// BOM/NUL-детект UTF-16 перекрывает переданный prior: standalone-точки входа
+// (ParseFile парсеров, review) получают те же гарантии, что и walk-воркер.
 func ReadFile(path string, encoding Encoding) (string, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
-
-	var reader io.Reader = f
-
-	switch encoding {
-	case CP866:
-		reader = transform.NewReader(f, charmap.CodePage866.NewDecoder())
-	case WIN1251:
-		reader = transform.NewReader(f, charmap.Windows1251.NewDecoder())
+	if detected, ok := DetectBOMOrUTF16(data); ok {
+		encoding = detected
 	}
-
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return "", err
-	}
-
-	return string(data), nil
+	return DecodeBytes(data, encoding)
 }
 
 // ReadFileBytes читает файл и возвращает сырые байты
@@ -70,6 +132,11 @@ func GetDecoder(encoding Encoding) transform.Transformer {
 		return charmap.CodePage866.NewDecoder()
 	case WIN1251:
 		return charmap.Windows1251.NewDecoder()
+	case UTF16LE:
+		// UseBOM: при наличии BOM он используется и удаляется, иначе — LE.
+		return unicode.UTF16(unicode.LittleEndian, unicode.UseBOM).NewDecoder()
+	case UTF16BE:
+		return unicode.UTF16(unicode.BigEndian, unicode.UseBOM).NewDecoder()
 	default:
 		return nil
 	}
@@ -99,14 +166,25 @@ func ConvertToUTF8(input string, fromEncoding Encoding) (string, error) {
 }
 
 // xmlEncodingRegexp ищет encoding в XML declaration: <?xml version="1.0" encoding="windows-1251"?>
-var xmlEncodingRegexp = regexp.MustCompile(`<?xml[^>]*encoding=["']([^"']+)["'][^>]*?>`)
+var xmlEncodingRegexp = regexp.MustCompile(`<\?xml[^>]*encoding=["']([^"']+)["'][^>]*\?>`)
 
-// DetectXMLEncoding определяет кодировку XML по declaration или содержимому
-// 1. Ищет encoding в XML declaration
-// 2. Если declaration нет или encoding не указан:
+// DetectXMLEncoding определяет кодировку XML по declaration или содержимому:
+//  0. BOM/NUL-детект UTF-16 (BOM FF FE/FE FF; UTF-16 без BOM иначе выглядит как
+//     валидный UTF-8 из-за NUL) и UTF-8 BOM — раньше разбора declaration
+//     (декларация в UTF-16-файле не читается как ASCII).
+//  1. Ищет encoding в XML declaration (первые 200 байт); при заявленном
+//     utf-8 декларация проверяется на достоверность через utf8.Valid —
+//     ложная декларация не доверяется, кодировка определяется эвристикой
+//     по маркерным диапазонам (fallback WIN1251 для CP1251-подобного).
+//  2. Если declaration нет или encoding не указан:
 //   - Проверяет валидность UTF-8
 //   - Если невалидно -> предполагает WIN1251 (Diasoft heuristic)
 func DetectXMLEncoding(data []byte) Encoding {
+	// Шаг 0: UTF-16 (BOM или NUL-эвристика) и UTF-8 BOM.
+	if enc, ok := DetectBOMOrUTF16(data); ok {
+		return enc
+	}
+
 	// Ищем XML declaration в начале файла (первые 200 байт достаточно)
 	prefix := data
 	if len(prefix) > 200 {
@@ -120,7 +198,13 @@ func DetectXMLEncoding(data []byte) Encoding {
 		case "windows-1251", "cp1251", "windows1251":
 			return WIN1251
 		case "utf-8", "utf8":
-			return UTF8
+			// Декларации не верим вслепую: файл с CP1251-байтами и
+			// декларацией UTF-8 (фикстура API_GSOD_MassCreate) должен
+			// декодироваться по фактическому содержимому.
+			if utf8.Valid(data) {
+				return UTF8
+			}
+			return DetectFromBytesWithPrior(data, WIN1251)
 		case "cp866", "ibm866":
 			return CP866
 		}
@@ -148,6 +232,9 @@ func DetectFromBytes(data []byte) Encoding {
 // расширений (см. fswalk.getEncodingAndLanguage).
 //
 // Алгоритм:
+//  0. BOM/NUL-детект UTF-16 (требование «Детекция UTF-16 по BOM и
+//     NUL-плотности»): UTF-16-байты невидимы для однобайтовых эвристик,
+//     а NUL не должен доходить до декодера формата.
 //  1. Нет байт > 0x7F → prior (ASCII, декод — identity).
 //  2. Валидный UTF-8 → UTF-8.
 //  3. «Почти UTF-8»: ≥80% высоких байт входят в валидные многобайтные UTF-8
@@ -165,6 +252,11 @@ func DetectFromBytes(data []byte) Encoding {
 //     при CP866-декоде дают руны U+2500–U+259F и украинские буквы, которые
 //     не встречаются в легитимном русском тексте.
 func DetectFromBytesWithPrior(data []byte, prior Encoding) Encoding {
+	// Шаг 0: UTF-16 по BOM/NUL-эвристике — раньше ASCII fast-path.
+	if enc, ok := DetectBOMOrUTF16(data); ok {
+		return enc
+	}
+
 	hasHigh := false
 	for _, b := range data {
 		if b > 0x7F {
@@ -241,7 +333,12 @@ func scanUTF8AndScore(data []byte) (validHigh, invalidHigh, cp866Score, cp1251Sc
 // Openspec-артефакты финпродуктов хранятся в UTF-8 (с BOM и без), но в дереве
 // встречаются legacy-файлы в CP1251. Приоритет UTF-8: валидный UTF-8 (BOM —
 // валидная UTF-8 последовательность) → UTF8; иначе — CP1251 fallback.
+// UTF-16 (BOM или NUL-эвристика) распознаётся раньше — NUL не должен доходить
+// до декодера, а UTF-16-байты невидимы для utf8.Valid.
 func DetectMarkdownEncoding(data []byte) Encoding {
+	if enc, ok := DetectBOMOrUTF16(data); ok {
+		return enc
+	}
 	if utf8.Valid(data) {
 		return UTF8
 	}
@@ -313,7 +410,19 @@ func hasCyrillicText(input string) bool {
 // DecodeBytes декодирует байты из указанной кодировки в UTF-8 строку
 func DecodeBytes(data []byte, encoding Encoding) (string, error) {
 	if encoding == UTF8 {
+		// Ведущий BOM EF BB BF удаляется: U+FEFF не должен попадать в контент.
+		if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
+			data = data[3:]
+		}
 		return string(data), nil
+	}
+
+	if encoding == UTF16LE || encoding == UTF16BE {
+		result, err := io.ReadAll(transform.NewReader(bytes.NewReader(data), GetDecoder(encoding)))
+		if err != nil {
+			return "", err
+		}
+		return string(result), nil
 	}
 
 	decoder := GetDecoder(encoding)

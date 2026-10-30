@@ -1,6 +1,7 @@
 package fswalk
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -654,6 +655,122 @@ func TestIsContentDetectedExt(t *testing.T) {
 		if isContentDetectedExt(ext) {
 			t.Fatalf("isContentDetectedExt(%q) = true, want false", ext)
 		}
+	}
+}
+
+// encodeTestUTF16LE кодирует строку в UTF-16LE с BOM FF FE.
+func encodeTestUTF16LE(t *testing.T, s string) []byte {
+	t.Helper()
+	out := []byte{0xFF, 0xFE}
+	src := []byte(s)
+	for _, r := range src {
+		if r < 0x80 {
+			out = append(out, byte(r), 0)
+		} else {
+			t.Fatalf("test helper supports ASCII only, got rune %q", r)
+		}
+	}
+	return out
+}
+
+func TestWalkParallelUTF16Detection(t *testing.T) {
+	root := t.TempDir()
+
+	// UTF-16LE .sql с BOM (pgonline-тест TC01 в миниатюре): ASCII-структура
+	// SQL даёт NUL на нечётных смещениях; кириллицу даёт детект BOM.
+	src := "create procedure pTest as\nbegin\n  -- pgonline version: 5.6\n  select 1\nend\n"
+	raw := encodeTestUTF16LE(t, src)
+	writeTestFileBytes(t, filepath.Join(root, "TC_mini.sql"), raw)
+
+	// UTF-16LE .t01: правило формата CP866 перекрывается пре-детектом.
+	writeTestFileBytes(t, filepath.Join(root, "generated.t01"), encodeTestUTF16LE(t, "exec pSubscriber @P1 = 1\n"))
+
+	// UTF-16LE .yaml: правило UTF-8 перекрывается пре-детектом.
+	writeTestFileBytes(t, filepath.Join(root, "meta.yaml"), encodeTestUTF16LE(t, "key: value\n"))
+
+	// XML с честной UTF-8: кодировка UTF8, не refined.
+	writeTestFile(t, filepath.Join(root, "plain.xml"), `<?xml version="1.0" encoding="UTF-8"?><Object><Name>X</Name></Object>`)
+
+	w := NewWalker(root, []string{"*.sql", "*.t01", "*.yaml", "*.xml"}, nil)
+	filesChan, errorsChan := w.WalkParallel(4)
+
+	var files []FileInfo
+	for file := range filesChan {
+		files = append(files, file)
+	}
+	for err := range errorsChan {
+		if err != nil {
+			t.Fatalf("Walk returned error: %v", err)
+		}
+	}
+
+	byRelPath := map[string]FileInfo{}
+	for _, f := range files {
+		byRelPath[f.RelPath] = f
+	}
+
+	// UTF-16LE .sql: Encoding=UTF16LE, Content сырой, hash = SHA-256 сырых байтов.
+	tc := byRelPath["TC_mini.sql"]
+	if tc.Encoding != "UTF16LE" {
+		t.Fatalf("TC_mini.sql encoding = %q, want UTF16LE", tc.Encoding)
+	}
+	if !tc.EncodingRefined {
+		t.Fatal("TC_mini.sql EncodingRefined = false, want true (prior CP866)")
+	}
+	if !bytes.Equal(tc.Content, raw) {
+		t.Fatal("TC_mini.sql Content must stay raw UTF-16LE bytes")
+	}
+	if want := computeHashBytes(raw); tc.Hash != want {
+		t.Fatalf("TC_mini.sql hash = %q, want SHA-256 of raw bytes %q", tc.Hash, want)
+	}
+
+	// UTF-16 .t01: правило CP866 перекрыто.
+	if got := byRelPath["generated.t01"].Encoding; got != "UTF16LE" {
+		t.Fatalf("generated.t01 encoding = %q, want UTF16LE", got)
+	}
+	// UTF-16 .yaml: правило UTF-8 перекрыто (refined: prior UTF8 != UTF16LE).
+	if got := byRelPath["meta.yaml"].Encoding; got != "UTF16LE" {
+		t.Fatalf("meta.yaml encoding = %q, want UTF16LE", got)
+	}
+
+	// Честный UTF-8 XML без BOM: UTF8, не refined.
+	plain := byRelPath["plain.xml"]
+	if plain.Encoding != "UTF8" || plain.EncodingRefined {
+		t.Fatalf("plain.xml encoding = %q refined = %v, want UTF8/false", plain.Encoding, plain.EncodingRefined)
+	}
+}
+
+func TestWalkParallelXMLFalseDeclaration(t *testing.T) {
+	// XML с декларацией UTF-8, но CP1251-байтами (GSOD-кейс): воркер
+	// записывает фактическую WIN1251 в FileInfo.Encoding, EncodingRefined.
+	root := t.TempDir()
+	cp1251Body, err := charmap.Windows1251.NewEncoder().Bytes([]byte("<Object><ShortDescription>Создание выплат массовое</ShortDescription></Object>"))
+	if err != nil {
+		t.Fatalf("encode CP1251: %v", err)
+	}
+	data := append([]byte(`<?xml version="1.0" encoding="UTF-8"?>`), cp1251Body...)
+	writeTestFileBytes(t, filepath.Join(root, "API_GSOD_mini.xml"), data)
+
+	w := NewWalker(root, []string{"*.xml"}, nil)
+	filesChan, errorsChan := w.WalkParallel(2)
+
+	var files []FileInfo
+	for file := range filesChan {
+		files = append(files, file)
+	}
+	for err := range errorsChan {
+		if err != nil {
+			t.Fatalf("Walk returned error: %v", err)
+		}
+	}
+	if len(files) != 1 {
+		t.Fatalf("files = %d, want 1", len(files))
+	}
+	if files[0].Encoding != "WIN1251" {
+		t.Fatalf("GSOD mini encoding = %q, want WIN1251", files[0].Encoding)
+	}
+	if !files[0].EncodingRefined {
+		t.Fatal("GSOD mini EncodingRefined = false, want true (prior UTF8)")
 	}
 }
 

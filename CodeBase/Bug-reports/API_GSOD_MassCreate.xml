@@ -1,0 +1,1016 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Object>
+	<ObjectTypeID>1</ObjectTypeID>
+	<ObjectName>API_GSOD_MassCreate</ObjectName>
+	<ObjectNameID>41413</ObjectNameID>
+	<APIVersion>8000</APIVersion>
+	<ArchApproval>1</ArchApproval>
+	<Implemented>1</Implemented>
+	<InternalUse>0</InternalUse>
+	<Deprecated>0</Deprecated>
+	<AutoTest>0</AutoTest>
+	<IsVirtualLink>0</IsVirtualLink>
+	<ShortDescription>Массовое добавление глобальных операций над выпусками ЦБ и операций реорганизации АО</ShortDescription>
+	<FullDescription>Метод предназначен для массового добавления глобальных операций над выпусками ЦБ и операций реорганизации АО (сделок). Для глобальных операций, операций реорганизации АО со списанием исходного выпуска ЦБ на вход методу передаются атрибуты пар сделок списания (продажи) и зачисления (покупки), которые должны быть связаны. На выходе метод возвращает пары идентификаторов сделок списания (продажи) и зачисления (покупки), которые также должны быть связаны.
+
+При добавлении операции (сделки) анализируется праметр-флаг "Проверка уникальности добавляемой операции (сделки)":
+1 - по умолчанию; проверяется уникальность добавляемой операции (сделки) по набору параметров: "Номер операции в ТС", "Дата в учете", "Направление". Если в системе уже заведена такая операция (сделка), то формируется соответствующее сообщение об ошибке.
+2 - отключена проверка на уникальность для операций (сделок) с незаполненным полем "Номер операции в ТС". 
+
+Поддерживаются следующие типы глобальных операций: конвертация ЦБ, ликвидация ЦБ, бонусная эмиссия ЦБ, консолидация ЦБ, дробление ЦБ. Тип глобальной операции определяется переданной финансовой операцией. На форме ввода глобальной операции по умолчанию устанавливается значение типа КД "ГО".
+
+Для типов глобальных операций  конвертация ЦБ, консолидация ЦБ, дробление ЦБ метод возвращает 2 сделки (зачисление и списание), для типа ликвидация ЦБ - 1 сделку (списание), для типа бонусная эмиссия ЦБ - 1 сделку (зачисление).
+
+Глобальная операция в системе Diasoft FA# создается по выплате, которая формируется по данным из реестра и корпоративного действия, и оформляется как сделка покупки, или продажи, или как две сделки покупка и продажа. Последний вариант выполняется для типа корпоративного действия "Со списанием исходного выпуска".
+
+Если не передана "Дата комиссии", то она автоматически устанавливается равной "Дате в учете" сделки.
+
+Добавление платежных инструкции (ПИ) по операции:
+1. выполняется идентификация шаблона ПИ по идентификатору или сокращенному наименованию (если переданы). Если шаблон ПИ не определен, то метод завершает работу с соответствующим сообщением об ошибке
+2. если идентификация ПИ выполнена, то по операции добавляется экземпляр ПИ. 
+2.1. если переданы другие параметры в наборе данных и передаваемые значения корректные, то экземпляр ПИ сохраняется с переданными значениями;
+2.2. если переданы другие параметры и значение не корректные (не определены по идентификатору/сокращению), то метод завершает работу с соответствующим сообщением об ошибке
+3. если не переданы идентификатор или сокращенное наименование шаблона ПИ, то добавляется экземпляр ПИ по операции (по переданным данным).
+
+
+На выходе метод возвращает набор данных с идентификаторами сделок и набор данных с сообщениями об ошибках.</FullDescription>
+	<IsShadowParam>0</IsShadowParam>
+	<ModuleDepend>0</ModuleDepend>
+	<DataSetMode>0</DataSetMode>
+	<ClientOrderID>3372979</ClientOrderID>
+	<Dependencies/>
+	<FullName>Mass Create</FullName>
+	<IsExternal>0</IsExternal>
+	<Topic/>
+	<UsedObjectName/>
+	<UsedModuleSysName/>
+	<UsedModuleRelease/>
+	<UsedPPRName/>
+	<UsedPPRNumber>0</UsedPPRNumber>
+	<UsedBranchName/>
+	<UsedBuildNumber>0</UsedBuildNumber>
+	<InputParams>
+		<Param>
+			<ParamOrder>1</ParamOrder>
+			<ParamName>CheckUniqFlag</ParamName>
+			<PrmSubObject/>
+			<TypeName>DSTINYINT</TypeName>
+			<Required>0</Required>
+			<RusName>Проверка уникальности добавляемой операции (сделки)</RusName>
+			<Description>Проверять уникальность добавляемой операции (сделки), возможные значения:
+1 - да (по умолчанию);  
+2 - отключить проверку для операций с незаполненным полем "Номер в ТС".</Description>
+			<IsVirtualLink>0</IsVirtualLink>
+			<WsParamName/>
+		</Param>
+	</InputParams>
+	<InputTables>
+		<Table>
+			<ParamOrder>2</ParamOrder>
+			<ParamName>pAPI_GSOD_MassCreate</ParamName>
+			<Required>1</Required>
+			<RusName>Основные атрибуты глобальных операций над выпусками ЦБ и операций реорганизации АО</RusName>
+			<Description>Набор данных с основными атрибутами глобальных операций над выпусками ЦБ.</Description>
+			<IsVirtualLink>0</IsVirtualLink>
+			<WsParamName/>
+			<IsList>0</IsList>
+			<Fields>
+				<Param>
+					<ParamOrder>1</ParamOrder>
+					<ParamName>LinkID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>1</Required>
+					<RusName>Поле связи</RusName>
+					<Description>Поле для связи с исходящими таблицами.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>2</ParamOrder>
+					<ParamName>DealDate</ParamName>
+					<TypeName>DSOPERDAY</TypeName>
+					<Required>1</Required>
+					<RusName>Дата в учете</RusName>
+					<Description>Дата в учете.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>3</ParamOrder>
+					<ParamName>BranchID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>ID филиала</RusName>
+					<Description>Идентификатор филиала.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>4</ParamOrder>
+					<ParamName>BranchBrief</ParamName>
+					<TypeName>DSACCNUMBER</TypeName>
+					<Required>0</Required>
+					<RusName>Сокращенное наименование филиала</RusName>
+					<Description>Сокращенное наименование филиала.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>5</ParamOrder>
+					<ParamName>FinOperID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>ID финансовой операции</RusName>
+					<Description>Идентификатор финансовой операции.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>6</ParamOrder>
+					<ParamName>TradeDate</ParamName>
+					<TypeName>DSDATETIME</TypeName>
+					<Required>0</Required>
+					<RusName>Дата заключения</RusName>
+					<Description>Дата заключения. На форме ввода время в дате заключения всегда нулевое.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>7</ParamOrder>
+					<ParamName>TradingSystemNumber</ParamName>
+					<TypeName>DSACCNUMBER</TypeName>
+					<Required>0</Required>
+					<RusName>Номер операции в ТС</RusName>
+					<Description>Номер операции в торговой системе.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>8</ParamOrder>
+					<ParamName>TradingSystemID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>ID торговой площадки</RusName>
+					<Description>Идентификатор торговой площадки. Для клиентов бэк-офиса ТП берется из выплаты. Для клиентов депозитария, которые не являются клиентами бэк-офиса, ТП берется из параметра "ТП для сделок депонентов" на шаблоне диспатча. Если ТП не передана, соответствующие поля не заполняются, сообщение об ошибке не выдается.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>9</ParamOrder>
+					<ParamName>TradingSystemBrief</ParamName>
+					<TypeName>DSACCNUMBER</TypeName>
+					<Required>0</Required>
+					<RusName>Торговая площадка</RusName>
+					<Description>Сокращённое наименование торговой площадки.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>10</ParamOrder>
+					<ParamName>BrokerID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>ID брокера по глобальной операции (сделке)</RusName>
+					<Description>Идентификатор организации, которая является брокером по глобальной операции (сделке). Если идентификатор не передан, то поиск организации происходит по переданному сокращенному наименованию.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>11</ParamOrder>
+					<ParamName>BrokerBrief</ParamName>
+					<TypeName>DSACCNUMBER</TypeName>
+					<Required>0</Required>
+					<RusName>Сокращенное наименование брокера по глобальной операции (сделке)</RusName>
+					<Description>Сокращенное наименование брокера по глобальной операции (сделке).</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>12</ParamOrder>
+					<ParamName>ClientAgreementID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>ID договора брокерского обслуживания клиента</RusName>
+					<Description>Идентификатор договора брокерского обслуживания клиента.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>13</ParamOrder>
+					<ParamName>PortfolioID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>ID портфеля по договору брокерского обслуживания клиента.</RusName>
+					<Description>Идентификатор портфеля глобальной операции (сделки). Определяется по договору брокерского обслуживания клиента.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>14</ParamOrder>
+					<ParamName>ContractorID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>ID агента</RusName>
+					<Description>Идентификатор агента, который производит выплату.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>15</ParamOrder>
+					<ParamName>CorpActType</ParamName>
+					<TypeName>DSTINYINT</TypeName>
+					<Required>0</Required>
+					<RusName>Тип КД</RusName>
+					<Description>Тип корпоративного действия.
+Возможные значения: 1 - ГО (по умолчанию); 2- реорганизация АО.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>16</ParamOrder>
+					<ParamName>SettlementResponsibility</ParamName>
+					<TypeName>DSTINYINT</TypeName>
+					<Required>0</Required>
+					<RusName>Расчеты по сделке</RusName>
+					<Description>Расчеты по сделке (ответственность брокера за обеспечение расчетов по сделке). 
+Допустимые значения:
+1 - по деньгам и бумагам (значение по умолчанию); 
+3 - только по бумагам;
+4 - без расчетов.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+			</Fields>
+		</Table>
+		<Table>
+			<ParamOrder>3</ParamOrder>
+			<ParamName>pAPI_GSOD_MassCreateDetail</ParamName>
+			<Required>1</Required>
+			<RusName>Атрибуты глобальных операций, реорганизаций АО зачисления/списания над выпусками ЦБ</RusName>
+			<Description>Набор данных с атрибутами для глобальных операций над выпусками ЦБ с направлением списание или зачисление. Набор включает атрибуты, значения которых отличаются для сделок списания и сделок зачисления.</Description>
+			<IsVirtualLink>0</IsVirtualLink>
+			<WsParamName/>
+			<IsList>0</IsList>
+			<Fields>
+				<Param>
+					<ParamOrder>1</ParamOrder>
+					<ParamName>LinkID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>1</Required>
+					<RusName>Поле связи</RusName>
+					<Description>Поле для связи с исходящими таблицами.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>2</ParamOrder>
+					<ParamName>Direction</ParamName>
+					<TypeName>DSTINYINT</TypeName>
+					<Required>1</Required>
+					<RusName>Направление</RusName>
+					<Description>Возможные значение:
+1 - Зачисление,
+2 - Списание.
+На форме ввода зачисление соответствует флагу "Покупка", списание - "Продажа".</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>3</ParamOrder>
+					<ParamName>Number</ParamName>
+					<TypeName>DSACCNUMBER</TypeName>
+					<Required>0</Required>
+					<RusName>Номер глобальной операции</RusName>
+					<Description>Номер глобальной операции. Если не передан, то заполняется автоматически.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>4</ParamOrder>
+					<ParamName>SecurityID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>ID ценной бумаги</RusName>
+					<Description>Идентификатор ценной бумаги.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>5</ParamOrder>
+					<ParamName>CurrencyID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>ID валюты операции</RusName>
+					<Description>Идентификатор валюты операции. Принимает значение валюты номинала ЦБ.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>6</ParamOrder>
+					<ParamName>CurrencyBrief</ParamName>
+					<TypeName>DSBRIEFNAME</TypeName>
+					<Required>0</Required>
+					<RusName>Валюта операции</RusName>
+					<Description>Сокращенное наименование валюты операции. Принимает значение валюты номинала ЦБ.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>7</ParamOrder>
+					<ParamName>Quantity</ParamName>
+					<TypeName>DSBIGMONEY</TypeName>
+					<Required>0</Required>
+					<RusName>Количество ценных бумаг</RusName>
+					<Description>Количество ценных бумаг по операции в штуках.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>8</ParamOrder>
+					<ParamName>Price</ParamName>
+					<TypeName>DSBIGMONEY</TypeName>
+					<Required>0</Required>
+					<RusName>Цена одной ЦБ</RusName>
+					<Description>Цена одной ЦБ.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>9</ParamOrder>
+					<ParamName>Amount</ParamName>
+					<TypeName>DSBIGMONEY</TypeName>
+					<Required>0</Required>
+					<RusName>Сумма</RusName>
+					<Description>Заполняется значением, равным цене одной ЦБ, умноженной на количество.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>10</ParamOrder>
+					<ParamName>CouponAmount</ParamName>
+					<TypeName>DSBIGMONEY</TypeName>
+					<Required>0</Required>
+					<RusName>Накопленный купонный доход</RusName>
+					<Description>Накопленный купонный доход. Заполняется только для операций с облигациями.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>11</ParamOrder>
+					<ParamName>AmountNKD</ParamName>
+					<TypeName>DSBIGMONEY</TypeName>
+					<Required>0</Required>
+					<RusName>Сумма с учетом накопленного купонного дохода</RusName>
+					<Description>Сумма с учетом накопленного купонного дохода. Заполняется только для операций с облигациями.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>12</ParamOrder>
+					<ParamName>Comment</ParamName>
+					<TypeName>DSCOMMENT</TypeName>
+					<Required>0</Required>
+					<RusName>Примечание</RusName>
+					<Description>Примечание к сделке.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+			</Fields>
+		</Table>
+		<Table>
+			<ParamOrder>4</ParamOrder>
+			<ParamName>pAPI_GSOD_MassCreateCommis</ParamName>
+			<Required>0</Required>
+			<RusName>Список комиссий</RusName>
+			<Description>Набор данных с параметрами комиссий</Description>
+			<IsVirtualLink>0</IsVirtualLink>
+			<WsParamName/>
+			<IsList>0</IsList>
+			<Fields>
+				<Param>
+					<ParamOrder>1</ParamOrder>
+					<ParamName>LinkID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>1</Required>
+					<RusName>Поле связи</RusName>
+					<Description>Поле для связи с исходящими таблицами</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>2</ParamOrder>
+					<ParamName>Type</ParamName>
+					<TypeName>DSTINYINT</TypeName>
+					<Required>1</Required>
+					<RusName>Тип комиссии</RusName>
+					<Description>Тип комиссии:
+1 - прочие расходы
+2 - комиссия торговой системы
+3 - клиринговая комиссия
+4 - комиссия брокера
+5 - комиссия с клиента
+6 - комиссия депозитария
+7 - комиссия за ИТС
+8 - комиссия информационного брокера
+</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>3</ParamOrder>
+					<ParamName>Amount</ParamName>
+					<TypeName>DSBIGMONEY</TypeName>
+					<Required>0</Required>
+					<RusName>Сумма комиссии</RusName>
+					<Description>Сумма комиссии</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>4</ParamOrder>
+					<ParamName>CurrencyID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>Идентификатор валюты комиссии</RusName>
+					<Description>Идентификатор валюты комиссии</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>5</ParamOrder>
+					<ParamName>CurrencyBrief</ParamName>
+					<TypeName>DSACCNUMBER35</TypeName>
+					<Required>0</Required>
+					<RusName>Сокращенное наименование валюты комиссии</RusName>
+					<Description>Сокращенное наименование валюты комиссии</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>6</ParamOrder>
+					<ParamName>Date</ParamName>
+					<TypeName>DSOPERDAY</TypeName>
+					<Required>0</Required>
+					<RusName>Дата комиссии</RusName>
+					<Description>Дата комиссии</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+			</Fields>
+		</Table>
+		<Table>
+			<ParamOrder>5</ParamOrder>
+			<ParamName>pAPI_GSOD_MassCrtPmntInstr</ParamName>
+			<Required>0</Required>
+			<RusName>Список реквизитов платежных инструкций</RusName>
+			<Description>Список реквизитов платежных инструкций</Description>
+			<IsVirtualLink>0</IsVirtualLink>
+			<WsParamName>GlobalSecuritiesOperationsDealMassCreatePmntInstrList</WsParamName>
+			<IsList>0</IsList>
+			<Fields>
+				<Param>
+					<ParamOrder>1</ParamOrder>
+					<ParamName>LinkID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>1</Required>
+					<RusName>Поле связи</RusName>
+					<Description>Поле для связи с исходящими таблицами (идентификатор набора входных параметров)</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>2</ParamOrder>
+					<ParamName>Name</ParamName>
+					<TypeName>DSVARFULLNAME</TypeName>
+					<Required>0</Required>
+					<RusName>Наименование платежной инструкции</RusName>
+					<Description>Наименование платежной инструкции</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>3</ParamOrder>
+					<ParamName>BalanceID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>Идентификатор области учета</RusName>
+					<Description>Идентификатор области учета</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>4</ParamOrder>
+					<ParamName>BalanceBrief</ParamName>
+					<TypeName>DSACCNUMBER</TypeName>
+					<Required>0</Required>
+					<RusName>Область учета</RusName>
+					<Description>Сокращенное название области учета
+Если область учета не определена (не найден/не передан идентификатор), то по кор счету или счету клиента определяется область учета платежной инструкции. Если кор счет или счет клиента не переданы/не заведены в системе, то область учета для нашей стороны заполняется пустым значением (нулем), для контрагента указывается область "К"</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>5</ParamOrder>
+					<ParamName>CurrencyID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>Идентификатор валюты</RusName>
+					<Description>Идентификатор валюты. Если валюте не передана, то выбирается валюта платежа по глобальной операции для инструкций по оплате и штуки для платежной инструкции по поставке</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>6</ParamOrder>
+					<ParamName>CurrencyBrief</ParamName>
+					<TypeName>DSACCNUMBER</TypeName>
+					<Required>0</Required>
+					<RusName>Код валюты</RusName>
+					<Description>Сокращение валюты RUB, USD, EUR и т.д.
+Используется если не указан CurrencyID</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>7</ParamOrder>
+					<ParamName>ParticipantID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>Идентификатор клиента</RusName>
+					<Description>Идентификатор клиента</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>8</ParamOrder>
+					<ParamName>ParticipantINN</ParamName>
+					<TypeName>DSBIC</TypeName>
+					<Required>0</Required>
+					<RusName>ИНН клиента</RusName>
+					<Description>ИНН клиента</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>9</ParamOrder>
+					<ParamName>ParticipantAccountID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>Идентификатор счета клиента</RusName>
+					<Description>Идентификатор счета клиента</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>10</ParamOrder>
+					<ParamName>ParticipantAccountNumber</ParamName>
+					<TypeName>DSACCNUMBER35</TypeName>
+					<Required>0</Required>
+					<RusName>Счет клиента</RusName>
+					<Description>Номер счета клиента</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>11</ParamOrder>
+					<ParamName>BankID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>Идентификатор банка</RusName>
+					<Description>Идентификатор банка</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>12</ParamOrder>
+					<ParamName>BankBIC</ParamName>
+					<TypeName>DSBIC</TypeName>
+					<Required>0</Required>
+					<RusName>БИК банка</RusName>
+					<Description>БИК банка</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>13</ParamOrder>
+					<ParamName>BankAccountID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>Идентификатор кор. счета</RusName>
+					<Description>Идентификатор кор. счета</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>14</ParamOrder>
+					<ParamName>BankAccountNumber</ParamName>
+					<TypeName>DSACCNUMBER35</TypeName>
+					<Required>0</Required>
+					<RusName>Корр. счет в банке</RusName>
+					<Description>Номер корр. счета в банке</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>15</ParamOrder>
+					<ParamName>CorrespondentID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>Идентификатор корреспондента</RusName>
+					<Description>Идентификатор корреспондента</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>16</ParamOrder>
+					<ParamName>CorrespondentExtCode</ParamName>
+					<TypeName>DSACCNUMBER</TypeName>
+					<Required>0</Required>
+					<RusName>Внешний код корреспондента</RusName>
+					<Description>Внешний код корреспондента</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>17</ParamOrder>
+					<ParamName>CorrespondentAccountID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>Идентификатор счета корреспондента</RusName>
+					<Description>Идентификатор счета корреспондента</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>18</ParamOrder>
+					<ParamName>CorrespondentAccountNumber</ParamName>
+					<TypeName>DSACCNUMBER35</TypeName>
+					<Required>0</Required>
+					<RusName>Счет корреспондента</RusName>
+					<Description>Номер счета корреспондента, если не передан идентификатор</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>19</ParamOrder>
+					<ParamName>AgentID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>Идентификатор посредника</RusName>
+					<Description>Идентификатор посредника</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>20</ParamOrder>
+					<ParamName>AgentExtCode</ParamName>
+					<TypeName>DSACCNUMBER</TypeName>
+					<Required>0</Required>
+					<RusName>Внешний код посредника</RusName>
+					<Description>Внешний код посредника</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>21</ParamOrder>
+					<ParamName>AgentAccountID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>Идентификатор счета посредника</RusName>
+					<Description>Идентификатор счета посредника</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>22</ParamOrder>
+					<ParamName>AgentAccountNumber</ParamName>
+					<TypeName>DSACCNUMBER35</TypeName>
+					<Required>0</Required>
+					<RusName>Счет посредника</RusName>
+					<Description>Номер счета посредника, если не передан идентификатор</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>23</ParamOrder>
+					<ParamName>PmntInstrKind</ParamName>
+					<TypeName>DSTINYINT</TypeName>
+					<Required>1</Required>
+					<RusName>Тип платежной инструкции</RusName>
+					<Description>Тип платежной инструкции:
+1 - Инструкция клиента по оплате
+2 - Инструкция клиента по поставке
+3 - инструкция контрагента по оплате
+4 - инструкция контрагента по поставке</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>24</ParamOrder>
+					<ParamName>PaymentInstructBrief</ParamName>
+					<TypeName>DSACCNUMBER</TypeName>
+					<Required>0</Required>
+					<RusName>Сокращенное наименование платежной инструкции</RusName>
+					<Description>Сокращенное наименование платежной инструкции</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>25</ParamOrder>
+					<ParamName>PaymentInstructionRuleID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>Идентификатор шаблона платежной инструкции</RusName>
+					<Description>Идентификатор шаблона платежной инструкции</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+			</Fields>
+		</Table>
+		<Table>
+			<ParamOrder>6</ParamOrder>
+			<ParamName>pAPI_GSOD_MassCrtExtrAttr</ParamName>
+			<Required>0</Required>
+			<RusName>Дополнительные атрибуты глобальных операций.</RusName>
+			<Description>Набор данных с дополнительными атрибутами глобальных операций над выпусками ЦБ.</Description>
+			<IsVirtualLink>0</IsVirtualLink>
+			<WsParamName/>
+			<IsList>0</IsList>
+			<Fields>
+				<Param>
+					<ParamOrder>1</ParamOrder>
+					<ParamName>LinkID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>1</Required>
+					<RusName>Поле связи</RusName>
+					<Description>Поле для связи с исходящими таблицами.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>2</ParamOrder>
+					<ParamName>Name</ParamName>
+					<TypeName>DSACCNUMBER</TypeName>
+					<Required>1</Required>
+					<RusName>Системное имя дополнительного атрибута</RusName>
+					<Description>Системное имя дополнительного атрибута.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>3</ParamOrder>
+					<ParamName>Direction</ParamName>
+					<TypeName>DSTINYINT</TypeName>
+					<Required>1</Required>
+					<RusName>Направление</RusName>
+					<Description>Возможные значение:
+1 - Зачисление,
+2 - Списание.
+На форме ввода зачисление соответствует флагу "Покупка", списание - "Продажа".</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>4</ParamOrder>
+					<ParamName>Value</ParamName>
+					<TypeName>DSCOMMENT</TypeName>
+					<Required>1</Required>
+					<RusName>Значение дополнительного атрибута</RusName>
+					<Description>Значение дополнительного атрибута.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>5</ParamOrder>
+					<ParamName>Date</ParamName>
+					<TypeName>DSOPERDAY</TypeName>
+					<Required>0</Required>
+					<RusName>Дата начала действия значения дополнительного атрибута</RusName>
+					<Description>Дата начала действия значения дополнительного атрибута.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>6</ParamOrder>
+					<ParamName>ObjectID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>0</Required>
+					<RusName>Идентификатор объекта</RusName>
+					<Description>Идентификатор объекта, указанного в доп.атрибуте, если значение доп.атрибута - ссылка на справочник.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+			</Fields>
+		</Table>
+	</InputTables>
+	<OutputParams/>
+	<OutputTables>
+		<Table>
+			<ParamOrder>1</ParamOrder>
+			<ParamName>pAPI_GSOD_LinkID</ParamName>
+			<Required>0</Required>
+			<RusName>Исходящие данные.</RusName>
+			<Description>Набор с исходящими данными.</Description>
+			<IsVirtualLink>0</IsVirtualLink>
+			<WsParamName/>
+			<IsList>0</IsList>
+			<Fields>
+				<Param>
+					<ParamOrder>1</ParamOrder>
+					<ParamName>LinkID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>1</Required>
+					<RusName>Поле связи</RusName>
+					<Description>Поле для связи с входящими таблицами.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>2</ParamOrder>
+					<ParamName>GSODealID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>1</Required>
+					<RusName>ID глобальной операции</RusName>
+					<Description>Идентификатор глобальной опеарции (сделки).</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>3</ParamOrder>
+					<ParamName>Direction</ParamName>
+					<TypeName>DSTINYINT</TypeName>
+					<Required>1</Required>
+					<RusName>Направление</RusName>
+					<Description>Возможные значения:
+1 - Зачисление,
+2 - Списание.
+На форме ввода зачисление соответствует флагу "Покупка", списание - "Продажа".</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+			</Fields>
+		</Table>
+		<Table>
+			<ParamOrder>2</ParamOrder>
+			<ParamName>pAPI_GSOD_MassCreateNTF</ParamName>
+			<Required>0</Required>
+			<RusName>Данные об ошибках</RusName>
+			<Description>Набор с данными об ошибках.</Description>
+			<IsVirtualLink>0</IsVirtualLink>
+			<WsParamName/>
+			<IsList>0</IsList>
+			<Fields>
+				<Param>
+					<ParamOrder>1</ParamOrder>
+					<ParamName>LinkID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>1</Required>
+					<RusName>Поле связи</RusName>
+					<Description>Поле для связи с входящими таблицами.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>2</ParamOrder>
+					<ParamName>NTFID</ParamName>
+					<TypeName>DSIDENTIFIER</TypeName>
+					<Required>1</Required>
+					<RusName>Идентификатор кода ошибки</RusName>
+					<Description>Идентификатор кода ошибки.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+				<Param>
+					<ParamOrder>3</ParamOrder>
+					<ParamName>NTFMessage</ParamName>
+					<TypeName>DSCOMMENT</TypeName>
+					<Required>0</Required>
+					<RusName>Текст возможных сообщений об ошибке</RusName>
+					<Description>Текст возможных сообщений об ошибке.</Description>
+					<IsDataSet>0</IsDataSet>
+					<IsList>0</IsList>
+				</Param>
+			</Fields>
+		</Table>
+	</OutputTables>
+	<ReturnValues>
+		<ReturnValue>
+			<Value>0</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Ошибок нет.</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>1</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Филиал не определен.</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>2</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Торговая площадка не определена.</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>3</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Финансовая операция не определена.</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>4</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Ценная бумага не определена.</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>5</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Валюта не определена.</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>6</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Брокер не определен.</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>7</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Договор брокерского обслуживания клиента не определен.</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>8</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Портфель по договору брокерского обслуживания не определен.</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>9</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Агент не определен.</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>10</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Системное имя дополнительного атрибута не определено.</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>11</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Cделка с идентичным номером в торговой системе, датой заключения и типом (покупка/продажа) уже существует в системе.</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>28437</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Валюта в ПИ не определена (&lt;PmntInstrKind&gt;)</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>31053</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Область учета в ПИ не определена (&lt;PmntInstrKind&gt;)</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>34235</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Счет клиента в платежной инструкции не определен (&lt;PmntInstrKind&gt;)</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>34236</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Клиент в платежной инструкции не определен (&lt;PmntInstrKind&gt;)</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>34237</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Банк в платежной инструкции не определен (&lt;PmntInstrKind&gt;)</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>34238</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Кор. счет в платежной инструкции не определен (&lt;PmntInstrKind&gt;)</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>34239</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Корреспондент в платежной инструкции не определен (&lt;PmntInstrKind&gt;)</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>34240</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Счет корреспондента в платежной инструкции не определен (&lt;PmntInstrKind&gt;)</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>34241</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Посредник в платежной инструкции не определен (&lt;PmntInstrKind&gt;)</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>34242</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Счет посредника в платежной инструкции не определен (&lt;PmntInstrKind&gt;)</Description>
+		</ReturnValue>
+		<ReturnValue>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>111805</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Шаблон платежной инструкции не определен</Description>
+		</ReturnValue>
+		<ReturnValue>
+			<Value>111806</Value>
+			<ReturnType>1</ReturnType>
+			<Description>Передано некорректное значение параметра "Тип платежной инструкции"</Description>

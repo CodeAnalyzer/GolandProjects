@@ -64,6 +64,15 @@ func (p *Parser) ParseFile(path string) (*ParseResult, error) {
 
 // ParseBytes парсит TPR-файл из уже прочитанных байт (без повторного чтения с диска)
 func (p *Parser) ParseBytes(data []byte, path string) (*ParseResult, error) {
+	// UTF-16 (BOM/NUL) и UTF-8 BOM — пре-детект первой попыткой, до перебора
+	// однобайтовых кодировок: walk-воркер контент TPR не декодирует, а
+	// UTF-16-байты (≤0x7F с NUL) невидимы для валидатора ниже.
+	if enc, ok := encoding.DetectBOMOrUTF16(data); ok {
+		if content, derr := encoding.DecodeBytes(data, enc); derr == nil {
+			return p.ParseContent(content, path)
+		}
+	}
+
 	encodings := []encoding.Encoding{encoding.WIN1251, encoding.CP866, encoding.UTF8}
 
 	var content string

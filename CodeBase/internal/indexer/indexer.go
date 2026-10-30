@@ -191,6 +191,7 @@ func mergeScanStats(dst *model.ScanStats, src *model.ScanStats) {
 	dst.PostProcessed += src.PostProcessed
 	dst.PreFilteredFiles += src.PreFilteredFiles
 	dst.EncodingRefined += src.EncodingRefined
+	dst.XMLSkipped += src.XMLSkipped
 	dst.SaveMs += src.SaveMs
 	dst.ParseMs += src.ParseMs
 }
@@ -1379,6 +1380,19 @@ func (idx *Indexer) parseXMLFile(ctx context.Context, file fswalk.FileInfo, file
 	result, err := parser.ParseBytes(file.Content, path)
 	if err != nil {
 		return fmt.Errorf("failed to parse XML file: %w", err)
+	}
+	if result.Skipped {
+		// Graceful-skip (message/fasdocument, неизвестный корень, корень вне
+		// своей path-ветки): файл индексируется без DSArchitect-сущностей,
+		// в errors_count не попадает — считаем отдельным счётчиком.
+		stats.XMLSkipped++
+		return nil
+	}
+	if result.Recovered {
+		// Recovery битой вложенности («element closed by»): файл разобран
+		// после автозакрытия незакрытых элементов — предупреждение в
+		// error-лог (не в errors_count, не в консоль со спиннером).
+		idx.errorLogger.Print(fmt.Sprintf("WARNING: File: %s - %s", path, result.RecoveryNote))
 	}
 	for _, item := range result.BusinessObjects {
 		item.FileID = fileID

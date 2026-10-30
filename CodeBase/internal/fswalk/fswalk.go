@@ -290,13 +290,34 @@ func (w *Walker) WalkParallelCtx(ctx context.Context, workers int) (<-chan FileI
 					hash := computeHashBytes(content)
 					encoding, language := getEncodingAndLanguage(task.ext)
 					encodingRefined := false
-					if task.ext == "md" {
+					// Шаг 0 (до ASCII fast-path и до диспетчеризации по
+					// расширению, включая xml/md/yaml/t01): UTF-16 детект по
+					// BOM/NUL-эвристике. UTF-16LE-байты ≤0x7F, поэтому
+					// однобайтовые эвристики такой файл не видят. Результат —
+					// только метаданные: Content остаётся сырыми байтами
+					// (SHA-256 — по сырым байтам), декодируют точки входа
+					// формата.
+					prior := encpkg.Encoding(encoding)
+					if detected, ok := encpkg.DetectBOMOrUTF16(content); ok {
+						encoding = string(detected)
+						encodingRefined = detected != prior
+					} else if task.ext == "md" {
 						// Markdown: кодировка определяется по содержимому (UTF-8 приоритет, CP1251 fallback)
 						encoding = string(encpkg.DetectMarkdownEncoding(content))
+					} else if task.ext == "xml" {
+						// XML: фактическая кодировка по декларации с проверкой
+						// достоверности (utf8.Valid) и содержимому — иначе
+						// файл с ложной UTF-8-декларацией сохранит фиктивный
+						// UTF8 в files.encoding. XML-парсер выполняет ту же
+						// детекцию повторно — результат детерминирован.
+						detected := encpkg.DetectXMLEncoding(content)
+						if detected != prior {
+							encoding = string(detected)
+							encodingRefined = true
+						}
 					} else if isContentDetectedExt(task.ext) {
 						// Single-byte legacy-форматы: детекция по содержимому,
 						// карта расширений служит prior (ASCII → prior, tie → prior).
-						prior := encpkg.Encoding(encoding)
 						detected := encpkg.DetectFromBytesWithPrior(content, prior)
 						if detected != prior {
 							encoding = string(detected)

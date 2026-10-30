@@ -118,7 +118,7 @@ func TestBatchInsertRelationsAndScanRun(t *testing.T) {
 	if ok {
 		t.Fatal("running scan must not count as completed init")
 	}
-	if err := db.UpdateScanRun(context.Background(), scanID, 1, 1, 0, "completed"); err != nil {
+	if err := db.UpdateScanRun(context.Background(), scanID, 1, 1, 0, 0, 0, "completed"); err != nil {
 		t.Fatalf("UpdateScanRun: %v", err)
 	}
 	ok, err = db.HasCompletedInit(context.Background())

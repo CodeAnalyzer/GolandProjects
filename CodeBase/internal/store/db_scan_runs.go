@@ -29,16 +29,19 @@ func (db *DB) HasCompletedInit(ctx context.Context) (bool, error) {
 	return exists, nil
 }
 
-// UpdateScanRun обновляет статус сканирования
-func (db *DB) UpdateScanRun(ctx context.Context, id int64, filesScanned, filesIndexed, errorsCount int, status string) error {
+// UpdateScanRun обновляет статус сканирования и метрики прогона
+// (encoding_refined/xml_skipped — сводные счётчики кодировки/skip).
+func (db *DB) UpdateScanRun(ctx context.Context, id int64, filesScanned, filesIndexed, errorsCount, encodingRefined, xmlSkipped int, status string) error {
 	_, err := db.ExecContext(ctx, `
-		UPDATE scan_runs 
+		UPDATE scan_runs
 		SET finished_at = NOW(),
-		    status = $4,
+		    status = $6,
 		    files_scanned = $1,
 		    files_indexed = $2,
-		    errors_count = $3
-		WHERE id = $5
-	`, filesScanned, filesIndexed, errorsCount, status, id)
+		    errors_count = $3,
+		    encoding_refined = $4,
+		    xml_skipped = $5
+		WHERE id = $7
+	`, filesScanned, filesIndexed, errorsCount, encodingRefined, xmlSkipped, status, id)
 	return err
 }

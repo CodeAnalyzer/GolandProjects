@@ -242,12 +242,13 @@ func (db *DB) computeStats(ctx context.Context, lsaGeneration, descGeneration st
 	var finishedAt sql.NullTime
 	var status sql.NullString
 	var errorsCount sql.NullInt64
+	var encodingRefined, xmlSkipped sql.NullInt64
 	if err := db.QueryRowContext(ctx, `
-		SELECT id, started_at, finished_at, status, errors_count
+		SELECT id, started_at, finished_at, status, errors_count, encoding_refined, xml_skipped
 		FROM scan_runs
 		ORDER BY started_at DESC, id DESC
 		LIMIT 1
-	`).Scan(&stats.LastScanID, &stats.LastScanStarted, &finishedAt, &status, &errorsCount); err != nil {
+	`).Scan(&stats.LastScanID, &stats.LastScanStarted, &finishedAt, &status, &errorsCount, &encodingRefined, &xmlSkipped); err != nil {
 		if err != sql.ErrNoRows {
 			return nil, fmt.Errorf("failed to get last scan info: %w", err)
 		}
@@ -262,6 +263,12 @@ func (db *DB) computeStats(ctx context.Context, lsaGeneration, descGeneration st
 	}
 	if errorsCount.Valid {
 		stats.Errors = int(errorsCount.Int64)
+	}
+	if encodingRefined.Valid {
+		stats.LastScanEncodingRefined = int(encodingRefined.Int64)
+	}
+	if xmlSkipped.Valid {
+		stats.LastScanXMLSkipped = int(xmlSkipped.Int64)
 	}
 
 	return stats, nil

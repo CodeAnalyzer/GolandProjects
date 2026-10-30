@@ -7,6 +7,12 @@ func sanitizeUTF8String(value string) string {
 	if value == "" {
 		return value
 	}
+	// NUL — валидный UTF-8 байт, ToValidUTF8 его не удаляет, а PostgreSQL
+	// отвергает строки с 0x00. Быстрый предикат без копирования; замена —
+	// только при обнаружении (safety-net против недекодированного UTF-16).
+	if strings.IndexByte(value, 0) >= 0 {
+		value = strings.ReplaceAll(value, "\x00", "")
+	}
 	return strings.ToValidUTF8(value, "")
 }
 
