@@ -1,2 +1,6 @@
 *.log
 *.exe~
+.devin/
+.opencode/
+Tests/
+Logs/

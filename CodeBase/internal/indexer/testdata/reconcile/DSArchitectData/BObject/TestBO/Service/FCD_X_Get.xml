@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Object>
+  <ObjectTypeID>1</ObjectTypeID>
+  <ObjectName>FCD_X_Get</ObjectName>
+  <Implemented>1</Implemented>
+  <ShortDescription>Test service contract</ShortDescription>
+  <InputTables/>
+  <OutputTables/>
+  <ReturnValues/>
+</Object>

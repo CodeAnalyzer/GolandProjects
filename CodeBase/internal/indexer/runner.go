@@ -182,6 +182,12 @@ func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified
 	// backfill существующих строк, пропущенных pre-filter'ом mtime+size).
 	discoveryCutoff := idx.discoverGitSources(ctx, rootPath, newGitDetector())
 
+	// Safety-net аварийного окна «reconcile → удаление старых поколений»:
+	// чистит дубли поколений, оставшиеся после падения предыдущего прогона,
+	// до walk (изменённые пути текущего прогона сюда не попадают — их
+	// поколения создаются позже).
+	idx.reconcileStaleFileGenerations(ctx, rootPath)
+
 	existing, err := idx.db.GetLatestFilesByRootPath(ctx, rootPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load previous file state: %w", err)
@@ -297,17 +303,8 @@ errorLoopUpdate:
 	workersWG.Wait()
 	processDone := time.Now()
 
-	// Batch delete old rows for modified files, keeping the new file IDs.
-	// Должно выполняться ПОСЛЕ workersWG.Wait(), иначе cascade-удаление старых
-	// file rows удаляет spec_configs, на которые ссылаются создаваемые changes.
-	if len(modifiedPaths) > 0 && ctx.Err() == nil {
-		if err := idx.db.DeleteFilesByPathsExcept(ctx, modifiedPaths, newFileIDs); err != nil {
-			idx.logError("<cleanup>", "Error batch deleting outdated file rows: %v", err)
-			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
-		}
-	}
-
-	// Batch delete removed files (not seen in walker).
+	// Удалённые файлы = пути из предыдущего индекса, не увиденные walker'ом
+	// (seen заполнен feeder'ом, канал закрыт — набор полный).
 	removedPaths := make([]string, 0, 128)
 	for path := range existing {
 		if _, ok := seen[path]; ok {
@@ -315,7 +312,40 @@ errorLoopUpdate:
 		}
 		removedPaths = append(removedPaths, path)
 	}
+
+	// Согласование графа связей (change relations-incremental-consistency):
+	// purge рёбер старых источников + remap межфайловых целей ДО каскадного
+	// удаления старых поколений files (старые и новые сущности ещё
+	// сосуществуют, поэтому перенос целей возможен). При ошибке этапа старые
+	// поколения НЕ удаляются (обе версии живы, резолверы берут max id,
+	// мёртвых рёбер нет) — safety-net следующего прогона доведёт до конца.
+	reconcileOK := true
 	if ctx.Err() == nil {
+		// Стадия прогресс-репортера: на больших БД reconcile идёт десятки
+		// секунд (FA: ~79 с), строка счётчиков на это время замирает.
+		// Спиннер стадии живёт на собственной строке (как spec-lsa/desc-lsa).
+		collector.Add(func(stats *model.ScanStats) { stats.Stage = "relations reconcile" })
+		_, err := idx.reconcileRelations(ctx, modifiedPaths, newFileIDs, removedPaths)
+		collector.Add(func(stats *model.ScanStats) { stats.Stage = "" })
+		if err != nil {
+			idx.logError("<reconcile>", "Error reconciling relations: %v", err)
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+			reconcileOK = false
+		}
+	}
+
+	// Batch delete old rows for modified files, keeping the new file IDs.
+	// Должно выполняться ПОСЛЕ workersWG.Wait(), иначе cascade-удаление старых
+	// file rows удаляет spec_configs, на которые ссылаются создаваемые changes.
+	if len(modifiedPaths) > 0 && ctx.Err() == nil && reconcileOK {
+		if err := idx.db.DeleteFilesByPathsExcept(ctx, modifiedPaths, newFileIDs); err != nil {
+			idx.logError("<cleanup>", "Error batch deleting outdated file rows: %v", err)
+			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })
+		}
+	}
+
+	// Batch delete removed files (not seen in walker).
+	if ctx.Err() == nil && reconcileOK {
 		if err := idx.db.DeleteFilesByPaths(ctx, removedPaths); err != nil {
 			idx.logError("<cleanup>", "Error batch deleting removed files: %v", err)
 			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })

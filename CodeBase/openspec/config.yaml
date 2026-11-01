@@ -17,6 +17,7 @@ context: |
       api-macros-t01             — API-макросы из SQL + препроцессированные .t01 (generated subscriber calls)
       openspec-parsing           — OpenSpec-артефакты (spec.md, usecase-слои, changes, config.yaml): capability-иерархия, требования, сценарии, spec_code_mentions, зависимости, dual-write в symbols
       relations-postprocessing   — граф связей между сущностями + постобработка (PAS↔DFM, SQL calls, retcode, callbacks)
+      relations-consistency      — целостность графа при инкрементальной индексации: purge/remap рёбер старых поколений, инвариант без мёртвых концов
 
     query/                       — запросы к индексу
       symbol-search              — unified symbols index — поиск сущностей по имени
