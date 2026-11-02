@@ -762,12 +762,21 @@ func (q *Query) SearchDFMComponent(ctx context.Context, name string, like bool, 
 // фрагменты этой ветки — дубли внутри одной ветки сохраняются, поэтому на
 // одно-веточном индексе поведение не меняется.
 func (q *Query) SearchQueryFragment(ctx context.Context, text string, limit int) ([]QueryFragmentResult, error) {
+	// Идентификаторы отбираются из того же CTE matches, а не повторным join к
+	// query_fragments: повторный ILIKE по всей таблице с сортировкой по file_id
+	// провоцировал Merge Join с полным параллельным сканом (2.4 млн строк) —
+	// запрос по частому фрагменту ("select @@spid", 124 тыс. совпадений) уходил
+	// в statement timeout. Множество результатов эквивалентно: chosen строится
+	// из matches, а все строки выбранной ветки уже присутствуют в matches.
 	idRows, err := q.db.QueryContext(ctx, `
 		WITH matches AS (
-			SELECT COALESCE(qf.query_hash, md5(qf.query_text)) AS content_key,
+			SELECT qf.id,
+			       COALESCE(qf.query_hash, md5(qf.query_text)) AS content_key,
 			       COALESCE(f.ds_product_id, 0) AS product_key,
 			       COALESCE(f.ds_product_branch_id, 0) AS branch_key,
-			       COALESCE(br.is_default, FALSE) AS is_default
+			       COALESCE(br.is_default, FALSE) AS is_default,
+			       qf.file_id,
+			       qf.line_number
 			FROM query_fragments qf
 			JOIN files f ON qf.file_id = f.id
 			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
@@ -778,14 +787,12 @@ func (q *Query) SearchQueryFragment(ctx context.Context, text string, limit int)
 			FROM matches
 			ORDER BY content_key, product_key, `+q.profileMatchSQL("product_key", "branch_key")+` DESC, is_default DESC, branch_key DESC
 		)
-		SELECT qf.id
-		FROM query_fragments qf
-		JOIN files f ON qf.file_id = f.id
-		JOIN chosen ch ON ch.content_key = COALESCE(qf.query_hash, md5(qf.query_text))
-		             AND ch.product_key = COALESCE(f.ds_product_id, 0)
-		             AND ch.branch_key = COALESCE(f.ds_product_branch_id, 0)
-		WHERE qf.query_text ILIKE $1
-		ORDER BY qf.file_id, qf.line_number
+		SELECT m.id
+		FROM matches m
+		JOIN chosen ch ON ch.content_key = m.content_key
+		             AND ch.product_key = m.product_key
+		             AND ch.branch_key = m.branch_key
+		ORDER BY m.file_id, m.line_number
 		LIMIT $2
 	`, "%"+text+"%", limit)
 	if err != nil {
