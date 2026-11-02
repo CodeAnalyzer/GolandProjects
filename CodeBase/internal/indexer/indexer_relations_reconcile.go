@@ -44,26 +44,28 @@ func formatReconcileCounters(counts map[string]int64) string {
 	return strings.Join(parts, ", ")
 }
 
-// logReconcileResult печатает счётчики этапа рядом с другими фазами прогона;
-// нулевой прогон сообщает нули (требование «Наблюдаемость согласования»).
-// Ведущий \n завершает текущую строку прогресс-репортера (спиннер пишет
-// кадры через \r без перевода строки — иначе блок склеивается с ней).
+// logReconcileResult пишет счётчики этапа в лог индексатора
+// (indexer_errors_*.log), а не в консоль: печать поверх кадров
+// прогресс-репортера (\r-спиннер) разрывает строку прогресса. Нулевой прогон
+// сообщает нули (требование «Наблюдаемость согласования»).
 func (idx *Indexer) logReconcileResult(label string, result *relationsReconcileResult) {
-	fmt.Printf("\n%s: old_file_generations=%d purged=%d remapped=%d deleted_unresolved=%d elapsed_ms=%d\n",
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s: old_file_generations=%d purged=%d remapped=%d deleted_unresolved=%d elapsed_ms=%d",
 		label, result.OldFileGenerations,
 		reconcileCounterTotal(result.Purged),
 		reconcileCounterTotal(result.Remapped),
 		reconcileCounterTotal(result.DeletedUnresolved),
 		result.ElapsedMs)
 	if len(result.Purged) > 0 {
-		fmt.Printf("  purge by source_type: %s\n", formatReconcileCounters(result.Purged))
+		fmt.Fprintf(&sb, "\n  purge by source_type: %s", formatReconcileCounters(result.Purged))
 	}
 	if len(result.Remapped) > 0 {
-		fmt.Printf("  remap by target_type: %s\n", formatReconcileCounters(result.Remapped))
+		fmt.Fprintf(&sb, "\n  remap by target_type: %s", formatReconcileCounters(result.Remapped))
 	}
 	if len(result.DeletedUnresolved) > 0 {
-		fmt.Printf("  deleted_unresolved by target_type: %s\n", formatReconcileCounters(result.DeletedUnresolved))
+		fmt.Fprintf(&sb, "\n  deleted_unresolved by target_type: %s", formatReconcileCounters(result.DeletedUnresolved))
 	}
+	idx.errorLogger.Print(sb.String())
 }
 
 // reconcileRelations — этап согласования графа между парсингом (workers) и
@@ -161,6 +163,6 @@ func (idx *Indexer) reconcileStaleFileGenerations(ctx context.Context, rootPath 
 		DeletedUnresolved:  unresolved,
 		OldFileGenerations: len(oldIDs),
 	}
-	fmt.Printf("Relations safety-net: stale_paths=%d removed_file_rows=%d\n", len(paths), len(oldIDs))
+	idx.errorLogger.Printf("Relations safety-net: stale_paths=%d removed_file_rows=%d", len(paths), len(oldIDs))
 	idx.logReconcileResult("Relations safety-net reconcile", result)
 }

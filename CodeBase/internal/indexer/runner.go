@@ -321,12 +321,10 @@ errorLoopUpdate:
 	// мёртвых рёбер нет) — safety-net следующего прогона доведёт до конца.
 	reconcileOK := true
 	if ctx.Err() == nil {
-		// Стадия прогресс-репортера: на больших БД reconcile идёт десятки
-		// секунд (FA: ~79 с), строка счётчиков на это время замирает.
-		// Спиннер стадии живёт на собственной строке (как spec-lsa/desc-lsa).
-		collector.Add(func(stats *model.ScanStats) { stats.Stage = "relations reconcile" })
+		// Этап идёт под обычной строкой счётчиков: отдельная стадия-фаза
+		// печатается репортером на собственной строке и разрывает кадры
+		// прогресса. Счётчики этапа пишутся в indexer_errors_*.log.
 		_, err := idx.reconcileRelations(ctx, modifiedPaths, newFileIDs, removedPaths)
-		collector.Add(func(stats *model.ScanStats) { stats.Stage = "" })
 		if err != nil {
 			idx.logError("<reconcile>", "Error reconciling relations: %v", err)
 			collector.Add(func(stats *model.ScanStats) { stats.Errors++ })

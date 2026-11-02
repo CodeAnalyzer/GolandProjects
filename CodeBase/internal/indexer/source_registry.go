@@ -2,7 +2,6 @@ package indexer
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -182,7 +181,9 @@ func (idx *Indexer) discoverGitSources(ctx context.Context, rootPath string, det
 		if n, err := idx.db.BackfillFilesFromSources(ctx, backfill); err != nil {
 			idx.logError(rootPath, "Source discovery backfill: %v", err)
 		} else if n > 0 {
-			fmt.Printf("Source discovery: %d git sources, backfilled %d existing file rows\n", len(bindings), n)
+			// В лог, а не в консоль: вывод поверх кадров прогресс-репортера
+			// (\r-спиннер) разрывает строку прогресса.
+			idx.errorLogger.Printf("Source discovery: %d git sources, backfilled %d existing file rows", len(bindings), n)
 		}
 	}
 	return cutoff
@@ -201,6 +202,6 @@ func (idx *Indexer) cleanupStaleBranches(ctx context.Context, cutoff time.Time) 
 		return
 	}
 	if n > 0 {
-		fmt.Printf("Source discovery: removed %d stale branch rows without files\n", n)
+		idx.errorLogger.Printf("Source discovery: removed %d stale branch rows without files", n)
 	}
 }
