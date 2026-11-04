@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/codebase/internal/config"
 	"github.com/codebase/internal/errs"
 	"github.com/codebase/internal/model"
 	"github.com/codebase/internal/store"
@@ -305,34 +306,38 @@ func buildNameLookupCondition(fields []string, like bool, argPosition int) strin
 
 // needsReportFormsLookup сообщает, требует ли поиск с данным первичным
 // каноническим типом fallback на поля report_forms (form_name, form_class).
-// Единая точка решения для buildSymbolLookupCondition и SearchSymbol:
-// условие ссылается на rf.* только вместе с LEFT JOIN report_forms,
-// поэтому оба места обязаны проверять один и тот же предикат.
+// Решение потребляет SearchSymbol: при report_form CTE base собирается как
+// UNION ALL трёх индексных ветвей (см. reportFormFieldConditions).
 func needsReportFormsLookup(primaryType string) bool {
 	return strings.TrimSpace(primaryType) == "report_form"
 }
 
-// buildReportFormLookupCondition строит составное условие поиска символа
-// отчётной формы по трём именам: имя отчёта (symbol_name), имя DFM-формы
-// (rf.form_name) и класс DFM-формы (rf.form_class). Требует LEFT JOIN
-// report_forms rf в SearchSymbol (см. needsReportFormsLookup).
-func buildReportFormLookupCondition(like bool, argPosition int) string {
-	fields := []string{"s.symbol_name", "rf.form_name", "rf.form_class"}
+// reportFormFieldConditions строит условия трёхполевого поиска символа
+// отчётной формы: имя отчёта (symbol_name), имя DFM-формы (rf.form_name) и
+// класс DFM-формы (rf.form_class). Каждое условие применяется в отдельной
+// ветви UNION ALL (change optimize-query-search-bottlenecks, B3): прежний
+// единый OR по полям двух таблиц не позволял планировщику использовать
+// индексы — план перебирал все символы типа report_form с per-row lookup в
+// report_forms. Ветвь rf.form_name/rf.form_class идёт INNER JOIN от
+// report_forms: символы report_form без резолвнутой записи report_forms
+// находятся ветвью symbol_name и не теряются.
+func reportFormFieldConditions(like bool, argPosition int) []string {
 	if like {
-		return buildNameLookupCondition(fields, true, argPosition)
+		return []string{
+			fmt.Sprintf("s.symbol_name ILIKE $%d", argPosition),
+			fmt.Sprintf("rf.form_name ILIKE $%d", argPosition),
+			fmt.Sprintf("rf.form_class ILIKE $%d", argPosition),
+		}
 	}
-	conditions := make([]string, 0, len(fields))
-	for _, field := range fields {
-		conditions = append(conditions, fmt.Sprintf("LOWER(%s) = LOWER($%d)", field, argPosition))
+	return []string{
+		fmt.Sprintf("LOWER(s.symbol_name) = LOWER($%d)", argPosition),
+		fmt.Sprintf("LOWER(rf.form_name) = LOWER($%d)", argPosition),
+		fmt.Sprintf("LOWER(rf.form_class) = LOWER($%d)", argPosition),
 	}
-	return strings.Join(conditions, " OR ")
 }
 
 func buildSymbolLookupCondition(symbolType string, like bool, argPosition int) string {
 	normalizedType := strings.TrimSpace(symbolType)
-	if needsReportFormsLookup(normalizedType) {
-		return buildReportFormLookupCondition(like, argPosition)
-	}
 	if !like && normalizedType != "" && normalizedType != "form" {
 		return fmt.Sprintf("LOWER(s.symbol_name) = LOWER($%d)", argPosition)
 	}
@@ -382,6 +387,8 @@ const symbolOwnerKeyExpr = `
 // ветки); ключ дедупа — тип, имя, владелец (класс/форма для method/component),
 // продукт. Разные продукты и одноимённые методы разных классов остаются
 // отдельными строками; на одно-веточном индексе дедуп — no-op.
+// Трёхполевой fallback отчётных форм (report_form) выполняется UNION ALL
+// индексных ветвей — см. reportFormFieldConditions (B3).
 func (q *Query) SearchSymbol(ctx context.Context, name string, symbolType string, like bool, limit int) ([]SymbolResult, error) {
 	canonicalTypes, err := normalizeSymbolTypeFilter(symbolType)
 	if err != nil {
@@ -392,11 +399,20 @@ func (q *Query) SearchSymbol(ctx context.Context, name string, symbolType string
 		primaryType = canonicalTypes[0]
 	}
 	lookupValue := buildLookupValue(name, like)
-	lookupCondition := buildSymbolLookupCondition(primaryType, like, 1)
+	args := []interface{}{lookupValue}
+	typeFilter := ""
+	if len(canonicalTypes) > 0 {
+		// Фильтр по типу добавляется динамически, чтобы не плодить отдельные SQL-шаблоны.
+		// Один алиас (api_contract) разворачивается в несколько канонических типов.
+		typeFilter = " AND s.symbol_type = ANY($2)"
+		args = append(args, pq.Array(canonicalTypes))
+	}
+
 	// symbols — это unified index (унифицированный индекс), поэтому этот метод
 	// является самым общим способом найти сущность без знания конкретной таблицы-хранилища.
-	query := `
-		WITH base AS (
+	// symbolBaseBranch — одна индексная ветвь CTE base с общим списком колонок.
+	symbolBaseBranch := func(fromClause, condition string) string {
+		return `
 			SELECT
 				s.id,
 				s.file_id,
@@ -414,31 +430,37 @@ func (q *Query) SearchSymbol(ctx context.Context, name string, symbolType string
 				COALESCE(br.branch_key, '') AS branch_used,
 				(NOT f.is_generated) AS not_generated,
 				COALESCE(br.is_default, FALSE) AS is_default
-			FROM symbols s`
+			FROM ` + fromClause + `
+			JOIN files f ON s.file_id = f.id
+			LEFT JOIN ds_products pr ON pr.id = f.ds_product_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+			WHERE (` + condition + `)` + typeFilter
+	}
+
+	var baseQuery string
+	finalDistinct := ""
 	if needsReportFormsLookup(primaryType) {
-		// JOIN нужен для fallback-полей report_forms (form_name/form_class);
-		// guard по symbol_type исключает пересечение entity_id с идентификаторами
-		// других типов символов. LEFT, а не INNER: символы report_form без
-		// резолвнутой записи report_forms не теряются.
-		query += `
-		LEFT JOIN report_forms rf ON s.symbol_type = 'report_form' AND s.entity_id = rf.id`
-	}
-	query += `
-		JOIN files f ON s.file_id = f.id
-		LEFT JOIN ds_products pr ON pr.id = f.ds_product_id
-		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
-		WHERE (` + lookupCondition + `)
-	`
-	args := []interface{}{lookupValue}
-
-	if len(canonicalTypes) > 0 {
-		// Фильтр по типу добавляется динамически, чтобы не плодить отдельные SQL-шаблоны.
-		// Один алиас (api_contract) разворачивается в несколько канонических типов.
-		query += " AND s.symbol_type = ANY($2)"
-		args = append(args, pq.Array(canonicalTypes))
+		// Трёхполевой fallback отчётных форм как UNION ALL индексных ветвей
+		// (change optimize-query-search-bottlenecks, B3): ветвь symbol_name
+		// использует idx_symbols_symbol_name_type_lower, ветви form_name/
+		// form_class идут от небольшой report_forms с выходом на symbols через
+		// idx_symbols_entity_type_entity_id.
+		reportFormsFrom := "report_forms rf JOIN symbols s ON s.symbol_type = 'report_form' AND s.entity_id = rf.id"
+		conds := reportFormFieldConditions(like, 1)
+		baseQuery = symbolBaseBranch("symbols s", conds[0]) + `
+			UNION ALL
+		` + symbolBaseBranch(reportFormsFrom, conds[1]) + `
+			UNION ALL
+		` + symbolBaseBranch(reportFormsFrom, conds[2])
+		// Строка, совпавшая по нескольким полям, попадает в base дважды:
+		// дедуп точных копий по id (веточный дедуп выполняет chosen).
+		finalDistinct = "DISTINCT "
+	} else {
+		baseQuery = symbolBaseBranch("symbols s", buildSymbolLookupCondition(primaryType, like, 1))
 	}
 
-	query += `
+	query := `
+		WITH base AS (` + baseQuery + `
 		),
 		chosen AS (
 			SELECT DISTINCT ON (b.name_key, b.symbol_type, b.owner_key, b.product_key)
@@ -447,7 +469,7 @@ func (q *Query) SearchSymbol(ctx context.Context, name string, symbolType string
 			ORDER BY b.name_key, b.symbol_type, b.owner_key, b.product_key,
 			         b.not_generated DESC, ` + q.profileMatchSQL("b.product_key", "b.branch_id") + ` DESC, b.is_default DESC, b.id DESC
 		)
-		SELECT b.id, b.file_id, b.entity_id, b.symbol_name, b.symbol_type, b.entity_type,
+		SELECT ` + finalDistinct + `b.id, b.file_id, b.entity_id, b.symbol_name, b.symbol_type, b.entity_type,
 		       b.rel_path, b.line_number, b.signature, b.product, b.branch_used
 		FROM base b
 		JOIN chosen ch ON ch.name_key = b.name_key AND ch.symbol_type = b.symbol_type
@@ -756,20 +778,49 @@ func (q *Query) SearchDFMComponent(ctx context.Context, name string, like bool, 
 	return results, rows.Err()
 }
 
+// QueryFragmentSearchOutput — выдача поиска query fragments для CLI/MCP:
+// строки + признак усечения по потолку кандидатов (change
+// optimize-query-search-bottlenecks, B5): сверхширокий шаблон останавливает
+// выборку на sql_fragment_match_cap совпадениях вместо таймаута.
+type QueryFragmentSearchOutput struct {
+	Items     []QueryFragmentResult `json:"items"`
+	Truncated bool                  `json:"truncated"`
+	Hint      string                `json:"hint,omitempty"`
+}
+
+// QueryFragmentTruncatedHint — подсказка при усечении выдачи sql-fragment.
+const QueryFragmentTruncatedHint = "candidate set truncated at sql_fragment_match_cap; refine the pattern to see all matches"
+
 // SearchQueryFragment поиск фрагментов запросов. Побайтово идентичные копии
 // из разных веток одного продукта схлопываются: для группы (хэш текста,
 // продукт) выбирается одна ветка (приоритет default) и показываются все
 // фрагменты этой ветки — дубли внутри одной ветки сохраняются, поэтому на
 // одно-веточном индексе поведение не меняется.
-func (q *Query) SearchQueryFragment(ctx context.Context, text string, limit int) ([]QueryFragmentResult, error) {
+// Возвращает признак усечения: true, когда совпадений больше потолка
+// кандидатов query.sql_fragment_match_cap (внутренний LIMIT cap+1 в matches;
+// явный 0 в конфиге — без ограничения, план как до изменения).
+func (q *Query) SearchQueryFragment(ctx context.Context, text string, limit int) ([]QueryFragmentResult, bool, error) {
 	// Идентификаторы отбираются из того же CTE matches, а не повторным join к
 	// query_fragments: повторный ILIKE по всей таблице с сортировкой по file_id
 	// провоцировал Merge Join с полным параллельным сканом (2.4 млн строк) —
 	// запрос по частому фрагменту ("select @@spid", 124 тыс. совпадений) уходил
 	// в statement timeout. Множество результатов эквивалентно: chosen строится
 	// из matches, а все строки выбранной ветки уже присутствуют в matches.
-	idRows, err := q.db.QueryContext(ctx, `
-		WITH matches AS (
+	//
+	// Guard-потолок (B5): внутренний LIMIT cap+1 делает выборку matches ленивой
+	// — executor перестаёт тянуть строки из ILIKE-скана после cap+1, DISTINCT ON
+	// сортирует ≤ cap+1 строк. Окно count(*) OVER () стоит строго снаружи
+	// внутреннего LIMIT (считает ≤ cap+1 уже выбранных строк, не форсируя
+	// полный проход). total_matched > cap → усечение (truncated=true).
+	// config.Get() может быть nil (запрос без загруженного конфига) — тогда
+	// применяется дефолт потолка.
+	var queryCfg config.QueryConfig
+	if loaded := config.Get(); loaded != nil {
+		queryCfg = loaded.Query
+	}
+	matchCap := queryCfg.SQLFragmentMatchCapOrDefault()
+
+	matchesInner := `
 			SELECT qf.id,
 			       COALESCE(qf.query_hash, md5(qf.query_text)) AS content_key,
 			       COALESCE(f.ds_product_id, 0) AS product_key,
@@ -780,41 +831,76 @@ func (q *Query) SearchQueryFragment(ctx context.Context, text string, limit int)
 			FROM query_fragments qf
 			JOIN files f ON qf.file_id = f.id
 			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
-			WHERE qf.query_text ILIKE $1
-		),
+			WHERE qf.query_text ILIKE $1`
+
+	var matchesCTE string
+	totalColumn := ""
+	if matchCap > 0 {
+		matchesInner += `
+			LIMIT $3`
+		matchesCTE = `
+		WITH matches AS (
+			SELECT t.id, t.content_key, t.product_key, t.branch_key, t.is_default, t.file_id, t.line_number,
+			       count(*) OVER () AS total_matched
+			FROM (` + matchesInner + `
+			) t
+		)`
+		totalColumn = ", m.total_matched"
+	} else {
+		matchesCTE = `
+		WITH matches AS (` + matchesInner + `
+		)`
+	}
+
+	// Порядок аргументов обязан совпадать с нумерацией плейсхолдеров:
+	// $1 — шаблон, $2 — финальный LIMIT выдачи, $3 — внутренний LIMIT cap+1
+	// (только при включённом потолке).
+	queryArgs := []interface{}{"%" + text + "%", limit}
+	if matchCap > 0 {
+		queryArgs = append(queryArgs, matchCap+1)
+	}
+
+	idRows, err := q.db.QueryContext(ctx, matchesCTE+`,
 		chosen AS (
 			SELECT DISTINCT ON (content_key, product_key) content_key, product_key, branch_key
 			FROM matches
 			ORDER BY content_key, product_key, `+q.profileMatchSQL("product_key", "branch_key")+` DESC, is_default DESC, branch_key DESC
 		)
-		SELECT m.id
+		SELECT m.id`+totalColumn+`
 		FROM matches m
 		JOIN chosen ch ON ch.content_key = m.content_key
 		             AND ch.product_key = m.product_key
 		             AND ch.branch_key = m.branch_key
 		ORDER BY m.file_id, m.line_number
 		LIMIT $2
-	`, "%"+text+"%", limit)
+	`, queryArgs...)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer idRows.Close()
 
 	ids := make([]int64, 0, limit)
 	positions := make(map[int64]int, limit)
+	totalMatched := 0
 	for idRows.Next() {
 		var id int64
-		if err := idRows.Scan(&id); err != nil {
-			return nil, err
+		if matchCap > 0 {
+			if err := idRows.Scan(&id, &totalMatched); err != nil {
+				return nil, false, err
+			}
+		} else {
+			if err := idRows.Scan(&id); err != nil {
+				return nil, false, err
+			}
 		}
 		positions[id] = len(ids)
 		ids = append(ids, id)
 	}
 	if err := idRows.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if len(ids) == 0 {
-		return []QueryFragmentResult{}, nil
+		return []QueryFragmentResult{}, false, nil
 	}
 
 	placeholders := make([]string, 0, len(ids))
@@ -845,7 +931,7 @@ func (q *Query) SearchQueryFragment(ctx context.Context, text string, limit int)
 
 	rows, err := q.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 
@@ -854,7 +940,7 @@ func (q *Query) SearchQueryFragment(ctx context.Context, text string, limit int)
 		var r QueryFragmentResult
 		var tablesJSON []byte
 		if err := rows.Scan(&r.ID, &r.FileID, &r.ParentType, &r.ParentID, &r.ComponentName, &r.ComponentType, &r.QueryText, &tablesJSON, &r.Context, &r.File, &r.LineNumber, &r.Product, &r.BranchUsed); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if len(tablesJSON) > 0 {
 			_ = json.Unmarshal(tablesJSON, &r.TablesReferenced)
@@ -865,7 +951,8 @@ func (q *Query) SearchQueryFragment(ctx context.Context, text string, limit int)
 		}
 	}
 
-	return results, rows.Err()
+	truncated := matchCap > 0 && totalMatched > matchCap
+	return results, truncated, rows.Err()
 }
 
 // SearchReportField поиск report fields: не более одной строки на поле отчёта

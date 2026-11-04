@@ -532,7 +532,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_query_sql_fragment": {
-			Definition: toolDefinition{Name: "codebase_query_sql_fragment", Description: "Search indexed SQL query fragments (inline SQL embedded in PAS/JS/VB/SMF/DFM source files) by text content. Returns the fragment text, parent entity (method/function), file path and line number. Use when looking for ad-hoc queries that reference a table or procedure name but are not standalone SQL procedures.", InputSchema: querySchema("text", stringProp("Text fragment"), map[string]interface{}{"limit": intProp("Max results")})},
+			Definition: toolDefinition{Name: "codebase_query_sql_fragment", Description: "Search indexed SQL query fragments (inline SQL embedded in PAS/JS/VB/SMF/DFM source files) by text content. Returns an object {items, truncated, hint}: items are fragments (fragment text, parent entity, file path, line number); truncated=true means the candidate set hit the sql_fragment_match_cap limit — refine the pattern to see all matches. Use when looking for ad-hoc queries that reference a table or procedure name but are not standalone SQL procedures.", InputSchema: querySchema("text", stringProp("Text fragment"), map[string]interface{}{"limit": intProp("Max results")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				text, err := requiredString(args, "text")
 				if err != nil {
@@ -540,7 +540,18 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				}
 				limit := optionalLimit(args)
 				return runQueryOpt(ctx, db, args, func(q *query.Query) (interface{}, error) {
-					return q.SearchQueryFragment(ctx, text, limit)
+					fragments, truncated, err := q.SearchQueryFragment(ctx, text, limit)
+					if err != nil {
+						return nil, err
+					}
+					if fragments == nil {
+						fragments = []query.QueryFragmentResult{}
+					}
+					output := &query.QueryFragmentSearchOutput{Items: fragments, Truncated: truncated}
+					if truncated {
+						output.Hint = query.QueryFragmentTruncatedHint
+					}
+					return output, nil
 				})
 			},
 		},
@@ -1421,7 +1432,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_query_spec_search": {
-			Definition: toolDefinition{Name: "codebase_query_spec_search", Description: "Two-layer full-text search across OpenSpec capabilities: exact (tsvector + trigram) and semantic (LSA). Returns separate sections for exact and semantic matches. Use filters product (DS product name) and level (capability, requirement, scenario, usecase) to narrow results.", InputSchema: querySchema("query", stringProp("Search text"), map[string]interface{}{"product": stringProp("Filter by DS product name"), "level": stringProp("Filter by spec level: capability, requirement, scenario, usecase"), "layer": stringProp("Search layer: exact, semantic, or both"), "limit": intProp("Max results per section")})},
+			Definition: toolDefinition{Name: "codebase_query_spec_search", Description: "Two-layer search across OpenSpec capabilities. Layer exact is lexical: full-text tsvector plus trigram by tech names (related_code) and code mentions; layer semantic is LSA. Returns separate sections for exact and semantic matches. Use filters product (DS product name) and level (capability, requirement, scenario, usecase) to narrow results.", InputSchema: querySchema("query", stringProp("Search text"), map[string]interface{}{"product": stringProp("Filter by DS product name"), "level": stringProp("Filter by spec level: capability, requirement, scenario, usecase"), "layer": stringProp("Search layer: exact (lexical: tsvector + tech-name trigram), semantic (LSA), or both"), "limit": intProp("Max results per section")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				q, err := requiredString(args, "query")
 				if err != nil {

@@ -257,13 +257,21 @@ func QueryLexicalCoverage(query string) (recognized, total int) {
 // токенизатор не распознал и которые не являются стоп-словами.
 func UnrecognizedWords(query string) []string {
 	units := lexicalUnits(query)
-	unrecognized := make([]string, 0)
+	unrecognized := make([]string, 0, len(units))
 	for _, unit := range units {
 		if !isRecognizedLexicalUnit(unit) {
 			unrecognized = append(unrecognized, unit)
 		}
 	}
 	return unrecognized
+}
+
+// LexicalUnitCount возвращает число «сырых» лексических единиц запроса по
+// правилу QueryLexicalCoverage (последовательность букв/цифр/подчёркиваний
+// длиной ≥ 2 рун с хотя бы одной буквой). Используется гейтингом trgm-слоя
+// spec-поиска (change optimize-query-search-bottlenecks, B2).
+func LexicalUnitCount(query string) int {
+	return len(lexicalUnits(query))
 }
 
 // QueryCoverageGate вычисляет долю распознанных слов и признак срабатывания

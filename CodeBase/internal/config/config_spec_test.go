@@ -69,6 +69,37 @@ func TestSpecDefaults_NegativeThresholdRejected(t *testing.T) {
 	}
 }
 
+// TestSQLFragmentMatchCap — tri-state семантика потолка кандидатов sql-fragment
+// (change optimize-query-search-bottlenecks, B5): отсутствует → дефолт,
+// явный 0 → без ограничения, отрицательное → ошибка загрузки.
+func TestSQLFragmentMatchCap(t *testing.T) {
+	if err := writeTestConfig(t, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := Get().Query.SQLFragmentMatchCapOrDefault(); got != DefaultSQLFragmentMatchCap {
+		t.Errorf("absent cap = %d, want default %d", got, DefaultSQLFragmentMatchCap)
+	}
+
+	if err := writeTestConfig(t, "\n[query]\nsql_fragment_match_cap = 0\n"); err != nil {
+		t.Fatal(err)
+	}
+	if got := Get().Query.SQLFragmentMatchCapOrDefault(); got != 0 {
+		t.Errorf("explicit 0 must disable cap, got %d", got)
+	}
+
+	if err := writeTestConfig(t, "\n[query]\nsql_fragment_match_cap = 1000\n"); err != nil {
+		t.Fatal(err)
+	}
+	if got := Get().Query.SQLFragmentMatchCapOrDefault(); got != 1000 {
+		t.Errorf("explicit 1000 must be preserved, got %d", got)
+	}
+
+	err := writeTestConfig(t, "\n[query]\nsql_fragment_match_cap = -1\n")
+	if err == nil || !strings.Contains(err.Error(), "sql_fragment_match_cap") {
+		t.Errorf("expected error for negative cap, got %v", err)
+	}
+}
+
 func TestSpecThresholds_ExplicitValues(t *testing.T) {
 	if err := writeTestConfig(t, "\n[spec]\nlsa_min_cosine = 0.3\nlsa_relative_cutoff = 0.7\n"); err != nil {
 		t.Fatal(err)

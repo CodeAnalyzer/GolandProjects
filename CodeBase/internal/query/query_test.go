@@ -76,19 +76,31 @@ func TestBuildSymbolLookupCondition_LikeUsesILike(t *testing.T) {
 	}
 }
 
-func TestBuildSymbolLookupCondition_ReportFormTypeSearchesNameAndFormFields(t *testing.T) {
-	got := buildSymbolLookupCondition("report_form", false, 1)
-	want := "LOWER(s.symbol_name) = LOWER($1) OR LOWER(rf.form_name) = LOWER($1) OR LOWER(rf.form_class) = LOWER($1)"
-	if got != want {
-		t.Fatalf("condition: got=%q want=%q", got, want)
+func TestReportFormFieldConditions_ExactUsesLowerEq(t *testing.T) {
+	got := reportFormFieldConditions(false, 1)
+	want := "LOWER(s.symbol_name) = LOWER($1)|LOWER(rf.form_name) = LOWER($1)|LOWER(rf.form_class) = LOWER($1)"
+	if strings.Join(got, "|") != want {
+		t.Fatalf("conditions: got=%q want=%q", strings.Join(got, "|"), want)
 	}
 }
 
-func TestBuildSymbolLookupCondition_ReportFormLikeUsesILike(t *testing.T) {
-	got := buildSymbolLookupCondition("report_form", true, 2)
-	want := "s.symbol_name ILIKE $2 OR rf.form_name ILIKE $2 OR rf.form_class ILIKE $2"
-	if got != want {
-		t.Fatalf("condition: got=%q want=%q", got, want)
+func TestReportFormFieldConditions_LikeUsesILike(t *testing.T) {
+	got := reportFormFieldConditions(true, 2)
+	want := "s.symbol_name ILIKE $2|rf.form_name ILIKE $2|rf.form_class ILIKE $2"
+	if strings.Join(got, "|") != want {
+		t.Fatalf("conditions: got=%q want=%q", strings.Join(got, "|"), want)
+	}
+}
+
+// Трёхполевой fallback report_form больше не входит в buildSymbolLookupCondition:
+// SearchSymbol собирает его отдельными ветвями UNION ALL (B3), поэтому условие
+// для report_form не должно ссылаться на rf.*.
+func TestBuildSymbolLookupCondition_ReportFormDoesNotReferenceReportForms(t *testing.T) {
+	for _, like := range []bool{false, true} {
+		got := buildSymbolLookupCondition("report_form", like, 1)
+		if strings.Contains(got, "rf.") {
+			t.Fatalf("report_form condition must be branch-based, no rf.* (like=%v): %q", like, got)
+		}
 	}
 }
 

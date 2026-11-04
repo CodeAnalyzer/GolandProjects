@@ -57,8 +57,9 @@ command_enabled = true
 
 # Лимиты для query/rti/trc вызовов
 [query]
-default_limit = 100   # Лимит по умолчанию
-max_limit = 1000      # Максимальный лимит (hard cap)
+default_limit = 100          # Лимит по умолчанию
+max_limit = 1000             # Максимальный лимит (hard cap)
+sql_fragment_match_cap = 50000  # Потолок кандидатов query sql-fragment (0 = без ограничения)
 
 # Настройки RTI-анализатора
 [rti]

@@ -34,6 +34,8 @@ type queryResponseMeta struct {
 	Filters      map[string]string            `json:"filters,omitempty"`
 	Output       string                       `json:"output,omitempty"`
 	HasMore      bool                         `json:"has_more,omitempty"`
+	Truncated    bool                         `json:"truncated,omitempty"`
+	Hint         string                       `json:"hint,omitempty"`
 	SemanticMeta *specfts.SemanticDiagnostics `json:"semantic_meta,omitempty"`
 }
 

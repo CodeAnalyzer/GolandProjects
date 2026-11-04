@@ -288,29 +288,12 @@ func (q *Query) searchDescriptionsSemantic(ctx context.Context, text string, kin
 	}
 
 	// Дедуп «контракт вытесняет процедуру» для semantic-стороны: процедуры,
-	// реализующие контракты с непустым описанием (лёгкий запрос, ~тысячи строк).
-	displaced := make(map[int64]bool)
-	dRows, err := q.db.QueryContext(ctx, `
-		SELECT r.source_id
-		FROM relations r
-		JOIN api_contracts dc ON dc.id = r.target_id AND r.target_type = 'api_contract'
-		WHERE r.source_type = 'sql_procedure'
-		  AND r.relation_type = 'implements_contract'
-		  AND coalesce(dc.short_description, '') || coalesce(dc.full_description, '') <> ''`)
+	// реализующие контракты с непустым описанием. Множество кешируется по
+	// ключу «поколение модели + эпоха индексации» (B8): per-call SQL ~1 с на
+	// вытесняющих контрактах; состав выдачи идентичен per-call выборке.
+	displaced, err := descDisplacedCache.get(ctx, q, model.Generation)
 	if err != nil {
-		return nil, nil, fmt.Errorf("desc semantic displaced: %w", err)
-	}
-	for dRows.Next() {
-		var id int64
-		if err := dRows.Scan(&id); err != nil {
-			dRows.Close()
-			return nil, nil, fmt.Errorf("desc semantic displaced scan: %w", err)
-		}
-		displaced[id] = true
-	}
-	dRows.Close()
-	if err := dRows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("desc semantic displaced rows: %w", err)
+		return nil, nil, err
 	}
 
 	kindSet := make(map[string]bool, len(kinds))

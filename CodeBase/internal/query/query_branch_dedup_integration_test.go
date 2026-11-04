@@ -329,7 +329,7 @@ func TestFindPASMethodsByNameBranchDedup(t *testing.T) {
 // develop и SP схлопываются в одну строку develop.
 func TestSearchQueryFragmentCollapse(t *testing.T) {
 	_, q := seedBranchDedupFixture(t)
-	results, err := q.SearchQueryFragment(context.Background(), "FROM TA_DUP WHERE Rest", 10)
+	results, _, err := q.SearchQueryFragment(context.Background(), "FROM TA_DUP WHERE Rest", 10)
 	if err != nil {
 		t.Fatalf("SearchQueryFragment: %v", err)
 	}

@@ -28,11 +28,11 @@ func (m *mockClientLookup) SearchDFMForm(ctx context.Context, name string, like 
 	return nil, nil
 }
 
-func (m *mockClientLookup) SearchQueryFragment(ctx context.Context, text string, limit int) ([]query.QueryFragmentResult, error) {
+func (m *mockClientLookup) SearchQueryFragment(ctx context.Context, text string, limit int) ([]query.QueryFragmentResult, bool, error) {
 	if res, ok := m.queryFragment[text]; ok {
-		return res, nil
+		return res, false, nil
 	}
-	return nil, nil
+	return nil, false, nil
 }
 
 func TestEnrichClientEvent_ClassMethodMatch(t *testing.T) {

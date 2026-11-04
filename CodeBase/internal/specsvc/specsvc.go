@@ -398,8 +398,12 @@ func ExecuteSpecSearch(ctx context.Context, db *store.DB, query string, product 
 		}
 		result.Exact = exact
 
-		// Слой 1b: trgm по техименам в capabilities
-		trgm, err := searchSpecTrgm(ctx, db, query, product, level, limit)
+		// Слой 1b: trgm по техименам в capabilities и code mentions.
+		// Body-ветви (body_text, сценарии, usecases) гейтятся по числу
+		// лексических единиц запроса: для длинных фраз similarity-поиск
+		// по текстам гарантированно пуст и многосекунден (B2).
+		trgm, err := searchSpecTrgm(ctx, db, query, product, level, limit,
+			specfts.LexicalUnitCount(query) <= specTrgmMaxQueryTokens)
 		if err != nil {
 			return nil, fmt.Errorf("spec search trgm: %w", err)
 		}
@@ -1309,12 +1313,14 @@ func searchSpecExact(ctx context.Context, db *store.DB, query, product, level st
 			       CONCAT_WS(' ', c.title, c.purpose, c.notes) AS snippet,
 			       c.search_vector, c.ds_product_id, c.file_id
 			FROM spec_capabilities c
+			WHERE c.search_vector @@ plainto_tsquery('russian', $1)
 			UNION ALL
 			SELECT req.id, c.id, c.capability_name,
 			       c.capability_name || '|' || req.requirement_name,
 			       'requirement', req.requirement_name, '',
 			       req.line_start, req.line_end, req.body_text, req.search_vector, c.ds_product_id, req.file_id
 			FROM spec_requirements req JOIN spec_capabilities c ON c.id = req.capability_id
+			WHERE req.search_vector @@ plainto_tsquery('russian', $1)
 			UNION ALL
 			SELECT s.id, c.id, c.capability_name,
 			       c.capability_name || '|' || s.scenario_name,
@@ -1324,6 +1330,7 @@ func searchSpecExact(ctx context.Context, db *store.DB, query, product, level st
 			FROM spec_scenarios s
 			JOIN spec_requirements req ON req.id = s.requirement_id
 			JOIN spec_capabilities c ON c.id = req.capability_id
+			WHERE s.search_vector @@ plainto_tsquery('russian', $1)
 			UNION ALL
 			SELECT uc.id, 0, uc.usecase_name, uc.usecase_name,
 			       'usecase', uc.title, '',
@@ -1331,6 +1338,7 @@ func searchSpecExact(ctx context.Context, db *store.DB, query, product, level st
 			       CONCAT_WS(' ', uc.description, uc.actors, uc.preconditions, uc.postconditions),
 			       uc.search_vector, cfg.ds_product_id, uc.file_id
 			FROM spec_usecases uc JOIN spec_configs cfg ON cfg.id = uc.spec_config_id
+			WHERE uc.search_vector @@ plainto_tsquery('russian', $1)
 		)
 		, chosen AS (
 			SELECT DISTINCT ON (a.level, a.name_key, COALESCE(dp.product_name, ''))
@@ -1385,21 +1393,26 @@ func searchSpecExact(ctx context.Context, db *store.DB, query, product, level st
 	return hits, rows.Err()
 }
 
+// specTrgmMaxQueryTokens — порог гейтинга body-trgm (change
+// optimize-query-search-bottlenecks, B2): similarity-поиск по текстовым полям
+// (body_text, тексты сценариев/usecases) выполняется только для запросов с
+// числом лексических единиц (specfts.LexicalUnitCount) не больше этого
+// значения. Similarity короткого запроса против длинного текста ограничена
+// ниже порога 0.3 конструированием (union триграмм), recheck отбрасывает всех
+// кандидатов, при этом скан и recheck стоят до секунд на боевом индексе.
+// Tech-пути (related_code, точное сравнение и trgm по mention_name) гейтинга
+// не имеют и выполняются для любых запросов.
+const specTrgmMaxQueryTokens = 2
+
 // searchSpecTrgm — trgm поиск по индексируемым именам и code mentions.
 // Копии артефактов из разных веток одного продукта схлопываются:
 // DISTINCT ON (level, name_key, продукт) с приоритетом default-ветки.
-func searchSpecTrgm(ctx context.Context, db *store.DB, query, product, level string, limit int) ([]SpecSearchHit, error) {
-	rows, err := db.QueryContext(ctx, `
-		WITH trgm_hits AS (
-			SELECT c.id AS capability_id, c.capability_name, c.id AS entity_id, 'capability'::text AS level,
-			       c.title, COALESCE(c.purpose, '') AS purpose, c.line_start, c.line_end,
-			       CONCAT_WS(' ', c.title, c.purpose, c.notes, c.related_code) AS snippet,
-			       similarity(c.related_code, $1) AS rank,
-			       COALESCE(dp.product_name, '') AS product,
-			       c.capability_name AS name_key, c.file_id
-			FROM spec_capabilities c
-			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
-			WHERE c.related_code % $1
+// includeBody включает body-ветви (body_text, сценарии, usecases) — см.
+// specTrgmMaxQueryTokens; tech-ветви выполняются всегда.
+func searchSpecTrgm(ctx context.Context, db *store.DB, query, product, level string, limit int, includeBody bool) ([]SpecSearchHit, error) {
+	var bodyBranches string
+	if includeBody {
+		bodyBranches = `
 			UNION ALL
 			SELECT c.id, c.capability_name, req.id, 'requirement', req.requirement_name, '',
 			       req.line_start, req.line_end, req.body_text,
@@ -1432,7 +1445,19 @@ func searchSpecTrgm(ctx context.Context, db *store.DB, query, product, level str
 			FROM spec_usecases uc
 			JOIN spec_configs cfg ON cfg.id = uc.spec_config_id
 			LEFT JOIN ds_products dp ON dp.id = cfg.ds_product_id
-			WHERE (uc.usecase_name || ' ' || uc.title || ' ' || COALESCE(uc.description, '') || ' ' || COALESCE(uc.actors, '') || ' ' || COALESCE(uc.preconditions, '') || ' ' || COALESCE(uc.postconditions, '') || ' ' || COALESCE(uc.business_value, '') || ' ' || COALESCE(uc.architecture, '') || ' ' || COALESCE(uc.data_schema, '')) % $1
+			WHERE (uc.usecase_name || ' ' || uc.title || ' ' || COALESCE(uc.description, '') || ' ' || COALESCE(uc.actors, '') || ' ' || COALESCE(uc.preconditions, '') || ' ' || COALESCE(uc.postconditions, '') || ' ' || COALESCE(uc.business_value, '') || ' ' || COALESCE(uc.architecture, '') || ' ' || COALESCE(uc.data_schema, '')) % $1`
+	}
+	rows, err := db.QueryContext(ctx, `
+		WITH trgm_hits AS (
+			SELECT c.id AS capability_id, c.capability_name, c.id AS entity_id, 'capability'::text AS level,
+			       c.title, COALESCE(c.purpose, '') AS purpose, c.line_start, c.line_end,
+			       CONCAT_WS(' ', c.title, c.purpose, c.notes, c.related_code) AS snippet,
+			       similarity(c.related_code, $1) AS rank,
+			       COALESCE(dp.product_name, '') AS product,
+			       c.capability_name AS name_key, c.file_id
+			FROM spec_capabilities c
+			LEFT JOIN ds_products dp ON dp.id = c.ds_product_id
+			WHERE c.related_code % $1`+bodyBranches+`
 			UNION ALL
 			SELECT c.id, c.capability_name, c.id, 'capability', c.title, COALESCE(c.purpose, ''), c.line_start, c.line_end,
 			       CONCAT_WS(' ', c.title, c.purpose, c.notes, c.related_code),

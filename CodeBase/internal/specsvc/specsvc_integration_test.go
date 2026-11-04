@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1257,5 +1258,230 @@ func TestExecuteSpecByCodeSourceSnippets(t *testing.T) {
 		if !seen[sourceType] {
 			t.Fatalf("missing %s source hit: %+v", sourceType, result.Hits)
 		}
+	}
+}
+
+// legacySpecExactSQL — прежний вид запроса searchSpecExact (до проталкивания
+// FTS-предиката в ветки UNION ALL): эталон для проверки эквивалентности
+// оптимизированного плана (change optimize-query-search-bottlenecks, B1).
+const legacySpecExactSQL = `
+	WITH artifacts AS (
+		SELECT c.id AS entity_id, c.id AS capability_id, c.capability_name,
+		       c.capability_name AS name_key,
+		       'capability'::text AS level, c.title, COALESCE(c.purpose, '') AS purpose,
+		       c.line_start, c.line_end,
+		       CONCAT_WS(' ', c.title, c.purpose, c.notes) AS snippet,
+		       c.search_vector, c.ds_product_id, c.file_id
+		FROM spec_capabilities c
+		UNION ALL
+		SELECT req.id, c.id, c.capability_name,
+		       c.capability_name || '|' || req.requirement_name,
+		       'requirement', req.requirement_name, '',
+		       req.line_start, req.line_end, req.body_text, req.search_vector, c.ds_product_id, req.file_id
+		FROM spec_requirements req JOIN spec_capabilities c ON c.id = req.capability_id
+		UNION ALL
+		SELECT s.id, c.id, c.capability_name,
+		       c.capability_name || '|' || s.scenario_name,
+		       'scenario', s.scenario_name, '',
+		       s.line_start, s.line_end,
+		       CONCAT_WS(' ', s.given_text, s.when_text, s.then_text), s.search_vector, c.ds_product_id, s.file_id
+		FROM spec_scenarios s
+		JOIN spec_requirements req ON req.id = s.requirement_id
+		JOIN spec_capabilities c ON c.id = req.capability_id
+		UNION ALL
+		SELECT uc.id, 0, uc.usecase_name, uc.usecase_name,
+		       'usecase', uc.title, '',
+		       uc.line_start, uc.line_end,
+		       CONCAT_WS(' ', uc.description, uc.actors, uc.preconditions, uc.postconditions),
+		       uc.search_vector, cfg.ds_product_id, uc.file_id
+		FROM spec_usecases uc JOIN spec_configs cfg ON cfg.id = uc.spec_config_id
+	)
+	, chosen AS (
+		SELECT DISTINCT ON (a.level, a.name_key, COALESCE(dp.product_name, ''))
+		       a.level AS level_key,
+		       a.name_key,
+		       COALESCE(dp.product_name, '') AS product_key,
+		       f.ds_product_branch_id AS branch_id
+		FROM artifacts a
+		JOIN files f ON f.id = a.file_id
+		LEFT JOIN ds_products dp ON dp.id = a.ds_product_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+		WHERE a.search_vector @@ plainto_tsquery('russian', $1)
+		  AND ($2 = '' OR dp.product_name = $2)
+		  AND ($3 = '' OR LOWER(a.level) = LOWER($3))
+		ORDER BY a.level, a.name_key, COALESCE(dp.product_name, ''),
+		         (NOT f.is_generated) DESC, COALESCE(br.is_default, FALSE) DESC, a.entity_id DESC
+	)
+	SELECT a.capability_id, a.capability_name, a.entity_id, a.level, a.title, a.purpose,
+	       a.line_start, a.line_end, a.snippet,
+	       ts_rank(a.search_vector, plainto_tsquery('russian', $1)) AS rank,
+	       COALESCE(dp.product_name, '') AS product,
+	       COALESCE(br.branch_key, '') AS branch_used
+	FROM artifacts a
+	JOIN files f ON f.id = a.file_id
+	LEFT JOIN ds_products dp ON dp.id = a.ds_product_id
+	LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+	JOIN chosen ch ON ch.level_key = a.level
+	             AND ch.name_key = a.name_key
+	             AND ch.product_key = COALESCE(dp.product_name, '')
+	             AND ch.branch_id IS NOT DISTINCT FROM f.ds_product_branch_id
+	WHERE a.search_vector @@ plainto_tsquery('russian', $1)
+	  AND ($2 = '' OR dp.product_name = $2)
+	  AND ($3 = '' OR LOWER(a.level) = LOWER($3))
+	ORDER BY rank DESC, a.level, a.entity_id
+	LIMIT $4`
+
+// TestSpecSearchExactPushdownEquivalence: после проталкивания FTS-предиката
+// в ветки UNION ALL состав хитов и ранги tsvector-слоя совпадают с прежним
+// запросом (предикат снаружи CTE) для пачки фраз по всем четырём уровням.
+func TestSpecSearchExactPushdownEquivalence(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+	fileID := insertFileDirect(t, db, "specs/pushdown/spec.md")
+	capID := insertSpecConfigAndCapabilityDirect(t, db, fileID, "arrest-capability")
+	reqID := insertRequirementDirect(t, db, fileID, capID, "арест счёта", "аналитический счёт арестован по решению суда", 3, 5)
+	scenarioID := insertScenarioDirect(t, db, fileID, reqID, "сценарий ареста", "дано арест аналитического счёта", "когда арест исполнен", "тогда счёт арестован", 6, 9)
+	_ = scenarioID
+
+	var cfgID int64
+	if err := db.QueryRow(
+		`INSERT INTO spec_configs (file_id, product_name) VALUES ($1, 'fa-contracts') RETURNING id`,
+		fileID,
+	).Scan(&cfgID); err != nil {
+		t.Fatalf("insert spec_config: %v", err)
+	}
+	usecaseID := insertSpecUsecaseDirect(t, db, fileID, cfgID, "usecase-ареста")
+	_ = usecaseID
+
+	if err := db.EnsureSpecSearchVectors(ctx, fileID); err != nil {
+		t.Fatalf("EnsureSpecSearchVectors: %v", err)
+	}
+
+	queries := []string{"арест", "арест счёта", "счёт", "аналитический"}
+	for _, query := range queries {
+		result, err := specsvc.ExecuteSpecSearch(ctx, db, query, "", "", "exact", 100)
+		if err != nil {
+			t.Fatalf("ExecuteSpecSearch %q: %v", query, err)
+		}
+
+		type legacyHit struct {
+			level    string
+			entityID int64
+			rank     float64
+		}
+		var legacy []legacyHit
+		rows, err := db.QueryContext(ctx, legacySpecExactSQL, query, "", "", 100)
+		if err != nil {
+			t.Fatalf("legacy query %q: %v", query, err)
+		}
+		for rows.Next() {
+			var h legacyHit
+			var capabilityID int64
+			var capabilityName, title, purpose, snippet, product, branch string
+			var lineStart, lineEnd int
+			if err := rows.Scan(&capabilityID, &capabilityName, &h.entityID, &h.level, &title, &purpose, &lineStart, &lineEnd, &snippet, &h.rank, &product, &branch); err != nil {
+				rows.Close()
+				t.Fatalf("legacy scan %q: %v", query, err)
+			}
+			legacy = append(legacy, h)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			t.Fatalf("legacy rows %q: %v", query, err)
+		}
+
+		// Множество артефактов совпадает с прежним запросом.
+		gotSet := make(map[string]float64, len(result.Exact))
+		for _, hit := range result.Exact {
+			gotSet[hit.Level+"|"+fmt.Sprintf("%d", hit.EntityID)] = hit.Rank
+		}
+		if len(gotSet) != len(legacy) {
+			t.Fatalf("query %q: got %d hits, legacy %d: %+v vs %+v", query, len(gotSet), len(legacy), result.Exact, legacy)
+		}
+		for _, h := range legacy {
+			key := h.level + "|" + fmt.Sprintf("%d", h.entityID)
+			rank, ok := gotSet[key]
+			if !ok {
+				t.Fatalf("query %q: legacy hit %s missing in new result: %+v", query, key, result.Exact)
+			}
+			// Ранг сверяем только у tsvector-хитов: trgm-слияние может
+			// заменить ранг совпавшего артефакта на similarity-ранг.
+			for _, hit := range result.Exact {
+				if hit.Level == h.level && hit.EntityID == h.entityID && hit.Source == "tsvector" {
+					if math.Abs(hit.Rank-h.rank) > 1e-9 {
+						t.Fatalf("query %q: hit %s rank = %v, legacy %v", query, key, hit.Rank, h.rank)
+					}
+				}
+			}
+			_ = rank
+		}
+	}
+
+	// Смоук: три уровня из четырёх находятся новым запросом (capability
+	// в фикстуре не содержит русских лексем — имя латиницей, стемминг
+	// «арест» его не матчит ни старым, ни новым запросом).
+	result, err := specsvc.ExecuteSpecSearch(ctx, db, "арест", "", "", "exact", 100)
+	if err != nil {
+		t.Fatalf("ExecuteSpecSearch: %v", err)
+	}
+	levels := map[string]bool{}
+	for _, hit := range result.Exact {
+		levels[hit.Level] = true
+	}
+	for _, level := range []string{"requirement", "scenario", "usecase"} {
+		if !levels[level] {
+			t.Fatalf("level %s not found: %+v", level, result.Exact)
+		}
+	}
+}
+
+// TestExecuteSpecSearchTrgmBodyGating — гейтинг body-trgm по числу лексических
+// единиц (change optimize-query-search-bottlenecks, B2): короткий запрос (≤2
+// единиц) находит артефакт по similarity с body-текстом; многословная фраза
+// body-ветви не запускает — артефакт, матчатся только body-путём (FTS-стемы не
+// совпадают), не находится; tech-путь (точное совпадение mention_name) работает
+// для многословного запроса.
+func TestExecuteSpecSearchTrgmBodyGating(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+	fileID := insertFileDirect(t, db, "specs/trgm-gate/spec.md")
+	capID := insertSpecConfigAndCapabilityDirect(t, db, fileID, "trgm-gate")
+	// body-текст — одно склеенное слово: стемы запроса в нём не совпадают
+	// (FTS-путь пуст), но trigram-similarity с фразой из тех же корней высокая.
+	bodyOnlyID := insertRequirementDirect(t, db, fileID, capID, "склеенный кейс",
+		"бетатронавангардвариант", 3, 5)
+	scenarioID := insertScenarioDirect(t, db, fileID, capID, "gate scenario", "given", "when", "then", 6, 9)
+	insertCodeMentionDirect(t, db, fileID, "spec_scenario", scenarioID, "FA_DF_Mass Event Creation", 12)
+	if err := db.EnsureSpecSearchVectors(ctx, fileID); err != nil {
+		t.Fatalf("EnsureSpecSearchVectors: %v", err)
+	}
+
+	found := func(query string, level string, entityID int64) bool {
+		t.Helper()
+		result, err := specsvc.ExecuteSpecSearch(ctx, db, query, "", level, "exact", 100)
+		if err != nil {
+			t.Fatalf("ExecuteSpecSearch %q: %v", query, err)
+		}
+		for _, hit := range result.Exact {
+			if hit.EntityID == entityID {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Короткая фраза (2 единицы): body-trgm выполняется и находит кейс.
+	if !found("бетатрон авангард", "requirement", bodyOnlyID) {
+		t.Fatalf("short query must find body-only requirement via trgm")
+	}
+	// Многословная фраза (3 единицы): body-ветви загейчены, FTS-стемы не
+	// совпадают со склеенным словом — кейс не находится.
+	if found("бетатрон авангард вариант", "requirement", bodyOnlyID) {
+		t.Fatalf("long query must not run body-trgm; body-only requirement must be skipped")
+	}
+	// Tech-путь (точное совпадение mention_name) работает для многословного
+	// запроса — гейтинг body-ветвей его не затрагивает.
+	if !found("FA_DF_Mass Event Creation", "scenario", scenarioID) {
+		t.Fatalf("multiword mention equality must find scenario (tech path always runs)")
 	}
 }

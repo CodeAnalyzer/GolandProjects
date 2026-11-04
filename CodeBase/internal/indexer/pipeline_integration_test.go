@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/codebase/internal/config"
 	"github.com/codebase/internal/specfts"
@@ -350,5 +351,45 @@ func TestUpdateDeletesSpecBeforeLSAPublication(t *testing.T) {
 	}
 	if embeddingCount != 1 {
 		t.Fatalf("current generation embeddings = %d, want 1", embeddingCount)
+	}
+}
+
+// TestInitUpdateRunAnalyze — после успешного init/update выполняется ANALYZE
+// таблиц кодовой базы (change optimize-query-search-bottlenecks, требование
+// ANALYZE после прогона; в bug-репорте не нумерован — B6 там про пробы
+// warmup): last_analyze устанавливается у таблиц списка (pg_stat обновляется
+// асинхронно), повторный no-op update проходит штатно.
+func TestInitUpdateRunAnalyze(t *testing.T) {
+	idx, root := newTestIndexer(t)
+	ctx := context.Background()
+
+	if _, err := idx.InitCtx(ctx, root, 1); err != nil {
+		t.Fatalf("InitCtx: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var analyzed bool
+		if err := idx.db.QueryRow(`
+			SELECT last_analyze IS NOT NULL FROM pg_stat_all_tables WHERE relname = 'symbols'
+		`).Scan(&analyzed); err != nil {
+			t.Fatalf("read pg_stat_all_tables: %v", err)
+		}
+		if analyzed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("last_analyze not set for symbols after init pipeline (within 3s)")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// No-op update с хуком ANALYZE в хвосте — штатно завершается.
+	stats, err := idx.UpdateCtx(ctx, root, true, 1)
+	if err != nil {
+		t.Fatalf("UpdateCtx: %v", err)
+	}
+	if stats == nil || stats.Errors != 0 {
+		t.Fatalf("update stats = %+v, err = %v", stats, err)
 	}
 }

@@ -53,6 +53,25 @@ type IndexerConfig struct {
 type QueryConfig struct {
 	DefaultLimit int `toml:"default_limit"`
 	MaxLimit     int `toml:"max_limit"`
+	// SQLFragmentMatchCap — потолок кандидатов поиска sql-fragment
+	// (change optimize-query-search-bottlenecks, B5): внутренний LIMIT+1
+	// выборки matches, защищает от сверхшироких шаблонов (десятки секунд и
+	// таймауты). nil = DefaultSQLFragmentMatchCap; явный 0 — без ограничения
+	// (план как до изменения); отрицательное — ошибка загрузки.
+	SQLFragmentMatchCap *int `toml:"sql_fragment_match_cap"`
+}
+
+// DefaultSQLFragmentMatchCap — потолок кандидатов поиска sql-fragment,
+// применяемый при отсутствии query.sql_fragment_match_cap в конфиге.
+const DefaultSQLFragmentMatchCap = 50000
+
+// SQLFragmentMatchCapOrDefault — эффективный потолок кандидатов sql-fragment:
+// nil → DefaultSQLFragmentMatchCap, явный 0 → без ограничения.
+func (c *QueryConfig) SQLFragmentMatchCapOrDefault() int {
+	if c == nil || c.SQLFragmentMatchCap == nil {
+		return DefaultSQLFragmentMatchCap
+	}
+	return *c.SQLFragmentMatchCap
 }
 
 // RTIConfig настройки RTI-анализатора
@@ -351,6 +370,9 @@ func Load() error {
 	if cfg.Query.MaxLimit <= 0 {
 		cfg.Query.MaxLimit = 1000
 	}
+	if cfg.Query.SQLFragmentMatchCap != nil && *cfg.Query.SQLFragmentMatchCap < 0 {
+		return fmt.Errorf("query.sql_fragment_match_cap must be >= 0, got %d", *cfg.Query.SQLFragmentMatchCap)
+	}
 	if cfg.RTI.SlowThresholdMs <= 0 {
 		cfg.RTI.SlowThresholdMs = 100
 	}
@@ -533,8 +555,9 @@ func CreateDefault(rootPath string) *Config {
 			},
 		},
 		Query: QueryConfig{
-			DefaultLimit: 100,
-			MaxLimit:     1000,
+			DefaultLimit:        100,
+			MaxLimit:            1000,
+			SQLFragmentMatchCap: intPtr(DefaultSQLFragmentMatchCap),
 		},
 		RTI: RTIConfig{
 			SlowThresholdMs: 100,

@@ -11,6 +11,7 @@ import (
 
 	"github.com/codebase/internal/errs"
 	"github.com/codebase/internal/store/testutil"
+	"github.com/lib/pq"
 )
 
 type symbolTypesFixture struct {
@@ -312,6 +313,148 @@ func TestSearchSymbol_ReportFormLikeMatchesAllThreeFields(t *testing.T) {
 	}
 	if len(results) != 3 {
 		t.Fatalf("like over form_name/form_class must find all three reports, got %v", symbolNames(results))
+	}
+}
+
+// legacyReportFormLookup — прежний OR-запрос трёхполевого поиска report_form
+// (до UNION ALL-ветвей, change optimize-query-search-bottlenecks B3): эталон
+// для проверки эквивалентности нового плана.
+func legacyReportFormLookup(t *testing.T, q *Query, name string, like bool, limit int) []int64 {
+	t.Helper()
+	lookup := strings.Join(reportFormFieldConditions(like, 1), " OR ")
+	query := `
+		WITH base AS (
+			SELECT s.id, s.file_id, s.entity_id, s.symbol_name, s.symbol_type, s.entity_type,
+			       LOWER(s.symbol_name) AS name_key,` + symbolOwnerKeyExpr + ` AS owner_key,
+			       COALESCE(f.ds_product_id, 0) AS product_key, f.ds_product_branch_id AS branch_id,
+			       f.rel_path, s.line_number, s.signature,
+			       COALESCE(pr.product_name, '') AS product, COALESCE(br.branch_key, '') AS branch_used,
+			       (NOT f.is_generated) AS not_generated, COALESCE(br.is_default, FALSE) AS is_default
+			FROM symbols s
+			LEFT JOIN report_forms rf ON s.symbol_type = 'report_form' AND s.entity_id = rf.id
+			JOIN files f ON s.file_id = f.id
+			LEFT JOIN ds_products pr ON pr.id = f.ds_product_id
+			LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+			WHERE (` + lookup + `)
+			  AND s.symbol_type = ANY($2)
+		), chosen AS (
+			SELECT DISTINCT ON (b.name_key, b.symbol_type, b.owner_key, b.product_key)
+			       b.name_key, b.symbol_type, b.owner_key, b.product_key, b.branch_id
+			FROM base b
+			ORDER BY b.name_key, b.symbol_type, b.owner_key, b.product_key,
+			         b.not_generated DESC, b.is_default DESC, b.id DESC
+		)
+		SELECT b.id
+		FROM base b
+		JOIN chosen ch ON ch.name_key = b.name_key AND ch.symbol_type = b.symbol_type
+		 AND ch.owner_key = b.owner_key AND ch.product_key = b.product_key
+		 AND ch.branch_id IS NOT DISTINCT FROM b.branch_id
+		ORDER BY b.symbol_name, b.id
+		LIMIT $3`
+	lookupValue := name
+	if like {
+		lookupValue = "%" + name + "%"
+	}
+	rows, err := q.db.QueryContext(context.Background(), query, lookupValue, pq.Array([]string{"report_form"}), limit)
+	if err != nil {
+		t.Fatalf("legacy query %q: %v", name, err)
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, 8)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("legacy scan: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// TestSearchSymbol_ReportFormUnionAllEquivalence — UNION ALL-ветви дают то же
+// упорядоченное множество id, что и прежний OR-запрос, по всем режимам
+// (точный по трём полям, регистронезависимость, like).
+func TestSearchSymbol_ReportFormUnionAllEquivalence(t *testing.T) {
+	q := seedReportFormFixture(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		like bool
+	}{
+		{"RPT_ALPHA", false},
+		{"FormAlpha", false},
+		{"TFormAlpha", false},
+		{"tformalpha", false},
+		{"Form", true},
+		{"RPT_", true},
+		{"NonExistent", false},
+	}
+	for _, tc := range cases {
+		results, err := q.SearchSymbol(ctx, tc.name, "report_form", tc.like, 50)
+		if err != nil {
+			t.Fatalf("SearchSymbol(%q, like=%v): %v", tc.name, tc.like, err)
+		}
+		got := make([]int64, 0, len(results))
+		for _, r := range results {
+			got = append(got, r.ID)
+		}
+		want := legacyReportFormLookup(t, q, tc.name, tc.like, 50)
+		if len(got) != len(want) {
+			t.Fatalf("query %q (like=%v): got ids %v, legacy %v", tc.name, tc.like, got, want)
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Fatalf("query %q (like=%v): order mismatch at %d: got %v, legacy %v", tc.name, tc.like, i, got, want)
+			}
+		}
+	}
+}
+
+// TestSearchSymbol_ReportFormMultiFieldMatchDedup — строка, совпавшая по
+// нескольким полям (symbol_name и form_name одновременно), попадает в несколько
+// ветвей UNION ALL и возвращается ровно один раз (DISTINCT по id поверх
+// веточного дедупа chosen).
+func TestSearchSymbol_ReportFormMultiFieldMatchDedup(t *testing.T) {
+	q := seedReportFormFixture(t)
+	ctx := context.Background()
+
+	db := q.db
+	scanID, err := db.CreateScanRun(ctx, "/repo2")
+	if err != nil {
+		t.Fatalf("CreateScanRun: %v", err)
+	}
+	var fileID int64
+	if err := db.QueryRow(`
+		INSERT INTO files (scan_run_id, path, rel_path, extension, size_bytes, hash_sha256, modified_at, encoding, language)
+		VALUES ($1, '/repo2/dual.rpt', '/repo2/dual.rpt', 'rpt', 1, 'hash', NOW(), 'UTF8', 'REPORT')
+		RETURNING id
+	`, scanID).Scan(&fileID); err != nil {
+		t.Fatalf("insert file: %v", err)
+	}
+	// symbol_name = form_name = RPT_DUAL: совпадает и ветвью symbol_name,
+	// и ветвью form_name.
+	var reportFormID int64
+	if err := db.QueryRow(`
+		INSERT INTO report_forms (file_id, report_name, report_type, form_name, form_class, line_start, line_end)
+		VALUES ($1, 'RPT_DUAL', 'RPT', 'RPT_DUAL', 'TFormDual', 1, 1)
+		RETURNING id
+	`, fileID).Scan(&reportFormID); err != nil {
+		t.Fatalf("insert report_form: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO symbols (file_id, symbol_name, symbol_type, entity_type, entity_id, line_number)
+		VALUES ($1, 'RPT_DUAL', 'report_form', 'report', $2, 1)
+	`, fileID, reportFormID); err != nil {
+		t.Fatalf("insert symbol: %v", err)
+	}
+
+	results, err := q.SearchSymbol(ctx, "RPT_DUAL", "report_form", false, 50)
+	if err != nil {
+		t.Fatalf("SearchSymbol(RPT_DUAL): %v", err)
+	}
+	if len(results) != 1 || results[0].Name != "RPT_DUAL" {
+		t.Fatalf("dual-field match must dedup to single row, got %v", symbolNames(results))
 	}
 }
 

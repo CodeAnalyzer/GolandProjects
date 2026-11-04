@@ -268,7 +268,7 @@ func TestProfileContext_EntitySurfaces(t *testing.T) {
 		t.Fatalf("symbol = %+v", profSymbol)
 	}
 
-	fragments, err := q.SearchQueryFragment(ctx, "PROF_TABLE", 10)
+	fragments, _, err := q.SearchQueryFragment(ctx, "PROF_TABLE", 10)
 	if err != nil {
 		t.Fatalf("SearchQueryFragment: %v", err)
 	}

@@ -40,7 +40,7 @@ var querySpecCmd = &cobra.Command{
 
 var querySpecSearchCmd = &cobra.Command{
 	Use:   "search --query <text> [--product <name>] [--level <level>]",
-	Short: "Two-layer spec search (exact tsvector/trgm + semantic LSA)",
+	Short: "Two-layer spec search: lexical (tsvector + tech-name trigram) and semantic (LSA)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 		return runSpecCommand(ctx, "query spec search", map[string]string{
@@ -146,7 +146,7 @@ func init() {
 	querySpecSearchCmd.Flags().StringVar(&specSearchQuery, "query", "", "search text")
 	querySpecSearchCmd.Flags().StringVar(&specSearchProduct, "product", "", "filter by product name")
 	querySpecSearchCmd.Flags().StringVar(&specSearchLevel, "level", "", "filter by spec level (capability, requirement, scenario, usecase)")
-	querySpecSearchCmd.Flags().StringVar(&specSearchLayer, "layer", "both", "search layer (exact, semantic, both)")
+	querySpecSearchCmd.Flags().StringVar(&specSearchLayer, "layer", "both", "search layer: exact = lexical (full-text tsvector + trigram by tech names and code mentions), semantic = LSA, both")
 	cobra.CheckErr(querySpecSearchCmd.MarkFlagRequired("query"))
 
 	querySpecByCodeCmd.Flags().StringVar(&specByCodeName, "name", "", "code entity name to find in specs")

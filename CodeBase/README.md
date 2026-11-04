@@ -55,7 +55,7 @@
   - Поиск VBScript functions (VBScript-функций)
   - Поиск API contracts (контрактов API), API tables (таблиц API), API table indexes (индексов API-таблиц), API params (параметров API), implementations (реализаций), publishers (публикаторов событий), consumers (потребителей контрактов)
   - Unified `query symbol` для SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects, SMF instruments, XML/API symbols и spec-сущностей (capabilities, requirements, scenarios, usecases, changes)
-  - **Спеки**: полнотекстовый поиск по спецификациям (лексический tsvector+trgm и семантический LSA), спецификации по имени код-сущности, граф зависимостей capability, usecase-слой с involved capabilities, покрытие кода спеками, история изменения capability по changes
+  - **Спеки**: полнотекстовый поиск по спецификациям (лексический tsvector + trgm по техименам, семантический LSA), спецификации по имени код-сущности, граф зависимостей capability, usecase-слой с involved capabilities, покрытие кода спеками, история изменения capability по changes
 - **Review (проверка SQL перед деплоем)**: статический анализ SQL-файлов с детекцией deploy stoppers (использование внешних таблиц/процедур, небезопасные конструкции IF/EXISTS, отсутствие required hints, и т.д.)
 - **RTI-анализатор** (`codebase rti`): парсинг и анализ RTI-трейс логов Diasoft 5NT; извлечение вызовов процедур, параметров, контрольных точек, кодов ошибок, бизнес-лог блоков (`M_BUSINESSLOG_BLOCK_BEGIN/END`), checkpoint-временных меток, дампов таблиц (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`), клиентских событий (thick client d5nt: SQL blocks, recordset open, connection, BPL load, errors, memory); enrichment из индекса (PAS-файлы, DFM-формы, SQL-фрагменты); сохранение в БД для повторного анализа
 - **TRC-анализатор** (`codebase trc`): парсинг и анализ файлов SQL Server Profiler — бинарных `.trc`, XML-экспортов `.xml` и Extended Events `.xel`; декодирование событий (RPC:Completed, SQL:BatchCompleted, SP:StmtCompleted и др.), извлечение вызовов процедур и параметров из TextData, агрегация только завершённых вызовов `SP:Completed` (count/min/max/avg/total duration), список событий с раздельными matched/returned counts и limit, дерево вызовов по SPID с восстановлением вложенности через Starting/Completed пары, enrichment из индекса (путь к файлу и строки); сохранение в БД для повторного анализа
@@ -115,6 +115,9 @@ command_enabled = true
 [query]
 default_limit = 100
 max_limit = 1000
+# Потолок кандидатов поиска sql-fragment (защита от сверхшироких шаблонов;
+# 0 = без ограничения)
+sql_fragment_match_cap = 50000
 
 # Настройки RTI-анализатора
 [rti]
@@ -368,6 +371,8 @@ codebase query sql-fragment --text "exec API_" --json
 - `query_fragments.query_text`
 
 Для ускорения используется `GIN` индекс с `pg_trgm` по `query_fragments.query_text`.
+
+Сверхширокие шаблоны (десятки-сотни тысяч совпадений, например `--text "select"`) ограничиваются потолком кандидатов `query.sql_fragment_match_cap` (по умолчанию 50000, `0` — без ограничения): выборка останавливается на cap+1 совпадениях вместо таймаута, а ответ помечается усечением — в CLI `--json` это `meta.truncated=true` + `meta.hint`, в MCP-инструменте `codebase_query_sql_fragment` ответ является объектом `{items, truncated, hint}`. Ниже потолка результат не отличается от поиска без ограничения.
 
 #### Поиск DFM forms
 
@@ -650,7 +655,7 @@ codebase query spec config --product fa-cards
 codebase query spec config --product fa-cards --include-hierarchy true --depth 2
 ```
 
-Спеки индексируются из `openspec/` директорий финпродуктов: capabilities, requirements, scenarios, usecases, changes. Usecase-слой поддерживает четыре формата (`scenarios/`, `usecases/`, `business-processes/`, `specs/usecases/`) с извлечением inline-метаданных, шагов (`**Шаг N**.`, табличных, нумерованных), ветвлений WHEN/ELSE, Confluence pageId и ссылок на capabilities. Поиск поддерживает два слоя: лексический (tsvector 'russian' + pg_trgm) и семантический (TF-IDF + LSA). Semantic-слой использует тот же гейт `lsa_min_query_coverage` (по умолчанию `0.6`, `0` отключает): при низком покрытии `semantic=[]`, а `semantic_meta` содержит `reason=query_coverage`, `coverage`, `coverage_threshold` и `oov_terms`. Фильтры: `--product`, `--level` (capability|requirement|scenario|usecase), `--layer` (exact|semantic|both).
+Спеки индексируются из `openspec/` директорий финпродуктов: capabilities, requirements, scenarios, usecases, changes. Usecase-слой поддерживает четыре формата (`scenarios/`, `usecases/`, `business-processes/`, `specs/usecases/`) с извлечением inline-метаданных, шагов (`**Шаг N**.`, табличных, нумерованных), ветвлений WHEN/ELSE, Confluence pageId и ссылок на capabilities. Поиск поддерживает два слоя: лексический и семантический (TF-IDF + LSA). Лексический слой (`--layer exact`) = полнотекстовый tsvector 'russian' + trgm по техименам (`related_code`, точные совпадения и trgm по `spec_code_mentions.mention_name` — работают для запроса любой длины); similarity-trgm по текстам требований/сценариев/usecases выполняется только для коротких запросов (≤ 2 лексических единиц) — для длинных фраз он гарантированно пуст и пропускается. Semantic-слой использует тот же гейт `lsa_min_query_coverage` (по умолчанию `0.6`, `0` отключает): при низком покрытии `semantic=[]`, а `semantic_meta` содержит `reason=query_coverage`, `coverage`, `coverage_threshold` и `oov_terms`. Фильтры: `--product`, `--level` (capability|requirement|scenario|usecase), `--layer` (exact|semantic|both).
 
 Опции для всех запросов:
 - `--json` - вывод в формате JSON

@@ -232,15 +232,31 @@ var querySQLFragmentCmd = &cobra.Command{
 	Short: "Search SQL query fragments by text",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		return runQueryCommand(cmd.Context(), queryCommandSpec{
-			commandName: "query sql-fragment",
-			filters: map[string]string{
-				"text": queryFragmentText,
-			},
-			run: func(q *query.Query) (interface{}, error) {
-				return q.SearchQueryFragment(ctx, queryFragmentText, limit)
-			},
+		// Выделенный путь печати (не runQueryCommand): конверт несёт
+		// meta.truncated/hint — признак усечения по потолку кандидатов
+		// sql_fragment_match_cap (change optimize-query-search-bottlenecks, B5).
+		results, err := executeQuery(ctx, func(q *query.Query) (interface{}, error) {
+			fragments, truncated, err := q.SearchQueryFragment(ctx, queryFragmentText, limit)
+			if err != nil {
+				return nil, err
+			}
+			output := &query.QueryFragmentSearchOutput{Items: fragments, Truncated: truncated}
+			if truncated {
+				output.Hint = query.QueryFragmentTruncatedHint
+			}
+			return output, nil
 		})
+		if err != nil {
+			// Machine-readable конверт ошибки — на root-уровне (cmd/root.go).
+			return err
+		}
+		output, ok := results.(*query.QueryFragmentSearchOutput)
+		if !ok {
+			return fmt.Errorf("unexpected sql-fragment result type %T", results)
+		}
+		return printQueryFragmentResults("query sql-fragment", map[string]string{
+			"text": queryFragmentText,
+		}, output)
 	},
 }
 

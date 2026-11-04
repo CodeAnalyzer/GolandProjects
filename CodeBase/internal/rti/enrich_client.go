@@ -14,7 +14,7 @@ import (
 type ClientLookup interface {
 	FindPASMethodsByName(ctx context.Context, methodName string, like bool, limit int) ([]query.MethodResult, error)
 	SearchDFMForm(ctx context.Context, name string, like bool, limit int) ([]query.DFMFormResult, error)
-	SearchQueryFragment(ctx context.Context, text string, limit int) ([]query.QueryFragmentResult, error)
+	SearchQueryFragment(ctx context.Context, text string, limit int) ([]query.QueryFragmentResult, bool, error)
 }
 
 // ClientEnrichment — результат обогащения клиентского события цепочкой
@@ -106,7 +106,7 @@ func EnrichClientEvent(ctx context.Context, q ClientLookup, ev *RTIClientEvent) 
 	// Шаг 3: для exec-блоков — поиск похожего текста в query_fragments,
 	// чтобы найти PAS-метод/JS-функцию, сгенерировавшую этот SQL-вызов.
 	if ev.Kind == "sql_block" && ev.SQL != nil && ev.SQL.ExecProcedure != "" {
-		fragments, err := q.SearchQueryFragment(ctx, ev.SQL.ExecProcedure, clientEnrichLookupLimit)
+		fragments, _, err := q.SearchQueryFragment(ctx, ev.SQL.ExecProcedure, clientEnrichLookupLimit)
 		if err == nil {
 			normalizedLog := normalizeExecSegmentForCompare(ev.SQL.Text)
 			for _, f := range fragments {

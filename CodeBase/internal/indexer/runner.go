@@ -148,6 +148,11 @@ errorLoopInit:
 	if err := idx.db.UpdateScanRun(finalizeCtx, scanRunID, stats.FilesScanned, stats.FilesIndexed, stats.Errors, stats.EncodingRefined, stats.XMLSkipped, status); err != nil {
 		return nil, fmt.Errorf("failed to finalize scan run: %w", err)
 	}
+	// ANALYZE после успешного прогона (change optimize-query-search-
+	// bottlenecks): свежая статистика планировщика после массовых
+	// вставок/удалений. Ошибка — предупреждение в лог индексатора, статус
+	// прогона уже зафиксирован и не меняется.
+	idx.analyzeAfterRun(ctx, rootPath)
 	if ctx.Err() != nil {
 		return &stats, ctx.Err()
 	}
@@ -156,6 +161,18 @@ errorLoopInit:
 
 func (idx *Indexer) Init(rootPath string, parallel int) (*model.ScanStats, error) {
 	return idx.InitCtx(context.Background(), rootPath, parallel)
+}
+
+// analyzeAfterRun выполняет ANALYZE таблиц кодовой базы после успешного
+// завершения прогона; отменённый контекст пропускает этап (autovacuum
+// догонит статистику), ошибка ANALYZE — только предупреждение.
+func (idx *Indexer) analyzeAfterRun(ctx context.Context, rootPath string) {
+	if ctx.Err() != nil {
+		return
+	}
+	if err := idx.db.AnalyzeCodebaseTables(ctx); err != nil {
+		idx.logError(rootPath, "ANALYZE warning: %v", err)
+	}
 }
 
 func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified bool, parallel int) (*model.ScanStats, error) {
@@ -380,6 +397,8 @@ errorLoopUpdate:
 	if err := idx.db.UpdateScanRun(finalizeCtx, scanRunID, stats.FilesScanned, stats.FilesIndexed, stats.Errors, stats.EncodingRefined, stats.XMLSkipped, status); err != nil {
 		return nil, fmt.Errorf("failed to finalize scan run: %w", err)
 	}
+	// ANALYZE после успешного update — см. комментарий в runInitPipeline.
+	idx.analyzeAfterRun(ctx, rootPath)
 	if ctx.Err() != nil {
 		return &stats, ctx.Err()
 	}

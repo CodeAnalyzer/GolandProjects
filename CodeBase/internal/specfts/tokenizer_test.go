@@ -345,6 +345,28 @@ func TestUnrecognizedWords(t *testing.T) {
 	}
 }
 
+// TestLexicalUnitCount — правило гейтинга body-trgm spec-поиска (change
+// optimize-query-search-bottlenecks, B2): техимя с подчёркиванием — одна
+// единица, «создание user_profile» — две, длинная фраза — четыре.
+func TestLexicalUnitCount(t *testing.T) {
+	tests := []struct {
+		query string
+		want  int
+	}{
+		{query: "Audit_Insert", want: 1},
+		{query: "создание user_profile", want: 2},
+		{query: "массовое создание плановых событий", want: 4},
+		{query: "API_Card", want: 1},
+		{query: "", want: 0},
+		{query: "a 1", want: 0}, // короче двух рун / без букв
+	}
+	for _, tt := range tests {
+		if got := LexicalUnitCount(tt.query); got != tt.want {
+			t.Errorf("LexicalUnitCount(%q) = %d, want %d", tt.query, got, tt.want)
+		}
+	}
+}
+
 func TestQueryCoverageGate(t *testing.T) {
 	tests := []struct {
 		name      string
