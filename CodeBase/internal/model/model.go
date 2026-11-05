@@ -376,6 +376,10 @@ type Symbol struct {
 	LineNumber int
 	SQLContext string
 	Signature  string
+	// OwnerName — материализованный ключ владельца (класс для method, класс
+	// родительской формы для component, '' для остальных типов). Заполняется
+	// индексатором без преобразований; санитизация — в store при вставке.
+	OwnerName string
 }
 
 // ScanStats Статистика сканирования

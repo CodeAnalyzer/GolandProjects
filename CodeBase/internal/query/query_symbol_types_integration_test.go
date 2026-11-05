@@ -319,13 +319,23 @@ func TestSearchSymbol_ReportFormLikeMatchesAllThreeFields(t *testing.T) {
 // legacyReportFormLookup — прежний OR-запрос трёхполевого поиска report_form
 // (до UNION ALL-ветвей, change optimize-query-search-bottlenecks B3): эталон
 // для проверки эквивалентности нового плана.
+// Ключ владельца — инлайн-копия прежнего константного выражения
+// symbolOwnerKeyExpr (CASE с коррелированными подзапросами владельца),
+// удалённой при материализации symbols.owner_name (change
+// symbols-owner-key-materialization): эталон обязан воспроизводить план
+// «до материализации», для report_form-строк ветка владельца всегда ”.
 func legacyReportFormLookup(t *testing.T, q *Query, name string, like bool, limit int) []int64 {
 	t.Helper()
 	lookup := strings.Join(reportFormFieldConditions(like, 1), " OR ")
 	query := `
 		WITH base AS (
 			SELECT s.id, s.file_id, s.entity_id, s.symbol_name, s.symbol_type, s.entity_type,
-			       LOWER(s.symbol_name) AS name_key,` + symbolOwnerKeyExpr + ` AS owner_key,
+			       LOWER(s.symbol_name) AS name_key,
+			       CASE s.symbol_type
+			           WHEN 'method' THEN COALESCE((SELECT COALESCE(pc.class_name, '') FROM pas_methods pm LEFT JOIN pas_classes pc ON pm.class_id = pc.id WHERE pm.id = s.entity_id), '')
+			           WHEN 'component' THEN COALESCE((SELECT COALESCE(df.form_class, '') FROM dfm_components dc JOIN dfm_forms df ON dc.form_id = df.id WHERE dc.id = s.entity_id), '')
+			           ELSE ''
+			       END AS owner_key,
 			       COALESCE(f.ds_product_id, 0) AS product_key, f.ds_product_branch_id AS branch_id,
 			       f.rel_path, s.line_number, s.signature,
 			       COALESCE(pr.product_name, '') AS product, COALESCE(br.branch_key, '') AS branch_used,

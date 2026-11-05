@@ -10,7 +10,7 @@ import (
 // КОНТРАКТ: любое изменение DDL-списка InitSchemaCtx (колонки, индексы,
 // ограничения, миграции) требует bump этой версии — иначе fast-path
 // пропустит проход и новое DDL молча не применится на существующих БД.
-const CurrentSchemaVersion = "codebase_schema_v4"
+const CurrentSchemaVersion = "codebase_schema_v5"
 
 const schemaInitLockKey = "codebase/schema-init"
 
@@ -118,8 +118,15 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			entity_type TEXT NOT NULL,
 			entity_id BIGINT NOT NULL,
 			line_number INTEGER NOT NULL DEFAULT 0,
-			signature TEXT
+			signature TEXT,
+			owner_name TEXT NOT NULL DEFAULT ''
 		)`,
+		// owner_name (v5): материализованный ключ владельца символа (класс для
+		// method, класс формы для component) — устраняет per-row коррелированные
+		// подзапросы владельца из ключа дедупа SearchSymbol/SearchInContent.
+		// ADD COLUMN IF NOT EXISTS — идемпотентный апгрейд существующих БД;
+		// заполнение легаси-строк — миграция symbols_owner_name_backfill_v1 ниже.
+		`ALTER TABLE symbols ADD COLUMN IF NOT EXISTS owner_name TEXT NOT NULL DEFAULT ''`,
 		`CREATE TABLE IF NOT EXISTS sql_procedures (
 			id BIGSERIAL PRIMARY KEY,
 			file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -1255,6 +1262,29 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		 WHERE (rel_path ~* '/UPLOAD/' OR extension = 't01') AND NOT is_generated`,
 	}); err != nil {
 		return fmt.Errorf("failed to apply migration files_is_generated_backfill_v1: %w", err)
+	}
+	// symbols_owner_name_backfill_v1: однократный backfill материализованного
+	// ключа владельца для записей, проиндексированных до введения колонки.
+	// Два type-scoped set-based UPDATE (без self-join symbols и per-row
+	// подзапросов): для резолвнутых классов/форм значение семантически равно
+	// прежнему runtime-выражению ключа владельца, для нерезолвнутых — ''
+	// (имя класса-ссылки не сохранено в индексе и не восстанавливается);
+	// строки прочих типов не переписываются — DEFAULT '' уже семантически
+	// равен прежнему значению. Предикат owner_name = '' защищает при
+	// нештатном повторном применении (потеря/ручной сброс маркера): backfill
+	// пишет регистр декларации класса, а индексатор — регистр ссылки (D4.2),
+	// перезапись затёрла бы уже материализованные корректные значения и
+	// плодила бы лишний WAL. Новые записи получают owner_name от индексатора
+	// при вставке; повторные прогоны — no-op по маркеру.
+	if err := applyMigrationTx(ctx, tx, "symbols_owner_name_backfill_v1", []string{
+		`UPDATE symbols s SET owner_name = COALESCE(pc.class_name, '')
+		 FROM pas_methods pm LEFT JOIN pas_classes pc ON pm.class_id = pc.id
+		 WHERE s.symbol_type = 'method' AND pm.id = s.entity_id AND s.owner_name = ''`,
+		`UPDATE symbols s SET owner_name = COALESCE(df.form_class, '')
+		 FROM dfm_components dc JOIN dfm_forms df ON dc.form_id = df.id
+		 WHERE s.symbol_type = 'component' AND dc.id = s.entity_id AND s.owner_name = ''`,
+	}); err != nil {
+		return fmt.Errorf("failed to apply migration symbols_owner_name_backfill_v1: %w", err)
 	}
 	if err := applyMigrationTx(ctx, tx, "spec_search_vectors_weighted_v1", specSearchVectorUpdateStatements("")); err != nil {
 		return fmt.Errorf("failed to apply migration spec_search_vectors_weighted_v1: %w", err)

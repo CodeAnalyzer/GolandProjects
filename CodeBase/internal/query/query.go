@@ -371,16 +371,6 @@ func normalizeSymbolTypeFilter(symbolType string) ([]string, error) {
 	return canonical, nil
 }
 
-// symbolOwnerKeyExpr — дополнительная часть естественного ключа символа:
-// класс для PAS-методов и класс формы для DFM-компонентов (одноимённые
-// методы разных классов/компоненты разных форм не схлопываются при дедупе).
-const symbolOwnerKeyExpr = `
-	CASE s.symbol_type
-		WHEN 'method' THEN COALESCE((SELECT COALESCE(pc.class_name, '') FROM pas_methods pm LEFT JOIN pas_classes pc ON pm.class_id = pc.id WHERE pm.id = s.entity_id), '')
-		WHEN 'component' THEN COALESCE((SELECT COALESCE(df.form_class, '') FROM dfm_components dc JOIN dfm_forms df ON dc.form_id = df.id WHERE dc.id = s.entity_id), '')
-		ELSE ''
-	END`
-
 // SearchSymbol ищет сущность по имени. Копии, отличающиеся только веткой
 // одного продукта, схлопываются (двухфазный дедуп: выбирается ветка группы
 // ключа — приоритет default-ветки, — затем возвращаются все строки выбранной
@@ -420,7 +410,7 @@ func (q *Query) SearchSymbol(ctx context.Context, name string, symbolType string
 				s.symbol_name,
 				s.symbol_type,
 				s.entity_type,
-				LOWER(s.symbol_name) AS name_key,` + symbolOwnerKeyExpr + ` AS owner_key,
+				LOWER(s.symbol_name) AS name_key, COALESCE(s.owner_name, '') AS owner_key,
 				COALESCE(f.ds_product_id, 0) AS product_key,
 				f.ds_product_branch_id AS branch_id,
 				f.rel_path,
@@ -542,7 +532,7 @@ func (q *Query) SearchInContent(ctx context.Context, pattern string, limit int) 
 				s.symbol_name,
 				s.symbol_type,
 				s.entity_type,
-				LOWER(s.symbol_name) AS name_key,` + symbolOwnerKeyExpr + ` AS owner_key,
+				LOWER(s.symbol_name) AS name_key, COALESCE(s.owner_name, '') AS owner_key,
 				COALESCE(f.ds_product_id, 0) AS product_key,
 				f.ds_product_branch_id AS branch_id,
 				f.rel_path,

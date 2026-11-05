@@ -936,6 +936,10 @@ func (idx *Indexer) parsePASFile(ctx context.Context, file fswalk.FileInfo, file
 			EntityID:   methodID,
 			LineNumber: method.LineNumber,
 			Signature:  signature,
+			// Владелец — имя класса, как записано в коде метода (сырое значение;
+			// санитизация выполняется в store при вставке). Регистр написания
+			// ссылки сохраняется даже при регистронезависимом резолве класса.
+			OwnerName: method.ClassName,
 		})
 		if method.ClassID == 0 && strings.TrimSpace(method.ClassName) != "" {
 			idx.addPendingMethod(methodID, method.ClassName, method.MethodName, path)

@@ -775,6 +775,10 @@ func (idx *Indexer) parseDFMFile(ctx context.Context, file fswalk.FileInfo, file
 		symbol.EntityID = formIDs[store.BuildDFMFormLookupKey(symbol.SymbolName, symbol.LineNumber)]
 	}
 	formIDByName := make(map[string]int64)
+	// formClassByID — класс формы по её id: материализованный владелец
+	// component-символов (класс родительской формы того же файла), без
+	// дополнительного lookup — данные уже в formsBatch этого parse-прохода.
+	formClassByID := make(map[int64]string)
 	for _, form := range formsBatch {
 		if form == nil {
 			continue
@@ -782,6 +786,7 @@ func (idx *Indexer) parseDFMFile(ctx context.Context, file fswalk.FileInfo, file
 		formID := formIDs[store.BuildDFMFormLookupKey(form.FormName, form.LineStart)]
 		if formID > 0 {
 			formIDByName[strings.ToLower(strings.TrimSpace(form.FormName))] = formID
+			formClassByID[formID] = form.FormClass
 		}
 	}
 	for _, component := range result.Components {
@@ -841,6 +846,10 @@ func (idx *Indexer) parseDFMFile(ctx context.Context, file fswalk.FileInfo, file
 			EntityID:   componentID,
 			LineNumber: component.LineStart,
 			Signature:  signature,
+			// Владелец — класс родительской формы того же файла (сырое значение;
+			// санитизация выполняется в store при вставке). FormID резолвнут
+			// выше, поэтому владелец всегда именованный.
+			OwnerName: formClassByID[component.FormID],
 		})
 	}
 	if err := idx.db.BatchInsertSQLTables(ctx, tablesBatch, idx.config.Indexer.BatchSize); err != nil {

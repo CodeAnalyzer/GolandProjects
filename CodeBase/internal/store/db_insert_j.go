@@ -135,7 +135,7 @@ func (db *DB) insertSymbolsBatch(ctx context.Context, symbols []*model.Symbol) e
 	}
 
 	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
-		stmt, err := tx.Prepare(pq.CopyIn("symbols", "file_id", "symbol_name", "symbol_type", "entity_type", "entity_id", "line_number", "signature"))
+		stmt, err := tx.Prepare(pq.CopyIn("symbols", "file_id", "symbol_name", "symbol_type", "entity_type", "entity_id", "line_number", "signature", "owner_name"))
 		if err != nil {
 			return err
 		}
@@ -150,6 +150,7 @@ func (db *DB) insertSymbolsBatch(ctx context.Context, symbols []*model.Symbol) e
 				symbol.EntityID,
 				symbol.LineNumber,
 				sanitizeUTF8String(symbol.Signature),
+				sanitizeUTF8String(symbol.OwnerName),
 			)
 			if err != nil {
 				return err

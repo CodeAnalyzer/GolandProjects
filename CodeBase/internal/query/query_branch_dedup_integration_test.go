@@ -307,6 +307,85 @@ func TestSearchSymbolBranchDedup(t *testing.T) {
 	}
 }
 
+// TestSearchSymbolOwnerNameDedup — материализованный owner_name управляет
+// кросс-веточным дедупом method-символов (change
+// symbols-owner-key-materialization). Одно-веточные копии выживают при любом
+// owner_key, поэтому наблюдаемы только кросс-веточные случаи: копии одного
+// класса схлопываются, одноимённые методы разных (в т.ч. нерезолвнутых)
+// классов в разных ветках остаются отдельными строками; контр-кейс с пустым
+// владельцем у обеих копий доказывает чувствительность теста к владельцу.
+func TestSearchSymbolOwnerNameDedup(t *testing.T) {
+	db, q := seedBranchDedupFixture(t)
+	ctx := context.Background()
+
+	fileIDByPath := func(path string) int64 {
+		var id int64
+		if err := db.QueryRow(`SELECT id FROM files WHERE path = $1`, path).Scan(&id); err != nil {
+			t.Fatalf("resolve file %s: %v", path, err)
+		}
+		return id
+	}
+	devFile := fileIDByPath("/repo/develop/src.sql")
+	spFile := fileIDByPath("/repo/fa-x-11-01-7/src.sql")
+
+	newOwnedSymbol := func(fileID, entityID int64, name, owner string) {
+		if _, err := db.Exec(`
+			INSERT INTO symbols (file_id, symbol_name, symbol_type, entity_type, entity_id, line_number, owner_name)
+			VALUES ($1, $2, 'method', 'pas', $3, 1, $4)
+		`, fileID, name, entityID, owner); err != nil {
+			t.Fatalf("insert symbol %s (owner %q): %v", name, owner, err)
+		}
+	}
+
+	searchMethods := func(name string) []SymbolResult {
+		syms, err := q.SearchSymbol(ctx, name, "method", false, 20)
+		if err != nil {
+			t.Fatalf("SearchSymbol %s: %v", name, err)
+		}
+		return syms
+	}
+
+	// (б) Одноимённые методы разных нерезолвнутых классов, каждый только в
+	// своей ветке: два владельца — две строки.
+	newOwnedSymbol(devFile, 7101, "Run", "TFormA")
+	newOwnedSymbol(spFile, 7102, "Run", "TFormB")
+	run := searchMethods("Run")
+	if len(run) != 2 {
+		t.Fatalf("Run symbols = %d, want 2 (TFormA + TFormB в разных ветках): %+v", len(run), run)
+	}
+	runEntities := map[int64]string{}
+	for _, s := range run {
+		runEntities[s.EntityID] = s.BranchUsed
+	}
+	if len(runEntities) != 2 || runEntities[7101] != "develop" || runEntities[7102] != "fa-x-11-01-7" {
+		t.Fatalf("Run entities = %v, want 7101@develop + 7102@fa-x-11-01-7", runEntities)
+	}
+
+	// (а) Копия метода одного класса (одинаковое написание) в двух ветках
+	// схлопывается в одну строку default-ветки.
+	newOwnedSymbol(devFile, 7103, "CopyRun", "TFormC")
+	newOwnedSymbol(spFile, 7104, "CopyRun", "TFormC")
+	copyRun := searchMethods("CopyRun")
+	if len(copyRun) != 1 {
+		t.Fatalf("CopyRun symbols = %d, want 1 (один класс схлопывается): %+v", len(copyRun), copyRun)
+	}
+	if copyRun[0].EntityID != 7103 || copyRun[0].BranchUsed != "develop" {
+		t.Fatalf("CopyRun = {entity=%d branch=%q}, want 7103@develop", copyRun[0].EntityID, copyRun[0].BranchUsed)
+	}
+
+	// (в) Контр-кейс чувствительности: те же две ветки, но владелец пуст у
+	// обеих копий (легаси-строки backfill) — схлопываются по пустому ключу.
+	newOwnedSymbol(devFile, 7105, "LegacyRun", "")
+	newOwnedSymbol(spFile, 7106, "LegacyRun", "")
+	legacyRun := searchMethods("LegacyRun")
+	if len(legacyRun) != 1 {
+		t.Fatalf("LegacyRun symbols = %d, want 1 (пустой владелец схлопывается): %+v", len(legacyRun), legacyRun)
+	}
+	if legacyRun[0].EntityID != 7105 || legacyRun[0].BranchUsed != "develop" {
+		t.Fatalf("LegacyRun = {entity=%d branch=%q}, want 7105@develop", legacyRun[0].EntityID, legacyRun[0].BranchUsed)
+	}
+}
+
 // TestFindPASMethodsByNameBranchDedup — методы (класс+имя) в двух ветках
 // схлопываются; другой класс сохраняется отдельной строкой.
 func TestFindPASMethodsByNameBranchDedup(t *testing.T) {
