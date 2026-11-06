@@ -16,7 +16,7 @@ import (
 	"github.com/codebase/internal/store/testutil"
 )
 
-func newDiscoveryIndexer(t *testing.T, root string, patterns []string) *Indexer {
+func newDiscoveryIndexer(t *testing.T, patterns []string) *Indexer {
 	t.Helper()
 	return &Indexer{
 		db: testutil.Open(t),
@@ -108,7 +108,7 @@ func TestDiscovery_TwoLinesOfOneProduct(t *testing.T) {
 	developDir := seedGitSource(t, root, "fa-contracts", "fa-contracts", "develop", "CREATE PROCEDURE DevelopProc AS RETURN 0\n")
 	spDir := seedGitSource(t, root, "fa-contracts-11017", "fa-contracts", "FA-Contracts-11-01-7-SP", "CREATE PROCEDURE SpProc AS RETURN 1\n")
 
-	idx := newDiscoveryIndexer(t, root, []string{"*.sql"})
+	idx := newDiscoveryIndexer(t, []string{"*.sql"})
 	if _, err := idx.UpdateCtx(ctx, root, true, 1); err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestDiscovery_BackfillUnchangedRows(t *testing.T) {
 	spDir := seedGitSource(t, root, "fa-contracts-11017", "fa-contracts", "FA-Contracts-11-01-7-SP", "CREATE PROCEDURE SpProc AS RETURN 1\n")
 	sqlPath := filepath.Join(spDir, "Proc.sql")
 
-	idx := newDiscoveryIndexer(t, root, []string{"*.sql"})
+	idx := newDiscoveryIndexer(t, []string{"*.sql"})
 
 	// Legacy-состояние: строка файла существует с псевдопродуктом и без
 	// ветки; mtime+size совпадают с диском → pre-filter пропустит файл.
@@ -248,7 +248,7 @@ func TestDiscovery_SpecsTwoBranches(t *testing.T) {
 	gitRun(t, spDir, "add", ".")
 	gitRun(t, spDir, "commit", "-m", "spec")
 
-	idx := newDiscoveryIndexer(t, root, []string{"*.sql", "*.md", "*.yaml"})
+	idx := newDiscoveryIndexer(t, []string{"*.sql", "*.md", "*.yaml"})
 	// ValidateSpecDrivenRoot читает config.yaml по RelPath (относительный
 	// путь) — рабочий каталог теста должен быть корнем скана.
 	t.Chdir(root)
@@ -312,7 +312,7 @@ func TestDiscovery_SwitchBranchInDir(t *testing.T) {
 	root := t.TempDir()
 	dir := seedGitSource(t, root, "fa-contracts", "fa-contracts", "develop", "CREATE PROCEDURE P AS RETURN 0\n")
 
-	idx := newDiscoveryIndexer(t, root, []string{"*.sql"})
+	idx := newDiscoveryIndexer(t, []string{"*.sql"})
 	if _, err := idx.UpdateCtx(ctx, root, true, 1); err != nil {
 		t.Fatalf("update #1: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestDiscovery_RemovedDirCleansBranch(t *testing.T) {
 	seedGitSource(t, root, "fa-cards", "fa-cards", "develop", "CREATE PROCEDURE C AS RETURN 0\n")
 	removedDir := seedGitSource(t, root, "fa-cards-11017", "fa-cards", "FA-Cards-11-01-7-SP", "CREATE PROCEDURE C7 AS RETURN 7\n")
 
-	idx := newDiscoveryIndexer(t, root, []string{"*.sql"})
+	idx := newDiscoveryIndexer(t, []string{"*.sql"})
 	if _, err := idx.UpdateCtx(ctx, root, true, 1); err != nil {
 		t.Fatalf("update #1: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestDiscovery_DefaultMarkIndependentOfDirOrder(t *testing.T) {
 	seedGitSource(t, root, "fa-contracts-ext-check-save-pti", "fa-contracts-ext", "prj/CHECK_SAVE_PTI", "CREATE PROCEDURE PtiProc AS RETURN 0\n")
 	seedGitSource(t, root, "fa-contracts-ext-develop", "fa-contracts-ext", "develop", "CREATE PROCEDURE DevelopProc AS RETURN 1\n")
 
-	idx := newDiscoveryIndexer(t, root, []string{"*.sql"})
+	idx := newDiscoveryIndexer(t, []string{"*.sql"})
 	checkDefault := func(stage string) {
 		t.Helper()
 		branches := productBranchRows(t, idx, "fa-contracts-ext")

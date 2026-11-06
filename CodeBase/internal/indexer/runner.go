@@ -61,15 +61,28 @@ func (idx *Indexer) walkerPatterns() ([]string, []string) {
 }
 
 func (idx *Indexer) InitCtx(ctx context.Context, rootPath string, parallel int) (*model.ScanStats, error) {
-	return idx.runInitPipeline(ctx, rootPath, parallel, "init")
+	return idx.runInitPipeline(ctx, rootPath, parallel, "init", time.Now())
+}
+
+// InitCtxStartedAt — вариант InitCtx с внешней точкой отсчёта
+// подготовительного окна (до InitSchema/NewDB в cmd): работа схемы БД
+// атрибутируется в PrepMiscMs (change update-startup-visibility).
+func (idx *Indexer) InitCtxStartedAt(ctx context.Context, rootPath string, parallel int, prepStartedAt time.Time) (*model.ScanStats, error) {
+	return idx.runInitPipeline(ctx, rootPath, parallel, "init", prepStartedAt)
 }
 
 // runInitPipeline — штатный init-пайплайн: walk без pre-filter → парсинг →
 // batch insert → пост-обработка → LSA. progressLabel — метка в строке
 // прогресс-репортера ("init" при первичной индексации, "rebuild" при полной
-// пересборке из update --modified=false).
-func (idx *Indexer) runInitPipeline(ctx context.Context, rootPath string, parallel int, progressLabel string) (*model.ScanStats, error) {
-	startedAt := time.Now()
+// пересборке из update --modified=false). prepStartedAt — точка отсчёта
+// подготовительного окна (InitSchema в cmd для InitCtxStartedAt).
+func (idx *Indexer) runInitPipeline(ctx context.Context, rootPath string, parallel int, progressLabel string, prepStartedAt time.Time) (*model.ScanStats, error) {
+	// Репортер стартует до всех подготовительных фаз (change
+	// update-startup-visibility): discovery виден стадией до walk.
+	collector := &statsCollector{}
+	stopProgress := startProgressReporter(progressLabel, collector.Snapshot)
+	defer stopProgress()
+
 	scanRunID, err := idx.db.CreateScanRun(ctx, rootPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create scan run: %w", err)
@@ -81,17 +94,21 @@ func (idx *Indexer) runInitPipeline(ctx context.Context, rootPath string, parall
 	if err := idx.db.BackfillAPIContractSearchVectors(ctx); err != nil {
 		return nil, fmt.Errorf("failed to backfill api_contracts search vectors: %w", err)
 	}
+	prepMiscDone := time.Now()
 
 	// Discovery git-источников до обхода файлов: префиксная карта нужна
 	// saveFileCtx (продукт/линия), backfill чинит существующие строки.
-	discoveryCutoff := idx.discoverGitSources(ctx, rootPath, newGitDetector())
-
-	collector := &statsCollector{}
-	stopProgress := startProgressReporter(progressLabel, collector.Snapshot)
-	defer stopProgress()
+	// Детали «git detection N/M» / «source registry upsert» prep-строки
+	// выставляет discoverGitSources через collector.
+	discoveryStart := time.Now()
+	discoveryCutoff := idx.discoverGitSources(ctx, rootPath, newGitDetector(), parallel, collector)
+	discoveryDone := time.Now()
+	// Подготовительные фазы закончились: строка счётчиков walk.
+	collector.Add(func(stats *model.ScanStats) { stats.Stage = "" })
 
 	includePatterns, excludePatterns := idx.walkerPatterns()
 	walker := fswalk.NewWalker(rootPath, includePatterns, excludePatterns)
+	walkStart := time.Now()
 	filesCh, errsCh := walker.WalkParallelCtx(ctx, parallel)
 
 	// Воркеры читают файлы напрямую из filesCh и делают saveFile + processFile
@@ -129,7 +146,11 @@ errorLoopInit:
 	idx.cleanupStaleBranches(ctx, discoveryCutoff)
 	postProcessDone := time.Now()
 	stats := collector.Snapshot()
-	stats.WalkSaveMs = walkSaveDone.Sub(startedAt).Milliseconds()
+	// Подготовительное окно init: схема (через prepStartedAt из cmd) +
+	// scan run + FTS-backfill + discovery; safety-net/load state в init нет.
+	stats.PrepMiscMs = prepMiscDone.Sub(prepStartedAt).Milliseconds()
+	stats.DiscoveryMs = discoveryDone.Sub(discoveryStart).Milliseconds()
+	stats.WalkSaveMs = walkSaveDone.Sub(walkStart).Milliseconds()
 	stats.ProcessMs = 0 // Init: saveFile+processFile в одном цикле, per-phase через SaveMs/ParseMs
 	stats.PostProcessMs = postProcessDone.Sub(walkSaveDone).Milliseconds()
 	status := "completed"
@@ -176,15 +197,30 @@ func (idx *Indexer) analyzeAfterRun(ctx context.Context, rootPath string) {
 }
 
 func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified bool, parallel int) (*model.ScanStats, error) {
+	return idx.UpdateCtxStartedAt(ctx, rootPath, onlyModified, parallel, time.Now())
+}
+
+// UpdateCtxStartedAt — вариант UpdateCtx с внешней точкой отсчёта
+// подготовительного окна: cmd передаёт время ДО InitSchema/NewDB, чтобы
+// разовое применение миграций схемы атрибутировалось в PrepMiscMs
+// (change update-startup-visibility).
+func (idx *Indexer) UpdateCtxStartedAt(ctx context.Context, rootPath string, onlyModified bool, parallel int, prepStartedAt time.Time) (*model.ScanStats, error) {
 	// --modified=false = полная пересборка индекса кодовой базы: сброс таблиц
 	// (RTI/TRC-сессии, история scan_runs и schema_migrations сохраняются),
 	// удаление LSA-sidecar и делегация в init-пайплайн. Update-ветка ниже —
 	// только для инкрементального режима (--modified=true).
 	if !onlyModified {
-		return idx.fullRebuildCtx(ctx, rootPath, parallel)
+		return idx.fullRebuildCtx(ctx, rootPath, parallel, prepStartedAt)
 	}
 
-	startedAt := time.Now()
+	// Репортер стартует до всех подготовительных фаз (change
+	// update-startup-visibility): prep-фазы идут одной строкой «preparing»
+	// (деталь сменяется перезаписью), окно между баннером и первым кадром
+	// счётчиков закрыто.
+	collector := &statsCollector{}
+	stopProgress := startProgressReporter("update", collector.Snapshot)
+	defer stopProgress()
+
 	scanRunID, err := idx.db.CreateScanRun(ctx, rootPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create scan run: %w", err)
@@ -194,25 +230,31 @@ func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified
 	if err := idx.db.BackfillAPIContractSearchVectors(ctx); err != nil {
 		return nil, fmt.Errorf("failed to backfill api_contracts search vectors: %w", err)
 	}
+	prepMiscDone := time.Now()
 
 	// Discovery git-источников до обхода файлов (карта для saveFileCtx +
-	// backfill существующих строк, пропущенных pre-filter'ом mtime+size).
-	discoveryCutoff := idx.discoverGitSources(ctx, rootPath, newGitDetector())
+	// backfill существующих строк, пропущенных pre-filter'ом mtime+size):
+	// детали «git detection N/M» / «source registry upsert» prep-строки
+	// выставляет discoverGitSources через collector.
+	discoveryStart := time.Now()
+	discoveryCutoff := idx.discoverGitSources(ctx, rootPath, newGitDetector(), parallel, collector)
+	discoveryDone := time.Now()
 
 	// Safety-net аварийного окна «reconcile → удаление старых поколений»:
 	// чистит дубли поколений, оставшиеся после падения предыдущего прогона,
 	// до walk (изменённые пути текущего прогона сюда не попадают — их
 	// поколения создаются позже).
+	safetyNetStart := time.Now()
+	collector.Add(func(stats *model.ScanStats) { stats.Stage = "preparing: safety-net duplicates" })
 	idx.reconcileStaleFileGenerations(ctx, rootPath)
+	safetyNetDone := time.Now()
 
+	stateLoadStart := time.Now()
+	collector.Add(func(stats *model.ScanStats) { stats.Stage = "preparing: load state files" })
 	existing, err := idx.db.GetLatestFilesByRootPath(ctx, rootPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load previous file state: %w", err)
 	}
-
-	collector := &statsCollector{}
-	stopProgress := startProgressReporter("update", collector.Snapshot)
-	defer stopProgress()
 
 	includePatterns, excludePatterns := idx.walkerPatterns()
 	walker := fswalk.NewWalker(rootPath, includePatterns, excludePatterns)
@@ -230,6 +272,14 @@ func (idx *Indexer) UpdateCtx(ctx context.Context, rootPath string, onlyModified
 		walker.SetPreFilter(fingerprints)
 	}
 
+	// Фаза load state закрывается здесь, а не сразу после SELECT: построение
+	// fingerprint-карты по всем строкам предыдущего состояния (~624k файлов на
+	// рабочем корне) — заметная работа и входит в StateLoadMs, чтобы тайминги
+	// суммарно покрывали всё подготовительное окно (code review п.3).
+	collector.Add(func(stats *model.ScanStats) { stats.Stage = "" })
+	stateLoadDone := time.Now()
+
+	walkStart := time.Now()
 	filesCh, errsCh := walker.WalkParallelCtx(ctx, parallel)
 	jobs := make(chan indexedFileJob, 128)
 	seen := make(map[string]struct{})
@@ -377,7 +427,16 @@ errorLoopUpdate:
 	cleanupDone := time.Now()
 
 	stats := collector.Snapshot()
-	stats.WalkSaveMs = walkSaveDone.Sub(startedAt).Milliseconds()
+	// Тайминги подготовительного окна: четыре значения суммарно покрывают
+	// всё от старта прогона до первого кадра счётчиков (PrepMiscMs — от
+	// внешней точки отсчёта cmd, включая работу схемы БД).
+	stats.PrepMiscMs = prepMiscDone.Sub(prepStartedAt).Milliseconds()
+	stats.DiscoveryMs = discoveryDone.Sub(discoveryStart).Milliseconds()
+	stats.SafetyNetMs = safetyNetDone.Sub(safetyNetStart).Milliseconds()
+	stats.StateLoadMs = stateLoadDone.Sub(stateLoadStart).Milliseconds()
+	// WalkSaveMs — только фаза walk+save, без подготовительных фаз
+	// (сравнение с историей прогонов требует пере-замера).
+	stats.WalkSaveMs = walkSaveDone.Sub(walkStart).Milliseconds()
 	stats.ProcessMs = processDone.Sub(walkSaveDone).Milliseconds()
 	stats.PostProcessMs = postProcessDone.Sub(processDone).Milliseconds()
 	stats.CleanupMs = cleanupDone.Sub(postProcessDone).Milliseconds()
@@ -417,14 +476,17 @@ func (idx *Indexer) Update(rootPath string, onlyModified bool, parallel int) (*m
 // возобновляется повторным запуском --modified=false (полный рестарт):
 // инкрементальный run восстанавливает сущности файлов, но не relations-граф
 // (pending-ссылки постпроцессоров живут в памяти и не переживают перезапуск).
-func (idx *Indexer) fullRebuildCtx(ctx context.Context, rootPath string, parallel int) (*model.ScanStats, error) {
+// prepStartedAt — внешняя точка отсчёта подготовительного окна (до InitSchema
+// в cmd): ResetCodebaseTables + removeLSASidecars + работа схемы атрибутируются
+// в PrepMiscMs (code review п.2), тайминги покрывают всё окно до walk.
+func (idx *Indexer) fullRebuildCtx(ctx context.Context, rootPath string, parallel int, prepStartedAt time.Time) (*model.ScanStats, error) {
 	reset, err := idx.db.ResetCodebaseTables(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to reset codebase tables: %w", err)
 	}
 	fmt.Printf("Full rebuild: reset %d codebase tables (RTI/TRC sessions and scan history kept)\n", reset)
 	idx.removeLSASidecars()
-	stats, err := idx.runInitPipeline(ctx, rootPath, parallel, "rebuild")
+	stats, err := idx.runInitPipeline(ctx, rootPath, parallel, "rebuild", prepStartedAt)
 	if ctx.Err() != nil {
 		fmt.Fprint(os.Stderr, "\nRebuild interrupted. Run 'codebase update --modified=false' again to finish the rebuild (incremental update does not restore relations).\n")
 	}

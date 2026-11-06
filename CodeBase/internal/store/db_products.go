@@ -127,38 +127,55 @@ type FileSourceBinding struct {
 	BranchID  int64
 }
 
-// BackfillFilesFromSources проставляет продукт/линию существующим строкам
-// files по префиксу каталога источника (граница — разделитель пути, '/' и
-// '\'): чинит строки, пропущенные pre-filter'ом по mtime+size, и старые
-// псевдопродукты эвристики по имени каталога — без переиндексации
-// содержимого. Источники — непосредственные дети root_path, префиксы не
-// пересекаются. Возвращает число изменённых строк.
-func (db *DB) BackfillFilesFromSources(ctx context.Context, sources []FileSourceBinding) (int64, error) {
-	if len(sources) == 0 {
-		return 0, nil
-	}
-
+// BackfillFilesFromSourcesSQL строит тело bulk-backfill для N источников:
+// параметры $1..$3N тройками (prefix text, product_id bigint, branch_id
+// bigint). Выделено из BackfillFilesFromSources для канарейка-теста плана
+// production-формы (code review update-startup-visibility, п.1): VALUES-джойн
+// с LIKE-паттерном из колонки джойна не даёт индексного диапазона — план
+// фиксирован тестом TestBackfillFilesFromSources_PlanNoIndexRange.
+func BackfillFilesFromSourcesSQL(sourceCount int) string {
 	var sb strings.Builder
 	sb.WriteString(`WITH src(prefix, product_id, branch_id) AS (VALUES `)
-	args := make([]interface{}, 0, len(sources)*3)
-	for i, s := range sources {
+	for i := 0; i < sourceCount; i++ {
 		if i > 0 {
 			sb.WriteString(", ")
 		}
 		base := i * 3
 		fmt.Fprintf(&sb, "($%d::text, $%d::bigint, $%d::bigint)", base+1, base+2, base+3)
-		args = append(args, s.Path, s.ProductID, s.BranchID)
 	}
 	sb.WriteString(`)
 		UPDATE files f SET ds_product_id = s.product_id, ds_product_branch_id = s.branch_id
 		FROM src s
-		WHERE left(f.path, length(s.prefix)) = s.prefix
-		  AND (length(f.path) = length(s.prefix)
-		       OR substring(f.path from length(s.prefix) + 1 for 1) IN ('/', '\'))
+		WHERE (f.path LIKE s.prefix || '/%' OR f.path LIKE s.prefix || '\\%')
 		  AND (f.ds_product_id IS DISTINCT FROM s.product_id
 		       OR f.ds_product_branch_id IS DISTINCT FROM s.branch_id)`)
+	return sb.String()
+}
 
-	tag, err := db.ExecContext(ctx, sb.String(), args...)
+// BackfillFilesFromSources проставляет продукт/линию существующим строкам
+// files по префиксу каталога источника (граница — разделитель пути, '/' и
+// '\'): чинит строки, пропущенные pre-filter'ом по mtime+size, и старые
+// псевдопродукты эвристики по имени каталога — без переиндексации
+// содержимого. Источники — непосредственные дети root_path, префиксы не
+// пересекаются. Возвращает число изменённых строк. План — Seq Scan по files
+// (bulk-форма: паттерн LIKE вычисляется из колонки VALUES-джойна, индексного
+// диапазона нет; префиксы покрывают всё дерево — см. design D3 change
+// update-startup-visibility).
+func (db *DB) BackfillFilesFromSources(ctx context.Context, sources []FileSourceBinding) (int64, error) {
+	if len(sources) == 0 {
+		return 0, nil
+	}
+
+	args := make([]interface{}, 0, len(sources)*3)
+	for _, s := range sources {
+		// Префикс идёт в LIKE-паттерн: спецсимволы (%/_/обратный слэш)
+		// экранируются, граница — разделитель пути ('/' нормализованных
+		// путей, '\' — симметрия с прежним substring-предикатом).
+		// Ветки «path = prefix» нет: файл не может иметь путь каталога.
+		args = append(args, escapeLikeAll(s.Path), s.ProductID, s.BranchID)
+	}
+
+	tag, err := db.ExecContext(ctx, BackfillFilesFromSourcesSQL(len(sources)), args...)
 	if err != nil {
 		return 0, fmt.Errorf("failed to backfill files from sources: %w", err)
 	}

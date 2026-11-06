@@ -436,12 +436,20 @@ type ScanStats struct {
 	SpecCodeMentions int
 
 	// Тайминги стадий пайплайна (миллисекунды).
-	WalkSaveMs    int64 // wall-clock: старт → завершение walk+save
+	WalkSaveMs    int64 // wall-clock: фактическое начало walk → завершение walk+save
 	SaveMs        int64 // суммарное время воркеров в saveFile (per-worker Σ)
 	ParseMs       int64 // суммарное время воркеров в processFile (per-worker Σ)
 	ProcessMs     int64 // wall-clock: завершение walk+save → завершение пула (Update only; 0 для Init)
 	PostProcessMs int64 // пост-обработка relations
 	CleanupMs     int64 // удаление устаревших/исчезнувших файлов (только update)
+
+	// Тайминги подготовительных фаз до walk (change update-startup-visibility):
+	// суммарно атрибутируют «тихое окно» между стартом прогона и первым
+	// кадром счётчиков.
+	DiscoveryMs int64 // discovery git-источников: детекция + upsert'ы + backfill привязок
+	SafetyNetMs int64 // safety-net дублей поколений файлов (update only)
+	StateLoadMs int64 // загрузка предыдущего состояния файлов (update only)
+	PrepMiscMs  int64 // прочие подготовительные шаги: схема (InitSchema в cmd), scan run, FTS-backfill контрактов
 
 	// Stage — текущая длинная стадия для прогресс-репортера
 	// (например, "spec-lsa: svd (may take 1-2 min)"). Пусто — стадия не активна.

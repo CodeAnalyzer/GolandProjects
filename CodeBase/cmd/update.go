@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/codebase/internal/config"
@@ -46,23 +47,38 @@ Uses file hashes to detect changes.`,
 			effectiveParallel = cfg.Indexer.Parallel
 		}
 
+		// Баннер — ДО NewDB/InitSchema (change update-startup-visibility):
+		// разовое применение миграций (CREATE INDEX по ~сотням тысяч строк)
+		// не создаёт тихое окно до баннера. Строка схемы — первая деталь
+		// ЕДИНОЙ prep-строки «preparing | ...» (без перевода строки):
+		// после завершения InitSchema строка очищается, и репортер
+		// продолжает её же деталями (git detection и т.д.); очистка нужна,
+		// т.к. кадры репортера короче строки схемы и \r-перезапись
+		// оставила бы видимый хвост.
+		startedAt := time.Now()
+		fmt.Printf("\nUpdating started: %s\n", startedAt.Format("2006-01-02 15:04:05"))
+		fmt.Printf("rootPath=%s parallel=%d\n", rootPath, effectiveParallel)
+		fmt.Printf("preparing | schema check/migrations... ")
 		db, err := store.NewDB(cfg.DB)
 		if err != nil {
+			// Незавершённая строка индикации схемы завершается и в ветке
+			// ошибки, иначе сообщение stderr приклеивается к ней (code
+			// review п.5).
+			fmt.Printf("failed\n")
 			return fmt.Errorf("failed to connect to database: %w", err)
 		}
 		defer db.Close()
 
 		if err := db.InitSchema(); err != nil {
+			fmt.Printf("failed\n")
 			return fmt.Errorf("failed to init schema: %w", err)
 		}
+		fmt.Printf("done\r%s\r", strings.Repeat(" ", 64))
 
 		// onlyModified позволяет переключаться между настоящим incremental update
 		// и принудительным повторным проходом по всем файлам без полной re-init операции.
 		idx := indexer.New(db, cfg)
-		startedAt := time.Now()
-		fmt.Printf("\nUpdating started: %s\n", startedAt.Format("2006-01-02 15:04:05"))
-		fmt.Printf("rootPath=%s parallel=%d\n", rootPath, effectiveParallel)
-		stats, err := idx.UpdateCtx(ctx, rootPath, onlyModified, effectiveParallel)
+		stats, err := idx.UpdateCtxStartedAt(ctx, rootPath, onlyModified, effectiveParallel, startedAt)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				fmt.Fprintf(os.Stderr, "\nUpdating canceled by user.\n")

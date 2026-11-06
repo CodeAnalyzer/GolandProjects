@@ -1401,7 +1401,7 @@ func (idx *Indexer) parseXMLFile(ctx context.Context, file fswalk.FileInfo, file
 		// Recovery битой вложенности («element closed by»): файл разобран
 		// после автозакрытия незакрытых элементов — предупреждение в
 		// error-лог (не в errors_count, не в консоль со спиннером).
-		idx.errorLogger.Print(fmt.Sprintf("WARNING: File: %s - %s", path, result.RecoveryNote))
+		idx.errorLogger.Printf("WARNING: File: %s - %s", path, result.RecoveryNote)
 	}
 	for _, item := range result.BusinessObjects {
 		item.FileID = fileID
@@ -1911,6 +1911,10 @@ func startProgressReporter(mode string, snapshot func() model.ScanStats) func() 
 	// \r-тики множат хвосты). Смена под-стадии внутри фазы (spec-lsa:
 	// tf-idf matrix → svd) обновляет деталь на той же строке.
 	currentPhase := mode
+	printed := false // был ли напечатан хотя бы один кадр: перевод строки
+	// перед ПЕРВОЙ фазой не печатается — строка прогресса ещё пуста (cmd
+	// мог оставить курсор в начале затёртой prep-строки схемы), лишний \n
+	// создал бы пустую строку/зафиксировал бы её с несрезанным хвостом.
 
 	go func() {
 		ticker := time.NewTicker(progressInterval)
@@ -1944,13 +1948,13 @@ func startProgressReporter(mode string, snapshot func() model.ScanStats) func() 
 						prefix, detail, phase = "", stats.Stage, stats.Stage
 					}
 				}
-				if phase != currentPhase {
+				if phase != currentPhase && printed {
 					// Смена фазы (счётчики↔spec-lsa↔desc-lsa):
 					// фиксируем предыдущую строку и начинаем новую.
 					fmt.Print("\n")
-					currentPhase = phase
 					lastLen = 0
 				}
+				currentPhase = phase
 				var line string
 				if stats.Stage == "" {
 					line = fmt.Sprintf(
@@ -1974,6 +1978,7 @@ func startProgressReporter(mode string, snapshot func() model.ScanStats) func() 
 				}
 				lastLen = len(line)
 				fmt.Printf("\r%s", line)
+				printed = true
 				frameIndex++
 			}
 		}

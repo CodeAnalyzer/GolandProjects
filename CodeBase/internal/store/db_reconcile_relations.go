@@ -107,21 +107,31 @@ func escapeLikeAll(s string) string {
 	return s
 }
 
+// rootLikePattern — LIKE-паттерн детей корня: нормализованный корень,
+// экранированный escapeLikeAll, + '/' + wildcard. Единая нормализация и
+// экранирование для GetLatestFilesByRootPath и FindDuplicateFileGenerations
+// (change update-startup-visibility): корень с %/_/обратным слэшем
+// матчится литерально, без перематчивания спецсимволов.
+func rootLikePattern(rootPath string) string {
+	normalizedRoot := strings.ReplaceAll(strings.TrimSpace(rootPath), `\`, "/")
+	normalizedRoot = strings.TrimSuffix(normalizedRoot, "/")
+	return escapeLikeAll(normalizedRoot) + "/%"
+}
+
 // FindDuplicateFileGenerations находит пути с несколькими поколениями files
 // (последствия падения в окне reconcile → удаление старых поколений).
 // Возвращает map[path]keepID (последнее поколение) и map[path]oldIDs
 // (не-последние поколения) в пределах корня обновления.
 func (db *DB) FindDuplicateFileGenerations(ctx context.Context, rootPath string) (map[string]int64, map[string][]int64, error) {
-	normalizedRoot := strings.ReplaceAll(strings.TrimSpace(rootPath), `\`, "/")
-	normalizedRoot = strings.TrimSuffix(normalizedRoot, "/")
-
+	// Веток «path = root» нет (root — каталог, files.path всегда глубже):
+	// экранированный LIKE-префикс, sargable для idx_files_path.
 	rows, err := db.QueryContext(ctx, `
 		SELECT path, MAX(id) AS keep_id
 		FROM files
-		WHERE path = $1 OR path LIKE $2
+		WHERE path LIKE $1
 		GROUP BY path
 		HAVING COUNT(*) > 1
-	`, normalizedRoot, escapeLikeAll(normalizedRoot)+"/%")
+	`, rootLikePattern(rootPath))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to find duplicate file generations: %w", err)
 	}
@@ -274,7 +284,7 @@ func (db *DB) RemapRelationTargetsByFileIDs(ctx context.Context, fileIDs []int64
 			if end > len(fileIDs) {
 				end = len(fileIDs)
 			}
-		query := fmt.Sprintf(`
+			query := fmt.Sprintf(`
 			UPDATE relations r
 			SET target_id = m.new_id
 			FROM (

@@ -10,7 +10,7 @@ import (
 // КОНТРАКТ: любое изменение DDL-списка InitSchemaCtx (колонки, индексы,
 // ограничения, миграции) требует bump этой версии — иначе fast-path
 // пропустит проход и новое DDL молча не применится на существующих БД.
-const CurrentSchemaVersion = "codebase_schema_v5"
+const CurrentSchemaVersion = "codebase_schema_v6"
 
 const schemaInitLockKey = "codebase/schema-init"
 
@@ -1051,6 +1051,12 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_files_ds_product_id ON files(ds_product_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_files_ds_product_branch_id ON files(ds_product_branch_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_files_extension ON files(extension)`,
+		// text_pattern_ops (files.path — TEXT): LIKE-префиксные запросы без
+		// привязки к collation — backfill привязок источников и подпутевые
+		// update -p (change update-startup-visibility). Полнокорневая
+		// загрузка состояния остаётся seq scan (LIKE покрывает все строки
+		// корня — стоимость фазы в передаче, не в скане).
+		`CREATE INDEX IF NOT EXISTS idx_files_path ON files(path text_pattern_ops)`,
 		`CREATE INDEX IF NOT EXISTS idx_symbols_file_id ON symbols(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_symbols_symbol_name_type_lower ON symbols(LOWER(symbol_name), symbol_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_symbols_symbol_name_trgm ON symbols USING GIN (symbol_name gin_trgm_ops)`,

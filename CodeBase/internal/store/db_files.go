@@ -12,16 +12,17 @@ import (
 
 // GetLatestFilesByRootPath возвращает последнее известное состояние файлов для указанного root path.
 func (db *DB) GetLatestFilesByRootPath(ctx context.Context, rootPath string) (map[string]*model.File, error) {
-	normalizedRoot := strings.ReplaceAll(strings.TrimSpace(rootPath), `\`, "/")
-	normalizedRoot = strings.TrimSuffix(normalizedRoot, "/")
+	// Веток «path = root» нет: root — каталог, files.path всегда глубже
+	// (walker эмитит только файлы). Экранированный LIKE-префикс —
+	// sargable-предикат для idx_files_path (change update-startup-visibility).
 	rows, err := db.QueryContext(ctx, `
 		SELECT DISTINCT ON (path)
 			id, scan_run_id, ds_product_id, path, rel_path, extension, size_bytes,
 			hash_sha256, modified_at, encoding, language, created_at, updated_at
 		FROM files
-		WHERE path = $1 OR path LIKE $2
+		WHERE path LIKE $1
 		ORDER BY path, id DESC
-	`, normalizedRoot, normalizedRoot+"/%")
+	`, rootLikePattern(rootPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to query indexed files: %w", err)
 	}

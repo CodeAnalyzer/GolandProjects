@@ -230,6 +230,23 @@
 
 Для графа связей система SHALL создавать два индекса на `relations`: `idx_relations_relation_type_id` на `(relation_type, id DESC)` для запросов с фильтром только по типу связи и `idx_relations_source_type_relation_id` на `(source_type, relation_type, id DESC)` для комбинированного фильтра `source_type + relation_type` с сортировкой `ORDER BY id DESC`. Существующие составные индексы `(source_type, source_id)`, `(target_type, target_id)`, `(source_type, relation_type, source_id)`, `(target_type, relation_type, target_id)` SHALL сохраняться. `InitSchema` SHALL сохранять легаси-`DROP INDEX IF EXISTS idx_relations_relation_type` как идемпотентную чистку старых БД; имя нового индекса отличается и этой чисткой не затрагивается.
 
+Для таблицы `files` система SHALL создавать индекс `idx_files_path` на
+`files(path)` с opclass `text_pattern_ops` (колонка объявлена `TEXT`);
+предикаты pre-walk запросов инкрементального update (загрузка предыдущего
+состояния, поиск дубликатов поколений, backfill привязок источников) MUST быть
+sargable (экранированный LIKE-префикс, единый хелпер экранирования).
+Узкопрефиксные запросы с план-константным (параметризованным) LIKE-паттерном —
+`update --path <подпуть>` (загрузка предыдущего состояния и поиск дубликатов
+поколений по подпути) — MUST использовать индекс вместо полного
+последовательного скана таблицы. Полнокорневая загрузка предыдущего состояния
+(LIKE-префикс покрывает все строки корня) и bulk-backfill привязок источников
+(один UPDATE с VALUES-джойном: LIKE-паттерн вычисляется из колонки джойна и
+не даёт индексного диапазона; префиксы источников покрывают всё дерево)
+допускают Seq Scan. Добавление индекса SHALL сопровождаться bump версии схемы:
+существующие БД получают индекс штатной миграцией при следующем `InitSchema`
+(update); до первого `update` после замены бинарника read-only команды
+возвращают ошибку необходимости обновления схемы.
+
 #### Scenario: GIN-индекс для полнотекстового поиска
 
 - **GIVEN** пустая БД
@@ -262,6 +279,27 @@
 - **WHEN** выполняется `InitSchema`
 - **THEN** созданы индексы `idx_relations_relation_type_id` на `relations(relation_type, id DESC)` и `idx_relations_source_type_relation_id` на `relations(source_type, relation_type, id DESC)`
 - **AND** легаси-индекс `idx_relations_relation_type` отсутствует
+
+#### Scenario: Индекс на files(path) создаётся InitSchema
+
+- **GIVEN** пустая БД
+- **WHEN** выполняется `InitSchema`
+- **THEN** создан индекс `idx_files_path` на `files(path)` с opclass `text_pattern_ops`
+
+#### Scenario: Миграция индекса на существующей БД
+
+- **GIVEN** БД предыдущей версии схемы с заполненной таблицей `files`
+- **WHEN** выполняется `codebase update`
+- **THEN** индекс `idx_files_path` создан миграцией версии схемы
+- **AND** узкопрефиксный параметризованный запрос `SELECT ... FROM files WHERE path LIKE '<подпуть update --path>/%'` использует индексный скан по `idx_files_path` (структурная проверка плана при отключённом seq scan)
+- **AND** до выполнения этого `update` read-only команды возвращают ошибку необходимости обновления схемы
+
+#### Scenario: Bulk-backfill привязок источников допускает Seq Scan
+
+- **GIVEN** БД со схемой текущей версии и заполненной таблицей `files` под несколькими источниками
+- **WHEN** выполняется bulk-backfill привязок (один UPDATE с VALUES-джойном по префиксам источников)
+- **THEN** привязываются все строки под префиксами источников с границей разделителя (предикат sargable-вида)
+- **AND** план запроса не обязан использовать `idx_files_path`: паттерн LIKE вычисляется из колонки джойна и не даёт индексного диапазона (фактическое поведение зафиксировано канарейка-тестом плана)
 
 ### Requirement: Nullable helpers
 

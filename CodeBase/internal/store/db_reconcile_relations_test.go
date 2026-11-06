@@ -78,3 +78,23 @@ func TestEscapeLikeAll(t *testing.T) {
 		}
 	}
 }
+
+// TestRootLikePattern (change update-startup-visibility): паттерн детей
+// корня — нормализация слэшей/хвостового «/», экранирование спецсимволов и
+// суффикс-граница «/%». Единый хелпер GetLatestFilesByRootPath и
+// FindDuplicateFileGenerations.
+func TestRootLikePattern(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"D:/GITHUB/FA", `D:/GITHUB/FA/%`},
+		{"D:/my_project/root", `D:/my\_project/root/%`},
+		{"D:/100%/root", `D:/100\%/root/%`},
+		{`D:\repo\`, `D:/repo/%`},                // хвостовой слэш, обратные слэши
+		{"  D:/repo/  ", `D:/repo/%`},            // пробелы и хвостовой слэш
+		{`D:\repo_x\100%`, `D:/repo\_x/100\%/%`}, // все спецсимволы сразу
+	}
+	for _, tc := range cases {
+		if got := rootLikePattern(tc.in); got != tc.want {
+			t.Errorf("rootLikePattern(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

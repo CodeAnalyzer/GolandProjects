@@ -2,12 +2,14 @@ package indexer
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/codebase/internal/fswalk"
+	"github.com/codebase/internal/model"
 	"github.com/codebase/internal/store"
 )
 
@@ -95,14 +97,26 @@ func (idx *Indexer) resolveFileProduct(ctx context.Context, file fswalk.FileInfo
 	return "", 0, nil
 }
 
+// gitSourceDetector — минимальный интерфейс детектора git-источника:
+// *gitDetector — боевая реализация (git CLI + кэш на время скана),
+// подставные детекторы — в тестах пула детекции (change
+// update-startup-visibility).
+type gitSourceDetector interface {
+	Detect(ctx context.Context, dir string) (*GitSource, error)
+}
+
 // discoverGitSources — discovery git-источников среди непосредственных
-// детей root_path перед обходом файлов: git-детекция каждого каталога с
-// .git, upsert продуктов/линий, пометка default-ветки, публикация
-// префиксной карты в реестр и backfill существующих строк files.
-// Возвращает cutoff (до upsert) для последующей очистки устаревших линий.
-// Не-git каталоги и каталоги без remote остаются на прежней эвристике
-// продукта по пути; недоступный git CLI — warning и пропуск каталога.
-func (idx *Indexer) discoverGitSources(ctx context.Context, rootPath string, detector *gitDetector) time.Time {
+// детей root_path перед обходом файлов: параллельная (пул parallel воркеров,
+// нормализуется normalizeParallel) git-детекция каждого каталога с .git,
+// затем последовательные upsert продуктов/линий, пометка default-ветки,
+// публикация префиксной карты в реестр и backfill существующих строк files.
+// Прогресс детекции и пост-детекционной работы отображается стадиями
+// репортера (collector): «git detection: N/M» (счётчик — только детекция) и
+// «source registry: upsert». Возвращает cutoff (до upsert) для последующей
+// очистки устаревших линий. Не-git каталоги и каталоги без remote остаются
+// на прежней эвристике продукта по пути; недоступный git CLI — warning и
+// пропуск каталога.
+func (idx *Indexer) discoverGitSources(ctx context.Context, rootPath string, detector gitSourceDetector, parallel int, collector *statsCollector) time.Time {
 	cutoff := time.Now()
 
 	entries, err := os.ReadDir(rootPath)
@@ -111,13 +125,9 @@ func (idx *Indexer) discoverGitSources(ctx context.Context, rootPath string, det
 		return cutoff
 	}
 
-	defaultBranch := "develop"
-	if idx.config != nil && idx.config.Indexer.DefaultBranch != "" {
-		defaultBranch = idx.config.Indexer.DefaultBranch
-	}
-
-	bindings := make([]sourceEntry, 0, len(entries))
-	discoveredProducts := make(map[int64]struct{})
+	// Кандидаты: непосредственные дети root_path с .git — дёшево (по одному
+	// stat'у на каталог), порядок ReadDir детерминирован.
+	candidates := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -126,14 +136,74 @@ func (idx *Indexer) discoverGitSources(ctx context.Context, rootPath string, det
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 			continue
 		}
+		candidates = append(candidates, dir)
+	}
 
-		src, err := detector.Detect(ctx, dir)
-		if err != nil {
-			idx.logError(dir, "Source discovery skipped (git unavailable): %v", err)
-			continue
+	// Детекция пулом воркеров: вместо 3*N последовательных спавнов git.exe —
+	// до parallel одновременных. Результаты собираются по индексу кандидата
+	// (не по каналу) — порядок сохраняется, последующие upsert'ы
+	// последовательны и детерминированы. Все подготовительные стадии имеют
+	// общий префикс «preparing» — репортер держит их на ОДНОЙ строке
+	// прогресса, деталь сменяется перезаписью (без перевода строки между
+	// фазами подготовки).
+	pool := normalizeParallel(parallel)
+	results := make([]*GitSource, len(candidates))
+	detected := 0
+	var stageMu sync.Mutex
+	setStage := func(stage string) {
+		if collector != nil {
+			collector.Add(func(stats *model.ScanStats) { stats.Stage = stage })
 		}
+	}
+	if len(candidates) > 0 {
+		setStage(fmt.Sprintf("preparing: git detection 0/%d", len(candidates)))
+	}
+	var wg sync.WaitGroup
+	for worker := 0; worker < pool; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := worker; i < len(candidates); i += pool {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				dir := candidates[i]
+				src, err := detector.Detect(ctx, dir)
+				if err != nil {
+					idx.logError(dir, "Source discovery skipped (git unavailable): %v", err)
+				} else if src != nil {
+					results[i] = src
+				}
+				// Счётчик стадии — под мьютексом вместе с записью Stage, чтобы
+				// кадры репортера были монотонны (N не «прыгал» назад из-за
+				// чередования горутин между чтением счётчика и setStage).
+				stageMu.Lock()
+				detected++
+				setStage(fmt.Sprintf("preparing: git detection %d/%d", detected, len(candidates)))
+				stageMu.Unlock()
+			}
+		}(worker)
+	}
+	wg.Wait()
+
+	// Пост-детекционная работа — деталь той же prep-строки без счётчика
+	// детекции: upsert'ы + маркировка default + backfill не «висят» на N/M.
+	setStage("preparing: source registry upsert")
+
+	defaultBranch := "develop"
+	if idx.config != nil && idx.config.Indexer.DefaultBranch != "" {
+		defaultBranch = idx.config.Indexer.DefaultBranch
+	}
+
+	bindings := make([]sourceEntry, 0, len(candidates))
+	discoveredProducts := make(map[int64]struct{})
+	for i, dir := range candidates {
+		src := results[i]
 		if src == nil {
-			// нет remote / unborn HEAD — прежняя эвристика по пути
+			// нет remote / unborn HEAD / ошибка детекции — прежняя
+			// эвристика по пути
 			continue
 		}
 
@@ -186,6 +256,9 @@ func (idx *Indexer) discoverGitSources(ctx context.Context, rootPath string, det
 			idx.errorLogger.Printf("Source discovery: %d git sources, backfilled %d existing file rows", len(bindings), n)
 		}
 	}
+	// Стадии discovery закончились: дальше либо следующая подготовительная
+	// фаза (safety-net/load state), либо строка счётчиков walk.
+	setStage("")
 	return cutoff
 }
 

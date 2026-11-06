@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/codebase/internal/config"
@@ -24,13 +25,31 @@ var (
 
 func printPipelineTimings(stats *model.ScanStats) {
 	fmt.Printf("\nStage timings:\n")
-	fmt.Printf("  Walk+save files: %d ms (wall-clock)\n", stats.WalkSaveMs)
+	// Подготовительные фазы до walk (change update-startup-visibility):
+	// суммарно покрывают окно между стартом прогона и первым кадром
+	// счётчиков; печатаются только непустые (init без load state).
+	if stats.PrepMiscMs > 0 {
+		fmt.Printf("  Prep misc:        %d ms (schema check/migrations, scan run, FTS backfill)\n", stats.PrepMiscMs)
+	}
+	if stats.DiscoveryMs > 0 {
+		fmt.Printf("  Prep discovery:   %d ms (git detection + registry + backfill)\n", stats.DiscoveryMs)
+	}
+	if stats.SafetyNetMs > 0 {
+		fmt.Printf("  Prep safety-net:  %d ms\n", stats.SafetyNetMs)
+	}
+	if stats.StateLoadMs > 0 {
+		fmt.Printf("  Prep load state:  %d ms\n", stats.StateLoadMs)
+	}
+	fmt.Printf("  Walk+save files: %d ms (wall-clock, только фаза walk)\n", stats.WalkSaveMs)
 	if stats.SaveMs > 0 || stats.ParseMs > 0 {
 		fmt.Printf("  Save (Σ workers):  %d ms\n", stats.SaveMs)
 		fmt.Printf("  Parse (Σ workers): %d ms\n", stats.ParseMs)
 		// Знаменатель — полное wall-clock время работы воркеров:
 		// для init ProcessMs=0 (воркеры в окне WalkSaveMs),
 		// для update воркеры продолжают работать в фазе ProcessMs (post-walk).
+		// База знаменателя изменилась (WalkSaveMs больше не включает
+		// подготовительные фазы — change update-startup-visibility):
+		// сравнение с историей прогонов требует пере-замера.
 		workerWallMs := stats.WalkSaveMs + stats.ProcessMs
 		if workerWallMs > 0 {
 			ratio := float64(stats.SaveMs+stats.ParseMs) / float64(workerWallMs)
@@ -87,17 +106,33 @@ Arguments:
 			effectiveParallel = cfg.Indexer.Parallel
 		}
 
+		// Баннер — ДО NewDB/InitSchema (change update-startup-visibility):
+		// миграции схемы видимы, без тихого окна до баннера. Строка схемы —
+		// первая деталь ЕДИНОЙ prep-строки «preparing | ...» (без перевода
+		// строки): после InitSchema строка очищается, репортер продолжает
+		// её же деталями (git detection и т.д.); очистка нужна, т.к. кадры
+		// репортера короче строки схемы и \r-перезапись оставила бы хвост.
+		startedAt := time.Now()
+		fmt.Printf("\nIndexing started: %s\n", startedAt.Format("2006-01-02 15:04:05"))
+		fmt.Printf("rootPath=%s parallel=%d\n", rootPath, effectiveParallel)
+		fmt.Printf("preparing | schema check/migrations... ")
 		// init всегда работает через новый DB handle, чтобы команда была
 		// полностью самодостаточной и не зависела от внешнего состояния процесса.
 		db, err := store.NewDB(cfg.DB)
 		if err != nil {
+			// Незавершённая строка индикации схемы завершается и в ветке
+			// ошибки, иначе сообщение stderr приклеивается к ней (code
+			// review п.5).
+			fmt.Printf("failed\n")
 			return fmt.Errorf("failed to connect to database: %w", err)
 		}
 		defer db.Close()
 
 		if err := db.InitSchema(); err != nil {
+			fmt.Printf("failed\n")
 			return fmt.Errorf("failed to init schema: %w", err)
 		}
+		fmt.Printf("done\r%s\r", strings.Repeat(" ", 64))
 
 		hasCompletedInit, err := db.HasCompletedInit(ctx)
 		if err != nil {
@@ -109,10 +144,7 @@ Arguments:
 
 		// Indexer инкапсулирует весь pipeline (конвейер): walk -> parse -> persist.
 		idx := indexer.New(db, cfg)
-		startedAt := time.Now()
-		fmt.Printf("\nIndexing started: %s\n", startedAt.Format("2006-01-02 15:04:05"))
-		fmt.Printf("rootPath=%s parallel=%d\n", rootPath, effectiveParallel)
-		stats, err := idx.InitCtx(ctx, rootPath, effectiveParallel)
+		stats, err := idx.InitCtxStartedAt(ctx, rootPath, effectiveParallel, startedAt)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				fmt.Fprintf(os.Stderr, "\nIndexing canceled by user.\n")
