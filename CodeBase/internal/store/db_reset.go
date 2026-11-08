@@ -37,6 +37,8 @@ var codebaseResetTables = []string{
 	"api_contract_return_values", "api_contract_contexts", "api_macro_invocations",
 	// Связи/retcode
 	"relations", "ds_return_codes",
+	// Признак таблиц в памяти (ModuleTableInMemory.lst)
+	"memory_tables",
 	// Спеки
 	"spec_configs", "spec_capabilities", "spec_requirements", "spec_scenarios",
 	"spec_usecases", "spec_usecase_steps", "spec_changes", "spec_change_delta",

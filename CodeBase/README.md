@@ -1,10 +1,10 @@
-# CodeBase
+﻿# CodeBase
 
 Локальный индексатор исходников Diasoft 5NT для семантической навигации по кодовой базе.
 
 ## Возможности
 
-- **Индексация файлов**: SQL, H, PAS, INC, JS, SMF, DFM, TPR, RPT, XML, MD, YAML; опционально `.t01`
+- **Индексация файлов**: SQL, H, PAS, INC, JS, SMF, DFM, TPR, RPT, XML, MD, YAML, LST; опционально `.t01`
 - **Извлечение сущностей**:
   - SQL: процедуры, таблицы, поля, определения колонок, определения индексов, отдельные SQL statements/query fragments, schema patches (ALTER TABLE ... ADD, M_ADD_FIELD, CREATE INDEX, M_CRT_INDEX)
   - H-файлы: константы, макросы, определения
@@ -15,6 +15,7 @@
   - TPR: report forms (отчётные формы), report fields (поля отчёта), report params (параметры отчёта), SQL blocks (SQL-блоки), include directives (директивы include)
   - RPT: report forms (отчётные формы), report params (параметры формы), VB functions (VBScript-функции), embedded SQL (встроенный SQL)
   - DSArchitect XML и `.t01` поддерживаются парсерами и индексатором. `.t01` **не входит в дефолтные** `include_patterns` и для индексации требует явного добавления в конфиг; `*.xml` может уже присутствовать в вашем `codebase.toml`, но если его нет, добавьте явно
+  - `.lst`: deployment-списки Diasoft. Файл с каноническим именем `ModuleTableInMemory.lst` (extension «таблицы в памяти»: секции `[<Продукт>]` + строки `<Таблица>;<Модуль>`) индексируется как признак «объявлена как таблица в памяти» — обогащает `query table` / `query api-table`; прочие `.lst` (например `ld_AfterApiReg.lst`) — файлы без сущностей. В конфигах существующих установок добавьте `"*.lst"` в `include_patterns` **до** первого `update` после обновления бинаря: иначе схема применится, но файл не попадёт в обход
   - DSArchitect XML: `service` (сервисные контракты), `event` (событийные контракты), `used_service` (используемые сервисы), `callback_event` (callback-события), `api_table` (табличные структуры), `api_table_index` (индексы standalone API-таблиц), `api_param` (параметры BObject)
   - API macros (макросы API) из SQL: `API_CREATE_PROC`, `API_INIT_EVENT`, `API_EXEC`
   - Header-описания SQL-процедур (блок-комментарий после декларации, до 8 КБ) — `query procedure` выводит `description`
@@ -105,7 +106,7 @@ parallel = 12
 batch_size = 500
 batch_insert_size = 50000
 progress_interval_ms = 250
-include_patterns = ["*.sql", "*.h", "*.pas", "*.inc", "*.js", "*.smf", "*.dfm", "*.tpr", "*.rpt", "*.xml", "*.md", "*.yaml"]
+include_patterns = ["*.sql", "*.h", "*.pas", "*.inc", "*.js", "*.smf", "*.dfm", "*.tpr", "*.rpt", "*.xml", "*.md", "*.yaml", "*.lst"]
 exclude_patterns = ["*/.*", "*~", "*.bak", "*.old"]
 
 [logging]

@@ -21,7 +21,7 @@ batch_insert_size = 50000
 progress_interval_ms = 500
 include_patterns = [
     "*.sql", "*.h", "*.pas", "*.inc", "*.js", "*.smf",
-    "*.dfm", "*.tpr", "*.rpt", "*.xml", "*.md", "*.yaml"
+    "*.dfm", "*.tpr", "*.rpt", "*.xml", "*.md", "*.yaml", "*.lst"
 
 ]
 exclude_patterns = ["*/.*", "*~", "*.bak", "*.old", "*/backup/*"]

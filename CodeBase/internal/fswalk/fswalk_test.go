@@ -109,7 +109,7 @@ func TestGetEncodingAndLanguage(t *testing.T) {
 }
 
 func TestGetSupportedExtensions(t *testing.T) {
-	want := []string{".sql", ".h", ".pas", ".inc", ".js", ".smf", ".dfm", ".tpr", ".rpt", ".xml", ".t01", ".md", ".yaml"}
+	want := []string{".sql", ".h", ".pas", ".inc", ".js", ".smf", ".dfm", ".tpr", ".rpt", ".xml", ".t01", ".md", ".yaml", ".lst"}
 	if got := GetSupportedExtensions(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("GetSupportedExtensions() = %v, want %v", got, want)
 	}

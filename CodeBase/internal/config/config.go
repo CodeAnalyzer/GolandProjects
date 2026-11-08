@@ -398,7 +398,7 @@ func Load() error {
 	}
 	if len(cfg.Indexer.IncludePatterns) == 0 {
 		cfg.Indexer.IncludePatterns = []string{
-			"*.sql", "*.h", "*.pas", "*.inc", "*.js", "*.smf", "*.dfm", "*.tpr", "*.rpt",
+			"*.sql", "*.h", "*.pas", "*.inc", "*.js", "*.smf", "*.dfm", "*.tpr", "*.rpt", "*.lst",
 		}
 	}
 	if len(cfg.Indexer.ExcludePatterns) == 0 {
@@ -548,7 +548,7 @@ func CreateDefault(rootPath string) *Config {
 			ProgressIntervalMs: 250,
 			DefaultBranch:      "develop",
 			IncludePatterns: []string{
-				"*.sql", "*.h", "*.pas", "*.inc", "*.js", "*.smf", "*.dfm", "*.tpr", "*.rpt",
+				"*.sql", "*.h", "*.pas", "*.inc", "*.js", "*.smf", "*.dfm", "*.tpr", "*.rpt", "*.lst",
 			},
 			ExcludePatterns: []string{
 				"*/.*", "*~", "*.bak", "*.old",

@@ -38,7 +38,8 @@ include_patterns = [
     "*.rpt",
     "*.xml",
     "*.md",
-    "*.yaml"
+    "*.yaml",
+    "*.lst"
 ]
 
 # Исключаемые файлы и директории

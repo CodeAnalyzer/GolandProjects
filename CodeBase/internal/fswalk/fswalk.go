@@ -438,6 +438,10 @@ func getEncodingAndLanguage(ext string) (string, string) {
 		return "AUTO", "MD"
 	case "yaml":
 		return "UTF8", "YAML"
+	case "lst":
+		// Deployment-списки Diasoft (ModuleTableInMemory.lst и ld_*.lst):
+		// содержимое ASCII, приор WIN1251 — legacy-окружение CP1251-безопасно.
+		return "WIN1251", "LST"
 	default:
 		return "UTF8", "UNKNOWN"
 	}
@@ -458,5 +462,5 @@ func isContentDetectedExt(ext string) bool {
 
 // GetSupportedExtensions возвращает список поддерживаемых расширений
 func GetSupportedExtensions() []string {
-	return []string{".sql", ".h", ".pas", ".inc", ".js", ".smf", ".dfm", ".tpr", ".rpt", ".xml", ".t01", ".md", ".yaml"}
+	return []string{".sql", ".h", ".pas", ".inc", ".js", ".smf", ".dfm", ".tpr", ".rpt", ".xml", ".t01", ".md", ".yaml", ".lst"}
 }

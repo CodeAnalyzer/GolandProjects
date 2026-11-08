@@ -58,6 +58,14 @@ func TestMergeScanStatsAndCollector(t *testing.T) {
 			dst4.MDFiles, dst4.YAMLFiles, dst4.SpecConfigs, dst4.SpecCapabilities, dst4.SpecRequirements, dst4.SpecScenarios, dst4.SpecUsecases, dst4.SpecChanges)
 	}
 
+	// LSTFiles суммируется: разбор идёт в localStats воркеров (change memory-tables-flag)
+	dst5 := &model.ScanStats{LSTFiles: 1}
+	src5 := &model.ScanStats{LSTFiles: 5}
+	mergeScanStats(dst5, src5)
+	if dst5.LSTFiles != 6 {
+		t.Fatalf("LSTFiles merge: got %d, want 6", dst5.LSTFiles)
+	}
+
 	c := &statsCollector{}
 	c.Add(func(stats *model.ScanStats) {
 		stats.FilesScanned = 7
@@ -124,7 +132,7 @@ func TestPendingSnapshotsClearBuffers(t *testing.T) {
 func TestWalkerPatterns_FiltersUnsupportedAndDedups(t *testing.T) {
 	idx := &Indexer{config: &config.Config{
 		Indexer: config.IndexerConfig{
-			IncludePatterns: []string{"*.sql", "*.SQL", "readme.md", "", "sql", "*.unknown"},
+			IncludePatterns: []string{"*.sql", "*.SQL", "readme.md", "", "sql", "*.unknown", "*.lst"},
 			ExcludePatterns: []string{"*/archive/*"},
 		},
 	}}
@@ -133,8 +141,10 @@ func TestWalkerPatterns_FiltersUnsupportedAndDedups(t *testing.T) {
 		t.Fatalf("exclude = %#v", exclude)
 	}
 	// «readme.md» — точное имя (не *.ext): не проходит фильтр расширений (существующее поведение walkerPatterns)
-	if !reflect.DeepEqual(include, []string{"*.sql"}) {
-		t.Fatalf("include = %#v, want [*.sql]", include)
+	// «*.unknown» выбрасывается (нет в GetSupportedExtensions), «*.lst» сохраняется:
+	// без «.lst» в белом списке расширений паттерн молча терялся бы (change memory-tables-flag, D1)
+	if !reflect.DeepEqual(include, []string{"*.lst", "*.sql"}) {
+		t.Fatalf("include = %#v, want [*.lst *.sql]", include)
 	}
 
 	empty := &Indexer{}

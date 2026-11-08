@@ -37,6 +37,10 @@ func TestCreateDefault(t *testing.T) {
 	if len(got.Indexer.IncludePatterns) == 0 || len(got.Indexer.ExcludePatterns) == 0 {
 		t.Fatalf("expected default include and exclude patterns")
 	}
+	// *.lst входит в дефолтные include_patterns (ModuleTableInMemory.lst; change memory-tables-flag)
+	if !containsPattern(got.Indexer.IncludePatterns, "*.lst") {
+		t.Fatalf("default include patterns = %v, want *.lst inside", got.Indexer.IncludePatterns)
+	}
 	if got.Logging.CommandEnabled == nil || !*got.Logging.CommandEnabled {
 		t.Fatalf("expected command logging enabled by default")
 	}
@@ -130,6 +134,15 @@ func TestSaveWritesCurrentConfig(t *testing.T) {
 	if !containsAll(text, []string{"root_path", "D:/save-root", "password", "pass"}) {
 		t.Fatalf("saved config does not contain expected values: %s", text)
 	}
+}
+
+func containsPattern(patterns []string, want string) bool {
+	for _, p := range patterns {
+		if p == want {
+			return true
+		}
+	}
+	return false
 }
 
 func containsAll(text string, parts []string) bool {

@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 )
 
@@ -70,6 +71,9 @@ type APITableResult struct {
 	Product         string                `json:"product,omitempty"`
 	BranchUsed      string                `json:"branch_used,omitempty"`
 	BranchRequested string                `json:"branch_requested,omitempty"`
+	InMemory        bool                  `json:"in_memory"`
+	InMemoryProduct string                `json:"in_memory_product,omitempty"`
+	InMemoryModule  string                `json:"in_memory_module,omitempty"`
 	Fields          []APITableFieldResult `json:"fields,omitempty"`
 }
 
@@ -271,7 +275,96 @@ func (q *Query) SearchAPITable(ctx context.Context, name string, like bool, limi
 		fieldRows.Close()
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := q.enrichInMemoryFlag(ctx, len(items),
+		func(i int) string { return items[i].TableName },
+		func(i int, inMemory bool, product, module string) {
+			items[i].InMemory = inMemory
+			items[i].InMemoryProduct = product
+			items[i].InMemoryModule = module
+		}); err != nil {
+		return nil, err
+	}
+
+	return items, nil
+}
+
+// enrichInMemoryFlag enriches a result set with the in-memory table flag
+// («объявлена как таблица в памяти» из ModuleTableInMemory.lst): single batch
+// query for unique table names; the join is by table name only (no product
+// scope — the physical table is one per DB), and with multiple records (copies
+// of .lst across branches) the default branch wins by SORTING
+// (COALESCE(is_default) DESC, id), never by filtering — the only copy may
+// live in a non-default branch.
+func (q *Query) enrichInMemoryFlag(ctx context.Context, n int,
+	getName func(i int) string,
+	setResult func(i int, inMemory bool, product, module string),
+) error {
+	if n == 0 {
+		return nil
+	}
+	names := make([]string, 0, n)
+	seen := make(map[string]struct{}, n)
+	for i := 0; i < n; i++ {
+		name := getName(i)
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+
+	values := make([]string, len(names))
+	args := make([]interface{}, 0, len(names))
+	for i, name := range names {
+		values[i] = fmt.Sprintf("($%d::text)", i+1)
+		args = append(args, name)
+	}
+
+	rows, err := q.db.QueryContext(ctx, `
+		SELECT k.name, (m.table_name IS NOT NULL), COALESCE(m.product_name, ''), COALESCE(m.module_name, '')
+		FROM (VALUES `+strings.Join(values, ",")+`) AS k(name)
+		LEFT JOIN LATERAL (
+			SELECT mt.table_name, mt.product_name, mt.module_name
+			FROM memory_tables mt
+			JOIN files mf ON mf.id = mt.file_id
+			LEFT JOIN ds_products_branch mbr ON mbr.id = mf.ds_product_branch_id
+			WHERE LOWER(mt.table_name) = LOWER(k.name)
+			ORDER BY COALESCE(mbr.is_default, FALSE) DESC, mt.id
+			LIMIT 1
+		) m ON TRUE`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type inMemoryInfo struct {
+		inMemory bool
+		product  string
+		module   string
+	}
+	byName := make(map[string]inMemoryInfo, len(names))
+	for rows.Next() {
+		var name string
+		var info inMemoryInfo
+		if err := rows.Scan(&name, &info.inMemory, &info.product, &info.module); err != nil {
+			return err
+		}
+		byName[name] = info
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for i := 0; i < n; i++ {
+		if info, ok := byName[getName(i)]; ok {
+			setResult(i, info.inMemory, info.product, info.module)
+		}
+	}
+	return nil
 }
 
 func (q *Query) SearchAPITableIndex(ctx context.Context, name string, likeSearch bool, limit int) ([]APITableIndexResult, error) {

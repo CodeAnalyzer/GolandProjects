@@ -165,6 +165,7 @@ func mergeScanStats(dst *model.ScanStats, src *model.ScanStats) {
 	dst.APITableIndexes += src.APITableIndexes
 	dst.MDFiles += src.MDFiles
 	dst.YAMLFiles += src.YAMLFiles
+	dst.LSTFiles += src.LSTFiles
 	dst.SpecConfigs += src.SpecConfigs
 	dst.SpecCapabilities += src.SpecCapabilities
 	dst.SpecRequirements += src.SpecRequirements
@@ -1755,6 +1756,12 @@ func (idx *Indexer) processFileInTx(ctx context.Context, file fswalk.FileInfo, f
 	case "YAML":
 		stats.YAMLFiles++
 		if err := idx.parseYAMLFile(ctx, file, fileID, stats); err != nil {
+			return err
+		}
+		stats.FilesIndexed++
+	case "LST":
+		stats.LSTFiles++
+		if err := idx.parseLSTFile(ctx, file, fileID, stats); err != nil {
 			return err
 		}
 		stats.FilesIndexed++

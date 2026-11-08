@@ -73,7 +73,8 @@ func (q *Query) SearchTable(ctx context.Context, name string, likeSearch bool, l
 		)
 		SELECT ch.id, ch.table_name, ch.context, COALESCE(u.usages, 0),
 		       COALESCE(p.product_name, '') AS product, COALESCE(br.branch_key, '') AS branch_used,
-		       ch.product_key, COALESCE(ch.branch_id, 0)
+		       ch.product_key, COALESCE(ch.branch_id, 0),
+		       (m.table_name IS NOT NULL), COALESCE(m.product_name, ''), COALESCE(m.module_name, '')
 		FROM chosen ch
 		JOIN files f ON f.id = ch.file_id
 		LEFT JOIN ds_products p ON p.id = f.ds_product_id
@@ -85,6 +86,20 @@ func (q *Query) SearchTable(ctx context.Context, name string, likeSearch bool, l
 			  AND c.product_key = ch.product_key
 			  AND c.branch_id IS NOT DISTINCT FROM ch.branch_id
 		) u ON TRUE
+		LEFT JOIN LATERAL (
+			-- Признак «объявлена как таблица в памяти» (ModuleTableInMemory.lst):
+			-- сопоставление чисто по имени таблицы, без product-scope (физическая
+			-- таблица одна на БД). При нескольких записях (копии .lst в разных
+			-- ветках) берётся default-ветка, затем меньший id — СОРТИРОВКА, не
+			-- фильтр: единственная копия может лежать и в non-default ветке.
+			SELECT mt.table_name, mt.product_name, mt.module_name
+			FROM memory_tables mt
+			JOIN files mf ON mf.id = mt.file_id
+			LEFT JOIN ds_products_branch mbr ON mbr.id = mf.ds_product_branch_id
+			WHERE LOWER(mt.table_name) = LOWER(ch.table_name)
+			ORDER BY COALESCE(mbr.is_default, FALSE) DESC, mt.id
+			LIMIT 1
+		) m ON TRUE
 		ORDER BY COALESCE(u.usages, 0) DESC, ch.table_name
 		LIMIT $2
 	`
@@ -108,7 +123,7 @@ func (q *Query) SearchTable(ctx context.Context, name string, likeSearch bool, l
 	for rows.Next() {
 		var r TableResult
 		var key tableScopeKey
-		if err := rows.Scan(&r.ID, &r.TableName, &r.Context, &r.Usages, &r.Product, &r.BranchUsed, &key.ProductKey, &key.BranchID); err != nil {
+		if err := rows.Scan(&r.ID, &r.TableName, &r.Context, &r.Usages, &r.Product, &r.BranchUsed, &key.ProductKey, &key.BranchID, &r.InMemory, &r.InMemoryProduct, &r.InMemoryModule); err != nil {
 			return nil, err
 		}
 		key.TableName = r.TableName

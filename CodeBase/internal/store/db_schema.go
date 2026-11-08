@@ -10,7 +10,7 @@ import (
 // КОНТРАКТ: любое изменение DDL-списка InitSchemaCtx (колонки, индексы,
 // ограничения, миграции) требует bump этой версии — иначе fast-path
 // пропустит проход и новое DDL молча не применится на существующих БД.
-const CurrentSchemaVersion = "codebase_schema_v6"
+const CurrentSchemaVersion = "codebase_schema_v7"
 
 const schemaInitLockKey = "codebase/schema-init"
 
@@ -577,13 +577,21 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 			line_number INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS ds_return_codes (
-			id BIGSERIAL PRIMARY KEY,
-			file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-			ret_code BIGINT NOT NULL,
-			message TEXT NOT NULL,
-			proc_name TEXT,
-			module_id INTEGER
-		)`,
+		id BIGSERIAL PRIMARY KEY,
+		file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+		ret_code BIGINT NOT NULL,
+		message TEXT NOT NULL,
+		proc_name TEXT,
+		module_id INTEGER
+	)`,
+		`CREATE TABLE IF NOT EXISTS memory_tables (
+		id BIGSERIAL PRIMARY KEY,
+		file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+		product_name TEXT NOT NULL,
+		module_name TEXT NOT NULL DEFAULT '',
+		table_name TEXT NOT NULL,
+		line_number INTEGER NOT NULL DEFAULT 0
+	)`,
 		`CREATE TABLE IF NOT EXISTS rti_sessions (
 			id BIGSERIAL PRIMARY KEY,
 			file_path TEXT NOT NULL,
@@ -1138,6 +1146,8 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_relations_relation_type_id ON relations(relation_type, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_relations_source_type_relation_id ON relations(source_type, relation_type, id DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ds_return_codes_code ON ds_return_codes(ret_code)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_tables_table ON memory_tables(LOWER(table_name))`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_tables_file_id ON memory_tables(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_sessions_parsed_at ON rti_sessions(parsed_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_calls_session_proc ON rti_calls(session_id, procedure)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_calls_session_elapsed ON rti_calls(session_id, elapsed_ms DESC)`,

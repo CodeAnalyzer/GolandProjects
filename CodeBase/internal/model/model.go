@@ -426,6 +426,7 @@ type ScanStats struct {
 	APITableIndexes  int
 	MDFiles          int
 	YAMLFiles        int
+	LSTFiles         int // .lst-файлы, обработанные индексатором (канонические и ld_*; сущности — только ModuleTableInMemory.lst)
 	SpecConfigs      int
 	SpecCapabilities int
 	SpecRequirements int
@@ -650,6 +651,18 @@ type RetCodeEntry struct {
 	ModuleID   int
 	IsConstant bool // true если message — имя константы из H-файла (нужен lookup)
 	LineNumber int
+}
+
+// MemoryTableRecord — декларация «таблица в памяти» из ModuleTableInMemory.lst
+// (extension «таблицы в памяти» Diasoft 5NT: секция [<Продукт>] + строка <Таблица>;<Модуль>).
+// Признак декларативный: сопоставление с таблицами индекса идёт по имени таблицы,
+// ProductName/ModuleName — справочные поля декларации (см. change memory-tables-flag).
+type MemoryTableRecord struct {
+	FileID      int64
+	ProductName string // нормализованный продукт секции (branchkey.NormalizeProduct)
+	ModuleName  string // модуль из декларации, как есть
+	TableName   string
+	LineNumber  int // 1-based по исходным строкам
 }
 
 // ==== OpenSpec-артефакты финпродуктов ====

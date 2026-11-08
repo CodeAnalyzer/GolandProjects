@@ -175,6 +175,7 @@ Arguments:
 		fmt.Printf("  RPT files:      %d\n", stats.RPTFiles)
 		fmt.Printf("  MD files:       %d\n", stats.MDFiles)
 		fmt.Printf("  YAML files:     %d\n", stats.YAMLFiles)
+		fmt.Printf("  LST files:      %d\n", stats.LSTFiles)
 		fmt.Printf("\n")
 		fmt.Printf("SQL Entities:\n")
 		fmt.Printf("  Procedures:     %d\n", stats.Procedures)

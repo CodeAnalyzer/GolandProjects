@@ -49,6 +49,9 @@ type TableResult struct {
 	Product         string   `json:"product,omitempty"`
 	BranchUsed      string   `json:"branch_used,omitempty"`
 	BranchRequested string   `json:"branch_requested,omitempty"`
+	InMemory        bool     `json:"in_memory"`
+	InMemoryProduct string   `json:"in_memory_product,omitempty"`
+	InMemoryModule  string   `json:"in_memory_module,omitempty"`
 }
 
 // TableSchemaColumnResult результат поиска определений колонок таблицы

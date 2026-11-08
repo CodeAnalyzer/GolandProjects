@@ -35,6 +35,7 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 	requiredTables := []string{
 		"scan_runs", "files", "symbols", "sql_procedures", "relations",
 		"rti_sessions", "trc_sessions", "api_contracts", "ds_return_codes",
+		"memory_tables",
 		"schema_migrations", "spec_configs", "spec_capabilities", "spec_requirements", "spec_scenarios",
 		"spec_usecases", "spec_usecase_steps", "spec_changes", "spec_change_delta",
 		"spec_code_mentions", "spec_vocab", "spec_embeddings",
@@ -602,5 +603,62 @@ func TestSpecProfileDirectoriesAreScopedToConfigRoot(t *testing.T) {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestInitSchema_MemoryTablesV7 — миграция v6→v7: на БД с устаревшим маркером
+// повторный InitSchemaCtx создаёт memory_tables и её индексы.
+func TestInitSchema_MemoryTablesV7(t *testing.T) {
+	db := testutil.Open(t)
+
+	// Легаси-БД версии v6: маркер текущей версии отсутствует.
+	testutil.ResetSchemaVersion(t, db)
+
+	if err := db.InitSchemaCtx(context.Background()); err != nil {
+		t.Fatalf("InitSchema migration v7: %v", err)
+	}
+
+	var tableExists bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename='memory_tables')`).Scan(&tableExists); err != nil {
+		t.Fatalf("check memory_tables: %v", err)
+	}
+	if !tableExists {
+		t.Fatal("memory_tables was not created by v7 migration")
+	}
+
+	for _, idx := range []string{"idx_memory_tables_table", "idx_memory_tables_file_id"} {
+		var exists bool
+		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname=$1)`, idx).Scan(&exists); err != nil {
+			t.Fatalf("check index %s: %v", idx, err)
+		}
+		if !exists {
+			t.Fatalf("index %s was not created by v7 migration", idx)
+		}
+	}
+
+	// Каскад: удаление файла удаляет его записи признака.
+	var scanRunID, fileID int64
+	if err := db.QueryRow(`INSERT INTO scan_runs (root_path, status) VALUES ('repo', 'completed') RETURNING id`).Scan(&scanRunID); err != nil {
+		t.Fatalf("insert scan run: %v", err)
+	}
+	if err := db.QueryRow(`
+		INSERT INTO files (scan_run_id, path, rel_path, extension, hash_sha256, modified_at)
+		VALUES ($1, 'repo/ModuleTableInMemory.lst', 'ModuleTableInMemory.lst', '.lst', 'hash', NOW())
+		RETURNING id
+	`, scanRunID).Scan(&fileID); err != nil {
+		t.Fatalf("insert file: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO memory_tables (file_id, product_name, module_name, table_name, line_number) VALUES ($1, 'fa-gaap', 'GAAP', 'pRuleDoc_QtyStack', 26)`, fileID); err != nil {
+		t.Fatalf("insert memory_tables: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM files WHERE id = $1`, fileID); err != nil {
+		t.Fatalf("delete file: %v", err)
+	}
+	var remaining int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM memory_tables`).Scan(&remaining); err != nil {
+		t.Fatalf("count memory_tables: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("memory_tables rows survived file deletion: %d", remaining)
 	}
 }
