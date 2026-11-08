@@ -12,8 +12,10 @@ import (
 // seedInMemoryFixture: продукты fa-administrator (develop default + non-default
 // ветка prj для второй копии .lst), fa-gaap, fa-cards; таблицы в SQL-коде
 // (pRuleDoc_QtyStack, pAPI_AttrValue в чужом продукте, tContract без
-// декларации) и standalone API-таблица pAPI_AttrValue; декларации
-// memory_tables от ModuleTableInMemory.lst (default-копия и non-default-копия).
+// декларации, pOnlyInPrj с декларацией только в non-default ветке) и
+// standalone API-таблица pAPI_AttrValue; декларации memory_tables от
+// ModuleTableInMemory.lst (default-копия и non-default-копия), плюс
+// pMemoryOnly — декларация без вхождения в sql_tables.
 func seedInMemoryFixture(t *testing.T) *Query {
 	t.Helper()
 	db := testutil.Open(t)
@@ -76,6 +78,7 @@ func seedInMemoryFixture(t *testing.T) *Query {
 	newTable(gaapSQL, "pRuleDoc_QtyStack") // обычная p-таблица, задекларирована
 	newTable(cardsSQL, "pAPI_AttrValue")   // API-таблица, вхождение в чужом продукте
 	newTable(gaapSQL, "tContract")         // без декларации
+	newTable(gaapSQL, "pOnlyInPrj")        // декларация только в non-default ветке
 
 	if _, err := db.Exec(`
 		INSERT INTO api_business_object_tables (file_id, business_object, table_name, description, line_number)
@@ -98,11 +101,13 @@ func seedInMemoryFixture(t *testing.T) *Query {
 			t.Fatalf("insert memory_tables %s: %v", table, err)
 		}
 	}
-	// default-копия: pAPI_AttrValue + pRuleDoc_QtyStack; non-default копия:
-	// pAPI_AttrValue с ДРУГИМ модулем (проверка приоритета default) и
-	// pOnlyInPrj (проверка, что non-default копия не теряется).
+	// default-копия: pAPI_AttrValue + pRuleDoc_QtyStack + pMemoryOnly (без
+	// вхождения в sql_tables); non-default копия: pAPI_AttrValue с ДРУГИМ
+	// модулем (проверка приоритета default) и pOnlyInPrj (проверка, что lone
+	// non-default декларация даёт признак).
 	newMemory(lstDev, "fa-administrator", "API_Administrator", "pAPI_AttrValue", 2)
 	newMemory(lstDev, "fa-gaap", "GAAP", "pRuleDoc_QtyStack", 26)
+	newMemory(lstDev, "fa-cards", "CARDS", "pMemoryOnly", 4)
 	newMemory(lstPrj, "fa-administrator", "API_Administrator_PRJ", "pAPI_AttrValue", 2)
 	newMemory(lstPrj, "fa-contracttransfers", "CT", "pOnlyInPrj", 3)
 
@@ -122,8 +127,9 @@ func findTableResult(t *testing.T, items []TableResult, name string) TableResult
 
 // TestSearchTable_InMemoryFlag: признак «объявлена как таблица в памяти»
 // join-ится чисто по имени (без product-scope) — вхождение в чужом продукте
-// тоже несёт флаг; при двух копиях .lst выигрывает default-ветка, lone
-// non-default копия не теряется; без декларации флаг не установлен.
+// тоже несёт флаг; при двух копиях .lst выигрывает default-ветка; единственная
+// декларация в non-default ветке тоже даёт признак; без декларации флаг не
+// установлен; декларация без вхождения в sql_tables не порождает строк.
 func TestSearchTable_InMemoryFlag(t *testing.T) {
 	q := seedInMemoryFixture(t)
 	ctx := context.Background()
@@ -165,14 +171,28 @@ func TestSearchTable_InMemoryFlag(t *testing.T) {
 		t.Fatalf("tContract in-memory = true, want false")
 	}
 
-	// Единственная декларация в non-default ветке не теряется
+	// Единственная декларация лежит в non-default ветке — признак всё равно
+	// установлен (приоритет реализован СОРТИРОВКОЙ, не фильтром)
 	res, err = q.SearchTable(ctx, "pOnlyInPrj", false, 10)
 	if err != nil {
 		t.Fatalf("SearchTable pOnlyInPrj: %v", err)
 	}
+	if len(res) != 1 {
+		t.Fatalf("pOnlyInPrj results = %d, want 1", len(res))
+	}
+	r = findTableResult(t, res, "pOnlyInPrj")
+	if !r.InMemory || r.InMemoryProduct != "fa-contracttransfers" || r.InMemoryModule != "CT" {
+		t.Fatalf("pOnlyInPrj in-memory = (%v, %q, %q), want (true, fa-contracttransfers, CT) — lone non-default declaration must yield the flag", r.InMemory, r.InMemoryProduct, r.InMemoryModule)
+	}
+
+	// Декларация без вхождения в sql_tables не порождает фантомных строк:
+	// память-декларация сама по себе не создаёт строку таблицы
+	res, err = q.SearchTable(ctx, "pMemoryOnly", false, 10)
+	if err != nil {
+		t.Fatalf("SearchTable pMemoryOnly: %v", err)
+	}
 	if len(res) != 0 {
-		r = res[0]
-		t.Fatalf("pOnlyInPrj unexpected row: %+v (no sql_tables occurrence)", r)
+		t.Fatalf("pMemoryOnly results = %d, want 0 (memory_tables declaration alone must not create table rows)", len(res))
 	}
 }
 

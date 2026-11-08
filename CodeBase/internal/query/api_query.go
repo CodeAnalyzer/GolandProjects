@@ -292,13 +292,12 @@ func (q *Query) SearchAPITable(ctx context.Context, name string, like bool, limi
 	return items, nil
 }
 
-// enrichInMemoryFlag enriches a result set with the in-memory table flag
-// («объявлена как таблица в памяти» из ModuleTableInMemory.lst): single batch
-// query for unique table names; the join is by table name only (no product
-// scope — the physical table is one per DB), and with multiple records (copies
-// of .lst across branches) the default branch wins by SORTING
-// (COALESCE(is_default) DESC, id), never by filtering — the only copy may
-// live in a non-default branch.
+// enrichInMemoryFlag обогащает выборку признаком «объявлена как таблица в
+// памяти» (ModuleTableInMemory.lst): один batch-запрос по уникальным именам
+// таблиц; join чисто по имени таблицы (без product-scope — физическая таблица
+// одна на БД), при нескольких записях (копии .lst в разных ветках) побеждает
+// default-ветка СОРТИРОВКОЙ (COALESCE(is_default) DESC, id), а не фильтром —
+// единственная копия может лежать и в non-default ветке.
 func (q *Query) enrichInMemoryFlag(ctx context.Context, n int,
 	getName func(i int) string,
 	setResult func(i int, inMemory bool, product, module string),
