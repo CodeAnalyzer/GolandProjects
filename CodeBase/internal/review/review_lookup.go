@@ -451,6 +451,7 @@ func (r *Runner) batchLoadIndexCandidates(ctx context.Context, tableNames []stri
 	type aggregate struct {
 		tableLower string
 		name       string
+		isUnique   bool
 		fieldsByNo map[int]string
 	}
 
@@ -463,15 +464,16 @@ func (r *Runner) batchLoadIndexCandidates(ctx context.Context, tableNames []stri
 			var tableLower string
 			var indexID int64
 			var indexName string
+			var isUnique bool
 			var fieldName sql.NullString
 			var fieldOrder sql.NullInt64
-			if err := rows.Scan(&tableLower, &indexID, &indexName, &fieldName, &fieldOrder); err != nil {
+			if err := rows.Scan(&tableLower, &indexID, &indexName, &isUnique, &fieldName, &fieldOrder); err != nil {
 				return err
 			}
 			k := fmt.Sprintf("%s|%d:%s", tableLower, indexID, normalizeIdentifier(indexName))
 			agg, exists := items[k]
 			if !exists {
-				agg = &aggregate{tableLower: tableLower, name: strings.TrimSpace(indexName), fieldsByNo: map[int]string{}}
+				agg = &aggregate{tableLower: tableLower, name: strings.TrimSpace(indexName), isUnique: isUnique, fieldsByNo: map[int]string{}}
 				items[k] = agg
 				order = append(order, k)
 			}
@@ -490,7 +492,7 @@ func (r *Runner) batchLoadIndexCandidates(ctx context.Context, tableNames []stri
 	}
 
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT LOWER(i.table_name), i.id, i.index_name, f.field_name, f.field_order
+		SELECT LOWER(i.table_name), i.id, i.index_name, i.is_unique, f.field_name, f.field_order
 		FROM sql_index_definitions i
 		LEFT JOIN sql_index_definition_fields f ON f.table_index_id = i.id
 		WHERE LOWER(i.table_name) = ANY($1)
@@ -504,7 +506,7 @@ func (r *Runner) batchLoadIndexCandidates(ctx context.Context, tableNames []stri
 	}
 
 	rows2, err := r.db.QueryContext(ctx, `
-		SELECT LOWER(t.table_name), i.id, i.index_name, f.field_name, f.field_order
+		SELECT LOWER(t.table_name), i.id, i.index_name, (i.index_type IN (2, 3)), f.field_name, f.field_order
 		FROM api_business_object_table_indexes i
 		JOIN api_business_object_tables t ON t.id = i.business_table_id
 		LEFT JOIN api_business_object_table_index_fields f ON f.table_index_id = i.id
@@ -529,7 +531,7 @@ func (r *Runner) batchLoadIndexCandidates(ctx context.Context, tableNames []stri
 				fields = append(fields, f)
 			}
 		}
-		candidatesByTable[agg.tableLower] = append(candidatesByTable[agg.tableLower], tableIndexCandidate{Name: agg.name, Fields: fields})
+		candidatesByTable[agg.tableLower] = append(candidatesByTable[agg.tableLower], tableIndexCandidate{Name: agg.name, Fields: fields, IsUnique: agg.isUnique})
 		indexLower := strings.ToLower(normalizeIdentifier(agg.name))
 		if _, exists := indexFieldsByName[indexLower]; !exists {
 			indexFieldsByName[indexLower] = fields
@@ -552,6 +554,54 @@ func (r *Runner) batchLoadIndexCandidates(ctx context.Context, tableNames []stri
 	}
 	r.indexCandMu.Unlock()
 	return nil
+}
+
+// normalizeTableKey приводит ссылку на таблицу к ключу кэша/запроса: нижний
+// регистр, снятие схемного префикса (dbo.) и квотирования ([]/"") в любом
+// сочетании — в т.ч. смешанном dbo.[tbl]. Порядок обязателен: снятие скобок
+// ДО отрезания схемы оставило бы "[tbl" от dbo.[tbl].
+func normalizeTableKey(tableName string) string {
+	s := strings.ToLower(strings.TrimSpace(tableName))
+	if idx := strings.LastIndex(s, "."); idx >= 0 {
+		s = s[idx+1:]
+	}
+	return strings.Trim(s, "[]\"")
+}
+
+// isMemoryTable сообщает, объявлена ли таблица «таблицей в памяти» — есть ли
+// запись признака с этим именем (сопоставление по имени, без product-scope:
+// физическая таблица одна на БД, декларация действительна для любого продукта).
+// Множество имён лениво загружается одним SELECT при первом обращении (правила
+// выполняются параллельно); флаг загруженности ставится и при пустом результате,
+// и при ошибке запроса — правило инертно до конца запуска без шторма запросов.
+func (r *Runner) isMemoryTable(ctx context.Context, tableName string) bool {
+	name := normalizeTableKey(tableName)
+	if name == "" {
+		return false
+	}
+	r.memoryTableMu.Lock()
+	defer r.memoryTableMu.Unlock()
+	if !r.memoryTablesLoaded {
+		cache := make(map[string]struct{})
+		if r.db != nil {
+			rows, err := r.db.QueryContext(ctx, `SELECT DISTINCT LOWER(table_name) FROM memory_tables`)
+			if err == nil {
+				for rows.Next() {
+					var tn sql.NullString
+					if scanErr := rows.Scan(&tn); scanErr == nil && tn.Valid {
+						if key := strings.TrimSpace(tn.String); key != "" {
+							cache[key] = struct{}{}
+						}
+					}
+				}
+				rows.Close()
+			}
+		}
+		r.memoryTableCache = cache
+		r.memoryTablesLoaded = true
+	}
+	_, ok := r.memoryTableCache[name]
+	return ok
 }
 
 func (r *Runner) lookupTableIndexCandidates(ctx context.Context, tableName string) ([]tableIndexCandidate, error) {

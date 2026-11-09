@@ -28,7 +28,14 @@ type Runner struct {
 	indexCandCache   map[string][]tableIndexCandidate
 	indexCandMu      sync.Mutex
 	indexFieldsCache map[string][]string
-	onProgress       func(completed, total int)
+	// Кэш множества имён «таблиц в памяти» (memory_tables): лениво загружается
+	// одним SELECT при первом обращении правила; memoryTablesLoaded отличает
+	// «множество ещё не запрошено» от «запрошено и пусто» (пустая memory_tables
+	// не должна провоцировать повторные запросы на каждый UPDATE).
+	memoryTableMu      sync.Mutex
+	memoryTableCache   map[string]struct{}
+	memoryTablesLoaded bool
+	onProgress         func(completed, total int)
 	// prewarm caches for batch-loaded DB data (nil = not prewarmed, fallback to per-call)
 	procParamsCache     map[string][]model.SQLParam
 	procProductIDCache  map[string]int64
@@ -51,7 +58,7 @@ type ruleTask struct {
 }
 
 func NewRunner(db *store.DB) *Runner {
-	return &Runner{db: db, parser: sqlparser.NewParser(), colTypeCache: make(map[string]string), macroTypeCache: make(map[string]string), indexCandCache: make(map[string][]tableIndexCandidate), indexFieldsCache: make(map[string][]string), procParamsCache: nil, procProductIDCache: nil, tableProductIDCache: nil}
+	return &Runner{db: db, parser: sqlparser.NewParser(), colTypeCache: make(map[string]string), macroTypeCache: make(map[string]string), indexCandCache: make(map[string][]tableIndexCandidate), indexFieldsCache: make(map[string][]string), memoryTableCache: make(map[string]struct{}), procParamsCache: nil, procProductIDCache: nil, tableProductIDCache: nil}
 }
 
 func (r *Runner) SetOnProgress(fn func(completed, total int)) {
@@ -78,6 +85,12 @@ func (r *Runner) RunSQLFileCtx(ctx context.Context, path string, opts Options) (
 	r.indexCandCache = make(map[string][]tableIndexCandidate)
 	r.indexFieldsCache = make(map[string][]string)
 	r.indexCandMu.Unlock()
+
+	// Сбрасываем кэш «таблиц в памяти» (множество + флаг загруженности)
+	r.memoryTableMu.Lock()
+	r.memoryTableCache = make(map[string]struct{})
+	r.memoryTablesLoaded = false
+	r.memoryTableMu.Unlock()
 
 	// Сбрасываем prewarm-кэши
 	r.procParamsCache = nil

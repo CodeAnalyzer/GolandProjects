@@ -247,6 +247,13 @@ var ruleCatalog = map[RuleID]ruleMeta{
 			return r.checkDeferredUpdate(ctx, file)
 		},
 	},
+	RuleMemoryUniqueIndexUpdate: {
+		Severity:    SeverityDeployStopper,
+		Description: "Изменение полей уникального индекса таблицы в памяти",
+		Build: func(r *Runner, ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+			return r.checkMemoryUniqueIndexUpdate(ctx, file)
+		},
+	},
 	RuleInSubQuery: {
 		Severity:    SeverityDeployStopper,
 		Description: "IN с подзапросом вместо JOIN/EXISTS",

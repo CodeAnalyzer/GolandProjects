@@ -38,6 +38,7 @@ const (
 	RuleEmptyReturn                       RuleID = "emptyReturn"
 	RuleRawTransactionControl             RuleID = "rawTransactionControl"
 	RuleDeferredUpdate                    RuleID = "deferredUpdate"
+	RuleMemoryUniqueIndexUpdate           RuleID = "memoryUniqueIndexUpdate"
 	RuleInSubQuery                        RuleID = "inSubQuery"
 	RuleVarcharSize                       RuleID = "varcharSize"
 	RuleColumnInsert                      RuleID = "columnInsert"
@@ -258,6 +259,10 @@ type indexedFile struct {
 type tableIndexCandidate struct {
 	Name   string
 	Fields []string
+	// IsUnique — признак уникальности индекса: sql_index_definitions.is_unique
+	// для SQL-определений, index_type IN (2, 3) для API-таблиц (оба вида дают
+	// уникальный индекс в целевой БД).
+	IsUnique bool
 }
 
 type tableFromClause struct {

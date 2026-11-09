@@ -1057,6 +1057,11 @@ codebase review <путь_к_файлу.sql> --rules foreignTablesUsing,execNotE
 - `useDrop` — использование `DROP`/`DROP_CREATE` в теле процедуры
 - `mathOperations` — математические операции в `BETWEEN` и сравнениях (риск overflow)
 - `existsWithAndInIf` — `IF` с запросом к таблицам и `AND` (нет гарантии short-circuit)
+- `deferredUpdate` — отложенное обновление: `UPDATE` изменяет колонку, входящую в индекс из table hint того же оператора
+- `inSubQuery` — использование `IN` с подзапросом (рекомендуется `EXISTS`)
+- `varcharSize` — `VARCHAR` без указания размера
+- `columnInsert` — `INSERT` без явного указания колонок
+- `memoryUniqueIndexUpdate` — изменение полей уникального индекса таблицы, объявленной «таблицей в памяти» (in-memory enforcement немедленный)
 
 **PostgreReq** (severity=2, требования PostgreSQL):
 
@@ -1067,10 +1072,6 @@ codebase review <путь_к_файлу.sql> --rules foreignTablesUsing,execNotE
 - `modifyOutProc` — модификация выходных параметров процедуры
 - `emptyReturn` — пустой `RETURN` без значения
 - `rawTransactionControl` — прямое управление транзакциями (`BEGIN TRAN`/`COMMIT`/`ROLLBACK`)
-- `deferredUpdate` — отложенное обновление (UPDATE после INSERT в той же таблице)
-- `inSubQuery` — использование `IN` с подзапросом (рекомендуется `EXISTS`)
-- `varcharSize` — `VARCHAR` без указания размера
-- `columnInsert` — `INSERT` без явного указания колонок
 - `postgreLabelGotoLevel` — использование `GOTO` и меток
 - `dateIntoString` — приведение даты к строке
 - `emptyStringDate` — сравнение даты с пустой строкой
@@ -1097,7 +1098,7 @@ codebase review <путь_к_файлу.sql> --rules foreignTablesUsing,execNotE
 - `datatype` — потенциальная потеря точности при assignment/conversion; тип колонки-приёмника разрешается с приоритетом: определение из того же файла → из того же продукта → глобальное latest-wins (исключает ложные срабатывания на кросс-продуктовых дубликатах DDL)
 
 Опции:
-- `--rules` — список проверяемых правил (по умолчанию все deploy stoppers)
+- `--rules` — список проверяемых правил (по умолчанию все правила каталога)
 - `--min-severity` — минимальный уровень серьезности (1=deploy stopper, 3=fine code)
 - `--json` — вывод в формате JSON
 

@@ -6154,3 +6154,69 @@ func TestAnalyzeStatementForFullScan_CommentInsideWhere_NoFalsePositive(t *testi
 		t.Fatalf("expected no finding, got: %+v", finding)
 	}
 }
+
+// TestMemoryUniqueMatchUniqueIndexColumns покрывает сопоставление SET-колонок
+// UPDATE с уникальными индексами: попадание, регистронезависимость, пропуск
+// неуникальных кандидатов (включая XPK без признака уникальности), дедуп
+// дублей одного индекса из разных файлов/веток.
+func TestMemoryUniqueMatchUniqueIndexColumns(t *testing.T) {
+	candidates := []tableIndexCandidate{
+		{Name: "XPKpMem", Fields: []string{"SPID", "KeyCol"}, IsUnique: true},
+		{Name: "XPKpMem", Fields: []string{"SPID", "KeyCol"}, IsUnique: true}, // дубль из другой ветки
+		{Name: "XIE1pMem", Fields: []string{"PlainCol"}},
+		{Name: "XPKpOther", Fields: []string{"OtherCol"}, IsUnique: true},
+	}
+
+	hits := matchUniqueIndexColumns([]string{"KeyCol", "PlainCol", "othercol", "Missing"}, candidates)
+	if len(hits) != 2 {
+		t.Fatalf("hits = %d (%+v), want 2", len(hits), hits)
+	}
+	if hits[0].Column != "KeyCol" || hits[0].IndexName != "XPKpMem" {
+		t.Fatalf("hits[0] = %+v, want KeyCol/XPKpMem", hits[0])
+	}
+	if hits[1].Column != "othercol" || hits[1].IndexName != "XPKpOther" {
+		t.Fatalf("hits[1] = %+v, want othercol/XPKpOther", hits[1])
+	}
+
+	// Кандидат без IsUnique (XPK без признака уникальности) не матчится
+	onlyFlagged := []tableIndexCandidate{{Name: "XPKpObj", Fields: []string{"ObjectID"}}}
+	if hits := matchUniqueIndexColumns([]string{"ObjectID"}, onlyFlagged); len(hits) != 0 {
+		t.Fatalf("hits without IsUnique = %+v, want none", hits)
+	}
+
+	// Колонка в двух уникальных индексах — по одному hit'у на индекс
+	twoUnique := []tableIndexCandidate{
+		{Name: "XAK1pMem", Fields: []string{"KeyCol"}, IsUnique: true},
+		{Name: "XPKpMem", Fields: []string{"SPID", "KeyCol"}, IsUnique: true},
+	}
+	hits2 := matchUniqueIndexColumns([]string{"keycol"}, twoUnique)
+	if len(hits2) != 2 {
+		t.Fatalf("hits for column in two unique indexes = %d (%+v), want 2", len(hits2), hits2)
+	}
+
+	// Скобочные идентификаторы нормализуются
+	if hits := matchUniqueIndexColumns([]string{"[KeyCol]"}, candidates[:1]); len(hits) != 1 {
+		t.Fatalf("hits for [KeyCol] = %+v, want 1", hits)
+	}
+}
+
+// TestMemoryUniqueNormalizeTableKey: ключ ссылки на таблицу — нижний регистр
+// со снятием схемного префикса и квотирования в любом сочетании (включая
+// смешанное dbo.[tbl]); снятие скобок до отрезания схемы оставило бы "[tbl".
+func TestMemoryUniqueNormalizeTableKey(t *testing.T) {
+	cases := map[string]string{
+		"pMemUniq":         "pmemuniq",
+		"PMEMUNIQ":         "pmemuniq",
+		"[pMemUniq]":       "pmemuniq",
+		"\"pMemUniq\"":     "pmemuniq",
+		"dbo.pMemUniq":     "pmemuniq",
+		"dbo.[pMemUniq]":   "pmemuniq",
+		"dbo.\"pMemUniq\"": "pmemuniq",
+		"  pMemUniq  ":     "pmemuniq",
+	}
+	for input, want := range cases {
+		if got := normalizeTableKey(input); got != want {
+			t.Fatalf("normalizeTableKey(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

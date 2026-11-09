@@ -3746,6 +3746,126 @@ func (r *Runner) checkDeferredUpdate(ctx context.Context, file *indexedFile) ([]
 	return findings, nil
 }
 
+// uniqueIndexHit — сопоставление SET-колонки UPDATE с уникальным индексом таблицы.
+type uniqueIndexHit struct {
+	Column    string
+	IndexName string
+}
+
+// matchUniqueIndexColumns возвращает пары (SET-колонка, уникальный индекс),
+// поле которого совпадает с колонкой (регистронезависимо). Дедуп по
+// (нормализованная колонка, нормализованное имя индекса): дубли кандидатов
+// одного индекса из разных файлов/веток не размножают результат.
+func matchUniqueIndexColumns(setColumns []string, candidates []tableIndexCandidate) []uniqueIndexHit {
+	hits := make([]uniqueIndexHit, 0)
+	seen := make(map[string]struct{})
+	for _, col := range setColumns {
+		normCol := normalizeIdentifier(col)
+		if normCol == "" {
+			continue
+		}
+		for _, cand := range candidates {
+			if !cand.IsUnique {
+				continue
+			}
+			normIndex := normalizeIdentifier(cand.Name)
+			for _, field := range cand.Fields {
+				if normCol != normalizeIdentifier(field) {
+					continue
+				}
+				key := normCol + "|" + normIndex
+				if _, dup := seen[key]; dup {
+					continue
+				}
+				seen[key] = struct{}{}
+				hits = append(hits, uniqueIndexHit{Column: col, IndexName: cand.Name})
+			}
+		}
+	}
+	return hits
+}
+
+// checkMemoryUniqueIndexUpdate проверяет, что UPDATE таблицы, объявленной
+// «таблицей в памяти», не изменяет колонки, входящие в уникальный индекс
+// таблицы: у in-memory таблиц уникальные индексы enforcement'ются немедленно
+// (внутри оператора), приёмы, рассчитанные на отложенное применение
+// индексных изменений, на них не работают.
+func (r *Runner) checkMemoryUniqueIndexUpdate(ctx context.Context, file *indexedFile) ([]Finding, error) {
+	findings := make([]Finding, 0)
+	content, err := r.fileContent(ctx, file.Path)
+	if err != nil {
+		return nil, err
+	}
+	text := string(content)
+
+	statements := splitStatementsWithOffsets(text)
+	for _, s := range statements {
+		lower := strings.ToLower(s.stmt)
+		if !strings.HasPrefix(lower, "update") {
+			continue
+		}
+
+		lineNo := 1
+		for i := 0; i < s.offset && i < len(text); i++ {
+			if text[i] == '\n' {
+				lineNo++
+			}
+		}
+
+		targetTable := extractUpdateTargetTable(s.stmt)
+		if targetTable == "" || strings.HasPrefix(strings.ToLower(targetTable), "#") {
+			continue
+		}
+
+		// Резолв алиаса цели (UPDATE x SET ... FROM pT x): реальная таблица
+		// берётся из FROM по совпадению имени или алиаса ДО проверки in-memory.
+		realTable := targetTable
+		for _, t := range extractTablesFromFromClause(s.stmt) {
+			if sameTableReference(t.TableName, targetTable) || sameTableReference(t.Alias, targetTable) {
+				realTable = t.TableName
+				break
+			}
+		}
+		if realTable == "" || strings.HasPrefix(strings.ToLower(realTable), "#") {
+			continue
+		}
+
+		if !r.isMemoryTable(ctx, realTable) {
+			continue
+		}
+
+		setColumns := extractSetColumns(s.stmt)
+		if len(setColumns) == 0 {
+			continue
+		}
+
+		// Ключ кэша индексов — в той же нормализации, что и проверка in-memory
+		// (dbo.[pT] не должен расщеплять цель на «память найдена / индексы нет»)
+		normTable := normalizeTableKey(realTable)
+		if normTable == "" {
+			continue
+		}
+		candidates, err := r.lookupTableIndexCandidates(ctx, normTable)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, hit := range matchUniqueIndexColumns(setColumns, candidates) {
+			findings = append(findings, Finding{
+				Rule:             RuleMemoryUniqueIndexUpdate,
+				Severity:         SeverityDeployStopper,
+				Message:          fmt.Sprintf("Колонка %s входит в уникальный индекс %s таблицы %s, объявленной таблицей в памяти: изменение полей уникального индекса in-memory таблицы в UPDATE не допускается.", hit.Column, hit.IndexName, normTable),
+				File:             file.Path,
+				Line:             lineNo,
+				Object:           normTable,
+				CurrentProductID: file.DsProductID,
+			})
+		}
+	}
+
+	return findings, nil
+}
+
 func (r *Runner) checkInSubQuery(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	content, err := r.fileContent(ctx, file.Path)

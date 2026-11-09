@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/codebase/internal/errs"
-	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/review"
 	"github.com/codebase/internal/reviewsvc"
+	"github.com/codebase/internal/store"
 	"github.com/spf13/cobra"
 )
 

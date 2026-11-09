@@ -106,6 +106,18 @@ func TestEnabledRuleSet_UpdateOnlyVar(t *testing.T) {
 	}
 }
 
+func TestEnabledRuleSet_MemoryUniqueIndexUpdate(t *testing.T) {
+	rules := []RuleID{RuleMemoryUniqueIndexUpdate}
+	set := enabledRuleSet(rules)
+
+	if !set[RuleMemoryUniqueIndexUpdate] {
+		t.Fatalf("RuleMemoryUniqueIndexUpdate should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
 func TestEnabledRuleSet_PTableSpid(t *testing.T) {
 	rules := []RuleID{RulePTableSpid}
 	set := enabledRuleSet(rules)
