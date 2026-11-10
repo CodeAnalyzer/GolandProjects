@@ -59,6 +59,7 @@ const (
 	RuleFloatToStringConvert              RuleID = "floatToStringConvert"
 	RuleSelectAfterSetRowcount            RuleID = "selectAfterSetRowcount"
 	RuleAliasWhenUsingUnion               RuleID = "aliasWhenUsingUnion"
+	RuleTableExistsInMetadata             RuleID = "tableExistsInMetadata"
 )
 
 const (

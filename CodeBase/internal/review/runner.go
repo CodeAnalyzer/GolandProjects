@@ -40,6 +40,10 @@ type Runner struct {
 	procParamsCache     map[string][]model.SQLParam
 	procProductIDCache  map[string]int64
 	tableProductIDCache map[string]map[int64]struct{}
+	// tableCreatorCache заполняется prewarmTableCreators ДО старта параллельных
+	// правил (включая негативные записи false); правила только читают его —
+	// ленивый fallback не пишет в общий map (data race).
+	tableCreatorCache map[string]bool
 }
 
 type reviewExecContext struct {
@@ -96,6 +100,7 @@ func (r *Runner) RunSQLFileCtx(ctx context.Context, path string, opts Options) (
 	r.procParamsCache = nil
 	r.procProductIDCache = nil
 	r.tableProductIDCache = nil
+	r.tableCreatorCache = nil
 
 	normalizedPath := normalizePath(path)
 	file, err := r.getIndexedFile(ctx, normalizedPath)
@@ -146,12 +151,20 @@ func (r *Runner) RunSQLFileCtx(ctx context.Context, path string, opts Options) (
 		return nil, err
 	}
 
+	ruleSet := enabledRuleSet(opts.Rules)
+
 	// Предзагружаем параметры процедур, productID процедур и productID таблиц
 	// одним batch-запросом каждый, чтобы избежать N+1 DB-запросов в правилах.
 	r.prewarmProcCaches(ctx, parsed)
 	r.prewarmTableProductIDs(ctx, parsed)
 
-	ruleSet := enabledRuleSet(opts.Rules)
+	// Признак «таблица создана» нужен только правилу tableExistsInMetadata —
+	// при его отключении через --rules batch-запрос не выполняется. Кэш
+	// заполняется ДО старта параллельных правил, с негативными записями
+	// (см. D4 модели конкурентности в design add-table-exists-in-metadata).
+	if ruleSet[RuleTableExistsInMetadata] {
+		r.prewarmTableCreators(ctx, parsed)
+	}
 	tasks := r.buildRuleTasks(ctx, ruleSet, parsed, file)
 	maxWorkers := r.maxRuleWorkers(ctx, len(tasks))
 	findings, err := runRuleTasks(ctx, tasks, maxWorkers, r.onProgress)

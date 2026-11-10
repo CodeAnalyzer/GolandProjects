@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	sqlparser "github.com/codebase/internal/parser/sql"
 	"github.com/codebase/internal/store/testutil"
 )
 
@@ -143,5 +144,62 @@ func TestBatchLoadIndexCandidatesIsUnique(t *testing.T) {
 	}
 	if r.isMemoryTable(ctx, "pmemuniq") {
 		t.Fatalf("isMemoryTable repeat call must stay false")
+	}
+}
+
+// TestPrewarmTableCreators: предзагрузка одним batch-запросом заполняет кэш
+// признака «таблица создана» для всех DML-таблиц файла, включая негативные
+// записи (false) для отсутствующих в индексе — ленивый путь в правилах не
+// срабатывает вовсе.
+func TestPrewarmTableCreators(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	var scanRunID int64
+	if err := db.QueryRow(`INSERT INTO scan_runs (root_path, status) VALUES ('/review-prewarm-creators', 'finished') RETURNING id`).Scan(&scanRunID); err != nil {
+		t.Fatalf("insert scan_run: %v", err)
+	}
+	var ddlFileID int64
+	if err := db.QueryRow(`
+		INSERT INTO files (scan_run_id, path, rel_path, extension, size_bytes, hash_sha256, modified_at)
+		VALUES ($1, '/review/prewarm/tPrewarmCreators_TmpTbl.sql', '/review/prewarm/tPrewarmCreators_TmpTbl.sql', 'sql', 0, 'x', NOW()) RETURNING id`, scanRunID).Scan(&ddlFileID); err != nil {
+		t.Fatalf("insert file: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sql_tables (file_id, table_name, context, line_number) VALUES ($1, 'tPrewarmDdl', 'create', 1)`, ddlFileID); err != nil {
+		t.Fatalf("insert sql_tables: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_business_object_tables (file_id, business_object, table_name) VALUES ($1, 'PrewarmObject', 'pPrewarmApi')`, ddlFileID); err != nil {
+		t.Fatalf("insert api_business_object_tables: %v", err)
+	}
+
+	content := `create proc TestProc
+as
+  select ID from tPrewarmDdl
+  update pPrewarmApi
+     set SPID = -SPID
+    from pPrewarmApi
+   where spid = @@spid
+  select ID from pPrewarmMissing
+`
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	r := NewRunner(db)
+	r.prewarmTableCreators(ctx, parsed)
+
+	if r.tableCreatorCache == nil {
+		t.Fatal("tableCreatorCache должен быть заполнен prewarm'ом")
+	}
+	if !r.tableCreatorCache["tprewarmddl"] {
+		t.Fatalf("tprewarmddl: want true (DDL create)")
+	}
+	if !r.tableCreatorCache["pprewarmapi"] {
+		t.Fatalf("pprewarmapi: want true (api_business_object_tables)")
+	}
+	if exists, ok := r.tableCreatorCache["pprewarmmissing"]; !ok || exists {
+		t.Fatalf("pprewarmmissing: негативная запись want (false,true), got (%v,%v)", exists, ok)
 	}
 }

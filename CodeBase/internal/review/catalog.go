@@ -394,6 +394,13 @@ var ruleCatalog = map[RuleID]ruleMeta{
 			return r.checkAliasWhenUsingUnion(ctx, parsed, file)
 		},
 	},
+	RuleTableExistsInMetadata: {
+		Severity:    SeverityDeployStopper,
+		Description: "Таблица отсутствует в метаданных",
+		Build: func(r *Runner, ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+			return r.checkTableExistsInMetadata(ctx, parsed, file)
+		},
+	},
 }
 
 func AllRuleIDs() []RuleID {

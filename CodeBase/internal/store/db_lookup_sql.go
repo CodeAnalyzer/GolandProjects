@@ -609,3 +609,58 @@ func (db *DB) BatchLookupTableProductIDs(ctx context.Context, names []string) (m
 
 	return result, nil
 }
+
+// BatchLookupTableCreators возвращает map: LOWER(table_name) -> true для всех
+// указанных таблиц, имеющих источник создания в индексе: DDL-скрипт
+// (sql_tables.context IN ('create','select_into')), SELECT ... INTO
+// (sql_column_definitions.definition_kind='select_into'), объявление в
+// DSArchitect (api_contract_tables, api_business_object_tables).
+// Предикат LOWER(table_name) = ANY($1) дублируется в каждой ветви UNION ALL —
+// проталкивание предиката сквозь UNION планировщиком не гарантируется, а
+// внутриветвевой фильтр гарантирует использование индексов lower(table_name).
+// Дедупликация имён выполняется Go-мапой (без DISTINCT).
+func (db *DB) BatchLookupTableCreators(ctx context.Context, names []string) (map[string]bool, error) {
+	normalized := make([]string, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, key)
+	}
+	result := make(map[string]bool, len(normalized))
+	if len(normalized) == 0 {
+		return result, nil
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT LOWER(table_name) FROM sql_tables
+		 WHERE context IN ('create','select_into') AND LOWER(table_name) = ANY($1)
+		UNION ALL
+		SELECT LOWER(table_name) FROM sql_column_definitions
+		 WHERE definition_kind = 'select_into' AND LOWER(table_name) = ANY($1)
+		UNION ALL
+		SELECT LOWER(table_name) FROM api_contract_tables
+		 WHERE LOWER(table_name) = ANY($1)
+		UNION ALL
+		SELECT LOWER(table_name) FROM api_business_object_tables
+		 WHERE LOWER(table_name) = ANY($1)
+	`, pq.Array(normalized))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		result[name] = true
+	}
+	return result, rows.Err()
+}

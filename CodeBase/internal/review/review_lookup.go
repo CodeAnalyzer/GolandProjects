@@ -441,6 +441,83 @@ func (r *Runner) prewarmTableProductIDs(ctx context.Context, parsed *sqlparser.P
 	}
 }
 
+// prewarmTableCreators загружает признак «таблица создана» всех уникальных
+// таблиц файла из DML-контекстов одним batch-запросом ДО старта параллельных
+// правил. create-контекст правилу не нужен: создатели того же файла
+// учитываются в правиле напрямую из parsed. Для запрошенных и не найденных
+// имён записывается false — ленивый путь cachedLookupTableCreator в проде
+// не срабатывает вовсе.
+func (r *Runner) prewarmTableCreators(ctx context.Context, parsed *sqlparser.ParseResult) {
+	_ = ctx
+	if r == nil || r.db == nil || parsed == nil {
+		return
+	}
+	seen := make(map[string]struct{})
+	names := make([]string, 0)
+	for _, table := range parsed.Tables {
+		if table == nil {
+			continue
+		}
+		switch table.Context {
+		case "select", "insert", "update", "delete", "log":
+		default:
+			continue
+		}
+		key := normalizeIdentifier(table.TableName)
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		names = append(names, key)
+	}
+	if len(names) == 0 {
+		r.tableCreatorCache = make(map[string]bool)
+		return
+	}
+	creators, err := r.db.BatchLookupTableCreators(context.Background(), names)
+	if err != nil {
+		// Кэш остаётся nil — правила перейдут на ленивый поиск по одному имени.
+		return
+	}
+	cache := make(map[string]bool, len(names))
+	for _, name := range names {
+		cache[name] = creators[name]
+	}
+	r.tableCreatorCache = cache
+}
+
+// cachedLookupTableCreator возвращает, существует ли в индексе источник,
+// создающий таблицу (DDL, SELECT INTO, объявление DSArchitect). Читает
+// prewarm-кэш; при промахе делает одиночный batch-запрос и НЕ записывает
+// результат в общий кэш: правила исполняются параллельно, запись из горутины
+// правила была бы data race (паттерн cachedLookupTableProductIDs).
+// При ошибке БД возвращается false (fail-closed): для severity-1 правила
+// ошибка lookup трактуется как «не найдено» — транзиентный сбой даёт ложный
+// finding, а не пропуск дефекта; в проде путь не срабатывает благодаря
+// негативному prewarm.
+func (r *Runner) cachedLookupTableCreator(ctx context.Context, name string) bool {
+	key := normalizeIdentifier(name)
+	if key == "" {
+		return false
+	}
+	if r.tableCreatorCache != nil {
+		if exists, ok := r.tableCreatorCache[key]; ok {
+			return exists
+		}
+	}
+	if r.db == nil {
+		return false
+	}
+	creators, err := r.db.BatchLookupTableCreators(ctx, []string{key})
+	if err != nil {
+		return false
+	}
+	return creators[key]
+}
+
 // batchLoadIndexCandidates загружает все индексы (из sql_index_definitions и API)
 // для переданного набора таблиц и заполняет indexCandCache и indexFieldsCache.
 func (r *Runner) batchLoadIndexCandidates(ctx context.Context, tableNames []string) error {

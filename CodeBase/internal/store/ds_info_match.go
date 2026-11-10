@@ -25,17 +25,17 @@ const (
 // MatchedBranchKey — фактический branch_key проиндексированной линии при
 // статусе ok (в остальных статусах пуст).
 type DsInfoProductMatch struct {
-	LineNo             int    `json:"line_no"`
-	RawName            string `json:"raw_name"`
-	ProductName        string `json:"product_name"`
-	RequestedBranchKey string `json:"branch_requested"`
-	MatchedProductID   int64  `json:"-"`
-	MatchedBranchID    int64  `json:"-"`
-	MatchedBranchKey   string `json:"branch_used,omitempty"`
-	MatchedBranchDefault bool `json:"-"` // выбранная линия — default-ветка продукта
-	FallbackBranchID   int64  `json:"-"` // default-линия продукта при branch_not_indexed
-	FallbackBranchKey  string `json:"-"` // branch_key этой линии
-	Status             string `json:"status"`
+	LineNo               int    `json:"line_no"`
+	RawName              string `json:"raw_name"`
+	ProductName          string `json:"product_name"`
+	RequestedBranchKey   string `json:"branch_requested"`
+	MatchedProductID     int64  `json:"-"`
+	MatchedBranchID      int64  `json:"-"`
+	MatchedBranchKey     string `json:"branch_used,omitempty"`
+	MatchedBranchDefault bool   `json:"-"` // выбранная линия — default-ветка продукта
+	FallbackBranchID     int64  `json:"-"` // default-линия продукта при branch_not_indexed
+	FallbackBranchKey    string `json:"-"` // branch_key этой линии
+	Status               string `json:"status"`
 }
 
 // LoadDsInfoProductMatches сопоставляет манифест профиля с индексом:

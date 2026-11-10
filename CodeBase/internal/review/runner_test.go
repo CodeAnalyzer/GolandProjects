@@ -535,6 +535,17 @@ func TestEnabledRuleSet_AliasWhenUsingUnion(t *testing.T) {
 	}
 }
 
+func TestEnabledRuleSet_TableExistsInMetadata(t *testing.T) {
+	rules := []RuleID{RuleTableExistsInMetadata}
+	set := enabledRuleSet(rules)
+	if !set[RuleTableExistsInMetadata] {
+		t.Fatalf("RuleTableExistsInMetadata should be enabled")
+	}
+	if set[RuleForeignProcedureUsing] {
+		t.Fatalf("RuleForeignProcedureUsing should be disabled")
+	}
+}
+
 func TestCachedFindColumnDefinitionType_CacheHit(t *testing.T) {
 	r := &Runner{colTypeCache: make(map[string]string)}
 

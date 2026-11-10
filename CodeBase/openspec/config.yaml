@@ -1,4 +1,4 @@
-schema: spec-driven
+﻿schema: spec-driven
 
 context: |
   CodeBase — локальный индексатор исходников Diasoft 5NT для семантической навигации.
@@ -27,7 +27,7 @@ context: |
       spec-search                — двухслойный поиск по спекам: лексический (tsvector 'russian' + pg_trgm) и семантический (TF-IDF + LSA) + управление LSA-моделью
 
     review/                      — статический анализ SQL перед деплоем
-      deploy-stoppers            — severity 1: 25 правил, блокирующие деплой
+      deploy-stoppers            — severity 1: правила каталога, блокирующие деплой
       postgre-requirements       — severity 2: 24 правила, требования PostgreSQL
       fine-code                  — severity 3: 4 правила, рекомендации по качеству
 

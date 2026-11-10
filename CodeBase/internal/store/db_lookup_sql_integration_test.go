@@ -311,3 +311,80 @@ func TestFindLatestSQLProcedureIDsByNames_TierScope(t *testing.T) {
 	}
 	_ = otherProductID
 }
+
+// TestBatchLookupTableCreators: единый источник «таблица создана» — все четыре
+// ветви (sql_tables create, sql_column_definitions select_into,
+// api_contract_tables, api_business_object_tables) дают true, отсутствующая
+// таблица в результате отсутствует.
+func TestBatchLookupTableCreators(t *testing.T) {
+	db := testutil.Open(t)
+	ctx := context.Background()
+
+	scanID, err := db.CreateScanRun(ctx, "/repo-creators")
+	if err != nil {
+		t.Fatalf("CreateScanRun: %v", err)
+	}
+	newFile := func(path string) int64 {
+		return insertProductFile(t, db, scanID, 0, path)
+	}
+	ddlFileID := newFile("/repo/tCreators_TmpTbl.sql")
+	apiFileID := newFile("/repo/tCreators_Api.xml")
+
+	// sql_tables: DDL-источник (create) и шумовой контекст select (не создатель)
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO sql_tables (file_id, table_name, context, line_number)
+		VALUES ($1, 'tCreatedByDDL', 'create', 1), ($1, 'tOnlySelected', 'select', 2)
+	`, ddlFileID); err != nil {
+		t.Fatalf("insert sql_tables: %v", err)
+	}
+
+	// sql_column_definitions: создание через SELECT ... INTO
+	if err := db.BatchInsertSQLColumnDefinitions(ctx, []*model.SQLColumnDefinition{
+		{FileID: ddlFileID, TableName: "tCreatedBySelectInto", ColumnName: "KeyCol", DataType: "DSINT_KEY", DefinitionKind: "select_into"},
+	}, 100); err != nil {
+		t.Fatalf("insert select_into column def: %v", err)
+	}
+
+	// api_contract_tables: объявление таблицы в API-контракте
+	var contractID int64
+	if err := db.QueryRowContext(ctx, `
+		INSERT INTO api_contracts (file_id, contract_name, contract_kind)
+		VALUES ($1, 'CreatorsContract', 'service')
+		RETURNING id
+	`, apiFileID).Scan(&contractID); err != nil {
+		t.Fatalf("insert api_contracts: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO api_contract_tables (contract_id, direction, table_name)
+		VALUES ($1, 'input', 'pApiContractTable')
+	`, contractID); err != nil {
+		t.Fatalf("insert api_contract_tables: %v", err)
+	}
+
+	// api_business_object_tables: объявление таблицы бизнес-объекта
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO api_business_object_tables (file_id, business_object, table_name)
+		VALUES ($1, 'CreatorsObject', 'pApiBusinessTable')
+	`, apiFileID); err != nil {
+		t.Fatalf("insert api_business_object_tables: %v", err)
+	}
+
+	creators, err := db.BatchLookupTableCreators(ctx, []string{
+		"TCreatedByDDL", "tcreatedbyselectinto", "PAPICONTRACTTABLE", "pApiBusinessTable",
+		"tOnlySelected", "pNotDeclaredAnywhere",
+	})
+	if err != nil {
+		t.Fatalf("BatchLookupTableCreators: %v", err)
+	}
+
+	for _, name := range []string{"tcreatedbyddl", "tcreatedbyselectinto", "papicontracttable", "papibusinesstable"} {
+		if !creators[name] {
+			t.Fatalf("creators[%s] = false, want true", name)
+		}
+	}
+	for _, name := range []string{"tonlyselected", "pnotdeclaredanywhere"} {
+		if creators[name] {
+			t.Fatalf("creators[%s] = true, want false (select-контекст не создаёт таблицу)", name)
+		}
+	}
+}

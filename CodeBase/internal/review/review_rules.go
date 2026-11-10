@@ -1595,6 +1595,202 @@ func (r *Runner) checkExecNotExistsProcedures(ctx context.Context, parsed *sqlpa
 	return findings, nil
 }
 
+// tableExistsDMLContexts — контексты обращения к таблице, которые правило
+// tableExistsInMetadata считает реальными DML-обращениями. Контекст unknown
+// (имена курсоров из open/close/deallocate, аргументы DROP_IF) не проверяется;
+// dfm_embedded/pas_embedded SQL-парсер review не эмитирует (признаки индекса).
+var tableExistsDMLContexts = map[string]bool{
+	"select": true, "insert": true, "update": true, "delete": true, "log": true,
+}
+
+// tableExistsStopNames — rule-local стоп-набор не-табличных имён для
+// tableExistsInMetadata: триггерные pseudo-таблицы, системные каталоги и
+// ключевые слова курсорных операций, отсутствующие в sqlKeywordsMap.
+// Общий sqlKeywordsMap не расширяется, чтобы не менять поведение других правил.
+var tableExistsStopNames = map[string]bool{
+	"inserted": true, "deleted": true, "master": true,
+	"information_schema": true,
+	"open":               true, "fetch": true, "goto": true,
+}
+
+// tableExistsPlaceholderRe — placeholder-токены генераторов кода: имена,
+// начинающиеся и заканчивающиеся подчёркиванием (`_tablename_`, `__table__`).
+var tableExistsPlaceholderRe = regexp.MustCompile(`^_.+_$`)
+
+// stripQuotedSegments удаляет из строки сегменты внутри одинарных кавычек
+// (экранированный апостроф ” внутри литерала не закрывает его).
+func stripQuotedSegments(line string) string {
+	var b strings.Builder
+	inQuote := false
+	runes := []rune(line)
+	for i := 0; i < len(runes); i++ {
+		if runes[i] == '\'' {
+			if inQuote && i+1 < len(runes) && runes[i+1] == '\'' {
+				i++
+				continue
+			}
+			inQuote = !inQuote
+			continue
+		}
+		if !inQuote {
+			b.WriteRune(runes[i])
+		}
+	}
+	return b.String()
+}
+
+// isSQLWordChar — символ, входящий в состав SQL-идентификатора (для
+// word-boundary проверки вхождения имени).
+func isSQLWordChar(c byte) bool {
+	return c == '_' || c == '#' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// containsWord проверяет вхождение name в line как отдельного токена
+// (word boundary), а не подстроки: имя "contract" не матчится в
+// "subcontracting", но матчится в "[contract]" (скобки — не word-символы).
+func containsWord(line, name string) bool {
+	if name == "" {
+		return false
+	}
+	n := len(name)
+	for i := 0; i+n <= len(line); i++ {
+		if line[i:i+n] != name {
+			continue
+		}
+		var before, after byte
+		if i > 0 {
+			before = line[i-1]
+		}
+		if i+n < len(line) {
+			after = line[i+n]
+		}
+		if isSQLWordChar(before) || isSQLWordChar(after) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// onlyQuotedOccurrence сообщает, что имя на строке обращения встречается
+// только внутри строковых литералов — профилировочные сообщения вида
+// PROFILE_TIME_EX('update contract') дают парсеру ложную пару (update, contract).
+func onlyQuotedOccurrence(lines []string, lineNumber int, lowerName string) bool {
+	if lineNumber < 1 || lineNumber > len(lines) || lowerName == "" {
+		return false
+	}
+	stripped := strings.ToLower(stripQuotedSegments(lines[lineNumber-1]))
+	return !containsWord(stripped, lowerName)
+}
+
+// isTableExistsNoiseName определяет, что имя заведомо не является проверяемой
+// таблицей: временные таблицы сессии (#/##), курсоры анализируемого файла,
+// ключевые слова SQL и Diasoft-макросы, стоп-набор (pseudo-таблицы, системные
+// каталоги), имена с префиксом sys и placeholder-токены генераторов.
+func isTableExistsNoiseName(name string, cursorDecls map[string]cursorDeclaration) bool {
+	if name == "" || strings.HasPrefix(name, "#") {
+		return true
+	}
+	if cursorDecls != nil {
+		if _, isCursor := cursorDecls[name]; isCursor {
+			return true
+		}
+	}
+	if tableExistsStopNames[name] || strings.HasPrefix(name, "sys") {
+		return true
+	}
+	if sqlKeywordsMap[name] || strings.HasPrefix(name, "m_") {
+		return true
+	}
+	if strings.HasPrefix(name, "__") || strings.Contains(name, "##") || tableExistsPlaceholderRe.MatchString(name) {
+		return true
+	}
+	return false
+}
+
+// checkTableExistsInMetadata (ruleTableExistsInMetadata, severity 1): для
+// каждой таблицы, к которой скрипт обращается в DML-контексте, проверяет
+// наличие в индексе источника, создающего таблицу (DDL-патч/TmpTbl,
+// SELECT ... INTO, объявление DSArchitect), с учётом создателей в самом
+// анализируемом файле (защита от устаревшего индекса).
+func (r *Runner) checkTableExistsInMetadata(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	if parsed == nil {
+		return []Finding{}, nil
+	}
+
+	// Создатели в самом файле: CREATE TABLE (context='create') и
+	// SELECT ... INTO со списком проекции (DefinitionKind='select_into').
+	created := make(map[string]struct{})
+	for _, table := range parsed.Tables {
+		if table == nil || table.Context != "create" {
+			continue
+		}
+		if name := normalizeIdentifier(table.TableName); name != "" {
+			created[name] = struct{}{}
+		}
+	}
+	for _, definition := range parsed.ColumnDefinitions {
+		if definition == nil || definition.DefinitionKind != "select_into" {
+			continue
+		}
+		if name := normalizeIdentifier(definition.TableName); name != "" {
+			created[name] = struct{}{}
+		}
+	}
+
+	// Курсоры, объявленные в самом файле: FETCH ... FROM и WHERE CURRENT OF
+	// дают DML-контекст (select/update), но таблицей курсор не является.
+	var cursorDecls map[string]cursorDeclaration
+	var lines []string
+	if content, err := r.fileContent(ctx, file.Path); err == nil {
+		contentStr := string(content)
+		cursorDecls = parseCursorDeclarations(contentStr)
+		lines = strings.Split(contentStr, "\n")
+	}
+
+	findings := make([]Finding, 0)
+	seen := make(map[string]struct{})
+	for _, table := range parsed.Tables {
+		if table == nil || !tableExistsDMLContexts[table.Context] {
+			continue
+		}
+		name := normalizeIdentifier(table.TableName)
+		if name == "" {
+			continue
+		}
+		key := fmt.Sprintf("%s:%d", name, table.LineNumber)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		if isTableExistsNoiseName(name, cursorDecls) {
+			continue
+		}
+		// Шум из строковых литералов: PROFILE_TIME_EX('update contract').
+		if onlyQuotedOccurrence(lines, table.LineNumber, name) {
+			continue
+		}
+		if _, isCreated := created[name]; isCreated {
+			continue
+		}
+		if r.cachedLookupTableCreator(ctx, name) {
+			continue
+		}
+
+		findings = append(findings, Finding{
+			Rule:             RuleTableExistsInMetadata,
+			Severity:         SeverityDeployStopper,
+			Message:          fmt.Sprintf("Таблица %s отсутствует в метаданных: не найден создающий DDL, SELECT INTO или объявление DSArchitect", table.TableName),
+			File:             file.Path,
+			Line:             table.LineNumber,
+			Object:           table.TableName,
+			CurrentProductID: file.DsProductID,
+		})
+	}
+	return findings, nil
+}
+
 func (r *Runner) checkProcDuplicate(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	for _, proc := range parsed.Procedures {
