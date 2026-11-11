@@ -15,12 +15,16 @@ func schemaHasProp(t *testing.T, name, prop string) bool {
 }
 
 // TestProfileAwareQueryToolsSchema — dsinfo_id присутствует у всех
-// инструментов, выбирающих копию сущности, и отсутствует у остальных.
+// инструментов, выбирающих копию сущности (плюс review, разрешающий ветки
+// чужих продуктов по профилю), и отсутствует у остальных.
 func TestProfileAwareQueryToolsSchema(t *testing.T) {
 	for name := range profileAwareQueryTools {
 		if !schemaHasProp(t, name, "dsinfo_id") {
 			t.Errorf("%s: отсутствует dsinfo_id", name)
 		}
+	}
+	if !schemaHasProp(t, "codebase_review_sql", "dsinfo_id") {
+		t.Error("codebase_review_sql: отсутствует dsinfo_id (ветки чужих продуктов)")
 	}
 
 	excluded := []string{
@@ -31,7 +35,6 @@ func TestProfileAwareQueryToolsSchema(t *testing.T) {
 		"codebase_query_spec_config",
 		"dsinfo_parse",
 		"dsinfo_list",
-		"codebase_review_sql",
 	}
 	for _, name := range excluded {
 		if schemaHasProp(t, name, "dsinfo_id") {

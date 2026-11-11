@@ -11,6 +11,7 @@ import (
 
 	"github.com/codebase/internal/model"
 	sqlparser "github.com/codebase/internal/parser/sql"
+	"github.com/codebase/internal/store"
 	"github.com/lib/pq"
 )
 
@@ -36,16 +37,20 @@ func (r *Runner) getIndexedFile(ctx context.Context, path string) (*indexedFile,
 	for _, candidate := range variants {
 		var item indexedFile
 		var dsProduct sql.NullInt64
+		var dsBranch sql.NullInt64
 		err := r.db.QueryRowContext(ctx, `
-			SELECT id, path, rel_path, ds_product_id
+			SELECT id, path, rel_path, ds_product_id, ds_product_branch_id
 			FROM files
 			WHERE LOWER(path) = LOWER($1) OR LOWER(rel_path) = LOWER($1)
 			ORDER BY id DESC
 			LIMIT 1
-		`, candidate).Scan(&item.ID, &item.Path, &item.RelPath, &dsProduct)
+		`, candidate).Scan(&item.ID, &item.Path, &item.RelPath, &dsProduct, &dsBranch)
 		if err == nil {
 			if dsProduct.Valid {
 				item.DsProductID = dsProduct.Int64
+			}
+			if dsBranch.Valid {
+				item.DsProductBranchID = dsBranch.Int64
 			}
 			item.Path = normalizePath(item.Path)
 			return &item, nil
@@ -76,30 +81,26 @@ func (r *Runner) cachedLookupProcedureParams(ctx context.Context, procName strin
 	return params
 }
 
-// cachedLookupProcedureProductID возвращает (productID, true) из prewarm-кэша,
-// или делает индивидуальный запрос при cache miss.
-// Возвращает (0, false) если процедура не найдена.
-func (r *Runner) cachedLookupProcedureProductID(ctx context.Context, procName string) (int64, bool) {
+// cachedLookupProcedureScopeInfo возвращает identity-инфо процедуры из
+// prewarm-кэша (владелец имени — свой продукт раньше чужого; существование
+// копии в разрешённой области владельца), или делает одиночный batch-запрос
+// при cache miss. ok = false — имя в индексе не найдено.
+func (r *Runner) cachedLookupProcedureScopeInfo(ctx context.Context, procName string) (store.ProcedureScopeInfo, bool) {
 	key := strings.ToLower(strings.TrimSpace(procName))
 	if r.procProductIDCache != nil {
-		if productID, ok := r.procProductIDCache[key]; ok {
-			return productID, true
+		if info, ok := r.procProductIDCache[key]; ok {
+			return info, true
 		}
 	}
 	if r.db == nil {
-		return 0, false
+		return store.ProcedureScopeInfo{}, false
 	}
-	productID, err := r.lookupProcedureProductID(ctx, procName)
+	infos, err := r.db.BatchLookupProcedureProductIDs(ctx, []string{key}, r.scope.LookupScope(), r.scope.Pairs())
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return 0, false
-		}
-		return 0, false
+		return store.ProcedureScopeInfo{}, false
 	}
-	if productID == 0 {
-		return 0, false
-	}
-	return productID, true
+	info, ok := infos[key]
+	return info, ok
 }
 
 // cachedLookupTableProductIDs возвращает productIDs для таблицы из prewarm-кэша,
@@ -187,24 +188,25 @@ func (r *Runner) lookupTableProductIDs(ctx context.Context, tableName string) (m
 	return result, nil
 }
 
-func (r *Runner) lookupProcedureProductID(ctx context.Context, procName string) (int64, error) {
-	var productID int64
-	err := r.db.QueryRowContext(ctx, `
-		SELECT f.ds_product_id
-		FROM sql_procedures p
-		JOIN files f ON f.id = p.file_id
-		WHERE LOWER(p.proc_name) = LOWER($1)
-		  AND f.ds_product_id IS NOT NULL
-		ORDER BY p.id DESC
-		LIMIT 1
-	`, strings.TrimSpace(procName)).Scan(&productID)
-	if err != nil {
-		return 0, err
-	}
-	return productID, nil
-}
-
+// lookupProcedureCreateFiles возвращает id файлов, создающих процедуру, в
+// пределах области СВОЕГО продукта (design D5): продукт файла + разрешённые
+// ветки (для EXT — union, для branch_id NULL — любая ветка продукта).
+// Исключения upload/.t01 сохраняются. Пустая карта областей — прежнее
+// глобальное поведение.
 func (r *Runner) lookupProcedureCreateFiles(ctx context.Context, procName string) ([]int64, error) {
+	areaFilter := ""
+	args := []interface{}{strings.TrimSpace(procName)}
+	if !r.scope.Pairs().IsEmpty() {
+		areaFilter = `
+		  AND f.ds_product_id = $2
+		  AND EXISTS (
+		      SELECT 1 FROM unnest($3::bigint[], $4::bigint[]) AS pb(pid, bid)
+		      WHERE pb.pid = f.ds_product_id
+		        AND (pb.bid = 0 OR pb.bid = f.ds_product_branch_id)
+		  )`
+		pairs := r.scope.Pairs()
+		args = append(args, r.scope.ProductID, pq.Array(pairs.Products), pq.Array(pairs.Branches))
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT DISTINCT f.id
 		FROM sql_procedures p
@@ -212,9 +214,9 @@ func (r *Runner) lookupProcedureCreateFiles(ctx context.Context, procName string
 		WHERE LOWER(p.proc_name) = LOWER($1)
 		  AND LOWER(f.path) NOT LIKE '%/upload/%'
 		  AND LOWER(f.path) NOT LIKE '%\upload\%'
-		  AND LOWER(f.path) NOT LIKE '%.t01'
+		  AND LOWER(f.path) NOT LIKE '%.t01'`+areaFilter+`
 		ORDER BY f.id
-	`, strings.TrimSpace(procName))
+	`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -278,13 +280,26 @@ func (r *Runner) lookupIndexFieldsByName(ctx context.Context, indexName string) 
 	}
 	r.indexCandMu.Unlock()
 
+	areaFilter := ""
+	var areaArgs []interface{}
+	if pairs := r.scope.Pairs(); !pairs.IsEmpty() {
+		areaFilter = `
+		  AND EXISTS (
+		      SELECT 1 FROM unnest($2::bigint[], $3::bigint[]) AS pb(pid, bid)
+		      WHERE pb.pid = f.ds_product_id
+		        AND (pb.bid = 0 OR pb.bid = f.ds_product_branch_id)
+		  )`
+		areaArgs = append(areaArgs, pq.Array(pairs.Products), pq.Array(pairs.Branches))
+	}
+
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT f.field_name
+		SELECT fld.field_name
 		FROM sql_index_definitions i
-		LEFT JOIN sql_index_definition_fields f ON f.table_index_id = i.id
-		WHERE LOWER(i.index_name) = LOWER($1)
-		ORDER BY f.field_order, f.id
-	`, normalized)
+		JOIN files f ON f.id = i.file_id
+		LEFT JOIN sql_index_definition_fields fld ON fld.table_index_id = i.id
+		WHERE LOWER(i.index_name) = LOWER($1)`+areaFilter+`
+		ORDER BY fld.field_order, fld.id
+	`, append([]interface{}{normalized}, areaArgs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -303,17 +318,21 @@ func (r *Runner) lookupIndexFieldsByName(ctx context.Context, indexName string) 
 			}
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
-	// Также проверяем API-индексы
+	// Также проверяем API-индексы (скоуп — через api_business_object_tables.file_id)
 	if len(fields) == 0 {
 		rows2, err := r.db.QueryContext(ctx, `
-			SELECT f.field_name
+			SELECT fld.field_name
 			FROM api_business_object_table_indexes i
 			JOIN api_business_object_tables t ON t.id = i.business_table_id
-			LEFT JOIN api_business_object_table_index_fields f ON f.table_index_id = i.id
-			WHERE LOWER(i.index_name) = LOWER($1)
-			ORDER BY f.field_order, f.id
-		`, normalized)
+			JOIN files f ON f.id = t.file_id
+			LEFT JOIN api_business_object_table_index_fields fld ON fld.table_index_id = i.id
+			WHERE LOWER(i.index_name) = LOWER($1)`+areaFilter+`
+			ORDER BY fld.field_order, fld.id
+		`, append([]interface{}{normalized}, areaArgs...)...)
 		if err != nil {
 			return nil, err
 		}
@@ -334,10 +353,6 @@ func (r *Runner) lookupIndexFieldsByName(ctx context.Context, indexName string) 
 		if err := rows2.Err(); err != nil {
 			return nil, err
 		}
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 
 	r.indexCandMu.Lock()
@@ -402,11 +417,11 @@ func (r *Runner) prewarmProcCaches(ctx context.Context, parsed *sqlparser.ParseR
 	if len(names) == 0 {
 		return
 	}
-	if params, err := r.db.BatchLookupProcedureParams(context.Background(), names); err == nil {
+	if params, err := r.db.BatchLookupProcedureParams(context.Background(), names, r.scope.LookupScope(), r.scope.Pairs()); err == nil {
 		r.procParamsCache = params
 	}
-	if productIDs, err := r.db.BatchLookupProcedureProductIDs(context.Background(), names); err == nil {
-		r.procProductIDCache = productIDs
+	if infos, err := r.db.BatchLookupProcedureProductIDs(context.Background(), names, r.scope.LookupScope(), r.scope.Pairs()); err == nil {
+		r.procProductIDCache = infos
 	}
 }
 
@@ -477,7 +492,7 @@ func (r *Runner) prewarmTableCreators(ctx context.Context, parsed *sqlparser.Par
 		r.tableCreatorCache = make(map[string]bool)
 		return
 	}
-	creators, err := r.db.BatchLookupTableCreators(context.Background(), names)
+	creators, err := r.db.BatchLookupTableCreators(context.Background(), names, r.scope.Pairs())
 	if err != nil {
 		// Кэш остаётся nil — правила перейдут на ленивый поиск по одному имени.
 		return
@@ -511,7 +526,7 @@ func (r *Runner) cachedLookupTableCreator(ctx context.Context, name string) bool
 	if r.db == nil {
 		return false
 	}
-	creators, err := r.db.BatchLookupTableCreators(ctx, []string{key})
+	creators, err := r.db.BatchLookupTableCreators(ctx, []string{key}, r.scope.Pairs())
 	if err != nil {
 		return false
 	}
@@ -520,6 +535,12 @@ func (r *Runner) cachedLookupTableCreator(ctx context.Context, name string) bool
 
 // batchLoadIndexCandidates загружает все индексы (из sql_index_definitions и API)
 // для переданного набора таблиц и заполняет indexCandCache и indexFieldsCache.
+// При построенной карте областей (режим existence, design D3/D4) кандидаты
+// ограничиваются файлами разрешённых областей: SQL-индексы — через
+// sql_index_definitions.file_id → files, API-индексы — через
+// api_business_object_tables.file_id → files. Кандидаты одной области не
+// конфликтуют по именам между ветками, поэтому first-wins дедуп
+// indexFieldsCache применяется только внутри области (3.3).
 func (r *Runner) batchLoadIndexCandidates(ctx context.Context, tableNames []string) error {
 	if len(tableNames) == 0 {
 		return nil
@@ -568,13 +589,26 @@ func (r *Runner) batchLoadIndexCandidates(ctx context.Context, tableNames []stri
 		return rows.Err()
 	}
 
+	areaFilter := ""
+	var areaArgs []interface{}
+	if pairs := r.scope.Pairs(); !pairs.IsEmpty() {
+		areaFilter = `
+		  AND EXISTS (
+		      SELECT 1 FROM unnest($2::bigint[], $3::bigint[]) AS pb(pid, bid)
+		      WHERE pb.pid = f.ds_product_id
+		        AND (pb.bid = 0 OR pb.bid = f.ds_product_branch_id)
+		  )`
+		areaArgs = append(areaArgs, pq.Array(pairs.Products), pq.Array(pairs.Branches))
+	}
+
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT LOWER(i.table_name), i.id, i.index_name, i.is_unique, f.field_name, f.field_order
+		SELECT LOWER(i.table_name), i.id, i.index_name, i.is_unique, fld.field_name, fld.field_order
 		FROM sql_index_definitions i
-		LEFT JOIN sql_index_definition_fields f ON f.table_index_id = i.id
-		WHERE LOWER(i.table_name) = ANY($1)
-		ORDER BY i.table_name, i.id, f.field_order, f.id
-	`, pq.Array(tableNames))
+		JOIN files f ON f.id = i.file_id
+		LEFT JOIN sql_index_definition_fields fld ON fld.table_index_id = i.id
+		WHERE LOWER(i.table_name) = ANY($1)`+areaFilter+`
+		ORDER BY i.table_name, i.id, fld.field_order, fld.id
+	`, append([]interface{}{pq.Array(tableNames)}, areaArgs...)...)
 	if err != nil {
 		return err
 	}
@@ -583,13 +617,14 @@ func (r *Runner) batchLoadIndexCandidates(ctx context.Context, tableNames []stri
 	}
 
 	rows2, err := r.db.QueryContext(ctx, `
-		SELECT LOWER(t.table_name), i.id, i.index_name, (i.index_type IN (2, 3)), f.field_name, f.field_order
+		SELECT LOWER(t.table_name), i.id, i.index_name, (i.index_type IN (2, 3)), fld.field_name, fld.field_order
 		FROM api_business_object_table_indexes i
 		JOIN api_business_object_tables t ON t.id = i.business_table_id
-		LEFT JOIN api_business_object_table_index_fields f ON f.table_index_id = i.id
-		WHERE LOWER(t.table_name) = ANY($1)
-		ORDER BY t.table_name, i.id, f.field_order, f.id
-	`, pq.Array(tableNames))
+		JOIN files f ON f.id = t.file_id
+		LEFT JOIN api_business_object_table_index_fields fld ON fld.table_index_id = i.id
+		WHERE LOWER(t.table_name) = ANY($1)`+areaFilter+`
+		ORDER BY t.table_name, i.id, fld.field_order, fld.id
+	`, append([]interface{}{pq.Array(tableNames)}, areaArgs...)...)
 	if err != nil {
 		return err
 	}
@@ -1744,15 +1779,31 @@ func findStatementStartHint(lower string) (string, int) {
 	return "", -1
 }
 
+// lookupProcedureParams разрешает сигнатуру процедуры в value-режиме
+// (design D3): не-генерируемый источник → разрешённая область (unnest-пары)
+// → свой продукт → default-ветка → самый свежий. Пустая карта областей —
+// прежнее поведение (not_generated → id DESC).
 func (r *Runner) lookupProcedureParams(ctx context.Context, procName string) ([]model.SQLParam, error) {
 	var paramsJSON []byte
 	err := r.db.QueryRowContext(ctx, `
-		SELECT parameters
-		FROM sql_procedures
-		WHERE LOWER(proc_name) = LOWER($1)
-		ORDER BY id DESC
+		SELECT p.parameters
+		FROM sql_procedures p
+		JOIN files f ON f.id = p.file_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+		WHERE LOWER(p.proc_name) = LOWER($1)
+		ORDER BY (NOT f.is_generated) DESC,
+		         EXISTS (
+		             SELECT 1 FROM unnest($2::bigint[], $3::bigint[]) AS pb(pid, bid)
+		             WHERE pb.pid = f.ds_product_id
+		               AND (pb.bid = 0 OR pb.bid = f.ds_product_branch_id)
+		         ) DESC,
+		         (COALESCE(f.ds_product_id = $4, FALSE)) DESC,
+		         (COALESCE(br.is_default, FALSE)) DESC,
+		         p.id DESC
 		LIMIT 1
-	`, strings.TrimSpace(procName)).Scan(&paramsJSON)
+	`, strings.TrimSpace(procName),
+		pq.Array(r.scope.Pairs().Products), pq.Array(r.scope.Pairs().Branches),
+		r.scope.ProductID).Scan(&paramsJSON)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
@@ -1769,13 +1820,29 @@ func (r *Runner) lookupProcedureParams(ctx context.Context, procName string) ([]
 	return r.lookupAPIContractParams(ctx, procName)
 }
 
+// lookupAPIContractParams разрешает параметры API-контракта в value-режиме:
+// разрешённая область (api_contracts.file_id → files) → свой продукт →
+// default-ветка → самый свежий.
 func (r *Runner) lookupAPIContractParams(ctx context.Context, procName string) ([]model.SQLParam, error) {
 	var contractID int64
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id FROM api_contracts
-		WHERE LOWER(contract_name) = LOWER($1)
-		ORDER BY id DESC LIMIT 1
-	`, strings.TrimSpace(procName)).Scan(&contractID)
+		SELECT c.id
+		FROM api_contracts c
+		JOIN files f ON f.id = c.file_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+		WHERE LOWER(c.contract_name) = LOWER($1)
+		ORDER BY EXISTS (
+		           SELECT 1 FROM unnest($2::bigint[], $3::bigint[]) AS pb(pid, bid)
+		           WHERE pb.pid = f.ds_product_id
+		             AND (pb.bid = 0 OR pb.bid = f.ds_product_branch_id)
+		       ) DESC,
+		       (COALESCE(f.ds_product_id = $4, FALSE)) DESC,
+		       (COALESCE(br.is_default, FALSE)) DESC,
+		       c.id DESC
+		LIMIT 1
+	`, strings.TrimSpace(procName),
+		pq.Array(r.scope.Pairs().Products), pq.Array(r.scope.Pairs().Branches),
+		r.scope.ProductID).Scan(&contractID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1842,6 +1909,10 @@ func (r *Runner) filterKnownNames(ctx context.Context, names []string) []string 
 	return result
 }
 
+// lookupMacroSignature разрешает сигнатуру макроса в value-режиме (design D3):
+// существование #define глобально (исключение), но ЗНАЧЕНИЕ сигнатуры — с
+// приоритетом области: разрешённая область (h_files_defines.file_id → files)
+// → свой продукт → default-ветка → самый свежий.
 func (r *Runner) lookupMacroSignature(ctx context.Context, macroName string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(macroName))
 	if normalized == "" {
@@ -1849,13 +1920,24 @@ func (r *Runner) lookupMacroSignature(ctx context.Context, macroName string) (st
 	}
 	var signature string
 	err := r.db.QueryRowContext(ctx, `
-		SELECT define_value
-		FROM h_files_defines
-		WHERE LOWER(define_name) = $1
-		  AND define_type = 'macro'
-		ORDER BY id DESC
+		SELECT d.define_value
+		FROM h_files_defines d
+		JOIN files f ON f.id = d.file_id
+		LEFT JOIN ds_products_branch br ON br.id = f.ds_product_branch_id
+		WHERE LOWER(d.define_name) = $1
+		  AND d.define_type = 'macro'
+		ORDER BY EXISTS (
+		           SELECT 1 FROM unnest($2::bigint[], $3::bigint[]) AS pb(pid, bid)
+		           WHERE pb.pid = f.ds_product_id
+		             AND (pb.bid = 0 OR pb.bid = f.ds_product_branch_id)
+		       ) DESC,
+		       (COALESCE(f.ds_product_id = $4, FALSE)) DESC,
+		       (COALESCE(br.is_default, FALSE)) DESC,
+		       d.id DESC
 		LIMIT 1
-	`, normalized).Scan(&signature)
+	`, normalized,
+		pq.Array(r.scope.Pairs().Products), pq.Array(r.scope.Pairs().Branches),
+		r.scope.ProductID).Scan(&signature)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}

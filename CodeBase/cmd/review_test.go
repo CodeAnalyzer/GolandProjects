@@ -19,6 +19,26 @@ func TestParseReviewRules_AcceptsExecNotExistsProc(t *testing.T) {
 	}
 }
 
+// TestBuildReviewOptions_DsinfoID — флаг --dsinfo прокидывается в Options
+// и дальше в reviewsvc/review (разрешение веток чужих продуктов).
+func TestBuildReviewOptions_DsinfoID(t *testing.T) {
+	opts, _, err := buildReviewOptions("", 0, 777)
+	if err != nil {
+		t.Fatalf("buildReviewOptions: %v", err)
+	}
+	if opts.DsinfoID != 777 {
+		t.Fatalf("opts.DsinfoID = %d, want 777", opts.DsinfoID)
+	}
+
+	opts, _, err = buildReviewOptions("", review.SeverityFineCode, 0)
+	if err != nil {
+		t.Fatalf("buildReviewOptions (default): %v", err)
+	}
+	if opts.DsinfoID != 0 {
+		t.Fatalf("default opts.DsinfoID = %d, want 0", opts.DsinfoID)
+	}
+}
+
 func TestParseReviewRules_ProcDuplicate(t *testing.T) {
 	rules, raw, err := parseReviewRules("procDuplicate")
 	if err != nil {

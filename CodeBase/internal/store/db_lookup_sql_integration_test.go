@@ -72,7 +72,7 @@ func TestFindLatestSQLColumnDefinitionType_ProductScope(t *testing.T) {
 
 	// С контекстом fa-contracts тип разрешается из своего продукта, а не из
 	// более свежей ADP-копии fa-reports
-	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "pConsQtyListRight", "QtyType", reviewFileID, store.LookupScope{ProductID: contractsProductID})
+	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "pConsQtyListRight", "QtyType", reviewFileID, store.LookupScope{ProductID: contractsProductID}, store.ProductBranchPairs{})
 	if err != nil {
 		t.Fatalf("FindLatestSQLColumnDefinitionType: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestFindLatestSQLColumnDefinitionType_SameFileTier(t *testing.T) {
 	insertColumnDef(t, db, reviewFileID, "#Rest", "RestCol", "DSBIGMONEY")
 	insertColumnDef(t, db, otherFileID, "#Rest", "RestCol", "DSMONEY")
 
-	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "#Rest", "RestCol", reviewFileID, store.LookupScope{ProductID: contractsProductID})
+	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "#Rest", "RestCol", reviewFileID, store.LookupScope{ProductID: contractsProductID}, store.ProductBranchPairs{})
 	if err != nil {
 		t.Fatalf("FindLatestSQLColumnDefinitionType: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestFindLatestSQLColumnDefinitionType_SameFileTier(t *testing.T) {
 	}
 
 	// Без файлового яруса (productID only) побеждает более свежее same-product
-	got, err = db.FindLatestSQLColumnDefinitionType(ctx, "#Rest", "RestCol", 0, store.LookupScope{ProductID: contractsProductID})
+	got, err = db.FindLatestSQLColumnDefinitionType(ctx, "#Rest", "RestCol", 0, store.LookupScope{ProductID: contractsProductID}, store.ProductBranchPairs{})
 	if err != nil {
 		t.Fatalf("FindLatestSQLColumnDefinitionType: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestFindLatestSQLColumnDefinitionType_GlobalFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateDSProductIDByName fa-payments: %v", err)
 	}
-	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "pConsQtyListRight", "QtyType", 0, store.LookupScope{ProductID: paymentsProductID})
+	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "pConsQtyListRight", "QtyType", 0, store.LookupScope{ProductID: paymentsProductID}, store.ProductBranchPairs{})
 	if err != nil {
 		t.Fatalf("FindLatestSQLColumnDefinitionType: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestFindLatestSQLColumnDefinitionType_ZeroContextLegacy(t *testing.T) {
 	ctx := context.Background()
 
 	// Нулевой контекст воспроизводит прежнее поведение: глобальный latest-wins
-	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "pConsQtyListRight", "QtyType", 0, store.LookupScope{})
+	got, err := db.FindLatestSQLColumnDefinitionType(ctx, "pConsQtyListRight", "QtyType", 0, store.LookupScope{}, store.ProductBranchPairs{})
 	if err != nil {
 		t.Fatalf("FindLatestSQLColumnDefinitionType: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestBatchFindColumnDefinitionTypes_ProductScope(t *testing.T) {
 	contractsProductID, _, _, reviewFileID := seedCrossProductQtyType(t, db)
 	ctx := context.Background()
 
-	scoped, err := db.BatchFindColumnDefinitionTypes(ctx, []string{"pConsQtyListRight"}, reviewFileID, contractsProductID)
+	scoped, err := db.BatchFindColumnDefinitionTypes(ctx, []string{"pConsQtyListRight"}, reviewFileID, store.LookupScope{ProductID: contractsProductID}, store.ProductBranchPairs{})
 	if err != nil {
 		t.Fatalf("BatchFindColumnDefinitionTypes scoped: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestBatchFindColumnDefinitionTypes_ProductScope(t *testing.T) {
 		t.Fatalf("batch scoped type = %q, want DSIDENTIFIER", got)
 	}
 
-	legacy, err := db.BatchFindColumnDefinitionTypes(ctx, []string{"pConsQtyListRight"}, 0, 0)
+	legacy, err := db.BatchFindColumnDefinitionTypes(ctx, []string{"pConsQtyListRight"}, 0, store.LookupScope{}, store.ProductBranchPairs{})
 	if err != nil {
 		t.Fatalf("BatchFindColumnDefinitionTypes legacy: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestBatchLookupTableCreators(t *testing.T) {
 	creators, err := db.BatchLookupTableCreators(ctx, []string{
 		"TCreatedByDDL", "tcreatedbyselectinto", "PAPICONTRACTTABLE", "pApiBusinessTable",
 		"tOnlySelected", "pNotDeclaredAnywhere",
-	})
+	}, store.ProductBranchPairs{})
 	if err != nil {
 		t.Fatalf("BatchLookupTableCreators: %v", err)
 	}

@@ -51,7 +51,7 @@ var reviewCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 		filePath := strings.TrimSpace(args[0])
-		opts, rawRules, err := buildReviewOptions(reviewRulesRaw, reviewMinSeverity)
+		opts, rawRules, err := buildReviewOptions(reviewRulesRaw, reviewMinSeverity, analysisDsInfoID)
 		if err != nil {
 			return err
 		}
@@ -98,7 +98,7 @@ var reviewCmd = &cobra.Command{
 	},
 }
 
-func buildReviewOptions(rawRules string, minSeverity int) (review.Options, []string, error) {
+func buildReviewOptions(rawRules string, minSeverity int, dsinfoID int64) (review.Options, []string, error) {
 	rules, raw, err := parseReviewRules(rawRules)
 	if err != nil {
 		return review.Options{}, nil, err
@@ -106,7 +106,7 @@ func buildReviewOptions(rawRules string, minSeverity int) (review.Options, []str
 	if minSeverity <= 0 {
 		minSeverity = review.SeverityFineCode
 	}
-	return review.Options{Rules: rules, MinSeverity: minSeverity}, raw, nil
+	return review.Options{Rules: rules, MinSeverity: minSeverity, DsinfoID: dsinfoID}, raw, nil
 }
 
 func parseReviewRules(raw string) ([]review.RuleID, []string, error) {
@@ -244,5 +244,6 @@ func init() {
 	reviewCmd.Flags().BoolVar(&reviewOutputJSON, "json", false, "output as JSON")
 	reviewCmd.Flags().StringVar(&reviewRulesRaw, "rules", "", "comma-separated rules ("+review.RuleListString()+")")
 	reviewCmd.Flags().IntVar(&reviewMinSeverity, "min-severity", review.SeverityFineCode, "minimum severity to output")
+	reviewCmd.PersistentFlags().Int64Var(&analysisDsInfoID, "dsinfo", 0, "dsinfo profile id for foreign product branch resolution (0 = env/active chain)")
 	rootCmd.AddCommand(reviewCmd)
 }

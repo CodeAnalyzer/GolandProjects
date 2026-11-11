@@ -370,7 +370,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_review_sql": {
-			Definition: toolDefinition{Name: "codebase_review_sql", Description: "Run static analysis (lint) checks on a single SQL file and return a list of findings with rule ID, severity, line number and message. Requires absolute file path. Available rule IDs: " + review.RuleListString() + ". Omit rules to run all enabled rules.", InputSchema: objectSchema(map[string]interface{}{"file_path": stringProp("Full SQL file path"), "rules": map[string]interface{}{"type": "array", "description": "Optional rule ids", "items": map[string]interface{}{"type": "string"}}, "min_severity": intProp("Minimum severity")})},
+			Definition: toolDefinition{Name: "codebase_review_sql", Description: "Run static analysis (lint) checks on a single SQL file and return a list of findings with rule ID, severity, line number and message. Requires absolute file path. Available rule IDs: " + review.RuleListString() + ". Omit rules to run all enabled rules.", InputSchema: objectSchema(map[string]interface{}{"file_path": stringProp("Full SQL file path"), "rules": map[string]interface{}{"type": "array", "description": "Optional rule ids", "items": map[string]interface{}{"type": "string"}}, "min_severity": intProp("Minimum severity"), "dsinfo_id": intProp("Optional dsinfo profile id for foreign product branch resolution (0 = env/active chain)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				filePath, err := requiredString(args, "file_path")
 				if err != nil {
@@ -384,11 +384,15 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 				if err != nil {
 					return nil, err
 				}
+				dsinfoID, err := optionalInt(args, "dsinfo_id")
+				if err != nil {
+					return nil, err
+				}
 				rules, err := review.ValidateRuleIDs(rulesRaw)
 				if err != nil {
 					return nil, err
 				}
-				opts := review.Options{Rules: rules, MinSeverity: minSeverity}
+				opts := review.Options{Rules: rules, MinSeverity: minSeverity, DsinfoID: int64(dsinfoID)}
 				if db != nil {
 					return reviewsvc.ExecuteWithCtx(ctx, db, filePath, opts, nil)
 				}

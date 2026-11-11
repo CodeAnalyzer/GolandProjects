@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/lib/pq"
 )
@@ -19,6 +20,95 @@ import (
 type LookupScope struct {
 	ProductID int64 // 0 = любой продукт
 	BranchID  int64 // 0 = default-ветка / глобально
+}
+
+// ProductBranchPairs — плоские пары (product_id, branch_id) разрешённых
+// областей review для unnest-предикатов: карта productID → []branchID,
+// развёрнутая в два массива одинаковой длины. Пара с branch_id = 0
+// означает «любая ветка продукта» (product-scope, branch_id NULL у файла).
+// Нулевое значение (пустые массивы) — области не заданы: предикат области
+// не применяется, lookup деградирует до прежнего глобального поведения.
+type ProductBranchPairs struct {
+	Products []int64
+	Branches []int64
+}
+
+// IsEmpty сообщает, заданы ли пары областей (false — области применяются).
+func (p ProductBranchPairs) IsEmpty() bool { return len(p.Products) == 0 }
+
+// NewProductBranchPairs разворачивает карту областей в плоские пары для
+// unnest. Порядок детерминирован (product_id по возрастанию) — одинаковые
+// пары дают одинаковые параметры запроса.
+func NewProductBranchPairs(areas map[int64][]int64) ProductBranchPairs {
+	if len(areas) == 0 {
+		return ProductBranchPairs{}
+	}
+	products := make([]int64, 0, len(areas))
+	for pid := range areas {
+		products = append(products, pid)
+	}
+	sort.Slice(products, func(i, j int) bool { return products[i] < products[j] })
+	pairs := ProductBranchPairs{
+		Products: make([]int64, 0, len(products)),
+		Branches: make([]int64, 0, len(products)),
+	}
+	for _, pid := range products {
+		for _, bid := range areas[pid] {
+			pairs.Products = append(pairs.Products, pid)
+			pairs.Branches = append(pairs.Branches, bid)
+		}
+	}
+	return pairs
+}
+
+// ProductBranchInfo — строка ds_products_branch, необходимая для построения
+// областей видимости review (детект EXT-продуктов по ключу prj/*).
+type ProductBranchInfo struct {
+	BranchID  int64
+	ProductID int64
+	BranchKey string
+	IsDefault bool
+}
+
+// ListDSProductBranches возвращает все релизные линии всех продуктов.
+func (db *DB) ListDSProductBranches(ctx context.Context) ([]ProductBranchInfo, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, ds_product_id, branch_key, is_default
+		FROM ds_products_branch
+		ORDER BY ds_product_id, id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list ds product branches: %w", err)
+	}
+	defer rows.Close()
+	result := make([]ProductBranchInfo, 0, 16)
+	for rows.Next() {
+		var item ProductBranchInfo
+		if err := rows.Scan(&item.BranchID, &item.ProductID, &item.BranchKey, &item.IsDefault); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+// ListDSProductIDs возвращает id всех продуктов индекса — включая продукты
+// без единой релизной линии: их областью видимости является product-scope.
+func (db *DB) ListDSProductIDs(ctx context.Context) ([]int64, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id FROM ds_products ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("list ds products: %w", err)
+	}
+	defer rows.Close()
+	result := make([]int64, 0, 16)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result = append(result, id)
+	}
+	return result, rows.Err()
 }
 
 // entityFileScopeTables — белый список таблиц для EntityFileScopes:

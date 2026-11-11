@@ -8,7 +8,7 @@ import (
 )
 
 // TestAnalysisDsInfoFlagRegistered — --dsinfo объявлен на группах анализа
-// (query/rti/trc) и отсутствует у команд, не принимающих профиль.
+// (query/rti/trc/review) и отсутствует у команд, не принимающих профиль.
 func TestAnalysisDsInfoFlagRegistered(t *testing.T) {
 	if queryCmd.PersistentFlags().Lookup("dsinfo") == nil {
 		t.Error("query: persistent flag --dsinfo not registered")
@@ -19,9 +19,12 @@ func TestAnalysisDsInfoFlagRegistered(t *testing.T) {
 	if trcCmd.PersistentFlags().Lookup("dsinfo") == nil {
 		t.Error("trc: persistent flag --dsinfo not registered")
 	}
+	if reviewCmd.PersistentFlags().Lookup("dsinfo") == nil {
+		t.Error("review: persistent flag --dsinfo not registered")
+	}
 
 	excluded := map[string]bool{
-		"init": true, "update": true, "dsinfo": true, "health": true, "stats": true, "review": true,
+		"init": true, "update": true, "dsinfo": true, "health": true, "stats": true,
 	}
 	for _, c := range rootCmd.Commands() {
 		if !excluded[c.Name()] {

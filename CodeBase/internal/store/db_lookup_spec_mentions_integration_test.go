@@ -161,11 +161,11 @@ func TestBatchLookupProcedureProductIDs_CanonicalProductWins(t *testing.T) {
 	insertProcParams(t, db, canonicalFile, "BaseAlgCalcCreditPortfolio", nil)
 	insertProcParams(t, db, copyFile, "BaseAlgCalcCreditPortfolio", nil)
 
-	products, err := db.BatchLookupProcedureProductIDs(ctx, []string{"BaseAlgCalcCreditPortfolio"})
+	products, err := db.BatchLookupProcedureProductIDs(ctx, []string{"BaseAlgCalcCreditPortfolio"}, store.LookupScope{}, store.ProductBranchPairs{})
 	if err != nil {
 		t.Fatalf("BatchLookupProcedureProductIDs: %v", err)
 	}
-	if got := products["basealgcalccreditportfolio"]; got != contractsProductID {
+	if got := products["basealgcalccreditportfolio"].ProductID; got != contractsProductID {
 		t.Fatalf("product = %d, want canonical product %d (не продукт копии %d)", got, contractsProductID, otherProductID)
 	}
 }
@@ -186,7 +186,7 @@ func TestBatchLookupProcedureParams_PrefersCanonical(t *testing.T) {
 	insertProcParams(t, db, canonicalFile, "BaseAlgSumRegistryOfOuterAmount", []model.SQLParam{{Name: "Sum", Type: "DSBIGMONEY", Direction: "in"}})
 	insertProcParams(t, db, copyFile, "BaseAlgSumRegistryOfOuterAmount", []model.SQLParam{{Name: "Sum", Type: "DSMONEY", Direction: "in"}})
 
-	params, err := db.BatchLookupProcedureParams(ctx, []string{"BaseAlgSumRegistryOfOuterAmount"})
+	params, err := db.BatchLookupProcedureParams(ctx, []string{"BaseAlgSumRegistryOfOuterAmount"}, store.LookupScope{}, store.ProductBranchPairs{})
 	if err != nil {
 		t.Fatalf("BatchLookupProcedureParams: %v", err)
 	}

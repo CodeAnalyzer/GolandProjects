@@ -1552,11 +1552,11 @@ func (r *Runner) checkForeignProcedures(ctx context.Context, parsed *sqlparser.P
 	calls := dedupeProcedureCalls(parsed.Calls)
 	findings := make([]Finding, 0)
 	for _, call := range calls {
-		targetProductID, ok := r.cachedLookupProcedureProductID(ctx, call.Name)
+		info, ok := r.cachedLookupProcedureScopeInfo(ctx, call.Name)
 		if !ok {
 			continue
 		}
-		if targetProductID == 0 || targetProductID == file.DsProductID {
+		if info.ProductID == 0 || info.ProductID == file.DsProductID {
 			continue
 		}
 		findings = append(findings, Finding{
@@ -1567,7 +1567,7 @@ func (r *Runner) checkForeignProcedures(ctx context.Context, parsed *sqlparser.P
 			Line:             call.Line,
 			Object:           call.Name,
 			CurrentProductID: file.DsProductID,
-			TargetProductID:  targetProductID,
+			TargetProductID:  info.ProductID,
 		})
 	}
 	return findings, nil
@@ -1577,8 +1577,11 @@ func (r *Runner) checkExecNotExistsProcedures(ctx context.Context, parsed *sqlpa
 	calls := dedupeProcedureCalls(parsed.Calls)
 	findings := make([]Finding, 0)
 	for _, call := range calls {
-		_, ok := r.cachedLookupProcedureProductID(ctx, call.Name)
-		if ok {
+		// Existence-режим (design D3): имя найдено, но копии нет в разрешённой
+		// области продукта-владельца (свой продукт — любая ветка файла/область
+		// EXT, чужой — разрешённая линия профиля/default/область EXT).
+		info, ok := r.cachedLookupProcedureScopeInfo(ctx, call.Name)
+		if ok && info.ExistsInArea {
 			continue
 		}
 
@@ -1791,10 +1794,67 @@ func (r *Runner) checkTableExistsInMetadata(ctx context.Context, parsed *sqlpars
 	return findings, nil
 }
 
+// reProcDuplicateHeader — заголовок CREATE PROCEDURE для within-file детекта
+// дублирования: парсер дедуплицирует parsed.Procedures по имени, поэтому
+// повторные определения видны только в контенте файла.
+var reProcDuplicateHeader = regexp.MustCompile(`(?i)create\s+proc(?:edure)?\s+(#?[a-z_][a-z0-9_#]*)`)
+
+// checkProcDuplicate обнаруживает дублирование имён процедур (design D5):
+// within-file — несколько CREATE PROCEDURE одного имени в самом файле
+// (скан контента, без БД), и межфайловый — одинаковое имя в разных
+// файлах разрешённой области СВОЕГО продукта (lookupProcedureCreateFiles,
+// включая EXT-union; upload/.t01 исключаются). Копии в других ветках вне
+// области и в других продуктах дублями не считаются. Finding — одно на
+// дублированное имя (строка второго определения для within-file).
 func (r *Runner) checkProcDuplicate(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
+	reported := make(map[string]struct{})
+	appendFinding := func(procName string, line int) {
+		key := strings.ToLower(strings.TrimSpace(procName))
+		if key == "" {
+			return
+		}
+		if _, exists := reported[key]; exists {
+			return
+		}
+		reported[key] = struct{}{}
+		findings = append(findings, Finding{
+			Rule:             RuleProcDuplicate,
+			Severity:         SeverityDeployStopper,
+			Message:          "Процедура создаётся в нескольких файлах",
+			File:             file.Path,
+			Line:             line,
+			Object:           procName,
+			CurrentProductID: file.DsProductID,
+		})
+	}
+
+	// Within-file: повторные определения одного имени в проверяемом файле.
+	content, err := r.fileContent(ctx, file.Path)
+	if err != nil {
+		return nil, err
+	}
+	headerCount := make(map[string]int)
+	for i, line := range strings.Split(string(content), "\n") {
+		for _, m := range reProcDuplicateHeader.FindAllStringSubmatch(line, -1) {
+			key := strings.ToLower(strings.TrimSpace(m[1]))
+			if key == "" {
+				continue
+			}
+			headerCount[key]++
+			if headerCount[key] == 2 {
+				appendFinding(m[1], i+1)
+			}
+		}
+	}
+
+	// Межфайловый: имя в разных файлах одной области своего продукта.
 	for _, proc := range parsed.Procedures {
 		if proc == nil || proc.ProcName == "" {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(proc.ProcName))
+		if _, exists := reported[key]; exists {
 			continue
 		}
 		fileIDs, err := r.lookupProcedureCreateFiles(ctx, proc.ProcName)
@@ -1802,15 +1862,7 @@ func (r *Runner) checkProcDuplicate(ctx context.Context, parsed *sqlparser.Parse
 			return nil, err
 		}
 		if len(fileIDs) > 1 {
-			findings = append(findings, Finding{
-				Rule:             RuleProcDuplicate,
-				Severity:         SeverityDeployStopper,
-				Message:          "Процедура создаётся в нескольких файлах",
-				File:             file.Path,
-				Line:             proc.LineStart,
-				Object:           proc.ProcName,
-				CurrentProductID: file.DsProductID,
-			})
+			appendFinding(proc.ProcName, proc.LineStart)
 		}
 	}
 	return findings, nil

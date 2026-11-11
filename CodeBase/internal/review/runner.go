@@ -18,9 +18,13 @@ import (
 )
 
 type Runner struct {
-	db               *store.DB
-	parser           *sqlparser.Parser
-	exec             *reviewExecContext
+	db     *store.DB
+	parser *sqlparser.Parser
+	exec   *reviewExecContext
+	// scope — область видимости текущего запуска (design D1): строится один
+	// раз в RunSQLFileCtx после getIndexedFile, до prewarm'ов и старта
+	// параллельных правил; после построения только читается (без мьютекса).
+	scope            ReviewScope
 	colTypeCache     map[string]string
 	colTypeMu        sync.Mutex
 	macroTypeCache   map[string]string
@@ -38,7 +42,7 @@ type Runner struct {
 	onProgress         func(completed, total int)
 	// prewarm caches for batch-loaded DB data (nil = not prewarmed, fallback to per-call)
 	procParamsCache     map[string][]model.SQLParam
-	procProductIDCache  map[string]int64
+	procProductIDCache  map[string]store.ProcedureScopeInfo
 	tableProductIDCache map[string]map[int64]struct{}
 	// tableCreatorCache заполняется prewarmTableCreators ДО старта параллельных
 	// правил (включая негативные записи false); правила только читают его —
@@ -54,6 +58,7 @@ type reviewExecContext struct {
 	// Контекст запуска для продуктового скопирования lookup'ов типов колонок
 	fileID    int64
 	productID int64
+	branchID  int64
 }
 
 type ruleTask struct {
@@ -114,6 +119,15 @@ func (r *Runner) RunSQLFileCtx(ctx context.Context, path string, opts Options) (
 		return nil, fmt.Errorf("ds_product_id is not set for file: %s", normalizedPath)
 	}
 
+	// Область видимости (design D1/D2): продукт/ветка файла + карта областей
+	// всех продуктов (свой — из файла, чужие — профиль dsinfo/default, EXT —
+	// union). Ошибка профиля валит review без fallback.
+	scope, err := r.buildReviewScope(ctx, file, opts.DsinfoID)
+	if err != nil {
+		return nil, err
+	}
+	r.scope = scope
+
 	// Читаем файл с кодировкой CP866 (как в sql_parser.ParseFile)
 	fileContent, err := encoding.ReadFile(normalizedPath, encoding.CP866)
 	if err != nil {
@@ -138,6 +152,7 @@ func (r *Runner) RunSQLFileCtx(ctx context.Context, path string, opts Options) (
 		lines:       strings.Split(macroResult.Content, "\n"),
 		fileID:      file.ID,
 		productID:   file.DsProductID,
+		branchID:    file.DsProductBranchID,
 	}
 	defer func() {
 		r.exec = nil
@@ -408,7 +423,8 @@ func (r *Runner) prewarmColTypeCache(ctx context.Context, parsed *sqlparser.Pars
 	}
 
 	ctxFileID, ctxProductID := r.execContextIDs()
-	batch, err := r.db.BatchFindColumnDefinitionTypes(ctx, names, ctxFileID, ctxProductID)
+	batch, err := r.db.BatchFindColumnDefinitionTypes(ctx, names, ctxFileID,
+		store.LookupScope{ProductID: ctxProductID, BranchID: r.scope.BranchID}, r.scope.Pairs())
 	if err != nil {
 		return err
 	}
@@ -439,11 +455,11 @@ func (r *Runner) cachedFindColumnDefinitionType(ctx context.Context, tableName, 
 	}
 	r.colTypeMu.Unlock()
 	fileID, productID := r.execContextIDs()
-	typeName, err := r.db.FindLatestSQLColumnDefinitionType(ctx, tableName, columnName, fileID, store.LookupScope{ProductID: productID})
+	typeName, err := r.db.FindLatestSQLColumnDefinitionType(ctx, tableName, columnName, fileID, r.scope.LookupScope(), r.scope.Pairs())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// Fallback: ищем тип в API-контрактах и business objects
-			apiType, apiErr := r.db.FindAPIColumnDefinitionType(ctx, tableName, columnName, productID)
+			apiType, apiErr := r.db.FindAPIColumnDefinitionType(ctx, tableName, columnName, productID, r.scope.Pairs())
 			if apiErr == nil && apiType != "" {
 				r.colTypeMu.Lock()
 				r.colTypeCache[key] = apiType

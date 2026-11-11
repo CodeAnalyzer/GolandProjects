@@ -248,6 +248,9 @@ type Result struct {
 type Options struct {
 	Rules       []RuleID
 	MinSeverity int
+	// DsinfoID — явный идентификатор профиля dsinfo для разрешения веток
+	// чужих продуктов (0 — цепочка env/active, см. dsinfosvc).
+	DsinfoID int64
 }
 
 type indexedFile struct {
@@ -255,6 +258,9 @@ type indexedFile struct {
 	Path        string
 	RelPath     string
 	DsProductID int64
+	// DsProductBranchID — ветка файла (files.ds_product_branch_id; 0 = NULL,
+	// product-scope).
+	DsProductBranchID int64
 }
 
 type tableIndexCandidate struct {

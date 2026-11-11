@@ -72,12 +72,14 @@ func TestMemoryUniqueIndexUpdateRuleE2E(t *testing.T) {
 		t.Fatalf("InitCtx: %v", err)
 	}
 
-	// Review требует непустой ds_product_id у целевого файла
+	// Review требует непустой ds_product_id у целевого файла; определения
+	// индексов (pMemUniq_TmpTbl.sql) — в области того же продукта: файлы без
+	// продукта остаются вне веточных областей (review-scope).
 	var productID int64
 	if err := db.QueryRow(`INSERT INTO ds_products (product_name) VALUES ('fa-test') RETURNING id`).Scan(&productID); err != nil {
 		t.Fatalf("insert ds_products: %v", err)
 	}
-	if _, err := db.Exec(`UPDATE files SET ds_product_id = $1 WHERE path LIKE '%review_target.sql'`, productID); err != nil {
+	if _, err := db.Exec(`UPDATE files SET ds_product_id = $1 WHERE path LIKE '%review_target.sql' OR path LIKE '%pMemUniq_TmpTbl.sql'`, productID); err != nil {
 		t.Fatalf("update files: %v", err)
 	}
 
