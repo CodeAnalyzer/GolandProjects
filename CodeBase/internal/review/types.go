@@ -8,6 +8,8 @@ const (
 	RuleForeignTablesUsing                RuleID = "foreignTablesUsing"
 	RuleForeignPTablesUsing               RuleID = "foreignPTablesUsing"
 	RuleForeignProcedureUsing             RuleID = "foreignProcedureUsing"
+	RuleAPIProcDirectCall                 RuleID = "apiProcDirectCall"
+	RuleAPIExecOutsideFacade              RuleID = "apiExecOutsideFacade"
 	RuleExecNotExistsProc                 RuleID = "execNotExistsProc"
 	RuleProcDuplicate                     RuleID = "procDuplicate"
 	RuleProcParamDefValue                 RuleID = "procParamDefValue"

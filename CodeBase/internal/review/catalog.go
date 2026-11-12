@@ -37,6 +37,20 @@ var ruleCatalog = map[RuleID]ruleMeta{
 			return r.checkForeignProcedures(ctx, parsed, file)
 		},
 	},
+	RuleAPIProcDirectCall: {
+		Severity:    SeverityDeployStopper,
+		Description: "Прямой вызов API-процедуры чужого продукта",
+		Build: func(r *Runner, ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+			return r.checkAPIProcDirectCall(ctx, parsed, file)
+		},
+	},
+	RuleAPIExecOutsideFacade: {
+		Severity:    SeverityDeployStopper,
+		Description: "Макрос API_EXEC вне фасадного скрипта (FCD_*/Facade_*/API_*/_fcd_*)",
+		Build: func(r *Runner, ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+			return r.checkAPIExecOutsideFacade(ctx, file)
+		},
+	},
 	RuleExecNotExistsProc: {
 		Severity:    SeverityDeployStopper,
 		Description: "Вызов несуществующей процедуры",

@@ -1062,6 +1062,8 @@ codebase review <путь_к_файлу.sql> --rules foreignTablesUsing,execNotE
 - `varcharSize` — `VARCHAR` без указания размера
 - `columnInsert` — `INSERT` без явного указания колонок
 - `memoryUniqueIndexUpdate` — изменение полей уникального индекса таблицы, объявленной «таблицей в памяти» (in-memory enforcement немедленный)
+- `apiProcDirectCall` — прямой `exec` API-процедуры (`API_*`) чужого продукта (нужен фасад с `API_EXEC`; вызов API-процедуры своего продукта легален, дедуп на уникальное имя)
+- `apiExecOutsideFacade` — макрос `API_EXEC` вне фасадного скрипта (препроцессор раскрывает его только в скриптах с префиксами `FCD_`/`Facade_`/`API_`/`_fcd_`, без учёта регистра; вхождения в комментариях и строковых литералах не учитываются)
 
 **PostgreReq** (severity=2, требования PostgreSQL):
 
@@ -1094,7 +1096,7 @@ codebase review <путь_к_файлу.sql> --rules foreignTablesUsing,execNotE
 
 - `foreignTablesUsing` — использование таблиц из других продуктов
 - `foreignPTablesUsing` — использование p-таблиц из других продуктов
-- `foreignProcedureUsing` — вызов процедур из других продуктов
+- `foreignProcedureUsing` — вызов процедур из других продуктов (API-процедуры `API_*` исключены: прямой вызов чужой API-процедуры — deploy-stopper `apiProcDirectCall`)
 - `datatype` — потенциальная потеря точности при assignment/conversion; тип колонки-приёмника разрешается с приоритетом: определение из того же файла → из того же продукта → глобальное latest-wins (исключает ложные срабатывания на кросс-продуктовых дубликатах DDL)
 
 Опции:

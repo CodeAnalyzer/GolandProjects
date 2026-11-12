@@ -106,6 +106,8 @@ func seedReviewScopeFixture(t *testing.T, db *store.DB) *reviewScopeFixture {
 	insertProc(f.devFileA, "RV_Both")
 	insertProc(f.spFileA, "RV_Both")
 	insertProc(f.otherFile, "RV_ForeignUtil")
+	insertProc(f.otherFile, "API_RvForeign")
+	insertProc(f.spFileA, "API_RvOwn")
 	insertProc(f.extDevFile, "RV_ExtProc")
 	insertProc(f.spFileA, "RV_DupInSP")
 	insertProc(f.spFileA2, "RV_DupInSP")
@@ -354,6 +356,94 @@ as
 		if fnd.Object == "RV_ForeignUtil" && fnd.TargetProductID != f.otherID {
 			t.Fatalf("RV_ForeignUtil: TargetProductID = %d, want %d", fnd.TargetProductID, f.otherID)
 		}
+	}
+}
+
+// TestCheckAPIProcDirectCallScope: прямой exec чужой API-процедуры —
+// deploy-stopper apiProcDirectCall с дедупом на имя (первое вхождение);
+// своя API-процедура — чисто; foreignProcedureUsing для тех же вызовов
+// не формируется (change add-review-api-proc-direct-call-rule).
+func TestCheckAPIProcDirectCallScope(t *testing.T) {
+	db := testutil.Open(t)
+	f := seedReviewScopeFixture(t, db)
+	ctx := context.Background()
+	r := scopedRunner(db, f)
+	file := f.spFile("/repo-review-scope/fa-rv-11017/Sp1.sql")
+
+	content := `create proc RV_API_Review
+as
+  exec API_RvForeign
+  exec API_RvForeign
+  exec API_RvOwn
+  return`
+	findings, err := r.checkAPIProcDirectCall(ctx, parseContent(t, content), file)
+	if err != nil {
+		t.Fatalf("checkAPIProcDirectCall: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want 1 apiProcDirectCall finding, got %d: %+v", len(findings), findings)
+	}
+	fnd := findings[0]
+	if fnd.Object != "API_RvForeign" {
+		t.Fatalf("object = %s, want API_RvForeign", fnd.Object)
+	}
+	if fnd.Severity != SeverityDeployStopper {
+		t.Fatalf("severity = %d, want %d", fnd.Severity, SeverityDeployStopper)
+	}
+	if fnd.TargetProductID != f.otherID || fnd.CurrentProductID != f.productID {
+		t.Fatalf("products: current=%d target=%d, want %d/%d", fnd.CurrentProductID, fnd.TargetProductID, f.productID, f.otherID)
+	}
+	if fnd.Line != 3 {
+		t.Fatalf("line = %d, want 3 (первое вхождение)", fnd.Line)
+	}
+
+	// foreignProcedureUsing не дублирует API-вызовы.
+	foreignFindings, err := r.checkForeignProcedures(ctx, parseContent(t, content), file)
+	if err != nil {
+		t.Fatalf("checkForeignProcedures: %v", err)
+	}
+	for _, ff := range foreignFindings {
+		if isAPIProcedure(ff.Object) {
+			t.Fatalf("foreignProcedureUsing вернул API-имя %s — юрисдикция apiProcDirectCall", ff.Object)
+		}
+	}
+}
+
+// TestCheckAPIExecOutsideFacadeScope: API_EXEC в не-фасадном файле —
+// deploy-stopper; lowercase-фасад — чисто (регистронезависимость).
+func TestCheckAPIExecOutsideFacadeScope(t *testing.T) {
+	db := testutil.Open(t)
+	f := seedReviewScopeFixture(t, db)
+	ctx := context.Background()
+	r := scopedRunner(db, f)
+
+	content := `create proc RV_ApiExec_Review
+as
+  API_EXEC(API_RvForeign, @RetVal, @ID)
+  return`
+
+	file := f.spFile("/repo-review-scope/fa-rv-11017/Sp1.sql")
+	r.exec = &reviewExecContext{filePath: normalizePath(file.Path), content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkAPIExecOutsideFacade(ctx, file)
+	if err != nil {
+		t.Fatalf("checkAPIExecOutsideFacade: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want 1 apiExecOutsideFacade finding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Severity != SeverityDeployStopper || findings[0].Line != 3 {
+		t.Fatalf("severity/line = %d/%d, want %d/3", findings[0].Severity, findings[0].Line, SeverityDeployStopper)
+	}
+
+	facadePath := "/repo-review-scope/fa-rv-11017/fcd_RvTest.sql"
+	facadeFile := f.spFile(facadePath)
+	r.exec = &reviewExecContext{filePath: normalizePath(facadePath), content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err = r.checkAPIExecOutsideFacade(ctx, facadeFile)
+	if err != nil {
+		t.Fatalf("checkAPIExecOutsideFacade (facade): %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("lowercase fcd_ фасад — finding не нужен, got %+v", findings)
 	}
 }
 

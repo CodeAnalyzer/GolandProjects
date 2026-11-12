@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -1548,10 +1549,183 @@ func (r *Runner) checkForeignPTables(ctx context.Context, parsed *sqlparser.Pars
 	return findings, nil
 }
 
+// isAPIProcedure — общий предикат API-процедуры (change
+// add-review-api-proc-direct-call-rule): имя с префиксом API_ без учёта
+// регистра. SQL-идентификаторы регистронезависимы, поэтому один и тот же
+// предикат используется в checkAPIProcDirectCall и в сужении
+// checkForeignProcedures — иначе lowercase api_* уйдёт из-под
+// deploy-stopper'а, но останется в severity 3. Для фасадных префиксов имени
+// файла используется отдельный предикат isFacadeScriptName.
+func isAPIProcedure(name string) bool {
+	return strings.HasPrefix(normalizeIdentifier(name), "api_")
+}
+
+// facadeScriptPrefixes — регистронезависимые префиксы basename файлов,
+// в которых препроцессор Diasoft раскрывает макрос API_EXEC. _fcd_ —
+// seed-шаблоны генерации фасадов (_fcd_tpl_seed.sql).
+var facadeScriptPrefixes = []string{"fcd_", "facade_", "api_", "_fcd_"}
+
+// isFacadeScriptName сообщает, является ли файл фасадным скриптом по
+// регистронезависимому префиксу basename. Боевые фасады поставки FA
+// используют lowercase fcd_*.sql — сравнение обязано быть case-insensitive.
+func isFacadeScriptName(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	for _, prefix := range facadeScriptPrefixes {
+		if strings.HasPrefix(base, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// apiExecMacroRe — textual-scan макроса API_EXEC в содержимом файла.
+// API_EXEC не матчится exec-regex'ом SQL-парсера (\bexec перед E стоит _),
+// поэтому единственный способ увидеть его в review — скан по контенту.
+var apiExecMacroRe = regexp.MustCompile(`(?i)\bAPI_EXEC\s*\(`)
+
+// sanitizeSQLForMacroScan — однопроходной лексер для textual-scan'а API_EXEC:
+// содержимое одинарных строковых литералов маскируется '?', комментарии
+// (-- и /* */) забиваются пробелами; \n/\r сохраняются на своих позициях
+// и общая длина текста не меняется, поэтому подсчёт строк по результату
+// корректен. Лексемы разбираются в точке сканирования, что устраняет
+// взаимовлияние «комментарий с апострофом» и «литерал с --» (двухфазная
+// схема removeComments → mask давала на них false negative).
+func sanitizeSQLForMacroScan(s string) string {
+	result := []byte(s)
+	const (
+		stateNormal = iota
+		stateInString
+		stateLineComment
+		stateBlockComment
+	)
+	state := stateNormal
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch state {
+		case stateNormal:
+			if ch == '\'' {
+				state = stateInString
+			} else if ch == '-' && i+1 < len(s) && s[i+1] == '-' {
+				state = stateLineComment
+				result[i], result[i+1] = ' ', ' '
+				i++
+			} else if ch == '/' && i+1 < len(s) && s[i+1] == '*' {
+				state = stateBlockComment
+				result[i], result[i+1] = ' ', ' '
+				i++
+			}
+		case stateInString:
+			if ch == '\n' || ch == '\r' {
+				continue
+			}
+			if ch == '\'' {
+				if i+1 < len(s) && s[i+1] == '\'' {
+					i++ // экранированная кавычка '' — оставляем обе
+					continue
+				}
+				state = stateNormal
+				continue
+			}
+			result[i] = '?'
+		case stateLineComment:
+			if ch == '\n' || ch == '\r' {
+				state = stateNormal
+				continue
+			}
+			result[i] = ' '
+		case stateBlockComment:
+			if ch == '*' && i+1 < len(s) && s[i+1] == '/' {
+				result[i], result[i+1] = ' ', ' '
+				i++
+				state = stateNormal
+				continue
+			}
+			if ch != '\n' && ch != '\r' {
+				result[i] = ' '
+			}
+		}
+	}
+	return string(result)
+}
+
+func (r *Runner) checkAPIExecOutsideFacade(ctx context.Context, file *indexedFile) ([]Finding, error) {
+	// Фасадные файлы (FCD_*/Facade_*/API_*/_fcd_*) составляют большинство
+	// файлов с API_EXEC, а finding для них невозможен — выходим до чтения
+	// и обработки контента.
+	if isFacadeScriptName(file.Path) {
+		return []Finding{}, nil
+	}
+	content, err := r.fileContent(ctx, file.Path)
+	if err != nil {
+		return nil, err
+	}
+	// Комментарии и строковые литералы не учитываются (требование).
+	// Строки считаются в expanded-пространстве — централизованный ремап
+	// выполняет runner.
+	clean := sanitizeSQLForMacroScan(string(content))
+	loc := apiExecMacroRe.FindStringIndex(clean)
+	if loc == nil {
+		return []Finding{}, nil
+	}
+	line := 1 + strings.Count(clean[:loc[0]], "\n")
+	return []Finding{{
+		Rule:             RuleAPIExecOutsideFacade,
+		Severity:         SeverityDeployStopper,
+		Message:          "Макрос API_EXEC вне фасадного скрипта (препроцессор раскрывает его только в FCD_*/Facade_*/API_*/_fcd_*)",
+		File:             file.Path,
+		Line:             line,
+		Object:           filepath.Base(file.Path),
+		CurrentProductID: file.DsProductID,
+	}}, nil
+}
+
+func (r *Runner) checkAPIProcDirectCall(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	calls := dedupeProcedureCalls(parsed.Calls)
+	findings := make([]Finding, 0)
+	// Дедуп на уникальное имя (без учёта регистра): finding на строку
+	// первого вхождения. dedupeProcedureCalls дедуплицирует по «имя:строка»
+	// и используется только как первичный фильтр (nil/keyword).
+	seen := make(map[string]struct{})
+	for _, call := range calls {
+		if !isAPIProcedure(call.Name) {
+			continue
+		}
+		key := normalizeIdentifier(call.Name)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		info, ok := r.cachedLookupProcedureScopeInfo(ctx, call.Name)
+		if !ok {
+			continue
+		}
+		if info.ProductID == 0 || info.ProductID == file.DsProductID {
+			continue
+		}
+		findings = append(findings, Finding{
+			Rule:             RuleAPIProcDirectCall,
+			Severity:         SeverityDeployStopper,
+			Message:          fmt.Sprintf("Прямой вызов API-процедуры чужого продукта %s (нужен фасад с API_EXEC)", call.Name),
+			File:             file.Path,
+			Line:             call.Line,
+			Object:           call.Name,
+			CurrentProductID: file.DsProductID,
+			TargetProductID:  info.ProductID,
+		})
+	}
+	return findings, nil
+}
+
 func (r *Runner) checkForeignProcedures(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	calls := dedupeProcedureCalls(parsed.Calls)
 	findings := make([]Finding, 0)
 	for _, call := range calls {
+		// API_*-процедуры исключены: прямой вызов чужой API-процедуры —
+		// юрисдикция deploy-stopper'а apiProcDirectCall, дубль severity 3
+		// на тот же вызов не формируется.
+		if isAPIProcedure(call.Name) {
+			continue
+		}
 		info, ok := r.cachedLookupProcedureScopeInfo(ctx, call.Name)
 		if !ok {
 			continue
