@@ -51,8 +51,13 @@ type Runner struct {
 }
 
 type reviewExecContext struct {
-	filePath    string
-	content     []byte
+	filePath string
+	content  []byte
+	// rawContent — исходный текст файла до replaceMacros: stripMacroDeclarations
+	// вырезает из content (expanded) все #define-строки, поэтому правила,
+	// анализирующие директивы препроцессора (debugProfileEnabled), работают
+	// именно по rawContent.
+	rawContent  []byte
 	macroResult macroReplaceResult
 	lines       []string
 	// Контекст запуска для продуктового скопирования lookup'ов типов колонок
@@ -144,10 +149,13 @@ func (r *Runner) RunSQLFileCtx(ctx context.Context, path string, opts Options) (
 	}
 
 	// Expanded-контент (после replaceMacros) — все правила работают в expanded-пространстве,
-	// а ремаппинг Finding.Line в конце конвертирует обратно к оригинальным строкам
+	// а ремаппинг Finding.Line в конце конвертирует обратно к оригинальным строкам.
+	// rawContent хранит исходный текст для правил, анализирующих директивы
+	// препроцессора (#define) — из expanded они вырезаны.
 	r.exec = &reviewExecContext{
 		filePath:    normalizePath(file.Path),
 		content:     []byte(macroResult.Content),
+		rawContent:  []byte(fileContent),
 		macroResult: macroResult,
 		lines:       strings.Split(macroResult.Content, "\n"),
 		fileID:      file.ID,
@@ -192,9 +200,13 @@ func (r *Runner) RunSQLFileCtx(ctx context.Context, path string, opts Options) (
 		minSeverity = SeverityFineCode
 	}
 
-	// Ремаппим номера строк в findings из expanded-контента обратно к оригинальному файлу
+	// Ремаппим номера строк в findings из expanded-контента обратно к оригинальному файлу.
+	// Findings с LineInOriginalSpace уже несут строку исходного файла
+	// (например, строку #define, отсутствующую в expanded) — их не трогаем.
 	for i := range findings {
-		findings[i].Line = mapExpandedLineToOriginal(findings[i].Line, macroResult.SourceMap)
+		if !findings[i].LineInOriginalSpace {
+			findings[i].Line = mapExpandedLineToOriginal(findings[i].Line, macroResult.SourceMap)
+		}
 	}
 
 	filtered := make([]Finding, 0, len(findings))
@@ -363,6 +375,17 @@ func (r *Runner) fileContent(ctx context.Context, path string) ([]byte, error) {
 	_ = ctx
 	if r.exec != nil && normalizePath(path) == r.exec.filePath {
 		return r.exec.content, nil
+	}
+	return nil, fmt.Errorf("file %q is not the active review target", path)
+}
+
+// rawFileContent возвращает исходный контент файла до replaceMacros:
+// stripMacroDeclarations вырезает из expanded-контента все #define-строки,
+// поэтому текстовый анализ директив препроцессора идёт по rawContent.
+func (r *Runner) rawFileContent(ctx context.Context, path string) ([]byte, error) {
+	_ = ctx
+	if r.exec != nil && normalizePath(path) == r.exec.filePath {
+		return r.exec.rawContent, nil
 	}
 	return nil, fmt.Errorf("file %q is not the active review target", path)
 }

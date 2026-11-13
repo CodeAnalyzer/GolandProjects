@@ -10,6 +10,7 @@ const (
 	RuleForeignProcedureUsing             RuleID = "foreignProcedureUsing"
 	RuleAPIProcDirectCall                 RuleID = "apiProcDirectCall"
 	RuleAPIExecOutsideFacade              RuleID = "apiExecOutsideFacade"
+	RuleDebugProfileEnabled               RuleID = "debugProfileEnabled"
 	RuleExecNotExistsProc                 RuleID = "execNotExistsProc"
 	RuleProcDuplicate                     RuleID = "procDuplicate"
 	RuleProcParamDefValue                 RuleID = "procParamDefValue"
@@ -233,6 +234,11 @@ type Finding struct {
 	Object           string `json:"object,omitempty"`
 	CurrentProductID int64  `json:"current_product_id,omitempty"`
 	TargetProductID  int64  `json:"target_product_id,omitempty"`
+	// LineInOriginalSpace — служебный признак (не сериализуется): Line уже
+	// указывает строку исходного файла (до replaceMacros), центральный ремап
+	// mapExpandedLineToOriginal такие findings пропускает — для строк,
+	// вырезанных stripMacroDeclarations, обратного отображения в SourceMap нет.
+	LineInOriginalSpace bool `json:"-"`
 }
 
 type Summary struct {

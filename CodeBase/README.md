@@ -1064,6 +1064,7 @@ codebase review <путь_к_файлу.sql> --rules foreignTablesUsing,execNotE
 - `memoryUniqueIndexUpdate` — изменение полей уникального индекса таблицы, объявленной «таблицей в памяти» (in-memory enforcement немедленный)
 - `apiProcDirectCall` — прямой `exec` API-процедуры (`API_*`) чужого продукта (нужен фасад с `API_EXEC`; вызов API-процедуры своего продукта легален, дедуп на уникальное имя)
 - `apiExecOutsideFacade` — макрос `API_EXEC` вне фасадного скрипта (препроцессор раскрывает его только в скриптах с префиксами `FCD_`/`Facade_`/`API_`/`_fcd_`, без учёта регистра; вхождения в комментариях и строковых литералах не учитываются)
+- `debugProfileEnabled` — включённое отладочное профилирование: активный `#define PROFILE` (до `#include <macros.h>`, если он есть) + точка профилирования в файле — прямые `PROFILE_*` вызовы или каркасные носители (`RETURN_PROFILE(_EX)`, `DCL_PROC_BODY`, `DCL_PROC_END`, `COMMIT_TRAN`, `__END_TRAN__`, `__BEGIN_PROCEDURE__`, `__END_PROCEDURE__`, `__CHECK_ERROR__`, `M_TRACE_DCL_PROC_END_START`); применяется к `.sql`/`.h` (расширение без учёта регистра); выключение — закомментировать директиву (`-- #define PROFILE`) или удалить её
 
 **PostgreReq** (severity=2, требования PostgreSQL):
 

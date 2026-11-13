@@ -1679,6 +1679,119 @@ func (r *Runner) checkAPIExecOutsideFacade(ctx context.Context, file *indexedFil
 	}}, nil
 }
 
+// debugProfileDefineRe — активная директива #define PROFILE в санитизированном
+// тексте (комментарии/литералы замаскированы лексером): \b отсекает
+// PROFILE_AVAILABLE.
+var debugProfileDefineRe = regexp.MustCompile(`(?i)^[ \t]*#[ \t]*define[ \t]+PROFILE\b`)
+
+// debugProfileMacrosIncludeRe — первая директива #include <macros.h>
+// (регистронезависимо, допускаются пробелы внутри <>). Условие порядка:
+// препроцессор обрабатывает заголовок линейно, и #define PROFILE после
+// этого include ничего не включает — MACROS.H уже развернул PROFILE_* в пустые
+// строки.
+var debugProfileMacrosIncludeRe = regexp.MustCompile(`(?i)^[ \t]*#[ \t]*include[ \t]*<[ \t]*macros\.h[ \t]*>`)
+
+// debugProfileCarrierRe — точка профилирования: прямой вызов PROFILE_* или
+// каркасный макрос-носитель, тело которого в MACROS.H содержит PROFILE_*.
+// Список фиксирован требованием спеки review/deploy-stoppers.
+var debugProfileCarrierRe = regexp.MustCompile(`(?i)\b(?:PROFILE_BEGIN_EX|PROFILE_BEGIN|PROFILE_TIME_VAR1|PROFILE_TIME_VAR2|PROFILE_TIME_VAR3|PROFILE_TIME_EX|PROFILE_TIME|PROFILE_END_EX|PROFILE_END|RETURN_PROFILE_EX|RETURN_PROFILE|DCL_PROC_BODY|DCL_PROC_END|COMMIT_TRAN|__END_TRAN__|__BEGIN_PROCEDURE__|__END_PROCEDURE__|__CHECK_ERROR__|M_TRACE_DCL_PROC_END_START)\b`)
+
+// debugProfileDefineStartRe — начало блока определения макроса (#define с любым
+// именем): блок вместе с \-продолжениями не считается точкой профилирования,
+// иначе определение helper-макроса с носителем в теле флаговалось бы из-за
+// самого определения.
+var debugProfileDefineStartRe = regexp.MustCompile(`(?i)^[ \t]*#[ \t]*define\b`)
+
+// checkDebugProfileEnabled — deploy-stopper: активный #define PROFILE плюс
+// точка профилирования в файле. Работает по исходному тексту (rawFileContent):
+// из expanded-контента stripMacroDeclarations вырезает все #define-строки.
+// Один finding на файл, строка — первый активный define в координатах
+// исходного файла (LineInOriginalSpace: центральный ремап его пропускает).
+func (r *Runner) checkDebugProfileEnabled(ctx context.Context, file *indexedFile) ([]Finding, error) {
+	// Guard расширения (сравнение без учёта регистра): боевые .SQL в
+	// fa-generalledger обязаны проходить.
+	ext := filepath.Ext(file.Path)
+	if !strings.EqualFold(ext, ".sql") && !strings.EqualFold(ext, ".h") {
+		return []Finding{}, nil
+	}
+	raw, err := r.rawFileContent(ctx, file.Path)
+	if err != nil {
+		return nil, err
+	}
+	// Комментарии и строковые литералы не учитываются; длина и \n/\r
+	// сохраняются, номера строк совпадают с исходным файлом.
+	clean := sanitizeSQLForMacroScan(string(raw))
+	lines := strings.Split(clean, "\n")
+
+	defineLine := 0
+	includeLine := 0
+	inDefineBlock := false
+	for i, line := range lines {
+		continues := strings.HasSuffix(strings.TrimRight(line, " \t\r"), "\\")
+		// Внутри блока #define (строка определения + \-продолжения) нет
+		// директив: текст тела макроса — в том числе #define PROFILE или
+		// #include — препроцессором как директива не обрабатывается.
+		if inDefineBlock {
+			if !continues {
+				inDefineBlock = false
+			}
+			continue
+		}
+		if debugProfileDefineRe.MatchString(line) {
+			defineLine = i + 1
+			break
+		}
+		if includeLine == 0 && debugProfileMacrosIncludeRe.MatchString(line) {
+			includeLine = i + 1
+		}
+		// Старт чужого блока определений: его продолжения пропускаются.
+		if debugProfileDefineStartRe.MatchString(line) && continues {
+			inDefineBlock = true
+		}
+	}
+	if defineLine == 0 {
+		return []Finding{}, nil
+	}
+	// Условие порядка: первый активный define обязан предшествовать первому
+	// #include <macros.h> (если он есть в файле).
+	if includeLine > 0 && defineLine > includeLine {
+		return []Finding{}, nil
+	}
+
+	// Поиск точки профилирования; строки внутри блоков #define (строка
+	// определения + \-продолжения) пропускаются.
+	inDefineBlock = false
+	for _, line := range lines {
+		continues := strings.HasSuffix(strings.TrimRight(line, " \t\r"), "\\")
+		if inDefineBlock {
+			if !continues {
+				inDefineBlock = false
+			}
+			continue
+		}
+		if debugProfileDefineStartRe.MatchString(line) {
+			if continues {
+				inDefineBlock = true
+			}
+			continue
+		}
+		if carrier := debugProfileCarrierRe.FindString(line); carrier != "" {
+			return []Finding{{
+				Rule:     RuleDebugProfileEnabled,
+				Severity: SeverityDeployStopper,
+				Message: fmt.Sprintf("Включённое отладочное профилирование: активный #define PROFILE (строка %d) + точка профилирования %s; для деплоя закомментируйте директиву или удалите её",
+					defineLine, strings.ToUpper(carrier)),
+				File:                file.Path,
+				Line:                defineLine,
+				Object:              filepath.Base(file.Path),
+				CurrentProductID:    file.DsProductID,
+				LineInOriginalSpace: true,
+			}}, nil
+		}
+	}
+	return []Finding{}, nil
+}
+
 func (r *Runner) checkAPIProcDirectCall(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	calls := dedupeProcedureCalls(parsed.Calls)
 	findings := make([]Finding, 0)

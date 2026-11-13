@@ -46,7 +46,7 @@ var (
 
 var reviewCmd = &cobra.Command{
 	Use:   "review <sql-file-path>",
-	Short: "Run SQL review checks for one file",
+	Short: "Run SQL review checks for one file (.sql or .h)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()

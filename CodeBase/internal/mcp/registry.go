@@ -370,7 +370,7 @@ func buildToolRegistry(db *store.DB) map[string]registeredTool {
 			},
 		},
 		"codebase_review_sql": {
-			Definition: toolDefinition{Name: "codebase_review_sql", Description: "Run static analysis (lint) checks on a single SQL file and return a list of findings with rule ID, severity, line number and message. Requires absolute file path. Available rule IDs: " + review.RuleListString() + ". Omit rules to run all enabled rules.", InputSchema: objectSchema(map[string]interface{}{"file_path": stringProp("Full SQL file path"), "rules": map[string]interface{}{"type": "array", "description": "Optional rule ids", "items": map[string]interface{}{"type": "string"}}, "min_severity": intProp("Minimum severity"), "dsinfo_id": intProp("Optional dsinfo profile id for foreign product branch resolution (0 = env/active chain)")})},
+			Definition: toolDefinition{Name: "codebase_review_sql", Description: "Run static analysis (lint) checks on a single SQL file (.sql or .h) and return a list of findings with rule ID, severity, line number and message. Requires absolute file path. Available rule IDs: " + review.RuleListString() + ". Omit rules to run all enabled rules.", InputSchema: objectSchema(map[string]interface{}{"file_path": stringProp("Full path to SQL file (.sql or .h)"), "rules": map[string]interface{}{"type": "array", "description": "Optional rule ids", "items": map[string]interface{}{"type": "string"}}, "min_severity": intProp("Minimum severity"), "dsinfo_id": intProp("Optional dsinfo profile id for foreign product branch resolution (0 = env/active chain)")})},
 			Handler: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 				filePath, err := requiredString(args, "file_path")
 				if err != nil {

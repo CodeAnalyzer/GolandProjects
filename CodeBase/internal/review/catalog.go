@@ -51,6 +51,13 @@ var ruleCatalog = map[RuleID]ruleMeta{
 			return r.checkAPIExecOutsideFacade(ctx, file)
 		},
 	},
+	RuleDebugProfileEnabled: {
+		Severity:    SeverityDeployStopper,
+		Description: "Включённое отладочное профилирование (#define PROFILE + точка профилирования; выключение — закомментировать/удалить директиву)",
+		Build: func(r *Runner, ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+			return r.checkDebugProfileEnabled(ctx, file)
+		},
+	},
 	RuleExecNotExistsProc: {
 		Severity:    SeverityDeployStopper,
 		Description: "Вызов несуществующей процедуры",
