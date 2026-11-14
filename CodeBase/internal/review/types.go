@@ -63,6 +63,7 @@ const (
 	RuleSelectAfterSetRowcount            RuleID = "selectAfterSetRowcount"
 	RuleAliasWhenUsingUnion               RuleID = "aliasWhenUsingUnion"
 	RuleTableExistsInMetadata             RuleID = "tableExistsInMetadata"
+	RuleViewUsageInServerCode             RuleID = "viewUsageInServerCode"
 )
 
 const (

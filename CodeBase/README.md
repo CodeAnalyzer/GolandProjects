@@ -1065,6 +1065,8 @@ codebase review <путь_к_файлу.sql> --rules foreignTablesUsing,execNotE
 - `apiProcDirectCall` — прямой `exec` API-процедуры (`API_*`) чужого продукта (нужен фасад с `API_EXEC`; вызов API-процедуры своего продукта легален, дедуп на уникальное имя)
 - `apiExecOutsideFacade` — макрос `API_EXEC` вне фасадного скрипта (препроцессор раскрывает его только в скриптах с префиксами `FCD_`/`Facade_`/`API_`/`_fcd_`, без учёта регистра; вхождения в комментариях и строковых литералах не учитываются)
 - `debugProfileEnabled` — включённое отладочное профилирование: активный `#define PROFILE` (до `#include <macros.h>`, если он есть) + точка профилирования в файле — прямые `PROFILE_*` вызовы или каркасные носители (`RETURN_PROFILE(_EX)`, `DCL_PROC_BODY`, `DCL_PROC_END`, `COMMIT_TRAN`, `__END_TRAN__`, `__BEGIN_PROCEDURE__`, `__END_PROCEDURE__`, `__CHECK_ERROR__`, `M_TRACE_DCL_PROC_END_START`); применяется к `.sql`/`.h` (расширение без учёта регистра); выключение — закомментировать директиву (`-- #define PROFILE`) или удалить её
+- `tableExistsInMetadata` — таблица отсутствует в метаданных: для DML-обращения не найден создающий DDL, `SELECT INTO` или объявление DSArchitect (в разрешённой области продукта; обращения к представлениям атрибутируются `viewUsageInServerCode`)
+- `viewUsageInServerCode` — использование представления (VIEW) в серверном коде: DML-обращение к имени, определённому в индексе фрагментом `create [or replace] view` (сопоставление по имени без product-scope; при ошибке БД правило инертно — fail-open)
 
 **PostgreReq** (severity=2, требования PostgreSQL):
 

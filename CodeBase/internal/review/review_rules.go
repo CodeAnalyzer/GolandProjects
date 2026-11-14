@@ -2067,11 +2067,105 @@ func (r *Runner) checkTableExistsInMetadata(ctx context.Context, parsed *sqlpars
 		if r.cachedLookupTableCreator(ctx, name) {
 			continue
 		}
+		// Обращение к представлению: атрибутируется правилу
+		// viewUsageInServerCode, а не «таблица отсутствует». Fail-open:
+		// при ошибке загрузки множества view имя не распознано и работает
+		// прежняя ветка (finding формируется, как до изменения).
+		if r.isViewTable(ctx, table.TableName) {
+			continue
+		}
 
 		findings = append(findings, Finding{
 			Rule:             RuleTableExistsInMetadata,
 			Severity:         SeverityDeployStopper,
 			Message:          fmt.Sprintf("Таблица %s отсутствует в метаданных: не найден создающий DDL, SELECT INTO или объявление DSArchitect", table.TableName),
+			File:             file.Path,
+			Line:             table.LineNumber,
+			Object:           table.TableName,
+			CurrentProductID: file.DsProductID,
+		})
+	}
+	return findings, nil
+}
+
+// checkViewUsageInServerCode (ruleViewUsageInServerCode, severity 1): каждое
+// обращение SQL-файла к представлению (VIEW) в DML-контексте — finding.
+// Множество имён view — глобальное, без product-scope (представления —
+// объекты общего namespace БД, паттерн memory_tables). Фильтры исключений
+// ложных ссылок переиспользуются от tableExistsInMetadata (единая точка
+// фильтрации шума). Fail-open: при ошибке загрузки множества правило
+// молчит, review не падает.
+func (r *Runner) checkViewUsageInServerCode(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
+	if parsed == nil {
+		return []Finding{}, nil
+	}
+
+	// Таблицы, созданные в самом файле (CREATE TABLE / SELECT ... INTO):
+	// локальное имя, совпавшее с view из другой ветки/продукта, — это ссылка
+	// на локальную таблицу, а не на view (симметрия с
+	// checkTableExistsInMetadata; защита от generic-имён view: Account,
+	// Balance, Branch, ...).
+	created := make(map[string]struct{})
+	for _, table := range parsed.Tables {
+		if table == nil || table.Context != "create" {
+			continue
+		}
+		if name := normalizeIdentifier(table.TableName); name != "" {
+			created[name] = struct{}{}
+		}
+	}
+	for _, definition := range parsed.ColumnDefinitions {
+		if definition == nil || definition.DefinitionKind != "select_into" {
+			continue
+		}
+		if name := normalizeIdentifier(definition.TableName); name != "" {
+			created[name] = struct{}{}
+		}
+	}
+
+	// Курсоры, объявленные в самом файле, и строки для фильтра литералов.
+	var cursorDecls map[string]cursorDeclaration
+	var lines []string
+	if content, err := r.fileContent(ctx, file.Path); err == nil {
+		contentStr := string(content)
+		cursorDecls = parseCursorDeclarations(contentStr)
+		lines = strings.Split(contentStr, "\n")
+	}
+
+	findings := make([]Finding, 0)
+	seen := make(map[string]struct{})
+	for _, table := range parsed.Tables {
+		if table == nil || !tableExistsDMLContexts[table.Context] {
+			continue
+		}
+		name := normalizeIdentifier(table.TableName)
+		if name == "" {
+			continue
+		}
+		key := fmt.Sprintf("%s:%d", name, table.LineNumber)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		if isTableExistsNoiseName(name, cursorDecls) {
+			continue
+		}
+		// Шум из строковых литералов: PROFILE_TIME_EX('update contract').
+		if onlyQuotedOccurrence(lines, table.LineNumber, name) {
+			continue
+		}
+		if _, isCreated := created[name]; isCreated {
+			continue
+		}
+		if !r.isViewTable(ctx, table.TableName) {
+			continue
+		}
+
+		findings = append(findings, Finding{
+			Rule:             RuleViewUsageInServerCode,
+			Severity:         SeverityDeployStopper,
+			Message:          fmt.Sprintf("Представление %s используется в серверном коде: обращения к VIEW запрещены (сессионная фильтрация tUserResSel, недоступность index-хинтов, непрозрачное разворачивание планировщиком)", table.TableName),
 			File:             file.Path,
 			Line:             table.LineNumber,
 			Object:           table.TableName,

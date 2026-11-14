@@ -403,6 +403,11 @@ default-ветки. Источник, существующий только в �
 - создание через `SELECT ... INTO`;
 - `CREATE TABLE` в самом анализируемом файле.
 
+Обращение к имени, распознанному как представление (view) в индексе (фрагмент
+`create [or replace] view <имя>`), MUST NOT формировать finding
+`tableExistsInMetadata`: такое обращение атрибутируется правилу
+`viewUsageInServerCode`.
+
 Проверка MUST рассматривать только реальные обращения к таблицам (SELECT/INSERT/UPDATE/DELETE/LOG) и MUST игнорировать:
 - временные таблицы с префиксом `#` (включая `##`);
 - имена, извлечённые в неопределённом контексте (например, аргументы `DROP_IF`);
@@ -459,6 +464,21 @@ default-ветки. Источник, существующий только в �
 - **GIVEN** файл ветки `prj/novikom-persform` продукта `fa-contracts-ext` использует в DML таблицу, созданную только в ветке `develop` этого продукта
 - **WHEN** выполняется review
 - **THEN** finding `tableExistsInMetadata` не формируется: поставка банка включает develop
+
+#### Scenario: Обращение к view не даёт tableExistsInMetadata
+
+- **GIVEN** SQL-файл использует `batch` в `SELECT`, и в индексе `batch` определена фрагментом `create view Batch` (создателя-таблицы нет)
+- **WHEN** выполняется review
+- **THEN** finding `tableExistsInMetadata` для `batch` не формируется
+- **AND** сформирован finding `viewUsageInServerCode` для `batch`
+
+#### Scenario: Ошибка БД не отключает проверку существования
+
+- **GIVEN** запрос множества имён представлений к БД завершается ошибкой
+- **AND** SQL-файл использует view-имя без создателя-таблицы (например, `batch` в `SELECT`)
+- **WHEN** выполняется review
+- **THEN** имя не распознано как представление
+- **AND** finding `tableExistsInMetadata` для `batch` формируется, как до изменения
 
 #### Scenario: Временная #-таблица не проверяется
 
@@ -677,6 +697,80 @@ default-ветки. Источник, существующий только в �
 - **GIVEN** файл `script.inc` с активным `#define PROFILE` и точкой профилирования
 - **WHEN** выполняется review
 - **THEN** finding `debugProfileEnabled` не формируется — правило применяется только к `.sql`/`.h`
+
+### Requirement: Запрет представлений в серверном коде
+
+Система SHALL формировать finding `viewUsageInServerCode` (severity 1) для
+каждого обращения SQL-файла к представлению (VIEW) в DML-контексте
+(SELECT/INSERT/UPDATE/DELETE/LOG). Finding MUST указывать имя представления,
+файл и строку обращения. Правило применяется ко всем SQL-файлам, принимаемым
+review (`.sql`, `.h`).
+
+Представлением считается имя, для которого в индексе существует фрагмент
+`create [or replace] view <имя>` (SQL-скрипт любого продукта или ветки:
+представления живут в общем namespace БД, сопоставление по имени без
+product-scope). Схемный префикс в определении (`public.`) MUST
+отбрасываться; в обращении префикс (`dbo.`) MUST отбрасываться, если парсер
+сохранил его в извлечённом имени — текущий SQL-парсер срезает
+qualified-ссылки до первого токена (`from dbo.X` даёт таблицу `dbo`),
+известное ограничение, квалифицированные обращения к view — FN. Сравнение
+имён MUST быть регистронезависимым. Findings дедуплицируются по имени и
+строке обращения (как у `tableExistsInMetadata`).
+
+Проверка MUST применять те же исключения ложных ссылок, что и
+`tableExistsInMetadata`: временные таблицы `#`/`##`, курсоры файла,
+триггерные pseudo-таблицы, системные каталоги, placeholder-токены, имена
+внутри строковых литералов.
+
+Ошибка получения множества имён представлений из БД MUST приводить к
+пропуску проверки без падения review (fail-open: бан-правило при сбое не
+формирует ложные findings).
+
+#### Scenario: SELECT из представления в серверной процедуре
+
+- **GIVEN** SQL-файл содержит `select ... from tfund`, и в индексе есть фрагмент `create view tfund`
+- **WHEN** выполняется review
+- **THEN** сформирован finding с rule `viewUsageInServerCode`, severity 1
+- **AND** в finding указаны имя `tfund`, файл и строка обращения
+
+#### Scenario: UPDATE представления
+
+- **GIVEN** SQL-файл содержит `update Batch set ...`, и в индексе есть фрагмент `create view Batch`
+- **WHEN** выполняется review
+- **THEN** сформирован finding с rule `viewUsageInServerCode`, severity 1
+
+#### Scenario: Определение представления не является нарушением
+
+- **GIVEN** SQL-файл содержит `create view Batch as select ... from tPropertyUsr, tUserResSel`
+- **AND** тела view обращаются к обычным таблицам (не view)
+- **WHEN** выполняется review
+- **THEN** finding `viewUsageInServerCode` по факту определения view и по обращениям к обычным таблицам не формируется
+
+#### Scenario: View поверх view
+
+- **GIVEN** SQL-файл содержит `create view vA as select ... from vB`, и `vB` определена как view в индексе
+- **WHEN** выполняется review
+- **THEN** сформирован finding `viewUsageInServerCode` для обращения к `vB`
+
+#### Scenario: Схемный префикс отбрасывается
+
+- **GIVEN** в индексе view определена фрагментом `create or replace view public.tinstracclink`
+- **AND** SQL-файл обращается к `tinstracclink` в `SELECT`
+- **WHEN** выполняется review
+- **THEN** сформирован finding `viewUsageInServerCode` для `tinstracclink`
+
+#### Scenario: Обычная таблица не даёт finding
+
+- **GIVEN** SQL-файл обращается к `tContract` в `SELECT`, и `tContract` — таблица (не view)
+- **WHEN** выполняется review
+- **THEN** finding `viewUsageInServerCode` не формируется
+
+#### Scenario: Ошибка БД не валит review
+
+- **GIVEN** запрос множества имён представлений к БД завершается ошибкой
+- **WHEN** выполняется review
+- **THEN** review завершается успешно
+- **AND** findings `viewUsageInServerCode` не формируются
 
 ## Related code
 

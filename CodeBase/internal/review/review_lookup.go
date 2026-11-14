@@ -716,6 +716,62 @@ func (r *Runner) isMemoryTable(ctx context.Context, tableName string) bool {
 	return ok
 }
 
+// isViewTable сообщает, определено ли имя как представление (VIEW) — есть ли
+// фрагмент `create [or replace] view <имя>` в SQL-скриптах индекса.
+// Сопоставление по имени без product-scope: представления — объекты общего
+// namespace БД (паттерн memory_tables). Множество имён лениво загружается
+// одним SELECT при первом обращении (правила выполняются параллельно);
+// флаг загруженности ставится и при пустом результате, и при ошибке
+// запроса/итерации — включая ошибку в середине выборки: частичный кэш
+// отбрасывается, правило инертно до конца запуска (fail-open: бан-правило
+// при неполных данных молчит, а не даёт находки по случайному подмножеству).
+// SQL возвращает сырые имена (без срезания схемы и lower): нормализация —
+// normalizeTableKey в Go, единая точка (срезает всё до последней точки в
+// любом регистре, снимает квотирование); NULL-строки regexp_matches
+// (квитированные/скобочные идентификаторы) пропускаются. Флаг 'g' извлекает
+// все определения фрагмента (защита от 2+ create view в одном фрагменте);
+// комментарии внутри query_text не вырезаются — assumption: `create view`
+// в line/block-комментарии перед реальным определением в корпусе не
+// встречается (замер: 0 фрагментов).
+func (r *Runner) isViewTable(ctx context.Context, tableName string) bool {
+	name := normalizeTableKey(tableName)
+	if name == "" {
+		return false
+	}
+	r.viewNameMu.Lock()
+	defer r.viewNameMu.Unlock()
+	if !r.viewNamesLoaded {
+		cache := make(map[string]struct{})
+		if r.db != nil {
+			rows, err := r.db.QueryContext(ctx, `
+				SELECT DISTINCT (regexp_matches(query_text, '(?i)create\s+(?:or\s+replace\s+)?view\s+([A-Za-z_#][A-Za-z0-9_#.]*)', 'g'))[1]
+				FROM query_fragments
+				WHERE component_type = 'sql_script'
+				  AND query_text ~* '(?i)create\s+(?:or\s+replace\s+)?view\s+'`)
+			if err == nil {
+				for rows.Next() {
+					var raw sql.NullString
+					if scanErr := rows.Scan(&raw); scanErr == nil && raw.Valid {
+						if key := normalizeTableKey(raw.String); key != "" {
+							cache[key] = struct{}{}
+						}
+					}
+				}
+				if rows.Err() != nil {
+					// Частичная выборка не является множеством: сбрасываем
+					// и остаёмся инертными до конца запуска.
+					cache = make(map[string]struct{})
+				}
+				rows.Close()
+			}
+		}
+		r.viewNameCache = cache
+		r.viewNamesLoaded = true
+	}
+	_, ok := r.viewNameCache[name]
+	return ok
+}
+
 func (r *Runner) lookupTableIndexCandidates(ctx context.Context, tableName string) ([]tableIndexCandidate, error) {
 	normalizedTable := strings.ToLower(strings.TrimSpace(tableName))
 	if normalizedTable == "" {
