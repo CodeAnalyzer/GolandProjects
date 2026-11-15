@@ -6124,6 +6124,100 @@ func TestCheckTableFullScan_InsertSelectLineAnchor(t *testing.T) {
 	}
 }
 
+func TestCheckTableFullScan_MacroParamTokenPaste_NoFinding(t *testing.T) {
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+
+	var b strings.Builder
+	b.WriteString("#define M_BRANCH(mx) select @@spid as SPID, ch##mx##.K from pSrc_Base ch##mx## inner join pSrc_Sb sb##mx## on sb##mx##.SPID = ch##mx##.SPID where ch##mx##.SPID = @@spid\n")
+	b.WriteString("insert into pT (SPID, K)\n")
+	for i := 1; i <= 12; i++ {
+		b.WriteString(fmt.Sprintf("M_BRANCH(%d)", i))
+		if i < 12 {
+			b.WriteString(" union all")
+		}
+		b.WriteString("\n")
+	}
+	content := strings.TrimRight(b.String(), "\n")
+
+	runner := &Runner{}
+	runner.exec = &reviewExecContext{
+		filePath:    normalizePath(file.Path),
+		content:     []byte(content),
+		macroResult: replaceMacros(content),
+		lines:       strings.Split(content, "\n"),
+	}
+
+	findings, err := runner.checkTableFullScan(context.Background(), file)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings after parameter token-paste, got %d: %#v", len(findings), findings)
+	}
+}
+
+func TestCheckTableFullScan_MacroParamTokenPaste_Anchor(t *testing.T) {
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+	lines := []string{
+		"#define M_FROM(mx) from pSrc ch##mx##",
+		"insert into pT (SPID, K) select @@spid, ch.K",
+		"M_FROM(1)",
+	}
+	content := strings.Join(lines, "\n")
+	macroResult := replaceMacros(content)
+
+	runner := &Runner{}
+	runner.exec = &reviewExecContext{
+		filePath:    normalizePath(file.Path),
+		content:     []byte(content),
+		macroResult: macroResult,
+		lines:       lines,
+	}
+
+	findings, err := runner.checkTableFullScan(context.Background(), file)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for unfiltered pSrc, got %d: %#v", len(findings), findings)
+	}
+	originalLine := mapExpandedLineToOriginal(findings[0].Line, macroResult.SourceMap)
+	if originalLine != 2 {
+		t.Fatalf("finding anchored to original line %d, want 2 (insert line); expanded line = %d", originalLine, findings[0].Line)
+	}
+}
+
+// Unit-level проверка входа checkIndexWrong: после token-paste alias должен
+// быть цельным (ch1), иначе WHERE-колонки не привяжутся к таблице. Полный
+// прогон правила зависит от метаданных индексов БД; отсутствие регресса
+// правила подтверждается baseline-диффом на реальных файлах FA.
+func TestIndexWrongInputs_MacroParamTokenPasteAlias(t *testing.T) {
+	expanded := replaceIdentifierToken(
+		"from pSrc ch##mx## where ch##mx##.SPID = 1",
+		"mx", "1",
+	)
+	if strings.Contains(expanded, "##") {
+		t.Fatalf("expanded text must not contain ##, got: %s", expanded)
+	}
+
+	tables := extractTablesFromFromClause(expanded)
+	if len(tables) != 1 {
+		t.Fatalf("expected 1 table, got %d: %#v", len(tables), tables)
+	}
+	if tables[0].Alias != "ch1" {
+		t.Fatalf("table alias = %q, want %q", tables[0].Alias, "ch1")
+	}
+
+	conditionColumns := extractConditionColumnsForIndexWrong(expanded, tables)
+	cols, ok := conditionColumns["ch1"]
+	if !ok {
+		t.Fatalf("condition columns missing clean alias %q: %#v", "ch1", conditionColumns)
+	}
+	if _, ok := cols["spid"]; !ok {
+		t.Fatalf("condition columns for ch1 = %#v, want spid", cols)
+	}
+}
+
 func TestExtractColumnRefsFromOn_TopLevelWithParens(t *testing.T) {
 	lower := "delete pt from pt, a inner join b on a.x = isnull(b.y, 0) inner join c on (c.z = a.x) where a.q = 1"
 	refs := extractColumnRefsFromOn(lower)

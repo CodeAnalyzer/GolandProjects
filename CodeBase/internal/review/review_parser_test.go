@@ -477,6 +477,53 @@ func TestReplaceMacros_TokenPasteOperator(t *testing.T) {
 	}
 }
 
+func TestReplaceMacros_ParamTokenPaste(t *testing.T) {
+	content := "#define M_INSERT(_VAL_, mx) select @@spid from T ch##mx## where ch##mx##.SPID = @@spid and ch##mx##.ExcludeReason = 0\nM_INSERT('X', 1)"
+	result := replaceMacros(content)
+
+	if strings.Contains(result.Content, "##") {
+		t.Fatalf("## should be consumed during parameter paste, got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "ch1.SPID = @@spid") {
+		t.Fatalf("expected ch1.SPID after parameter paste, got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "ch1.ExcludeReason = 0") {
+		t.Fatalf("expected ch1.ExcludeReason after parameter paste, got: %s", result.Content)
+	}
+}
+
+func TestReplaceIdentifierToken_TokenPasteMatrix(t *testing.T) {
+	cases := []struct {
+		name        string
+		text        string
+		token       string
+		replacement string
+		want        string
+	}{
+		{"paste both sides", "from T ch##mx## where ch##mx##.SPID = @@spid", "mx", "1", "from T ch1 where ch1.SPID = @@spid"},
+		{"paste qualified", "sb##mx##.SPID", "mx", "1", "sb1.SPID"},
+		{"plain parameter", "mx + mx", "mx", "1", "1 + 1"},
+		{"substring guard", "LinkID", "id", "X", "LinkID"},
+		{"one sided paste", "##PREFVAR##ObjectID", "PREFVAR", "m.", "m.ObjectID"},
+		{"empty argument", "##PREFVAR##ObjectID", "PREFVAR", "", "ObjectID"},
+		{"paste after at sign", "@##OBJECT##SeedID", "OBJECT", "User", "@UserSeedID"},
+		{"global temp untouched", "select ID from ##GlobalRest", "mx", "1", "select ID from ##GlobalRest"},
+		{"ppvarcnt marker untouched", "@val##PPVARCNT##PPLINE", "mx", "1", "@val##PPVARCNT##PPLINE"},
+		{"shared seed untouched", "##_SHARED_SEED_##t##OBJECT##Seed", "mx", "1", "##_SHARED_SEED_##t##OBJECT##Seed"},
+		{"file placeholder untouched", "FCD_##CURRENT_MODULEID##_HM_Proc", "mx", "1", "FCD_##CURRENT_MODULEID##_HM_Proc"},
+		{"dollar in replacement is literal", "##mx##", "mx", "$1", "$1"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := replaceIdentifierToken(tc.text, tc.token, tc.replacement)
+			if got != tc.want {
+				t.Fatalf("replaceIdentifierToken(%q, %q, %q) = %q, want %q", tc.text, tc.token, tc.replacement, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHasStatementEnded_SemicolonInsideStringLiteral_DoesNotEnd(t *testing.T) {
 	stmtBuffer := []string{
 		"update pCNENP_LoanExt_CollateralInfo",

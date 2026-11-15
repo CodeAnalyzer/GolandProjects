@@ -1010,8 +1010,13 @@ func replaceIdentifierToken(text string, token string, replacement string) strin
 		return text
 	}
 
-	re := cachedRegexp(`(?i)\b` + regexp.QuoteMeta(trimmedToken) + `\b`)
-	return re.ReplaceAllString(text, replacement)
+	// Token-paste: `##`, примыкающий к имени параметра, поглощается вместе
+	// с подстановкой (ch##mx## → ch1). `\b` стоит вокруг имени параметра,
+	// поэтому обычный mx по-прежнему подставляется, а подстроки (LinkID при
+	// параметре id) не портятся. ReplaceAllLiteralString не трактует `$` в
+	// значении аргумента как группы замены.
+	re := cachedRegexp(`(?i)(?:##)?\b` + regexp.QuoteMeta(trimmedToken) + `\b(?:##)?`)
+	return re.ReplaceAllLiteralString(text, replacement)
 }
 
 // maskBlockCommentsKeepLines маскирует блочные комментарии /* */ с сохранением строк
