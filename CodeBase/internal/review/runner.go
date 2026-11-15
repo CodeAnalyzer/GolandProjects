@@ -491,6 +491,11 @@ func (r *Runner) cachedFindColumnDefinitionType(ctx context.Context, tableName, 
 		return v, nil
 	}
 	r.colTypeMu.Unlock()
+	// Тестовый seam: без БД cache miss деградирует в «тип неизвестен», как и
+	// остальные lookup'ы. В проде db всегда задан.
+	if r.db == nil {
+		return "", nil
+	}
 	fileID, productID := r.execContextIDs()
 	typeName, err := r.db.FindLatestSQLColumnDefinitionType(ctx, tableName, columnName, fileID, r.scope.LookupScope(), r.scope.Pairs())
 	if err != nil {

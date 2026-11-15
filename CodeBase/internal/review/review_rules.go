@@ -2620,7 +2620,9 @@ func (r *Runner) checkDatatypeExecParams(ctx context.Context, parsed *sqlparser.
 	findings := make([]Finding, 0)
 	seen := make(map[string]struct{})
 
-	if r.db == nil {
+	// Тестовый seam: без БД ветка exec-параметров работает на
+	// предзаполненном procParamsCache (как остальные cache-lookup'ы).
+	if r.db == nil && r.procParamsCache == nil {
 		return findings, nil
 	}
 

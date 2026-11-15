@@ -194,6 +194,11 @@ func (r *Runner) lookupTableProductIDs(ctx context.Context, tableName string) (m
 // Исключения upload/.t01 сохраняются. Пустая карта областей — прежнее
 // глобальное поведение.
 func (r *Runner) lookupProcedureCreateFiles(ctx context.Context, procName string) ([]int64, error) {
+	// Тестовый seam: без БД резолв файлов процедуры деградирует в «не найдено»,
+	// как и остальные cache-lookup'ы (nil-safe). В проде db всегда задан.
+	if r.db == nil {
+		return nil, nil
+	}
 	areaFilter := ""
 	args := []interface{}{strings.TrimSpace(procName)}
 	if !r.scope.Pairs().IsEmpty() {
@@ -811,6 +816,11 @@ func (r *Runner) findAPITableNames(ctx context.Context, names []string) (map[str
 		normalized = append(normalized, key)
 	}
 	if len(normalized) == 0 {
+		return result, nil
+	}
+	// Тестовый seam: без БД API-имена таблиц не резолвятся, как и в остальных
+	// cache-lookup'ах (nil-safe). В проде db всегда задан.
+	if r.db == nil {
 		return result, nil
 	}
 
