@@ -9,6 +9,8 @@ var (
 	ErrNoRelationFilters   = errors.New("at least one relation filter must be provided")
 	ErrQueryFailed         = errors.New("query failed")
 	ErrReviewFailed        = errors.New("review failed")
+	ErrInvalidArguments    = errors.New("invalid arguments")
+	ErrAlreadyReported     = errors.New("review completed")
 	ErrStatsFailed         = errors.New("failed to get stats")
 	ErrHealthCheckFailed   = errors.New("failed to inspect index readiness")
 	ErrSpecNotFound        = errors.New("spec entity not found")

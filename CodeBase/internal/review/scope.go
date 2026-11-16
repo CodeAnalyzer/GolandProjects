@@ -42,15 +42,11 @@ func (s ReviewScope) LookupScope() store.LookupScope {
 // (несуществующий/некорректный id) — ошибка review без fallback.
 func (r *Runner) buildReviewScope(ctx context.Context, file *indexedFile, dsinfoID int64) (ReviewScope, error) {
 	scope := ReviewScope{FileID: file.ID, ProductID: file.DsProductID, BranchID: file.DsProductBranchID}
-	productIDs, err := r.db.ListDSProductIDs(ctx)
+	productIDs, branches, err := r.loadScopeLists(ctx)
 	if err != nil {
 		return scope, err
 	}
-	branches, err := r.db.ListDSProductBranches(ctx)
-	if err != nil {
-		return scope, err
-	}
-	analysis, err := dsinfosvc.ResolveAnalysisContext(ctx, r.db, dsinfoID)
+	analysis, err := r.resolveAnalysisContext(ctx, dsinfoID)
 	if err != nil {
 		return scope, fmt.Errorf("resolve dsinfo profile: %w", err)
 	}
@@ -60,6 +56,47 @@ func (r *Runner) buildReviewScope(ctx context.Context, file *indexedFile, dsinfo
 	}
 	scope.ProductBranch = buildProductBranchAreas(file.DsProductID, file.DsProductBranchID, productIDs, branches, profileBranches)
 	return scope, nil
+}
+
+// loadScopeLists отдаёт списки продуктов/веток, кэшируя их на время пакетного прогона.
+func (r *Runner) loadScopeLists(ctx context.Context) ([]int64, []store.ProductBranchInfo, error) {
+	if r.scopeCacheEnabled && r.productIDsCache != nil && r.branchesCache != nil {
+		return r.productIDsCache, r.branchesCache, nil
+	}
+	productIDs, err := r.db.ListDSProductIDs(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	branches, err := r.db.ListDSProductBranches(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if r.scopeCacheEnabled {
+		r.productIDsCache = productIDs
+		r.branchesCache = branches
+	}
+	return productIDs, branches, nil
+}
+
+// resolveAnalysisContext резолвит dsinfo-профиль, кэшируя результат по explicitID
+// (включая 0) на время пакетного прогона.
+func (r *Runner) resolveAnalysisContext(ctx context.Context, dsinfoID int64) (*dsinfosvc.AnalysisContext, error) {
+	if r.scopeCacheEnabled && r.analysisCache != nil {
+		if analysis, ok := r.analysisCache[dsinfoID]; ok {
+			return analysis, nil
+		}
+	}
+	analysis, err := dsinfosvc.ResolveAnalysisContext(ctx, r.db, dsinfoID)
+	if err != nil {
+		return nil, err
+	}
+	if r.scopeCacheEnabled {
+		if r.analysisCache == nil {
+			r.analysisCache = make(map[int64]*dsinfosvc.AnalysisContext)
+		}
+		r.analysisCache[dsinfoID] = analysis
+	}
+	return analysis, nil
 }
 
 // isPrjBranchKey определяет ветку банка EXT-продукта по ключу prj/*

@@ -26,7 +26,7 @@ import (
 var (
 	appName        = "CodeBase"
 	version        = "0.9.5"
-	buildNumber    = "1700"
+	buildNumber    = "1703"
 	copyright      = "Copyright (c) 2026"
 	cfgFile        string
 	commandLogger  *log.Logger
@@ -104,6 +104,9 @@ func Execute() (err error) {
 			return err
 		}
 		if isReviewJSONMode(args) {
+			if errors.Is(err, errs.ErrAlreadyReported) {
+				return err
+			}
 			if writeErr := writeReviewErrorResponse(err); writeErr != nil {
 				return writeErr
 			}

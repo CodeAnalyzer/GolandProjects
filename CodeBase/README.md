@@ -57,7 +57,7 @@
   - Поиск API contracts (контрактов API), API tables (таблиц API), API table indexes (индексов API-таблиц), API params (параметров API), implementations (реализаций), publishers (публикаторов событий), consumers (потребителей контрактов)
   - Unified `query symbol` для SQL procedures/tables/indexes/column definitions, H defines, PAS units/classes/methods, JS functions/constants, DFM forms/components, report forms/params/VB functions, API business objects, SMF instruments, XML/API symbols и spec-сущностей (capabilities, requirements, scenarios, usecases, changes)
   - **Спеки**: полнотекстовый поиск по спецификациям (лексический tsvector + trgm по техименам, семантический LSA), спецификации по имени код-сущности, граф зависимостей capability, usecase-слой с involved capabilities, покрытие кода спеками, история изменения capability по changes
-- **Review (проверка SQL перед деплоем)**: статический анализ SQL-файлов с детекцией deploy stoppers (использование внешних таблиц/процедур, небезопасные конструкции IF/EXISTS, отсутствие required hints, и т.д.)
+- **Review (проверка SQL перед деплоем)**: статический анализ SQL-файлов с детекцией deploy stoppers (использование внешних таблиц/процедур, небезопасные конструкции IF/EXISTS, отсутствие required hints, и т.д.); пакетный режим `review --files <list>` проверяет список файлов одним запуском — один процесс/соединение, изоляция ошибок по файлам, агрегированный JSON-конверт
 - **RTI-анализатор** (`codebase rti`): парсинг и анализ RTI-трейс логов Diasoft 5NT; извлечение вызовов процедур, параметров, контрольных точек, кодов ошибок, бизнес-лог блоков (`M_BUSINESSLOG_BLOCK_BEGIN/END`), checkpoint-временных меток, дампов таблиц (`M_LOG_TABLE`/`M_LOG_TABLE_LISTID`), клиентских событий (thick client d5nt: SQL blocks, recordset open, connection, BPL load, errors, memory); enrichment из индекса (PAS-файлы, DFM-формы, SQL-фрагменты); сохранение в БД для повторного анализа
 - **TRC-анализатор** (`codebase trc`): парсинг и анализ файлов SQL Server Profiler — бинарных `.trc`, XML-экспортов `.xml` и Extended Events `.xel`; декодирование событий (RPC:Completed, SQL:BatchCompleted, SP:StmtCompleted и др.), извлечение вызовов процедур и параметров из TextData, агрегация только завершённых вызовов `SP:Completed` (count/min/max/avg/total duration), список событий с раздельными matched/returned counts и limit, дерево вызовов по SPID с восстановлением вложенности через Starting/Completed пары, enrichment из индекса (путь к файлу и строки); сохранение в БД для повторного анализа
 - **DiasoftSystemInfo** (`codebase dsinfo`): парсер CSV-выгрузок DiasoftSystemInfo (детект по содержимому, WIN-1251, имя файла не канонично) — манифест продуктов Digital Q с нормализацией (`product_name`/`branch_key`/`hotfix_name`), клиентские модули (BPL/EXE → пакеты/хотфиксы) и полная таблица объектов БД (объект → модуль/пакет/state, ~62k строк) — основа точного резолва «процедура → пакет»; профили идемпотентны по SHA-256, активный профиль — singleton в БД; команды parse/list/show/delete/use (CLI и MCP)
@@ -679,6 +679,10 @@ codebase query spec config --product fa-cards --include-hierarchy true --depth 2
   - JSON envelope со статистикой индекса
 - `codebase health --json`
   - JSON envelope со status (статусом) и массивом `checks`
+- `codebase review <файл> --json` / `codebase review --files <список> --json`
+  - JSON envelope с `success`, `format_version`, `command`, `count`, `items`, `summary`, `meta`;
+    пакетный режим дополнительно содержит `mode="batch"` и блок `files`
+    (`total`/`succeeded`/`failed`/`results`) — см. «Review (проверка SQL перед деплоем)»
 
 Гарантии для machine-readable modes:
 
@@ -1032,6 +1036,7 @@ codebase trc procedures log.trc --dsinfo 5
 codebase review <путь_к_файлу.sql>
 codebase review <путь_к_файлу.sql> --json
 codebase review <путь_к_файлу.sql> --rules foreignTablesUsing,execNotExistsProc
+codebase review --files list.txt --json
 ```
 
 **Deploy stoppers** (severity=1, критические ошибки, блокирующие деплой):
@@ -1106,6 +1111,7 @@ codebase review <путь_к_файлу.sql> --rules foreignTablesUsing,execNotE
 - `--rules` — список проверяемых правил (по умолчанию все правила каталога)
 - `--min-severity` — минимальный уровень серьезности (1=deploy stopper, 3=fine code)
 - `--json` — вывод в формате JSON
+- `--files <list-file>` — пакетный режим: путь к файлу-списку SQL-файлов (один путь на строку, UTF-8) вместо позиционного аргумента; подробности ниже
 
 Пример JSON вывода:
 ```json
@@ -1113,7 +1119,7 @@ codebase review <путь_к_файлу.sql> --rules foreignTablesUsing,execNotE
   "success": true,
   "format_version": "1.0",
   "command": "review",
-  "count": 2,
+  "count": 1,
   "items": [
     {
       "rule": "foreignTablesUsing",
@@ -1126,6 +1132,71 @@ codebase review <путь_к_файлу.sql> --rules foreignTablesUsing,execNotE
   ]
 }
 ```
+
+#### Пакетный режим (--files)
+
+Прогон review по списку файлов одним запуском: один процесс и одно соединение с
+БД, переиспользуемые между файлами scope-инвариантные lookup'ы (списки
+продуктов/веток, dsinfo-профиль). Ко всем файлам применяются одни и те же
+`--rules`, `--min-severity` и `--dsinfo`; набор findings каждого файла
+совпадает с одиночным запуском при неизменном индексе и профиле.
+
+```bash
+codebase review --files list.txt
+codebase review --files list.txt --json
+codebase review --files list.txt --rules truncTbl --min-severity 1 --json
+```
+
+Формат списка (UTF-8, один путь на строку):
+
+- пустые строки и строки-комментарии (`# ...`) игнорируются;
+- окружающие пробелы и парные кавычки `"`/`'` снимаются;
+- дубликаты путей схлопываются с сохранением порядка первого вхождения;
+- относительные пути разрешаются от текущей рабочей директории — как позиционный аргумент;
+- отсутствующий, нечитаемый или пустой список — ошибка `invalid_arguments` (ненулевой exit code);
+- одновременная передача позиционного пути и `--files` — ошибка `invalid_arguments`.
+
+Изоляция ошибок: ошибка отдельного файла не прерывает пакет — она попадает в
+`files.results[]` со стабильным кодом (`not_indexed` — файл не проиндексирован,
+`missing_product` — не заполнен `ds_product_id`, `review_failed` — ошибка
+чтения/декодирования/парсинга), остальные файлы обрабатываются. Exit code
+ненулевой, если завершился ошибкой хотя бы один файл. Человекочитаемый вывод
+печатает блок по каждому файлу сразу после его обработки и общий итог в конце;
+прогресс `review [i/N] <file> rules k/m` идёт в stderr, в `--json` stdout
+содержит только JSON-конверт.
+
+Пакетный JSON-конверт (`mode=batch`):
+
+```json
+{
+  "success": false,
+  "format_version": "1.0",
+  "command": "review",
+  "mode": "batch",
+  "count": 1,
+  "items": [
+    { "rule": "truncTbl", "severity": 1, "file": "D:/.../A.sql", "line": 42, "object": "..." }
+  ],
+  "summary": { "total": 1, "by_rule": { "truncTbl": 1 }, "by_severity": { "1": 1 } },
+  "files": {
+    "total": 2,
+    "succeeded": 1,
+    "failed": 1,
+    "results": [
+      { "file": "D:/.../A.sql", "status": "ok", "count": 1, "summary": { "total": 1 } },
+      { "file": "D:/missing.sql", "status": "error", "count": 0, "summary": { "total": 0 },
+        "error": { "code": "not_indexed", "message": "file is not indexed: D:/missing.sql" } }
+    ]
+  },
+  "meta": { "rules": ["truncTbl"], "min_severity": 3 }
+}
+```
+
+- `files.total` — число уникальных файлов после дедупа, `succeeded + failed = total`;
+- `items` — плоский массив findings успешных файлов в порядке списка; каждый finding содержит `file` — индексный путь, как в одиночном режиме;
+- `results[].file` — нормализованный путь (`normalizePath`) в том виде, в каком путь передан в списке;
+- `success=false` при `failed > 0`; findings успешных файлов всё равно включаются в `items`;
+- одиночный `review <файл> --json` и MCP `codebase_review_sql` не меняются — поля `mode`/`files` в их ответах отсутствуют.
 
 ### MCP режим (stdio JSON-RPC)
 
@@ -1197,7 +1268,7 @@ profile=<name> tool=<name> args=<аргументы> duration=<d> duration_ms=<m
 - `codebase.health` — проверка готовности БД и индекса
 - `codebase.stats` — статистика индекса
 - `codebase.query.*` для всех query-подкоманд CLI (включая spec-запросы); инструменты, выбирающие копию сущности, принимают `dsinfo_id`
-- `codebase_review_sql` — статический анализ SQL-файла (review rules)
+- `codebase_review_sql` — статический анализ SQL-файла (review rules); одиночный файл — пакетный режим `--files` доступен только в CLI
 - `codebase_read_more` — пагинация MCP-ответов
 - `dsinfo_*` — управление профилями DiasoftSystemInfo (см. таблицу ниже)
 

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codebase/internal/dsinfosvc"
 	"github.com/codebase/internal/encoding"
 	"github.com/codebase/internal/model"
 	sqlparser "github.com/codebase/internal/parser/sql"
@@ -56,6 +57,11 @@ type Runner struct {
 	// правил (включая негативные записи false); правила только читают его —
 	// ленивый fallback не пишет в общий map (data race).
 	tableCreatorCache map[string]bool
+	// scope-инвариантные кэши пакетного режима (включаются только в RunSQLFilesCtx).
+	scopeCacheEnabled bool
+	productIDsCache   []int64
+	branchesCache     []store.ProductBranchInfo
+	analysisCache     map[int64]*dsinfosvc.AnalysisContext
 }
 
 type reviewExecContext struct {
@@ -94,7 +100,13 @@ func (r *Runner) RunSQLFileCtx(ctx context.Context, path string, opts Options) (
 	if r.db == nil {
 		return nil, fmt.Errorf("database is not initialized")
 	}
+	return r.runSQLFileCtx(ctx, path, opts)
+}
 
+// runSQLFileCtx - ядро обработки одного файла: сброс файловых кэшей, разбор,
+// предпрогрев (prewarm) и прогон правил. Публичный RunSQLFileCtx добавляет
+// валидацию входа.
+func (r *Runner) runSQLFileCtx(ctx context.Context, path string, opts Options) (*Result, error) {
 	r.colTypeMu.Lock()
 	r.colTypeCache = make(map[string]string)
 	r.colTypeMu.Unlock()
@@ -130,12 +142,12 @@ func (r *Runner) RunSQLFileCtx(ctx context.Context, path string, opts Options) (
 	file, err := r.getIndexedFile(ctx, normalizedPath)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("file is not indexed: %s", normalizedPath)
+			return nil, fmt.Errorf("%w: %s", ErrFileNotIndexed, normalizedPath)
 		}
 		return nil, err
 	}
 	if file.DsProductID == 0 {
-		return nil, fmt.Errorf("ds_product_id is not set for file: %s", normalizedPath)
+		return nil, fmt.Errorf("%w: %s", ErrProductNotSet, normalizedPath)
 	}
 
 	// Область видимости (design D1/D2): продукт/ветка файла + карта областей
@@ -248,6 +260,79 @@ func (r *Runner) RunSQLFileCtx(ctx context.Context, path string, opts Options) (
 // RunSQLFile - deprecated thin wrapper.
 func (r *Runner) RunSQLFile(path string, opts Options) (*Result, error) {
 	return r.RunSQLFileCtx(context.Background(), path, opts)
+}
+
+// RunSQLFilesCtx обрабатывает список файлов в одном рантайме: один DB-коннект,
+// однократная загрузка scope-инвариантных списков и изоляция ошибок по файлам.
+func (r *Runner) RunSQLFilesCtx(ctx context.Context, paths []string, opts Options, hooks BatchHooks) (*BatchResult, error) {
+	if r.db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+
+	r.scopeCacheEnabled = true
+	r.productIDsCache = nil
+	r.branchesCache = nil
+	r.analysisCache = make(map[int64]*dsinfosvc.AnalysisContext)
+	defer func() {
+		r.scopeCacheEnabled = false
+		r.productIDsCache = nil
+		r.branchesCache = nil
+		r.analysisCache = nil
+	}()
+
+	result := &BatchResult{
+		Total:    len(paths),
+		Files:    make([]BatchFileResult, 0, len(paths)),
+		Findings: make([]Finding, 0),
+	}
+	for i, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if hooks.OnFileStart != nil {
+			hooks.OnFileStart(i, len(paths), path)
+		}
+
+		fileResult := BatchFileResult{File: normalizePath(path), Status: "ok"}
+		res, err := r.runSQLFileCtx(ctx, path, opts)
+		if err != nil {
+			fileResult.Status = "error"
+			fileResult.Error = &BatchError{Code: BatchErrorCode(err), Message: err.Error()}
+			result.Failed++
+		} else {
+			fileResult.Count = len(res.Findings)
+			fileResult.Summary = res.Summary
+			result.Succeeded++
+			result.Findings = append(result.Findings, res.Findings...)
+			mergeSummary(&result.Summary, res.Summary)
+		}
+		result.Files = append(result.Files, fileResult)
+
+		if hooks.OnFileDone != nil {
+			hooks.OnFileDone(fileResult, res)
+		}
+	}
+	return result, nil
+}
+
+func mergeSummary(dst *Summary, src Summary) {
+	dst.Total += src.Total
+	if len(src.ByRule) > 0 {
+		if dst.ByRule == nil {
+			dst.ByRule = make(map[RuleID]int, len(src.ByRule))
+		}
+		for rule, count := range src.ByRule {
+			dst.ByRule[rule] += count
+		}
+	}
+	if len(src.BySeverity) > 0 {
+		if dst.BySeverity == nil {
+			dst.BySeverity = make(map[int]int, len(src.BySeverity))
+		}
+		for severity, count := range src.BySeverity {
+			dst.BySeverity[severity] += count
+		}
+	}
 }
 
 func (r *Runner) buildRuleTasks(ctx context.Context, ruleSet map[RuleID]bool, parsed *sqlparser.ParseResult, file *indexedFile) []ruleTask {

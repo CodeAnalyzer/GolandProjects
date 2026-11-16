@@ -254,6 +254,39 @@ type Result struct {
 	Findings     []Finding `json:"findings"`
 }
 
+// BatchError — ошибка обработки одного файла в пакетном режиме.
+type BatchError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// BatchFileResult — результат обработки одного файла пакета.
+type BatchFileResult struct {
+	File    string      `json:"file"`
+	Status  string      `json:"status"`
+	Count   int         `json:"count"`
+	Summary Summary     `json:"summary"`
+	Error   *BatchError `json:"error,omitempty"`
+}
+
+// BatchResult — агрегированный результат пакетного review.
+type BatchResult struct {
+	Total     int
+	Succeeded int
+	Failed    int
+	Summary   Summary
+	Findings  []Finding
+	Files     []BatchFileResult
+}
+
+// BatchHooks — колбэки пакетного прогона: прогресс по файлам, завершение
+// файла (для потокового вывода) и прогресс правил внутри файла.
+type BatchHooks struct {
+	OnFileStart    func(completed, total int, current string)
+	OnFileDone     func(file BatchFileResult, result *Result)
+	OnRuleProgress func(completed, total int)
+}
+
 type Options struct {
 	Rules       []RuleID
 	MinSeverity int
