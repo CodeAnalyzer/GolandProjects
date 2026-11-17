@@ -385,6 +385,19 @@ type cursorDeclaration struct {
 	CursorName        string
 	SelectExpressions []string
 	FromClause        string
+	// Line — номер строки DECLARE/__DECLARE_CURSOR__ (1-based) в expanded-тексте;
+	// при переобъявлении курсора каждая жизнь сопоставляется по позиции.
+	Line int
+}
+
+// fetchStatement — оператор FETCH ... INTO со спаном строк: LineStart — строка
+// FETCH, LineEnd — последняя строка, реально давшая переменную (строки-границы
+// и не-переменные строки в спан не входят).
+type fetchStatement struct {
+	CursorName string
+	Variables  []string
+	LineStart  int
+	LineEnd    int
 }
 
 type deallocateStatement struct {

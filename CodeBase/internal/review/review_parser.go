@@ -16,14 +16,16 @@ var (
 	reParserSelectAssign = regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
 
 	// cursorParserRegexes используются парсерами курсоров.
-	reParserFetchIntoPrefix     = regexp.MustCompile(`(?is)(?:__fetch_next__|fetch)(?:\s+next)?(?:\s+from)?\s+([a-z_#][a-z0-9_#]*)\s+into\s+`)
-	reParserFetchIntoVar        = regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*$`)
-	reParserFetchIntoBoundary   = regexp.MustCompile(`(?im)\n\s*(?:while|open|close|deallocate|__deallocate_cursor__|fetch|__fetch_next__|if|begin|end|return|go)\b`)
-	reParserCursorExplicitDecl  = regexp.MustCompile(`(?is)^declare\s+([a-z_#][a-z0-9_#]*)\s+(?:insensitive\s+)?cursor\s+for\s*(.*)$`)
-	reParserCursorMacroDecl     = regexp.MustCompile(`(?is)^__declare_cursor__\s*\(\s*([a-z_#][a-z0-9_#]*)\s*\)\s*(.*)$`)
-	reParserCursorDealloc       = regexp.MustCompile(`(?is)^(?:__deallocate_cursor__|deallocate(?:\s+cursor)?)\s+([a-z_#][a-z0-9_#]*)`)
-	reParserFetchNextIntoPrefix = regexp.MustCompile(`(?is)^\s*(?:__fetch_next__|fetch(?:\s+next)?(?:\s+from)?)\s+([a-z_#][a-z0-9_#]*)\s+into\s+(.*)$`)
-	reParserFetchIntoVarOnly    = regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)$`)
+	reParserFetchIntoPrefix    = regexp.MustCompile(`(?is)(?:__fetch_next__|fetch)(?:\s+next)?(?:\s+from)?\s+([a-z_#][a-z0-9_#]*)\s+into\s+`)
+	reParserFetchIntoVar       = regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*$`)
+	reParserFetchIntoBoundary  = regexp.MustCompile(`(?im)\n\s*(?:while|open|close|deallocate|__deallocate_cursor__|fetch|__fetch_next__|if|begin|end|return|go|select|exec|execute|print|set|insert|update|delete|goto)\b`)
+	reParserCursorExplicitDecl = regexp.MustCompile(`(?is)^declare\s+([a-z_#][a-z0-9_#]*)\s+(?:insensitive\s+)?cursor\s+for\s*(.*)$`)
+	reParserCursorMacroDecl    = regexp.MustCompile(`(?is)^__declare_cursor__\s*\(\s*([a-z_#][a-z0-9_#]*)\s*\)\s*(.*)$`)
+	reParserCursorDealloc      = regexp.MustCompile(`(?is)^(?:__deallocate_cursor__|deallocate(?:\s+cursor)?)\s+([a-z_#][a-z0-9_#]*)`)
+	// reParserFetchCursorStart детектирует начало оператора FETCH без
+	// требования INTO в той же строке: формы `__FETCH_NEXT__ c` / `into @A`
+	// разбираются сбором строк оператора.
+	reParserFetchCursorStart = regexp.MustCompile(`(?is)^\s*(?:__fetch_next__|fetch(?:\s+next)?(?:\s+from)?)\s+[a-z_#][a-z0-9_#]*`)
 
 	// aliasMapRegexes используются при построении map алиасов таблиц.
 	reParserAliasFromJoin        = regexp.MustCompile(`(?is)\b(?:from|join)\s+([a-z_#][a-z0-9_#]*)\s+([a-z_][a-z0-9_]*)`)
@@ -277,8 +279,13 @@ func findFetchIntoTailBoundary(value string) int {
 	return loc[0]
 }
 
-func parseCursorDeclarations(content string) map[string]cursorDeclaration {
-	result := make(map[string]cursorDeclaration)
+// parseCursorDeclarations возвращает декларации курсоров упорядоченным списком
+// в порядке следования по файлу: при переобъявлении (DECLARE → DEALLOCATE →
+// DECLARE того же имени) каждая жизнь остаётся отдельной записью с номером
+// строки. Name-set представление (последняя декларация имени выигрывает)
+// строится поверх через cursorDeclarationSet.
+func parseCursorDeclarations(content string) []cursorDeclaration {
+	result := make([]cursorDeclaration, 0)
 	if strings.TrimSpace(content) == "" {
 		return result
 	}
@@ -313,6 +320,9 @@ func parseCursorDeclarations(content string) map[string]cursorDeclaration {
 			continue
 		}
 
+		// Строка декларации фиксируется до цикла продолжений, мутирующего i.
+		declLine := i + 1
+
 		statementLines := make([]string, 0)
 		if remainder != "" {
 			statementLines = append(statementLines, remainder)
@@ -336,19 +346,49 @@ func parseCursorDeclarations(content string) map[string]cursorDeclaration {
 			continue
 		}
 
-		selectStmt, ok := parseSelectSourceStatement(queryText)
-		if !ok {
-			continue
-		}
+		// Декларация фиксируется даже когда SELECT не разбирается (например,
+		// `select 1` без FROM): строка декларации — граница жизни курсора для
+		// позиционных окон и name-set. Правила, сравнивающие аритмету,
+		// пропускают декларации с пустыми SelectExpressions (арность неизвестна).
+		selectStmt, _ := parseSelectSourceStatement(queryText)
 
-		result[normalizeIdentifier(cursorName)] = cursorDeclaration{
+		result = append(result, cursorDeclaration{
 			CursorName:        cursorName,
 			SelectExpressions: selectStmt.SelectExpressions,
 			FromClause:        selectStmt.FromClause,
-		}
+			Line:              declLine,
+		})
 	}
 
 	return result
+}
+
+// cursorDeclarationSet строит name-set представление деклараций (последняя
+// декларация имени выигрывает) для name-set потребителей вроде
+// isTableExistsNoiseName, которым позиционность не нужна.
+func cursorDeclarationSet(decls []cursorDeclaration) map[string]cursorDeclaration {
+	result := make(map[string]cursorDeclaration, len(decls))
+	for _, decl := range decls {
+		result[normalizeIdentifier(decl.CursorName)] = decl
+	}
+	return result
+}
+
+// nearestCursorDeclaration возвращает ближайшую декларацию курсора name,
+// расположенную не ниже строки line (последняя декларация с decl.Line <= line).
+// FETCH, выше которого нет декларации, сопоставлению не подлежит.
+func nearestCursorDeclaration(decls []cursorDeclaration, name string, line int) (cursorDeclaration, bool) {
+	key := normalizeIdentifier(name)
+	result := cursorDeclaration{}
+	found := false
+	for _, decl := range decls {
+		if normalizeIdentifier(decl.CursorName) != key || decl.Line > line {
+			continue
+		}
+		result = decl
+		found = true
+	}
+	return result, found
 }
 
 func parseDeallocateStatements(content string) []deallocateStatement {
@@ -373,8 +413,14 @@ func parseDeallocateStatements(content string) []deallocateStatement {
 	return result
 }
 
-func parseAllFetchIntoStatements(content string) map[string][]string {
-	result := make(map[string][]string)
+// parseAllFetchIntoStatements собирает все операторы FETCH ... INTO файла
+// упорядоченным списком со спаном строк. Строки оператора накапливаются до
+// границы нового оператора (isCursorDeclarationBoundary) и прогоняются через
+// parseFetchIntoStatement, поэтому формы с INTO на следующей строке
+// (`__FETCH_NEXT__ c` / `into @A`) тоже распознаются. LineEnd — последняя
+// строка, реально давшая переменную (строки-границы в спан не входят).
+func parseAllFetchIntoStatements(content string) []fetchStatement {
+	result := make([]fetchStatement, 0)
 	if strings.TrimSpace(content) == "" {
 		return result
 	}
@@ -389,50 +435,71 @@ func parseAllFetchIntoStatements(content string) map[string][]string {
 			continue
 		}
 
-		m := reParserFetchNextIntoPrefix.FindStringSubmatch(trimmed)
-		if len(m) != 3 {
+		if !reParserFetchCursorStart.MatchString(trimmed) {
 			continue
 		}
 
-		cursorName := normalizeIdentifier(strings.TrimSpace(m[1]))
-		varsPart := strings.TrimSpace(m[2])
+		// Строка FETCH фиксируется до цикла сбора продолжений, мутирующего i.
+		lineStart := i + 1
 
-		// Собираем продолжение переменных на следующих строках
+		// Собираем строки оператора до границы нового оператора: строка,
+		// начинающая новый SQL-оператор (select/set/exec/...), завершает
+		// FETCH — иначе переменные и LineEnd захватят следующий оператор.
+		statementLines := []string{lines[i]}
 		j := i + 1
 		for ; j < len(lines); j++ {
 			nextLine := strings.TrimSpace(lines[j])
 			if nextLine == "" {
 				continue
 			}
-			if isCursorDeclarationBoundary(nextLine) {
+			if isCursorDeclarationBoundary(nextLine) || isFetchStatementStopLine(nextLine) {
 				break
 			}
-			if varsPart != "" {
-				varsPart += " " + nextLine
-			} else {
-				varsPart = nextLine
-			}
+			statementLines = append(statementLines, lines[j])
 		}
 		i = j - 1
 
-		if varsPart == "" {
+		// Строки соединяются через \n: parseFetchIntoStatement обрезает хвост
+		// по reParserFetchIntoBoundary, который ищет перевод строки.
+		stmt, ok := parseFetchIntoStatement(strings.Join(statementLines, "\n"))
+		if !ok {
 			continue
 		}
 
-		if boundary := findFetchIntoTailBoundary(varsPart); boundary >= 0 {
-			varsPart = varsPart[:boundary]
-		}
-		varsPart = strings.TrimSpace(varsPart)
+		result = append(result, fetchStatement{
+			CursorName: stmt.CursorName,
+			Variables:  stmt.Variables,
+			LineStart:  lineStart,
+			LineEnd:    fetchVariablesLineEnd(statementLines, lineStart, stmt.Variables),
+		})
+	}
+	return result
+}
 
-		parts := splitTopLevelCSV(varsPart)
-		for _, part := range parts {
-			match := reParserFetchIntoVarOnly.FindStringSubmatch(strings.TrimSpace(part))
-			if len(match) == 2 {
-				result[cursorName] = append(result[cursorName], strings.TrimSpace(match[1]))
+// fetchVariablesLineEnd возвращает номер последней строки спана, реально
+// содержащей одну из переменных FETCH: спан не должен захватывать строку-границу
+// или не-переменные строки, иначе skip-спаны скроют реальные использования.
+func fetchVariablesLineEnd(statementLines []string, lineStart int, variables []string) int {
+	for k := len(statementLines) - 1; k >= 0; k-- {
+		lowerLine := strings.ToLower(statementLines[k])
+		for _, v := range variables {
+			if containsWord(lowerLine, strings.ToLower(v)) {
+				return lineStart + k
 			}
 		}
 	}
-	return result
+	return lineStart
+}
+
+// fetchIntoStatementLine вычисляет номер строки FETCH внутри фрагмента:
+// fragment.LineNumber может указывать на склеенный с FETCH оператор (open),
+// поэтому строка определяется по смещению префикса FETCH в тексте фрагмента.
+func fetchIntoStatementLine(queryText string, fragmentLine int) int {
+	loc := reParserFetchIntoPrefix.FindStringSubmatchIndex(queryText)
+	if len(loc) < 4 {
+		return fragmentLine
+	}
+	return fragmentLine + strings.Count(queryText[:loc[0]], "\n")
 }
 
 func parseSelectSourceStatement(queryText string) (insertSelectStatement, bool) {
@@ -473,6 +540,25 @@ func isCursorDeclarationBoundary(line string) bool {
 	keywords := []string{"open", "fetch", "__fetch_next__", "close", "deallocate", "__deallocate_cursor__", "declare", "__declare_cursor__", "if", "while", "return", "begin", "end", "go"}
 	for _, kw := range keywords {
 		if strings.HasPrefix(trimmed, kw+" ") || strings.HasPrefix(trimmed, kw+"\t") || strings.HasPrefix(trimmed, kw+"(") || trimmed == kw {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isFetchStatementStopLine определяет строку, начинающую новый SQL-оператор.
+// Сбор строк FETCH ... INTO останавливается на ней, чтобы переменные и спан
+// строк не захватывали следующий оператор (select/set/exec после FETCH).
+func isFetchStatementStopLine(line string) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(line))
+	if trimmed == "" {
+		return false
+	}
+
+	keywords := []string{"select", "exec", "execute", "print", "set", "insert", "update", "delete", "goto"}
+	for _, kw := range keywords {
+		if strings.HasPrefix(trimmed, kw+" ") || strings.HasPrefix(trimmed, kw+"\t") || trimmed == kw {
 			return true
 		}
 	}

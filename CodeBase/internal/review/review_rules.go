@@ -114,7 +114,13 @@ func (r *Runner) checkDatatypeFetchInto(ctx context.Context, parsed *sqlparser.P
 			continue
 		}
 
-		cursorDecl, exists := cursorDeclarations[normalizeIdentifier(stmt.CursorName)]
+		// Строка FETCH вычисляется по смещению префикса внутри фрагмента:
+		// fragment.LineNumber может указывать на склеенный оператор (open).
+		fetchLine := fetchIntoStatementLine(fragment.QueryText, fragment.LineNumber)
+
+		// Спаривание — с ближайшей декларацией выше по файлу: при
+		// переобъявлении курсора выражения чужих жизней не участвуют.
+		cursorDecl, exists := nearestCursorDeclaration(cursorDeclarations, stmt.CursorName, fetchLine)
 		if !exists {
 			continue
 		}
@@ -151,7 +157,7 @@ func (r *Runner) checkDatatypeFetchInto(ctx context.Context, parsed *sqlparser.P
 				if !isPotentialPrecisionLoss(sourceType, targetType) {
 					continue
 				}
-				key := fmt.Sprintf("%d|%s|%s", fragment.LineNumber, normalizeVariableName(targetVariable), normalizeDataType(sourceType))
+				key := fmt.Sprintf("%d|%s|%s", fetchLine, normalizeVariableName(targetVariable), normalizeDataType(sourceType))
 				if _, exists := seen[key]; exists {
 					continue
 				}
@@ -161,7 +167,7 @@ func (r *Runner) checkDatatypeFetchInto(ctx context.Context, parsed *sqlparser.P
 					Severity:         SeverityFineCode,
 					Message:          fmt.Sprintf("Потеря точности типов данных: %s -> %s", sourceType, targetType),
 					File:             file.Path,
-					Line:             fragment.LineNumber,
+					Line:             fetchLine,
 					Object:           targetVariable,
 					CurrentProductID: file.DsProductID,
 				})
@@ -2030,11 +2036,12 @@ func (r *Runner) checkTableExistsInMetadata(ctx context.Context, parsed *sqlpars
 
 	// Курсоры, объявленные в самом файле: FETCH ... FROM и WHERE CURRENT OF
 	// дают DML-контекст (select/update), но таблицей курсор не является.
+	// Достаточно name-set (последняя декларация имени выигрывает).
 	var cursorDecls map[string]cursorDeclaration
 	var lines []string
 	if content, err := r.fileContent(ctx, file.Path); err == nil {
 		contentStr := string(content)
-		cursorDecls = parseCursorDeclarations(contentStr)
+		cursorDecls = cursorDeclarationSet(parseCursorDeclarations(contentStr))
 		lines = strings.Split(contentStr, "\n")
 	}
 
@@ -2124,11 +2131,12 @@ func (r *Runner) checkViewUsageInServerCode(ctx context.Context, parsed *sqlpars
 	}
 
 	// Курсоры, объявленные в самом файле, и строки для фильтра литералов.
+	// Достаточно name-set (последняя декларация имени выигрывает).
 	var cursorDecls map[string]cursorDeclaration
 	var lines []string
 	if content, err := r.fileContent(ctx, file.Path); err == nil {
 		contentStr := string(content)
-		cursorDecls = parseCursorDeclarations(contentStr)
+		cursorDecls = cursorDeclarationSet(parseCursorDeclarations(contentStr))
 		lines = strings.Split(contentStr, "\n")
 	}
 
@@ -5041,8 +5049,26 @@ func (r *Runner) checkDateIntoString(ctx context.Context, parsed *sqlparser.Pars
 	return findings, nil
 }
 
+// inFetchSkipSpan сообщает, что строка попадает в спан одного из FETCH'ей,
+// исключённых из скана: строки-продолжения многострочного FETCH не являются
+// использованием переменных.
+func inFetchSkipSpan(lineNumber int, spans [][2]int) bool {
+	for _, span := range spans {
+		if lineNumber >= span[0] && lineNumber <= span[1] {
+			return true
+		}
+	}
+	return false
+}
+
+// checkVarUseAfterCursor ищет использование переменных курсора после его
+// деалокации. Окно анализа после DEALLOCATE ограничивается сверху следующей
+// декларацией того же имени (переобъявление открывает новую жизнь курсора);
+// переменные берутся из FETCH'ей текущей жизни — между предыдущей декларацией
+// и DEALLOCATE. Все структуры парсятся на одном expanded-тексте.
 func (r *Runner) checkVarUseAfterCursor(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
+	seen := make(map[string]struct{})
 	macroResult, err := r.fileProcessedContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
@@ -5050,25 +5076,64 @@ func (r *Runner) checkVarUseAfterCursor(ctx context.Context, file *indexedFile) 
 	text := macroResult.Content
 	lines := strings.Split(text, "\n")
 
-	cursorVars := parseAllFetchIntoStatements(text)
-	if len(cursorVars) == 0 {
+	fetches := parseAllFetchIntoStatements(text)
+	if len(fetches) == 0 {
 		return findings, nil
 	}
 
 	deallocs := parseDeallocateStatements(text)
+	decls := parseCursorDeclarations(text)
 
-	// Для каждого DEALLOCATE ищем использование переменных после него
 	for _, da := range deallocs {
 		cursorName := normalizeIdentifier(da.CursorName)
-		vars, exists := cursorVars[cursorName]
-		if !exists || len(vars) == 0 {
+
+		// Границы жизни: предыдущая декларация того же имени (или начало
+		// файла) и следующая декларация ниже DEALLOCATE (или конец файла).
+		nextDeclLine := len(lines) + 1
+		prevDeclLine := 0
+		for _, decl := range decls {
+			if normalizeIdentifier(decl.CursorName) != cursorName {
+				continue
+			}
+			if decl.Line > da.Line {
+				if decl.Line < nextDeclLine {
+					nextDeclLine = decl.Line
+				}
+			} else {
+				prevDeclLine = decl.Line
+			}
+		}
+
+		// Переменные текущей жизни: FETCH'и между предыдущей декларацией и
+		// DEALLOCATE. FETCH'и ниже DEALLOCATE дают skip-спаны: их строки
+		// (включая продолжения многострочного INTO) использованием не считаются.
+		vars := make([]string, 0)
+		skipSpans := make([][2]int, 0)
+		for _, fetch := range fetches {
+			if normalizeIdentifier(fetch.CursorName) != cursorName {
+				continue
+			}
+			if fetch.LineStart > da.Line {
+				skipSpans = append(skipSpans, [2]int{fetch.LineStart, fetch.LineEnd})
+				continue
+			}
+			if fetch.LineStart > prevDeclLine {
+				vars = append(vars, fetch.Variables...)
+			}
+		}
+		if len(vars) == 0 {
 			continue
 		}
 
-		// Сканируем строки после DEALLOCATE
-		for i := da.Line; i < len(lines); i++ {
+		// Сканируем строки окна после DEALLOCATE (i 0-based, поэтому окно
+		// 1-based — da.Line+1 .. nextDeclLine-1).
+		for i := da.Line; i < len(lines) && i+1 < nextDeclLine; i++ {
 			line := lines[i]
 			lower := strings.ToLower(line)
+
+			if inFetchSkipSpan(i+1, skipSpans) {
+				continue
+			}
 
 			// Пропускаем строки с declare/fetch/open/close/deallocate/для этого курсора
 			if strings.Contains(lower, "declare") && strings.Contains(lower, cursorName) {
@@ -5112,6 +5177,12 @@ func (r *Runner) checkVarUseAfterCursor(ctx context.Context, file *indexedFile) 
 				if strings.Contains(lower, "select") && strings.Contains(lower, varLower+"=") {
 					continue
 				}
+
+				key := fmt.Sprintf("%d|%s|%s", i+1, normalizeVariableName(v), cursorName)
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
 
 				findings = append(findings, Finding{
 					Rule:             RuleVarUseAfterCursor,
@@ -5708,6 +5779,8 @@ func (r *Runner) checkUseOnlyDeclaredCursors(ctx context.Context, parsed *sqlpar
 
 // checkCursorFetchArguments проверяет, что FETCH INTO из курсора содержит
 // столько же переменных, сколько выражений в SELECT объявления курсора.
+// Сопоставление позиционное: FETCH сравнивается с ближайшей декларацией того
+// же имени выше по файлу; FETCH выше первой декларации не проверяется.
 func (r *Runner) checkCursorFetchArguments(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 
@@ -5732,8 +5805,17 @@ func (r *Runner) checkCursorFetchArguments(ctx context.Context, parsed *sqlparse
 			continue
 		}
 
-		cursorDecl, exists := cursorDeclarations[normalizeIdentifier(stmt.CursorName)]
+		// Строка FETCH вычисляется по смещению префикса внутри фрагмента:
+		// fragment.LineNumber может указывать на склеенный оператор (open).
+		fetchLine := fetchIntoStatementLine(fragment.QueryText, fragment.LineNumber)
+
+		cursorDecl, exists := nearestCursorDeclaration(cursorDeclarations, stmt.CursorName, fetchLine)
 		if !exists {
+			continue
+		}
+		// Декларация с неразобранным SELECT (пустые SelectExpressions) —
+		// аритмета неизвестна, сравнение невозможно.
+		if len(cursorDecl.SelectExpressions) == 0 {
 			continue
 		}
 
@@ -5748,7 +5830,7 @@ func (r *Runner) checkCursorFetchArguments(ctx context.Context, parsed *sqlparse
 			Severity:         SeverityPostgreReq,
 			Message:          fmt.Sprintf("FETCH из курсора %s: %d переменных, а в DECLARE %d выражений", stmt.CursorName, fetchCount, declareCount),
 			File:             file.Path,
-			Line:             fragment.LineNumber,
+			Line:             fetchLine,
 			Object:           stmt.CursorName,
 			CurrentProductID: file.DsProductID,
 		})

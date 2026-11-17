@@ -1268,9 +1268,9 @@ open ActionPeriod_cur`
 		t.Fatalf("cursor declarations count = %d, want 2", len(decls))
 	}
 
-	first, ok := decls["actionperiod_cur"]
-	if !ok {
-		t.Fatalf("expected explicit cursor declaration for actionperiod_cur")
+	first := decls[0]
+	if normalizeIdentifier(first.CursorName) != "actionperiod_cur" {
+		t.Fatalf("first cursor name = %q, want ActionPeriod_cur", first.CursorName)
 	}
 	if len(first.SelectExpressions) != 3 {
 		t.Fatalf("explicit cursor select expressions = %d, want 3", len(first.SelectExpressions))
@@ -1278,13 +1278,139 @@ open ActionPeriod_cur`
 	if !strings.HasPrefix(strings.ToLower(first.FromClause), "from") {
 		t.Fatalf("explicit cursor fromClause must start with FROM, got %q", first.FromClause)
 	}
+	if first.Line != 1 {
+		t.Fatalf("explicit cursor line = %d, want 1", first.Line)
+	}
 
-	second, ok := decls["actionperiod_cur2"]
-	if !ok {
-		t.Fatalf("expected macro cursor declaration for actionperiod_cur2")
+	second := decls[1]
+	if normalizeIdentifier(second.CursorName) != "actionperiod_cur2" {
+		t.Fatalf("second cursor name = %q, want ActionPeriod_cur2", second.CursorName)
 	}
 	if len(second.SelectExpressions) != 2 {
 		t.Fatalf("macro cursor select expressions = %d, want 2", len(second.SelectExpressions))
+	}
+	if second.Line != 8 {
+		t.Fatalf("macro cursor line = %d, want 8", second.Line)
+	}
+}
+
+func TestParseCursorDeclarations_RedeclaredKeepsBothLives(t *testing.T) {
+	content := `declare c cursor for select A, B from tX
+fetch c into @a, @b
+deallocate c
+declare c cursor for select A from tX
+fetch c into @a`
+
+	decls := parseCursorDeclarations(content)
+	if len(decls) != 2 {
+		t.Fatalf("cursor declarations count = %d, want 2", len(decls))
+	}
+	if decls[0].Line != 1 || len(decls[0].SelectExpressions) != 2 {
+		t.Fatalf("first life: line = %d, expressions = %d, want 1 и 2", decls[0].Line, len(decls[0].SelectExpressions))
+	}
+	if decls[1].Line != 4 || len(decls[1].SelectExpressions) != 1 {
+		t.Fatalf("second life: line = %d, expressions = %d, want 4 и 1", decls[1].Line, len(decls[1].SelectExpressions))
+	}
+}
+
+func TestNearestCursorDeclaration(t *testing.T) {
+	decls := []cursorDeclaration{
+		{CursorName: "c", Line: 10, SelectExpressions: []string{"A"}},
+		{CursorName: "other", Line: 20},
+		{CursorName: "c", Line: 30, SelectExpressions: []string{"A", "B"}},
+	}
+
+	if _, ok := nearestCursorDeclaration(decls, "c", 5); ok {
+		t.Fatalf("expected no declaration above line 5")
+	}
+
+	decl, ok := nearestCursorDeclaration(decls, "c", 15)
+	if !ok || decl.Line != 10 {
+		t.Fatalf("nearest above 15: ok = %v, line = %d, want ok и 10", ok, decl.Line)
+	}
+
+	decl, ok = nearestCursorDeclaration(decls, "c", 10)
+	if !ok || decl.Line != 10 {
+		t.Fatalf("same line 10: ok = %v, line = %d, want ok и 10 (декларация на той же строке)", ok, decl.Line)
+	}
+
+	decl, ok = nearestCursorDeclaration(decls, "c", 40)
+	if !ok || decl.Line != 30 {
+		t.Fatalf("nearest above 40: ok = %v, line = %d, want ok и 30 (последняя из нескольких)", ok, decl.Line)
+	}
+
+	if _, ok := nearestCursorDeclaration(decls, "unknown", 40); ok {
+		t.Fatalf("expected no declaration for unknown cursor")
+	}
+}
+
+func TestParseAllFetchIntoStatements_Spans(t *testing.T) {
+	content := `declare c cursor for select A, B from tX
+open c
+fetch c into @A, @B
+close c
+fetch next from c into
+  @A,
+  @B
+close c
+__FETCH_NEXT__ c
+  into @A, @B
+if 1 = 1
+begin
+  select 1
+end
+fetch c into @A, @B
+select @A
+fetch c into @A
+select @X, @Y
+fetch c
+  into @A
+select @A`
+
+	fetches := parseAllFetchIntoStatements(content)
+	want := []fetchStatement{
+		{CursorName: "c", Variables: []string{"@A", "@B"}, LineStart: 3, LineEnd: 3},
+		{CursorName: "c", Variables: []string{"@A", "@B"}, LineStart: 5, LineEnd: 7},
+		{CursorName: "c", Variables: []string{"@A", "@B"}, LineStart: 9, LineEnd: 10},
+		{CursorName: "c", Variables: []string{"@A", "@B"}, LineStart: 15, LineEnd: 15},
+		// select @A (строка 16) — новый оператор: спан не захватывает его.
+		{CursorName: "c", Variables: []string{"@A"}, LineStart: 17, LineEnd: 17},
+		// select @X, @Y (строка 18) не отдаёт свои переменные в FETCH.
+		{CursorName: "c", Variables: []string{"@A"}, LineStart: 19, LineEnd: 20},
+		// into на новой строке + стоп на select (строка 21).
+	}
+	if len(fetches) != len(want) {
+		t.Fatalf("fetch statements count = %d, want %d", len(fetches), len(want))
+	}
+	for i, got := range fetches {
+		exp := want[i]
+		if normalizeIdentifier(got.CursorName) != normalizeIdentifier(exp.CursorName) {
+			t.Fatalf("fetch %d: cursor = %q, want %q", i, got.CursorName, exp.CursorName)
+		}
+		if strings.Join(got.Variables, ",") != strings.Join(exp.Variables, ",") {
+			t.Fatalf("fetch %d: variables = %v, want %v", i, got.Variables, exp.Variables)
+		}
+		if got.LineStart != exp.LineStart || got.LineEnd != exp.LineEnd {
+			t.Fatalf("fetch %d: span = [%d, %d], want [%d, %d]", i, got.LineStart, got.LineEnd, exp.LineStart, exp.LineEnd)
+		}
+	}
+}
+
+func TestParseCursorDeclarations_UnparseableSelect_KeepsBoundaryRecord(t *testing.T) {
+	content := `declare c cursor for select 1
+fetch c into @a
+deallocate c
+declare c cursor for select A from tX`
+
+	decls := parseCursorDeclarations(content)
+	if len(decls) != 2 {
+		t.Fatalf("cursor declarations count = %d, want 2 (неразобранная декларация остаётся границей жизни)", len(decls))
+	}
+	if decls[0].Line != 1 || len(decls[0].SelectExpressions) != 0 || decls[0].FromClause != "" {
+		t.Fatalf("unparseable declaration: line = %d, expressions = %d, want 1 и 0 (арность неизвестна)", decls[0].Line, len(decls[0].SelectExpressions))
+	}
+	if decls[1].Line != 4 || len(decls[1].SelectExpressions) != 1 {
+		t.Fatalf("parseable declaration: line = %d, expressions = %d, want 4 и 1", decls[1].Line, len(decls[1].SelectExpressions))
 	}
 }
 
@@ -3289,6 +3415,323 @@ as
 	}
 	if !objSet["@a"] || !objSet["@b"] {
 		t.Fatalf("expected findings for @a and @b, got %v", objSet)
+	}
+}
+
+func TestCheckVarUseAfterCursor_RedeclaredCursor_NextLifeClean(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare @b int
+  declare c cursor for select A from tX
+  open c
+  fetch c into @a
+  select @a
+  deallocate c
+  declare c cursor for select B from tX
+  open c
+  fetch c into @b
+  select @b
+  select @a
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (окно после DEALLOCATE ограничено следующей декларацией; повторное использование @a в новой жизни чисто)", len(findings))
+	}
+}
+
+func TestCheckVarUseAfterCursor_MultilineFetchIntoNextLife_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare @b int
+  declare c cursor for select A, B from tX
+  fetch c into @a, @b
+  deallocate c
+  declare c cursor for select A, B from tX
+  fetch c
+  into @a,
+        @b
+  if 1 = 1
+  begin
+    select @b
+  end
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (валидная декларация следующей жизни ограничивает окно; продолжения многострочного FETCH новой жизни чисты)", len(findings))
+	}
+}
+
+func TestCheckVarUseAfterCursor_OverlappingDeallocateWindows_Dedup(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare @b int
+  declare c cursor for select A, B from tX
+  fetch c into @a, @b
+  deallocate c
+  deallocate c
+  select @b
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (пересекающиеся окна двух DEALLOCATE без переобъявления гасятся дедупом)", len(findings))
+	}
+	if findings[0].Object != "@b" {
+		t.Fatalf("object = %q, want @b", findings[0].Object)
+	}
+	if findings[0].Line != 9 {
+		t.Fatalf("line = %d, want 9", findings[0].Line)
+	}
+}
+
+func TestCheckVarUseAfterCursor_FetchAfterDeallocate_SpansSkipped(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare @b int
+  declare c cursor for select A, B from tX
+  fetch c into @a, @b
+  deallocate c
+  fetch c
+  into @a,
+        @b
+  if 1 = 1
+  begin
+    select @a
+  end
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (спан FETCH после DEALLOCATE скрыт, реальное использование видно)", len(findings))
+	}
+	if findings[0].Object != "@a" {
+		t.Fatalf("object = %q, want @a", findings[0].Object)
+	}
+	if findings[0].Line != 13 {
+		t.Fatalf("line = %d, want 13", findings[0].Line)
+	}
+}
+
+func TestCheckCursorFetchArguments_MultipleLivesSynced_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare @a2 int
+  declare c cursor for select A, B from tX
+  fetch next from c into @a, @a2
+  deallocate c
+  declare c cursor for select A from tX
+  fetch next from c into @a
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			{QueryText: "fetch next from c into @a, @a2", LineNumber: 6},
+			{QueryText: "fetch next from c into @a", LineNumber: 9},
+		},
+	}
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (каждая жизнь совпадает со своей декларацией)", len(findings))
+	}
+}
+
+func TestCheckCursorFetchArguments_DesyncInSecondLife_FindingByNearestDecl(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare @a2 int
+  declare c cursor for select A, B from tX
+  fetch next from c into @a, @a2
+  deallocate c
+  declare c cursor for select A from tX
+  fetch next from c into @a, @a2
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			{QueryText: "fetch next from c into @a, @a2", LineNumber: 6},
+			{QueryText: "fetch next from c into @a, @a2", LineNumber: 9},
+		},
+	}
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1", len(findings))
+	}
+	if !strings.Contains(findings[0].Message, "в DECLARE 1 выражений") {
+		t.Fatalf("message = %q, want declare count 1 (ближайшая декларация)", findings[0].Message)
+	}
+	if findings[0].Line != 9 {
+		t.Fatalf("line = %d, want 9", findings[0].Line)
+	}
+}
+
+func TestCheckCursorFetchArguments_FetchAboveFirstDeclaration_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare @a2 int
+  fetch next from c into @a, @a2
+  declare c cursor for select A from tX
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			{QueryText: "fetch next from c into @a, @a2", LineNumber: 5},
+		},
+	}
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (FETCH выше декларации не проверяется)", len(findings))
+	}
+}
+
+func TestCheckCursorFetchArguments_GluedOpenFetch_LineByOffset(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare @a2 int
+  declare c cursor for select A from tX
+  open c
+  fetch next from c into @a, @a2
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			// Склеенный парсером фрагмент: LineNumber указывает на open.
+			{QueryText: "open c\nfetch next from c into @a, @a2", LineNumber: 6},
+		},
+	}
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1", len(findings))
+	}
+	if findings[0].Line != 7 {
+		t.Fatalf("line = %d, want 7 (строка FETCH по смещению префикса, не строка open)", findings[0].Line)
+	}
+}
+
+func TestCheckCursorFetchArguments_UnparseableDeclaration_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare @a2 int
+  declare c cursor for select 1
+  fetch next from c into @a, @a2
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			{QueryText: "fetch next from c into @a, @a2", LineNumber: 6},
+		},
+	}
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (SELECT без FROM: аритмета декларации неизвестна)", len(findings))
+	}
+}
+
+func TestCheckDatatypeFetchInto_NearestDeclarationPairing(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @ID2 DSIDENTIFIER
+  declare @Amount DSINT_KEY
+  declare c cursor for select ID, Amount from tX
+  open c
+  fetch c into @ID2, @Amount
+  deallocate c
+  declare c cursor for select ID from tX
+  open c
+  fetch c into @ID2
+`
+	r := &Runner{colTypeCache: map[string]string{
+		"tx|id":     "DSIDENTIFIER",
+		"tx|amount": "DSIDENTIFIER",
+	}}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			{QueryText: "fetch c into @ID2, @Amount", LineNumber: 7},
+			{QueryText: "fetch c into @ID2", LineNumber: 11},
+		},
+	}
+	findings, err := r.checkDatatypeFetchInto(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (спаривание по ближайшей декларации)", len(findings))
+	}
+	if findings[0].Object != "@Amount" {
+		t.Fatalf("object = %q, want @Amount", findings[0].Object)
+	}
+	if findings[0].Line != 7 {
+		t.Fatalf("line = %d, want 7", findings[0].Line)
+	}
+	if !strings.Contains(findings[0].Message, "DSIDENTIFIER") {
+		t.Fatalf("message = %q, want DSIDENTIFIER as source type", findings[0].Message)
 	}
 }
 
