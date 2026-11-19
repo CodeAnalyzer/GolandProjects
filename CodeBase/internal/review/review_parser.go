@@ -225,8 +225,29 @@ func parseSelectAssignStatement(queryText string) (selectAssignStatement, bool) 
 	return selectAssignStatement{Assignments: assignments, FromClause: fromClause}, true
 }
 
+// stripCommentsFromText удаляет из текста SQL однострочные (--) и блочные
+// (/* */) комментарии построчно, перенося inBlock-состояние между строками.
+// Строки не удаляются и не сливаются (склейка через \n), поэтому нумерация
+// строк сохраняется; \r в конце строк CRLF-текста остаётся внутри «строк»
+// (теряется только хвост комментария после --, включая его \r).
+func stripCommentsFromText(text string) string {
+	lines := strings.Split(text, "\n")
+	result := make([]string, len(lines))
+	inBlock := false
+	for i, line := range lines {
+		var stripped string
+		stripped, inBlock = stripLineComments(line, inBlock)
+		result[i] = stripped
+	}
+	return strings.Join(result, "\n")
+}
+
 func parseFetchIntoStatement(queryText string) (fetchIntoStatement, bool) {
-	text := strings.TrimSpace(queryText)
+	// Комментарии стриппятся до разбора: хвостовой -- или /* */ после
+	// переменной не должен отбрасывать её (анкорный reParserFetchIntoVar
+	// не допускает текста после переменной). Единая точка для обоих путей:
+	// fragment-level вызовы правил и file-level сборка parseAllFetchIntoStatements.
+	text := strings.TrimSpace(stripCommentsFromText(queryText))
 	if text == "" {
 		return fetchIntoStatement{}, false
 	}
@@ -418,7 +439,9 @@ func parseDeallocateStatements(content string) []deallocateStatement {
 // границы нового оператора (isCursorDeclarationBoundary) и прогоняются через
 // parseFetchIntoStatement, поэтому формы с INTO на следующей строке
 // (`__FETCH_NEXT__ c` / `into @A`) тоже распознаются. LineEnd — последняя
-// строка, реально давшая переменную (строки-границы в спан не входят).
+// строка с вхождением переменной, включая упоминание в комментарии:
+// skip-спан не сжимается (комментарий-упоминание не должен становиться
+// находкой varUseAfterCursor), строки-границы в спан не входят.
 func parseAllFetchIntoStatements(content string) []fetchStatement {
 	result := make([]fetchStatement, 0)
 	if strings.TrimSpace(content) == "" {
@@ -445,16 +468,26 @@ func parseAllFetchIntoStatements(content string) []fetchStatement {
 		// Собираем строки оператора до границы нового оператора: строка,
 		// начинающая новый SQL-оператор (select/set/exec/...), завершает
 		// FETCH — иначе переменные и LineEnd захватят следующий оператор.
+		// Граница определяется по стрипнутой копии строки с переносом
+		// inBlock между строками: строка внутри многострочного /* */,
+		// начинающаяся с ключевого слова оператора, границей не является.
+		// В statementLines кладётся сырая строка (спаны FETCH не сжимаются:
+		// комментарий-упоминание переменной остаётся под skip-спаном),
+		// включая пустые и чисто-комментарные — индекс k соответствует
+		// физической строке lineStart+k.
+		// inBlock инициализируется по первой строке оператора: /* на ней
+		// открывает блочный комментарий для последующих строк.
+		_, inBlock := stripLineComments(lines[i], false)
 		statementLines := []string{lines[i]}
 		j := i + 1
 		for ; j < len(lines); j++ {
-			nextLine := strings.TrimSpace(lines[j])
-			if nextLine == "" {
-				continue
-			}
-			if isCursorDeclarationBoundary(nextLine) || isFetchStatementStopLine(nextLine) {
+			stripped, nextInBlock := stripLineComments(lines[j], inBlock)
+			strippedTrimmed := strings.TrimSpace(stripped)
+			if strippedTrimmed != "" &&
+				(isCursorDeclarationBoundary(strippedTrimmed) || isFetchStatementStopLine(strippedTrimmed)) {
 				break
 			}
+			inBlock = nextInBlock
 			statementLines = append(statementLines, lines[j])
 		}
 		i = j - 1
@@ -476,9 +509,10 @@ func parseAllFetchIntoStatements(content string) []fetchStatement {
 	return result
 }
 
-// fetchVariablesLineEnd возвращает номер последней строки спана, реально
-// содержащей одну из переменных FETCH: спан не должен захватывать строку-границу
-// или не-переменные строки, иначе skip-спаны скроют реальные использования.
+// fetchVariablesLineEnd возвращает номер последней строки спана, содержащей
+// вхождение одной из переменных FETCH (по сырой строке, включая упоминание
+// в комментарии — skip-спан не сжимается). Строка-граница и не-переменные
+// строки в спан не входят, иначе skip-спаны скроют реальные использования.
 func fetchVariablesLineEnd(statementLines []string, lineStart int, variables []string) int {
 	for k := len(statementLines) - 1; k >= 0; k-- {
 		lowerLine := strings.ToLower(statementLines[k])
@@ -494,12 +528,16 @@ func fetchVariablesLineEnd(statementLines []string, lineStart int, variables []s
 // fetchIntoStatementLine вычисляет номер строки FETCH внутри фрагмента:
 // fragment.LineNumber может указывать на склеенный с FETCH оператор (open),
 // поэтому строка определяется по смещению префикса FETCH в тексте фрагмента.
+// Префикс ищется по стрипнутому от комментариев тексту (стриппинг сохраняет
+// количество \n): phantom-FETCH в комментарии выше реального оператора
+// не смещает строку относительно реально разобранного оператора.
 func fetchIntoStatementLine(queryText string, fragmentLine int) int {
-	loc := reParserFetchIntoPrefix.FindStringSubmatchIndex(queryText)
+	strippedText := stripCommentsFromText(queryText)
+	loc := reParserFetchIntoPrefix.FindStringSubmatchIndex(strippedText)
 	if len(loc) < 4 {
 		return fragmentLine
 	}
-	return fragmentLine + strings.Count(queryText[:loc[0]], "\n")
+	return fragmentLine + strings.Count(strippedText[:loc[0]], "\n")
 }
 
 func parseSelectSourceStatement(queryText string) (insertSelectStatement, bool) {

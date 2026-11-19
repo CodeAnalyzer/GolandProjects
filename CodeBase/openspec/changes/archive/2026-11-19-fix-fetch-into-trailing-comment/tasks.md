@@ -1,0 +1,21 @@
+# Tasks: fix-fetch-into-trailing-comment
+
+## 1. Парсер: стриппинг комментариев в разборе FETCH
+
+- [x] 1.1 Добавить хелпер `stripCommentsFromText(text string) string` (review_parser.go): построчный проход `stripLineComments` (review_helpers.go:1106) с переносом inBlock между строками, склейка через `\n`, строки не удаляются и не сливаются (нумерация строк сохраняется); покрыть unit-тестами: хвостовой `--` на строке переменной, `--` на первой строке FETCH, блочный `/* */` после переменной, блочный комментарий на нескольких строках, текст без комментариев возвращается без изменений, CRLF round-trip (`\r` в конце строк сохраняется, теряется только хвост комментария); проверить `go build ./...`
+- [x] 1.2 Применить `stripCommentsFromText` первым действием в `parseFetchIntoStatement` (review_parser.go:228) — единая точка для fragment-level вызовов (`checkCursorFetchArguments`, `checkDatatypeFetchInto`) и file-level сборки; расширить таблицу тестов разбора (review_rules_test.go:1237): многострочный FETCH с комментарием после последней переменной → извлечены все переменные; FETCH целиком внутри комментария → не распознаётся
+- [x] 1.3 `fetchIntoStatementLine` (review_parser.go:497): применять `stripCommentsFromText` перед поиском префикса (стриппинг сохраняет количество `\n`, смещения строк не меняются) — строка FETCH соответствует реально разобранному оператору, а не phantom-FETCH в комментарии; тест: строка `-- fetch c into @a` выше реального FETCH в одном фрагменте → возвращается строка реального FETCH
+- [x] 1.4 `parseAllFetchIntoStatements` (review_parser.go:422): в цикле сбора продолжений вести inBlock-состояние; boundary/stop-проверки (`isCursorDeclarationBoundary`, `isFetchStatementStopLine`) выполнять по `strings.TrimSpace(stripped)` стрипнутой копии строки (inBlock=false на старте оператора); в `statementLines` класть **сырую** строку (спаны не сжимаются — design Decision 2); пустые строки добавлять как `""` вместо пропуска (индекс `k` ↔ физическая строка `lineStart+k`); тесты: `select`-строка внутри многострочного `/* */` не обрывает сбор (`fetch c into @A, /* ...` / `select ...` / `*/ @B` → обе переменные); пустая строка внутри многострочного FETCH не смещает `LineEnd`; чисто-комментарная строка-продолжение остаётся в спане; проверить `go test ./internal/review/`
+
+## 2. Правила: приёмочные тесты дельт
+
+- [x] 2.1 `cursorFetchArguments`: тесты сценариев дельты postgre-requirements — `DECLARE c CURSOR FOR SELECT A, B, C FROM tX` + многострочный `FETCH NEXT FROM c INTO @A,` / `@B,` / `@C -- комментарий` → finding не формируется (3 переменные); реальный рассинхрон `SELECT A FROM tX` + `@A,` / `@B -- комментарий` → finding severity 2, числом переменных 2
+- [x] 2.2 `datatype`: тест сценария дельты fine-code — `DECLARE c CURSOR FOR SELECT ID, Amount FROM tX` + `FETCH c INTO @ID,` / `@Amount -- комментарий`, `Amount` типа `DSIDENTIFIER`, `@Amount` — `DSINT_KEY` → finding severity 3 по паре `Amount` → `@Amount` (пара из матрицы numericPrecisionScale)
+- [x] 2.3 `varUseAfterCursor`: тест — FETCH ниже DEALLOCATE с завершающей строкой-комментарием `-- @var` (переменная из FETCH упомянута только в комментарии) → 0 findings (спан по сырым строкам накрывает её); существующие тесты `checkVarUseAfterCursor` и `TestParseAllFetchIntoStatements_Spans` (review_rules_test.go) остаются зелёными
+
+## 3. Приёмка
+
+- [x] 3.1 `go test ./...` зелёный; `gofmt -l internal/review/` пуст; бамп `buildNumber` в cmd/root.go с "1705" до "1707" и пересборка `go build -o CodeBase.exe .`
+- [x] 3.2 Эталон FP: `codebase review D:\GITHUB\GolandProjects\FA\fa-contracts\Consumer\SERVER\Consumer\Cons_BankPartnerInstPrepare.sql` — `--rules cursorFetchArguments` → 0 findings; `--rules datatype` → ровно baseline 3 findings (line 208 `@OpenAccBP`, line 273 `@BankAlgMode`, line 522 `@CntFundID`), новых пар нет; `--rules varUseAfterCursor` → 0 findings (baseline 0)
+- [x] 3.3 Регрессия: review на `FA/fa-administrator/Administrator/Server/Core/InstrumentSO_LoadStates.sql` — ровно 11 находок с прежней разбивкой (4 `inSubQuery`, 2 `useFuncInIndCol`, 1 `execNotExistsProc`, 3 `datatype`, 1 `varUseAfterCursor` `@ChangedBrief`)
+- [x] 3.4 `openspec validate fix-fetch-into-trailing-comment` — без ошибок

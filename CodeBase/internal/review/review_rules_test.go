@@ -1230,6 +1230,20 @@ while __FETCH_STATUS__ = 0`,
 			cursorName: "ActionPeriod_cur",
 			varCount:   3,
 		},
+		{
+			name: "multiline fetch with trailing comment on last variable",
+			query: `__FETCH_NEXT__ CurrContract_Insert into @ContractCursID,
+                                            @FundID,
+                                            @AccountsRequestID --используется внутри макроса`,
+			cursorName: "CurrContract_Insert",
+			varCount:   3,
+		},
+		{
+			name:       "block comment after variable",
+			query:      "fetch c into @A /* тип */, @B",
+			cursorName: "c",
+			varCount:   2,
+		},
 	}
 
 	for _, tc := range cases {
@@ -1245,6 +1259,19 @@ while __FETCH_STATUS__ = 0`,
 				t.Fatalf("variables len = %d, want %d", len(stmt.Variables), tc.varCount)
 			}
 		})
+	}
+}
+
+func TestParseFetchIntoStatement_FetchInsideComment_NotRecognized(t *testing.T) {
+	if _, ok := parseFetchIntoStatement("-- fetch c into @a"); ok {
+		t.Fatalf("FETCH целиком внутри комментария не должен распознаваться")
+	}
+}
+
+func TestFetchIntoStatementLine_CommentAboveRealFetch(t *testing.T) {
+	queryText := "-- fetch c into @phantom\nopen c\nfetch c into @a"
+	if got := fetchIntoStatementLine(queryText, 10); got != 12 {
+		t.Fatalf("fetchIntoStatementLine = %d, want 12 (строка реального FETCH, а не комментария)", got)
 	}
 }
 
@@ -1393,6 +1420,55 @@ select @A`
 		if got.LineStart != exp.LineStart || got.LineEnd != exp.LineEnd {
 			t.Fatalf("fetch %d: span = [%d, %d], want [%d, %d]", i, got.LineStart, got.LineEnd, exp.LineStart, exp.LineEnd)
 		}
+	}
+}
+
+func TestParseAllFetchIntoStatements_BlockCommentAndEmptyLines(t *testing.T) {
+	content := `declare c cursor for select A, B from tX
+fetch c into @A, /* начало
+select 1
+*/ @B
+select 1
+
+fetch c into @A,
+
+@B
+select @A`
+
+	fetches := parseAllFetchIntoStatements(content)
+	if len(fetches) != 2 {
+		t.Fatalf("fetch statements count = %d, want 2", len(fetches))
+	}
+
+	first := fetches[0]
+	if strings.Join(first.Variables, ",") != "@A,@B" {
+		t.Fatalf("first fetch variables = %v, want [@A @B] (select внутри /* */ не оборвал сбор)", first.Variables)
+	}
+	if first.LineStart != 2 || first.LineEnd != 4 {
+		t.Fatalf("first fetch span = [%d, %d], want [2, 4]", first.LineStart, first.LineEnd)
+	}
+
+	second := fetches[1]
+	if strings.Join(second.Variables, ",") != "@A,@B" {
+		t.Fatalf("second fetch variables = %v, want [@A @B]", second.Variables)
+	}
+	if second.LineStart != 7 || second.LineEnd != 9 {
+		t.Fatalf("second fetch span = [%d, %d], want [7, 9] (пустая строка не смещает LineEnd)", second.LineStart, second.LineEnd)
+	}
+}
+
+func TestParseAllFetchIntoStatements_CommentContinuationKeepsSpan(t *testing.T) {
+	content := `declare c cursor for select A from tX
+fetch c into @A
+-- @A используется в макросе
+select 1`
+
+	fetches := parseAllFetchIntoStatements(content)
+	if len(fetches) != 1 {
+		t.Fatalf("fetch statements count = %d, want 1", len(fetches))
+	}
+	if fetches[0].LineEnd != 3 {
+		t.Fatalf("LineEnd = %d, want 3 (комментарий-упоминание остаётся в спане по сырой строке)", fetches[0].LineEnd)
 	}
 }
 
@@ -2655,6 +2731,57 @@ func TestStripLineComments(t *testing.T) {
 	}
 }
 
+func TestStripCommentsFromText(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "хвостовой -- на строке переменной",
+			in:   "__FETCH_NEXT__ c into @A,\n@B,\n@C --используется внутри макроса",
+			want: "__FETCH_NEXT__ c into @A,\n@B,\n@C ",
+		},
+		{
+			name: "-- на первой строке FETCH",
+			in:   "fetch c into @A, @B -- комментарий\nselect 1",
+			want: "fetch c into @A, @B \nselect 1",
+		},
+		{
+			name: "блочный комментарий после переменной",
+			in:   "fetch c into @A /* тип */, @B",
+			want: "fetch c into @A , @B",
+		},
+		{
+			name: "блочный комментарий на нескольких строках",
+			in:   "fetch c into @A, /* начало\nselect 1\n*/ @B",
+			want: "fetch c into @A, \n\n @B",
+		},
+		{
+			name: "текст без комментариев возвращается без изменений",
+			in:   "fetch c into @A,\n@B",
+			want: "fetch c into @A,\n@B",
+		},
+		{
+			name: "CRLF round-trip: \\r сохраняется в строках, теряется только в хвосте комментария",
+			in:   "fetch c into @A, -- комм\r\n@B\r\n",
+			want: "fetch c into @A, \n@B\r\n",
+		},
+		{
+			name: "FETCH целиком внутри комментария",
+			in:   "-- fetch c into @a",
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stripCommentsFromText(tc.in); got != tc.want {
+				t.Fatalf("stripCommentsFromText = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCheckNullComparison_Detects(t *testing.T) {
 	runner := &Runner{}
 	cases := []struct {
@@ -3539,6 +3666,124 @@ as
 	}
 	if findings[0].Line != 13 {
 		t.Fatalf("line = %d, want 13", findings[0].Line)
+	}
+}
+
+func TestCheckVarUseAfterCursor_CommentContinuationAfterDeallocate_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare @b int
+  declare c cursor for select A, B from tX
+  fetch c into @a, @b
+  deallocate c
+  fetch c into @a
+  -- @a используется в макросе
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (спан FETCH по сырым строкам накрывает комментарий-упоминание)", len(findings))
+	}
+}
+
+func TestCheckCursorFetchArguments_TrailingCommentCounted_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare c cursor for select A, B, C from tX
+  fetch next from c into @A,
+                         @B,
+                         @C -- комментарий после последней переменной
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			{QueryText: "fetch next from c into @A,\n                         @B,\n                         @C -- комментарий", LineNumber: 4},
+		},
+	}
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (переменная с хвостовым комментарием участвует в подсчёте)", len(findings))
+	}
+}
+
+func TestCheckCursorFetchArguments_RealDesyncWithComment_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare c cursor for select A from tX
+  fetch next from c into @A,
+                         @B -- комментарий
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			{QueryText: "fetch next from c into @A,\n                         @B -- комментарий", LineNumber: 4},
+		},
+	}
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (реальный рассинхрон ловится и при комментарии в списке)", len(findings))
+	}
+	if findings[0].Line != 4 {
+		t.Fatalf("line = %d, want 4", findings[0].Line)
+	}
+	if !strings.Contains(findings[0].Message, "2 переменных") {
+		t.Fatalf("message = %q, want содержит \"2 переменных\"", findings[0].Message)
+	}
+}
+
+func TestCheckDatatypeFetchInto_TrailingCommentVarChecked(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @ID DSIDENTIFIER
+  declare @Amount DSINT_KEY
+  declare c cursor for select ID, Amount from tX
+  open c
+  fetch c into @ID,
+               @Amount -- комментарий после переменной
+`
+	r := &Runner{colTypeCache: map[string]string{
+		"tx|id":     "DSIDENTIFIER",
+		"tx|amount": "DSIDENTIFIER",
+	}}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			{QueryText: "fetch c into @ID,\n               @Amount -- комментарий", LineNumber: 7},
+		},
+	}
+	findings, err := r.checkDatatypeFetchInto(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (переменная с хвостовым комментарием проверяется на потерю точности)", len(findings))
+	}
+	if findings[0].Object != "@Amount" {
+		t.Fatalf("object = %q, want @Amount", findings[0].Object)
+	}
+	if findings[0].Line != 7 {
+		t.Fatalf("line = %d, want 7", findings[0].Line)
 	}
 }
 
