@@ -1259,6 +1259,39 @@ DSINT_KEY)`,
 			cursorName: "c",
 			varCount:   2,
 		},
+		{
+			name:       "profiler call tail glued after variables",
+			query:      "fetch c into @ObjectID, @ParamID, @Line_ID, @Flag, @RelType\nPROFILE_TIME_EX(' >>> Курсор LoanAccountLinks <<< ')",
+			cursorName: "c",
+			varCount:   5,
+		},
+		{
+			name:       "function call tail is boundary",
+			query:      "fetch c into @A, @B\nmax(x)",
+			cursorName: "c",
+			varCount:   2,
+		},
+		{
+			name: "commented variable inside list does not break it",
+			query: `fetch c into @ID,
+--@CommentedVar,
+@InstitutionID`,
+			cursorName: "c",
+			varCount:   2,
+		},
+		{
+			name: "comma continuation on next line",
+			query: `fetch c into @A
+, @B`,
+			cursorName: "c",
+			varCount:   2,
+		},
+		{
+			name:       "crlf line breaks do not break boundary arithmetic",
+			query:      "fetch c into @A,\r\n@B,\r\n@C\r\nmax(x)",
+			cursorName: "c",
+			varCount:   3,
+		},
 	}
 
 	for _, tc := range cases {
@@ -1283,27 +1316,63 @@ func TestParseFetchIntoStatement_FetchInsideComment_NotRecognized(t *testing.T) 
 	}
 }
 
-func TestIsStandaloneMacroCallLine(t *testing.T) {
+func TestIsFetchVariablesContinuationLine(t *testing.T) {
 	cases := []struct {
 		name string
 		line string
 		want bool
 	}{
-		{name: "businesslog macro call", line: "M_BUSINESSLOG_BLOCK_END('>>> Итерация курсора <<<')", want: true},
-		{name: "lowercase macro call", line: "  m_log_table(pX)", want: true},
-		{name: "multiline macro call first line", line: "M_X(@a,", want: true},
-		{name: "macro without parens", line: "M_CHECK_REQUIRED", want: false},
-		{name: "forceorder without parens — осознанный предел", line: "M_FORCEORDER", want: false},
-		{name: "max function", line: "max(x)", want: false},
-		{name: "min function", line: "min(@a)", want: false},
-		{name: "month function", line: "month(@d)", want: false},
-		{name: "variable", line: "@Amount", want: false},
-		{name: "keyword", line: "select 1", want: false},
+		{name: "variable", line: "@Amount", want: true},
+		{name: "variable with trailing comma", line: "@B,", want: true},
+		{name: "comma continuation", line: ", @B", want: true},
+		{name: "comma continuation no space", line: ",@B", want: true},
+		{name: "indented variable", line: "  @UpdateFlag,", want: true},
+		{name: "empty line transparent", line: "", want: true},
+		{name: "whitespace-only line transparent", line: "   ", want: true},
+		{name: "businesslog macro call — boundary", line: "M_BUSINESSLOG_BLOCK_END('>>> Итерация курсора <<<')", want: false},
+		{name: "lowercase macro call — boundary", line: "  m_log_table(pX)", want: false},
+		{name: "multiline macro call first line — boundary", line: "M_X(@a,", want: false},
+		{name: "macro without parens — boundary", line: "M_CHECK_REQUIRED", want: false},
+		{name: "forceorder without parens — boundary", line: "M_FORCEORDER", want: false},
+		{name: "profiler call — boundary", line: "PROFILE_TIME_EX(' >>> Курсор <<< ')", want: false},
+		{name: "max function — boundary", line: "max(x)", want: false},
+		{name: "min function — boundary", line: "min(@a)", want: false},
+		{name: "month function — boundary", line: "month(@d)", want: false},
+		{name: "keyword — boundary", line: "while 1 = 1", want: false},
+		{name: "select — boundary", line: "select 1", want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isStandaloneMacroCallLine(tc.line); got != tc.want {
-				t.Fatalf("isStandaloneMacroCallLine(%q) = %v, want %v", tc.line, got, tc.want)
+			if got := isFetchVariablesContinuationLine(tc.line); got != tc.want {
+				t.Fatalf("isFetchVariablesContinuationLine(%q) = %v, want %v", tc.line, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsFetchStatementStopLine(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{name: "into header of multiline fetch — not stop", line: "into @A, @B", want: false},
+		{name: "indented into header — not stop", line: "  into @A", want: false},
+		{name: "into keyword alone — not stop", line: "into", want: false},
+		{name: "variable continuation — not stop", line: "@B,", want: false},
+		{name: "comma continuation — not stop", line: ", @B", want: false},
+		{name: "empty — not stop", line: "", want: false},
+		{name: "select — stop", line: "select 1", want: true},
+		{name: "while — stop", line: "while __FETCH_STATUS__ = 0", want: true},
+		{name: "macro call — stop", line: "M_BUSINESSLOG_BLOCK_END('x')", want: true},
+		{name: "macro without parens — stop", line: "M_FORCEORDER", want: true},
+		{name: "profiler call — stop", line: "PROFILE_TIME_VAR1('... @d = %1!', @d)", want: true},
+		{name: "function call — stop", line: "max(x)", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isFetchStatementStopLine(tc.line); got != tc.want {
+				t.Fatalf("isFetchStatementStopLine(%q) = %v, want %v", tc.line, got, tc.want)
 			}
 		})
 	}
@@ -1378,6 +1447,87 @@ fetch c into @a`
 	}
 	if decls[1].Line != 4 || len(decls[1].SelectExpressions) != 1 {
 		t.Fatalf("second life: line = %d, expressions = %d, want 4 и 1", decls[1].Line, len(decls[1].SelectExpressions))
+	}
+}
+
+func TestParseCursorDeclarations_UnionArityByFirstBranch(t *testing.T) {
+	cases := []struct {
+		name       string
+		declareSel string
+		exprs      int
+		fromPrefix string
+	}{
+		{
+			name:       "union with from in first branch — прежнее поведение",
+			declareSel: "select ID, Amount from tX union select X, Y from tY",
+			exprs:      2,
+			fromPrefix: "from",
+		},
+		{
+			name:       "union with from only in second branch",
+			declareSel: "select @Perc as Perc, @DateTmp1 as PrcDate union select PrcValue, PrcDate from pX",
+			exprs:      2,
+			fromPrefix: "union",
+		},
+		{
+			name:       "union all with from only in second branch",
+			declareSel: "select A, B union all select X, Y from tX",
+			exprs:      2,
+			fromPrefix: "union",
+		},
+		{
+			name:       "union without from at all",
+			declareSel: "select a, b union select c, d",
+			exprs:      2,
+			fromPrefix: "union",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			decls := parseCursorDeclarations("declare c cursor for " + tc.declareSel + "\nfetch c into @A, @B")
+			if len(decls) != 1 {
+				t.Fatalf("cursor declarations count = %d, want 1", len(decls))
+			}
+			decl := decls[0]
+			if len(decl.SelectExpressions) != tc.exprs {
+				t.Fatalf("select expressions = %d (%v), want %d (арность по первой ветке)", len(decl.SelectExpressions), decl.SelectExpressions, tc.exprs)
+			}
+			if !strings.HasPrefix(strings.ToLower(decl.FromClause), tc.fromPrefix) {
+				t.Fatalf("fromClause must start with %q, got %q", tc.fromPrefix, decl.FromClause)
+			}
+		})
+	}
+}
+
+func TestParseCursorDeclarations_UnionNotTriggeredInsideParensOrIdentifier(t *testing.T) {
+	// union внутри скобок первой ветки и идентификатор tX_union — не граница.
+	content := `declare c cursor for
+select (select 1 union select 2), Amount, Flag
+  from tX_union x
+fetch c into @A, @B, @C`
+
+	decls := parseCursorDeclarations(content)
+	if len(decls) != 1 {
+		t.Fatalf("cursor declarations count = %d, want 1", len(decls))
+	}
+	decl := decls[0]
+	if len(decl.SelectExpressions) != 3 {
+		t.Fatalf("select expressions = %d (%v), want 3 (union в скобках и tX_union не граница)", len(decl.SelectExpressions), decl.SelectExpressions)
+	}
+	if !strings.HasPrefix(strings.ToLower(decl.FromClause), "from") {
+		t.Fatalf("fromClause must start with FROM, got %q", decl.FromClause)
+	}
+}
+
+func TestParseFirstFromTable_UnionFromClause(t *testing.T) {
+	// FromClause при union-first начинается с union: таблица второй ветки
+	// резолвится прежним \bfrom\s+-матчем.
+	if got := parseFirstFromTable("union select X, Y from tX"); got != "tX" {
+		t.Fatalf("parseFirstFromTable(union-FromClause) = %q, want tX", got)
+	}
+	aliasMap := parseAliasMap("union select X, Y from tX x")
+	if aliasMap["x"] != "tX" {
+		t.Fatalf("parseAliasMap(union-FromClause)[x] = %q, want tX", aliasMap["x"])
 	}
 }
 
@@ -1530,6 +1680,50 @@ select @A`
 	}
 	if got.LineStart != 3 || got.LineEnd != 3 {
 		t.Fatalf("span = [%d, %d], want [3, 3] (макро-строка — граница оператора, в спан не входит)", got.LineStart, got.LineEnd)
+	}
+}
+
+func TestParseAllFetchIntoStatements_ProfilerTailAndCommentedVar(t *testing.T) {
+	content := `declare c cursor for select A, B from tX
+open c
+fetch c into @A,
+--@CommentedVar,
+@B
+PROFILE_TIME_VAR1(' >>> Курсор <<< ', @A)
+select @B`
+
+	fetches := parseAllFetchIntoStatements(content)
+	if len(fetches) != 1 {
+		t.Fatalf("fetch statements count = %d, want 1 (закомментированная переменная не рвёт список, профайлер — граница)", len(fetches))
+	}
+	got := fetches[0]
+	if strings.Join(got.Variables, ",") != "@A,@B" {
+		t.Fatalf("variables = %v, want [@A @B] (комментарий внутри списка отброшен стрипом)", got.Variables)
+	}
+	if got.LineStart != 3 || got.LineEnd != 5 {
+		t.Fatalf("span = [%d, %d], want [3, 5] (пустая после стрипа строка прозрачна, LineEnd — строка @B)", got.LineStart, got.LineEnd)
+	}
+}
+
+func TestParseAllFetchIntoStatements_MultilineIntoHeaderPreserved(t *testing.T) {
+	content := `declare c cursor for select A, B from tX
+fetch c
+  into @A, @B
+while __FETCH_STATUS__ = 0
+begin
+  select @A
+end`
+
+	fetches := parseAllFetchIntoStatements(content)
+	if len(fetches) != 1 {
+		t.Fatalf("fetch statements count = %d, want 1 (многострочный заголовок with into — не граница)", len(fetches))
+	}
+	got := fetches[0]
+	if strings.Join(got.Variables, ",") != "@A,@B" {
+		t.Fatalf("variables = %v, want [@A @B]", got.Variables)
+	}
+	if got.LineStart != 2 || got.LineEnd != 3 {
+		t.Fatalf("span = [%d, %d], want [2, 3]", got.LineStart, got.LineEnd)
 	}
 }
 
@@ -4015,6 +4209,299 @@ as
 	}
 	if findings[0].Line != 7 {
 		t.Fatalf("line = %d, want 7", findings[0].Line)
+	}
+}
+
+func TestCheckCursorFetchArguments_ProfilerTailCounted_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare c cursor for select A, B, C, D, E from tX
+  fetch c into @ObjectID, @ParamID, @Line_ID, @Flag, @RelType
+  PROFILE_TIME_EX(' >>> Курсор LoanAccountLinks <<< ')
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			{QueryText: "fetch c into @ObjectID, @ParamID, @Line_ID, @Flag, @RelType\nPROFILE_TIME_EX(' >>> Курсор LoanAccountLinks <<< ')", LineNumber: 5},
+		},
+	}
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (вызов профайлера после списка переменных завершает список, все пять переменных подсчитаны)", len(findings))
+	}
+}
+
+func TestCheckCursorFetchArguments_RealDesyncWithProfilerTail_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare c cursor for select A, B, C, D, E from tX
+  fetch c into @ObjectID, @ParamID, @Line_ID, @Flag
+  PROFILE_TIME_EX(' >>> Курсор LoanAccountLinks <<< ')
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			{QueryText: "fetch c into @ObjectID, @ParamID, @Line_ID, @Flag\nPROFILE_TIME_EX(' >>> Курсор LoanAccountLinks <<< ')", LineNumber: 5},
+		},
+	}
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (реальный рассинхрон ловится и при профайл-хвосте)", len(findings))
+	}
+	if !strings.Contains(findings[0].Message, "4 переменных") {
+		t.Fatalf("message = %q, want содержит \"4 переменных\" (последняя переменная не потеряна хвостом)", findings[0].Message)
+	}
+}
+
+func TestCheckCursorFetchArguments_UnionArityFirstBranch_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  __DECLARE_CURSOR__(Cons_cur_Prc)
+  select @Perc as Perc, @DateTmp1 as PrcDate
+  union select PrcValue, PrcDate from pX
+  open Cons_cur_Prc
+  __FETCH_NEXT__ Cons_cur_Prc into @PercCur, @DateCur
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			{QueryText: "__FETCH_NEXT__ Cons_cur_Prc into @PercCur, @DateCur", LineNumber: 7},
+		},
+	}
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (арность UNION-декларации — по первой ветке: 2)", len(findings))
+	}
+}
+
+func TestCheckCursorFetchArguments_UnionRealDesync_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  __DECLARE_CURSOR__(Cons_cur_Prc)
+  select @Perc as Perc, @DateTmp1 as PrcDate
+  union select PrcValue, PrcDate from pX
+  open Cons_cur_Prc
+  __FETCH_NEXT__ Cons_cur_Prc into @PercCur
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			{QueryText: "__FETCH_NEXT__ Cons_cur_Prc into @PercCur", LineNumber: 7},
+		},
+	}
+	findings, err := r.checkCursorFetchArguments(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (реальный рассинхрон при UNION в декларации)", len(findings))
+	}
+	if !strings.Contains(findings[0].Message, "DECLARE 2 выражений") {
+		t.Fatalf("message = %q, want содержит \"DECLARE 2 выражений\" (арность по первой ветке)", findings[0].Message)
+	}
+}
+
+func TestCheckDatatypeFetchInto_ProfilerTailLastVarChecked(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @ID DSIDENTIFIER
+  declare @Amount DSINT_KEY
+  declare c cursor for select ID, Amount from tX
+  fetch c into @ID, @Amount
+  PROFILE_TIME_EX(' >>> Курсор <<< ')
+`
+	r := &Runner{colTypeCache: map[string]string{
+		"tx|id":     "DSIDENTIFIER",
+		"tx|amount": "DSIDENTIFIER",
+	}}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			{QueryText: "fetch c into @ID, @Amount\nPROFILE_TIME_EX(' >>> Курсор <<< ')", LineNumber: 6},
+		},
+	}
+	findings, err := r.checkDatatypeFetchInto(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (последняя переменная перед вызовом профайлера проходит проверку типа)", len(findings))
+	}
+	if findings[0].Object != "@Amount" {
+		t.Fatalf("object = %q, want @Amount", findings[0].Object)
+	}
+}
+
+func TestCheckDatatypeFetchInto_UnionFirstBranchPair(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @ID DSIDENTIFIER
+  declare @Amount DSINT_KEY
+  declare c cursor for select ID, Amount union select X, Y from tX
+  fetch c into @ID, @Amount
+`
+	r := &Runner{colTypeCache: map[string]string{
+		"tx|id":     "DSIDENTIFIER",
+		"tx|amount": "DSIDENTIFIER",
+	}}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			{QueryText: "fetch c into @ID, @Amount", LineNumber: 6},
+		},
+	}
+	findings, err := r.checkDatatypeFetchInto(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (Amount первой ветки резолвится через таблицу второй ветки)", len(findings))
+	}
+	if findings[0].Object != "@Amount" {
+		t.Fatalf("object = %q, want @Amount", findings[0].Object)
+	}
+}
+
+func TestCheckDatatypeFetchInto_CommentedVarInsideList(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @ID DSIDENTIFIER
+  declare @Amount DSINT_KEY
+  declare c cursor for select ID, Amount from tX
+  fetch c into @ID,
+  --@CommentedVar,
+  @Amount
+`
+	r := &Runner{colTypeCache: map[string]string{
+		"tx|id":     "DSIDENTIFIER",
+		"tx|amount": "DSIDENTIFIER",
+	}}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	parsed := &sqlparser.ParseResult{
+		Fragments: []*model.QueryFragment{
+			{QueryText: "fetch c into @ID,\n--@CommentedVar,\n@Amount", LineNumber: 6},
+		},
+	}
+	findings, err := r.checkDatatypeFetchInto(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (закомментированная переменная внутри списка не прерывает спаривание)", len(findings))
+	}
+	if findings[0].Object != "@Amount" {
+		t.Fatalf("object = %q, want @Amount", findings[0].Object)
+	}
+}
+
+func TestCheckVarUseAfterCursor_ProfilerArgAfterDeallocate_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare c cursor for select A from tX
+  fetch c into @a
+  deallocate c
+  fetch c into @a
+  PROFILE_TIME_VAR1(' >>> Курсор ObjectDate: @a = %1! <<< ', @a)
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (строка профайлера ниже DEALLOCATE — не строка-продолжение FETCH, аргумент @a — реальное использование)", len(findings))
+	}
+	if findings[0].Object != "@a" {
+		t.Fatalf("object = %q, want @a", findings[0].Object)
+	}
+	if findings[0].Line != 8 {
+		t.Fatalf("line = %d, want 8 (строка вызова профайлера)", findings[0].Line)
+	}
+}
+
+func TestCheckVarUseAfterCursor_ProfilerNoWindowVars_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare c cursor for select A from tX
+  fetch c into @a
+  deallocate c
+  fetch c into @a
+  PROFILE_TIME_EX(' >>> Курсор ObjectDate <<< ')
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (вызов профайлера без переменных окна — не использование)", len(findings))
+	}
+}
+
+func TestCheckVarUseAfterCursor_MultilineIntoHeaderBelowDeallocate_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare @a2 int
+  declare c cursor for select A, B from tX
+  fetch c
+  into @a, @a2
+  deallocate c
+  fetch c
+  into @a, @a2
+  PROFILE_TIME_VAR1(' >>> @a = %1! <<< ', @a)
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (многострочный заголовок `fetch c` / `into ...` ниже DEALLOCATE должен собираться целиком — строка into не граница (B1); аргумент @a профайлера — реальное использование)", len(findings))
+	}
+	if findings[0].Object != "@a" {
+		t.Fatalf("object = %q, want @a", findings[0].Object)
+	}
+	if findings[0].Line != 11 {
+		t.Fatalf("line = %d, want 11 (строка вызова профайлера)", findings[0].Line)
 	}
 }
 

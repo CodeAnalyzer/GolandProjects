@@ -6,12 +6,6 @@ import (
 	"strings"
 )
 
-// standaloneMacroCallPattern — сигнатура standalone-вызова Diasoft-макроса
-// M_XXX(...): общий фрагмент для reParserStandaloneMacroCall и boundary-
-// альтернативы reParserFetchIntoBoundary — единая точка определения,
-// паттерны не разъезжаются.
-const standaloneMacroCallPattern = `m_[a-z0-9_]+[ \t]*\(`
-
 var (
 	// conditionNewStmtRe определяет начало нового SQL-оператора для прерывания условия WHERE/ON/HAVING.
 	conditionNewStmtRe = regexp.MustCompile(`(?i)^\s*(?:select|update|delete|insert)\b`)
@@ -22,27 +16,11 @@ var (
 	reParserSelectAssign = regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
 
 	// cursorParserRegexes используются парсерами курсоров.
-	reParserFetchIntoPrefix   = regexp.MustCompile(`(?is)(?:__fetch_next__|fetch)(?:\s+next)?(?:\s+from)?\s+([a-z_#][a-z0-9_#]*)\s+into\s+`)
-	reParserFetchIntoVar      = regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*$`)
-	reParserFetchIntoBoundary = regexp.MustCompile(`(?im)(?:\n\s*(?:while|open|close|deallocate|__deallocate_cursor__|fetch|__fetch_next__|if|begin|end|return|go|select|exec|execute|print|set|insert|update|delete|goto)\b|\n[ \t]*` + standaloneMacroCallPattern + `)`)
-	// reParserStandaloneMacroCall детектирует standalone-вызов Diasoft-макроса
-	// M_XXX(...) в начале строки — границу FETCH ... INTO: макрос, склеенный
-	// парсером с FETCH в один фрагмент, начинает новый оператор и не должен
-	// попадать в CSV переменных (иначе анкорный reParserFetchIntoVar роняет
-	// последнюю переменную). Паттерн префиксный, а не reStandaloneMacroLine
-	// (review_helpers.go): тому нужна закрывающая скобка на той же строке и
-	// матч всей строки (stripStandaloneMacroLines), а граница обязана
-	// распознаваться по префиксу — в том числе у многострочных вызовов
-	// (M_X(@a, / ...)). Обязательный m_ не ловит функции max(/min(/month(;
-	// [ \t] вместо \s: \s в Go-регэкспах включает \n и матчил бы имя и
-	// скобку на разных строках. Макросы без скобок (M_FORCEORDER) и скобка
-	// на следующей строке границей не являются — осознанный предел,
-	// в FETCH-контексте не встречаются (openspec fix-fetch-into-macro-tail,
-	// Non-Goals).
-	reParserStandaloneMacroCall = regexp.MustCompile(`(?i)^` + standaloneMacroCallPattern)
-	reParserCursorExplicitDecl  = regexp.MustCompile(`(?is)^declare\s+([a-z_#][a-z0-9_#]*)\s+(?:insensitive\s+)?cursor\s+for\s*(.*)$`)
-	reParserCursorMacroDecl     = regexp.MustCompile(`(?is)^__declare_cursor__\s*\(\s*([a-z_#][a-z0-9_#]*)\s*\)\s*(.*)$`)
-	reParserCursorDealloc       = regexp.MustCompile(`(?is)^(?:__deallocate_cursor__|deallocate(?:\s+cursor)?)\s+([a-z_#][a-z0-9_#]*)`)
+	reParserFetchIntoPrefix    = regexp.MustCompile(`(?is)(?:__fetch_next__|fetch)(?:\s+next)?(?:\s+from)?\s+([a-z_#][a-z0-9_#]*)\s+into\s+`)
+	reParserFetchIntoVar       = regexp.MustCompile(`(?is)^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*$`)
+	reParserCursorExplicitDecl = regexp.MustCompile(`(?is)^declare\s+([a-z_#][a-z0-9_#]*)\s+(?:insensitive\s+)?cursor\s+for\s*(.*)$`)
+	reParserCursorMacroDecl    = regexp.MustCompile(`(?is)^__declare_cursor__\s*\(\s*([a-z_#][a-z0-9_#]*)\s*\)\s*(.*)$`)
+	reParserCursorDealloc      = regexp.MustCompile(`(?is)^(?:__deallocate_cursor__|deallocate(?:\s+cursor)?)\s+([a-z_#][a-z0-9_#]*)`)
 	// reParserFetchCursorStart детектирует начало оператора FETCH без
 	// требования INTO в той же строке: формы `__FETCH_NEXT__ c` / `into @A`
 	// разбираются сбором строк оператора.
@@ -314,11 +292,22 @@ func findFetchIntoTailBoundary(value string) int {
 		return -1
 	}
 
-	loc := reParserFetchIntoBoundary.FindStringIndex(value)
-	if len(loc) != 2 {
-		return -1
+	// Построчный скан по белому списку продолжений (RE2 без lookahead не
+	// позволяет выразить «строка не матчит ^[@,]» одним регэкспом): первая
+	// строка после хвоста строки с into, не являющаяся продолжением списка
+	// переменных, — граница; пустые (после стрипа комментариев) строки
+	// прозрачны и список не прерывают. Первая строка всегда остаётся частью
+	// списка (same-line хвост — Non-Goal): variablesPart никогда не начинается
+	// с пустой строки, потому что жадный \s+ в reParserFetchIntoPrefix
+	// забирает все переводы строк сразу после into.
+	offset := 0
+	for lineIndex, line := range strings.Split(value, "\n") {
+		if lineIndex > 0 && !isFetchVariablesContinuationLine(line) {
+			return offset
+		}
+		offset += len(line) + 1
 	}
-	return loc[0]
+	return -1
 }
 
 // parseCursorDeclarations возвращает декларации курсоров упорядоченным списком
@@ -514,7 +503,7 @@ func parseAllFetchIntoStatements(content string) []fetchStatement {
 		i = j - 1
 
 		// Строки соединяются через \n: parseFetchIntoStatement обрезает хвост
-		// по reParserFetchIntoBoundary, который ищет перевод строки.
+		// по findFetchIntoTailBoundary, который ищет перевод строки.
 		stmt, ok := parseFetchIntoStatement(strings.Join(statementLines, "\n"))
 		if !ok {
 			continue
@@ -571,13 +560,23 @@ func parseSelectSourceStatement(queryText string) (insertSelectStatement, bool) 
 		return insertSelectStatement{}, false
 	}
 
+	// Граница SELECT-части — первый top-level from либо union, что раньше:
+	// при UNION арность и выражения спаривания определяются по первой ветке,
+	// а from может лежать только во второй (select @Perc, @Date union
+	// select PrcValue, PrcDate from pX). Отсутствие обоих ключей —
+	// декларация не распознаётся.
 	fromPos := findTopLevelKeywordPosition(text, "from")
-	if fromPos < 0 {
+	unionPos := findTopLevelKeywordPosition(text, "union")
+	boundary := fromPos
+	if unionPos >= 0 && (fromPos < 0 || unionPos < fromPos) {
+		boundary = unionPos
+	}
+	if boundary < 0 {
 		return insertSelectStatement{}, false
 	}
 
-	selectPart := strings.TrimSpace(text[len("select"):fromPos])
-	fromClause := strings.TrimSpace(text[fromPos:])
+	selectPart := strings.TrimSpace(text[len("select"):boundary])
+	fromClause := strings.TrimSpace(text[boundary:])
 	if selectPart == "" || fromClause == "" {
 		return insertSelectStatement{}, false
 	}
@@ -606,34 +605,39 @@ func isCursorDeclarationBoundary(line string) bool {
 	return false
 }
 
-// isStandaloneMacroCallLine сообщает, что строка — standalone-вызов
-// Diasoft-макроса M_XXX(...): такой вызов, следующий за списком переменных
-// FETCH (в том числе склеенный парсером в один фрагмент), начинает новый
-// оператор и завершает сбор строк FETCH. Сама тримит строку (годна для
-// прямых вызовов). Макросы без скобок (M_FORCEORDER) и скобка на следующей
-// строке границей не являются — осознанный предел, см. reParserStandaloneMacroCall.
-func isStandaloneMacroCallLine(line string) bool {
-	return reParserStandaloneMacroCall.MatchString(strings.TrimSpace(line))
+// isFetchVariablesContinuationLine сообщает, что строка может быть
+// продолжением списка переменных FETCH ... INTO: пустая строка (в том числе
+// ставшая пустой после стрипа комментариев — закомментированная переменная)
+// прозрачна и список не прерывает; непустая обязана начинаться с @-переменной
+// или запятой (разделитель, перенесённый на новую строку). Любая иная строка —
+// начало нового оператора (standalone-вызов макроса M_*, профайлера
+// PROFILE_TIME_*, функции или SQL-ключевое слово) и завершает список.
+// Сама тримит строку.
+func isFetchVariablesContinuationLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return true
+	}
+	return strings.HasPrefix(trimmed, "@") || strings.HasPrefix(trimmed, ",")
 }
 
-// isFetchStatementStopLine определяет строку, начинающую новый SQL-оператор.
-// Сбор строк FETCH ... INTO останавливается на ней, чтобы переменные и спан
-// строк не захватывали следующий оператор (select/set/exec после FETCH или
-// standalone-вызов макроса M_XXX(...) — макрос-хвост после списка переменных).
+// isFetchStatementStopLine определяет строку, начинающую новый SQL-оператор:
+// сбор строк FETCH ... INTO останавливается на ней, чтобы переменные и спан
+// строк не захватывали следующий оператор. Белый список продолжений:
+// заголовок into (многострочная форма `fetch c` / `into @A, @B`) или строка
+// списка переменных (@-переменная либо запятая после trim, включая
+// прозрачные пустые); всё иное — новый оператор, в том числе standalone-вызов
+// макроса M_XXX(...), профайлера PROFILE_TIME_* или функции после списка
+// переменных.
 func isFetchStatementStopLine(line string) bool {
 	trimmed := strings.TrimSpace(strings.ToLower(line))
 	if trimmed == "" {
 		return false
 	}
-
-	keywords := []string{"select", "exec", "execute", "print", "set", "insert", "update", "delete", "goto"}
-	for _, kw := range keywords {
-		if strings.HasPrefix(trimmed, kw+" ") || strings.HasPrefix(trimmed, kw+"\t") || trimmed == kw {
-			return true
-		}
+	if trimmed == "into" || strings.HasPrefix(trimmed, "into ") || strings.HasPrefix(trimmed, "into\t") {
+		return false
 	}
-
-	return isStandaloneMacroCallLine(line)
+	return !isFetchVariablesContinuationLine(line)
 }
 
 func splitTopLevelCSV(value string) []string {
