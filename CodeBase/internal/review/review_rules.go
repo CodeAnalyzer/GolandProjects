@@ -265,11 +265,6 @@ func (r *Runner) checkIndexWrong(ctx context.Context, file *indexedFile) ([]Find
 	for i, line := range lines {
 		lineNum := i + 1
 
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
-			continue
-		}
-
 		if inBlockComment {
 			if idx := strings.Index(line, "*/"); idx >= 0 {
 				inBlockComment = false
@@ -277,6 +272,11 @@ func (r *Runner) checkIndexWrong(ctx context.Context, file *indexedFile) ([]Find
 			} else {
 				continue
 			}
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
 		}
 
 		for {
@@ -485,11 +485,6 @@ func (r *Runner) checkUpdateOnlyVar(ctx context.Context, file *indexedFile) ([]F
 	for i, line := range lines {
 		lineNum := i + 1
 
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
-			continue
-		}
-
 		if inBlockComment {
 			if idx := strings.Index(line, "*/"); idx >= 0 {
 				inBlockComment = false
@@ -497,6 +492,11 @@ func (r *Runner) checkUpdateOnlyVar(ctx context.Context, file *indexedFile) ([]F
 			} else {
 				continue
 			}
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
 		}
 
 		for {
@@ -677,11 +677,6 @@ func (r *Runner) checkPTableSpid(ctx context.Context, file *indexedFile) ([]Find
 	for i, line := range lines {
 		lineNum := i + 1
 
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
-			continue
-		}
-
 		if inBlockComment {
 			if idx := strings.Index(line, "*/"); idx >= 0 {
 				inBlockComment = false
@@ -689,6 +684,11 @@ func (r *Runner) checkPTableSpid(ctx context.Context, file *indexedFile) ([]Find
 			} else {
 				continue
 			}
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
 		}
 
 		for {
@@ -829,11 +829,6 @@ func (r *Runner) checkForceOrder2Tbl(ctx context.Context, file *indexedFile) ([]
 	for i, line := range lines {
 		lineNum := i + 1
 
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
-			continue
-		}
-
 		if inBlockComment {
 			if idx := strings.Index(line, "*/"); idx >= 0 {
 				inBlockComment = false
@@ -841,6 +836,11 @@ func (r *Runner) checkForceOrder2Tbl(ctx context.Context, file *indexedFile) ([]
 			} else {
 				continue
 			}
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
 		}
 
 		for {
@@ -960,11 +960,6 @@ func (r *Runner) checkSaveTran(ctx context.Context, file *indexedFile) ([]Findin
 	for i, line := range lines {
 		lineNum := i + 1
 
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
-			continue
-		}
-
 		if inBlockComment {
 			if idx := strings.Index(line, "*/"); idx >= 0 {
 				inBlockComment = false
@@ -972,6 +967,11 @@ func (r *Runner) checkSaveTran(ctx context.Context, file *indexedFile) ([]Findin
 			} else {
 				continue
 			}
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
 		}
 
 		for {
@@ -1028,11 +1028,6 @@ func (r *Runner) checkUseDrop(ctx context.Context, file *indexedFile) ([]Finding
 	for i, line := range lines {
 		lineNum := i + 1
 
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
-			continue
-		}
-
 		if inBlockComment {
 			if idx := strings.Index(line, "*/"); idx >= 0 {
 				inBlockComment = false
@@ -1040,6 +1035,11 @@ func (r *Runner) checkUseDrop(ctx context.Context, file *indexedFile) ([]Finding
 			} else {
 				continue
 			}
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
 		}
 
 		for {
@@ -1112,11 +1112,6 @@ func (r *Runner) checkMathOperations(ctx context.Context, file *indexedFile) ([]
 	for i, line := range lines {
 		lineNum := i + 1
 
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
-			continue
-		}
-
 		if inBlockComment {
 			if idx := strings.Index(line, "*/"); idx >= 0 {
 				inBlockComment = false
@@ -1124,6 +1119,11 @@ func (r *Runner) checkMathOperations(ctx context.Context, file *indexedFile) ([]
 			} else {
 				continue
 			}
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
 		}
 
 		for {
@@ -1192,11 +1192,6 @@ func (r *Runner) checkExistsWithAndInIf(ctx context.Context, file *indexedFile) 
 	for i := 0; i < len(lines); i++ {
 		lineNum := i + 1
 
-		trimmed := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(trimmed, "--") {
-			continue
-		}
-
 		if inBlockComment {
 			if idx := strings.Index(lines[i], "*/"); idx >= 0 {
 				inBlockComment = false
@@ -1204,6 +1199,11 @@ func (r *Runner) checkExistsWithAndInIf(ctx context.Context, file *indexedFile) 
 			} else {
 				continue
 			}
+		}
+
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, "--") {
+			continue
 		}
 
 		for {
@@ -1308,11 +1308,6 @@ func (r *Runner) checkIndexExistsInDB(ctx context.Context, file *indexedFile) ([
 	for i, line := range lines {
 		lineNum := i + 1
 
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
-			continue
-		}
-
 		if inBlockComment {
 			if idx := strings.Index(line, "*/"); idx >= 0 {
 				inBlockComment = false
@@ -1320,6 +1315,11 @@ func (r *Runner) checkIndexExistsInDB(ctx context.Context, file *indexedFile) ([
 			} else {
 				continue
 			}
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
 		}
 
 		for {
@@ -4685,11 +4685,6 @@ func (r *Runner) checkVarcharSize(ctx context.Context, parsed *sqlparser.ParseRe
 	for i, line := range lines {
 		lineNum := i + 1
 
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
-			continue
-		}
-
 		if inBlockComment {
 			if idx := strings.Index(line, "*/"); idx >= 0 {
 				inBlockComment = false
@@ -4697,6 +4692,11 @@ func (r *Runner) checkVarcharSize(ctx context.Context, parsed *sqlparser.ParseRe
 			} else {
 				continue
 			}
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
 		}
 
 		for {
@@ -4802,10 +4802,6 @@ func (r *Runner) checkPostgreLabelGotoLevel(ctx context.Context, file *indexedFi
 	for i, line := range lines {
 		lineNum := i + 1
 
-		if idx := strings.Index(line, "--"); idx >= 0 {
-			line = line[:idx]
-		}
-
 		if inBlockComment {
 			if idx := strings.Index(line, "*/"); idx >= 0 {
 				inBlockComment = false
@@ -4813,6 +4809,10 @@ func (r *Runner) checkPostgreLabelGotoLevel(ctx context.Context, file *indexedFi
 			} else {
 				continue
 			}
+		}
+
+		if idx := strings.Index(line, "--"); idx >= 0 {
+			line = line[:idx]
 		}
 
 		for {
@@ -6264,11 +6264,6 @@ func (r *Runner) checkUseFuncInIndCol(ctx context.Context, file *indexedFile) ([
 	for i, line := range lines {
 		lineNum := i + 1
 
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
-			continue
-		}
-
 		if inBlockComment {
 			if idx := strings.Index(line, "*/"); idx >= 0 {
 				inBlockComment = false
@@ -6276,6 +6271,11 @@ func (r *Runner) checkUseFuncInIndCol(ctx context.Context, file *indexedFile) ([
 			} else {
 				continue
 			}
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
 		}
 
 		for {
