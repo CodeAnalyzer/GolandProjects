@@ -123,7 +123,7 @@ var ruleCatalog = map[RuleID]ruleMeta{
 	},
 	RuleUseEqColumn: {
 		Severity:    SeverityDeployStopper,
-		Description: "Сравнение по столбцу без индекса",
+		Description: "Сравнение с самим собой",
 		Build: func(r *Runner, ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 			return r.checkUseEqColumn(ctx, file)
 		},

@@ -3355,6 +3355,7 @@ func analyzeConditionForEqColumn(lines []string, startLine int, file *indexedFil
 
 	// Захватываем опциональный @ для переменных T-SQL
 	matches := reEqOperands.FindAllStringSubmatchIndex(fullText, -1)
+	bodyEnd := conditionBodyEnd(lines)
 
 	for _, m := range matches {
 		if len(m) < 6 {
@@ -3364,6 +3365,41 @@ func analyzeConditionForEqColumn(lines []string, startLine int, file *indexedFil
 		rightStart, rightEnd := m[4], m[5]
 		leftRaw := fullText[leftStart:leftEnd]
 		rightRaw := fullText[rightStart:rightEnd]
+
+		// Самосравнение переменной @X = @X — заведомо истинное условие.
+		// Проверяем до общего @-skip, который отсекает присваивания и аргументы.
+		if isSelfComparedUserVariable(fullText, leftStart, rightStart, leftRaw, rightRaw) {
+			// Буфер условия может захватить следующий оператор (exec/API_EXEC)
+			// с named-args: там @X = @X штатный синтаксис, а не предикат.
+			if leftStart >= bodyEnd {
+				continue
+			}
+			// Пропускаем присваивание в SELECT (например, в подзапросе условия).
+			if isInSelectClause(lines, leftStart) {
+				continue
+			}
+			key := "var:" + strings.ToLower(leftRaw)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+
+			matchLine := startLine
+			if posLine := positionToLine(lines, leftStart); posLine > 0 {
+				matchLine = startLine + posLine - 1
+			}
+
+			findings = append(findings, Finding{
+				Rule:             RuleUseEqColumn,
+				Severity:         SeverityDeployStopper,
+				Message:          fmt.Sprintf("Заведомо истинное сравнение: %s = %s", leftRaw, rightRaw),
+				File:             file.Path,
+				Line:             matchLine,
+				Object:           strings.ToLower(leftRaw),
+				CurrentProductID: file.DsProductID,
+			})
+			continue
+		}
 
 		// Пропускаем присваивание в SELECT: @var = column или column = @var
 		// @var — переменная, не колонка, это не сравнение столбца с самим собой
@@ -3409,6 +3445,82 @@ func analyzeConditionForEqColumn(lines []string, startLine int, file *indexedFil
 	}
 
 	return findings
+}
+
+// isSelfComparedUserVariable проверяет, что оба операнда — одна и та же
+// пользовательская переменная T-SQL (@name), а не системная (@@name).
+func isSelfComparedUserVariable(fullText string, leftStart, rightStart int, leftRaw, rightRaw string) bool {
+	if !isUserVariableOperand(fullText, leftStart, leftRaw) ||
+		!isUserVariableOperand(fullText, rightStart, rightRaw) {
+		return false
+	}
+	return strings.EqualFold(leftRaw, rightRaw)
+}
+
+// isUserVariableOperand: операнд начинается с одного @, без квалификации точкой;
+// символ перед матчем не @ — иначе @@spid матчится как @spid.
+func isUserVariableOperand(fullText string, start int, raw string) bool {
+	if len(raw) < 2 || raw[0] != '@' || strings.Contains(raw, ".") {
+		return false
+	}
+	if start > 0 && fullText[start-1] == '@' {
+		return false
+	}
+	return true
+}
+
+// conditionBodyEnd возвращает позицию конца выражения условия в склеенном
+// тексте: начало первой строки после WHERE/ON/HAVING на нулевой глубине
+// скобок, которая открывает новый оператор или макрос (exec/API_EXEC/M_*/$_IF/
+// if/begin/...). Сборщик условия может захватить такой хвост вплоть до
+// M_KEEPPLAN/go, а в нём @X = @X — это штатные named-args, а не предикат.
+func conditionBodyEnd(lines []string) int {
+	offset := 0
+	depth := 0
+	for i, line := range lines {
+		if i > 0 && depth == 0 && isConditionTerminatorLine(line) {
+			return offset
+		}
+		depth += countParensRespectingStrings(line)
+		if depth < 0 {
+			depth = 0
+		}
+		offset += len(line) + 1
+	}
+	return offset
+}
+
+// isConditionTerminatorLine сообщает, что строка начинает новый оператор или
+// вызов макроса, а не продолжает выражение условия.
+func isConditionTerminatorLine(line string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(line))
+	if trimmed == "" || strings.HasPrefix(trimmed, "--") {
+		return false
+	}
+	first := trimmed
+	if idx := strings.IndexAny(first, " \t(["); idx >= 0 {
+		first = first[:idx]
+	}
+	switch first {
+	case "exec", "execute", "begin", "end", "if", "while", "return", "goto",
+		"declare", "set", "fetch", "open", "close", "deallocate",
+		"select", "insert", "update", "delete", "truncate", "merge",
+		"print", "raiserror", "break", "continue", "waitfor":
+		return true
+	}
+	if strings.HasPrefix(first, "api_") || strings.HasPrefix(first, "m_") ||
+		strings.HasPrefix(first, "profile_") || strings.HasPrefix(first, "_") ||
+		strings.HasPrefix(first, "$") {
+		return true
+	}
+	// Вызов макроса/функции отдельной строкой: Name(...)
+	if idx := strings.Index(trimmed, "("); idx > 0 {
+		name := trimmed[:idx]
+		if strings.TrimSpace(name) != "" && !strings.ContainsAny(name, " =<>,+-*/") {
+			return true
+		}
+	}
+	return false
 }
 
 // isInSelectClause проверяет, что позиция в объединённом тексте условия

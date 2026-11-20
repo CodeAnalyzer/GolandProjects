@@ -545,7 +545,7 @@ func collectColumnsFromConditionBranch(branch string, tables []tableFromClause) 
 
 func extractUnqualifiedConditionColumns(expr string) map[string]struct{} {
 	result := make(map[string]struct{})
-	matches := reHelperUnqualifiedCondition.FindAllStringSubmatch(expr, -1)
+	matches := reHelperUnqualifiedCondition.FindAllStringSubmatchIndex(expr, -1)
 
 	keywords := map[string]struct{}{
 		"and": {}, "or": {}, "not": {}, "in": {}, "between": {}, "like": {}, "is": {}, "null": {},
@@ -553,10 +553,15 @@ func extractUnqualifiedConditionColumns(expr string) map[string]struct{} {
 	}
 
 	for _, match := range matches {
-		if len(match) < 2 {
+		if len(match) < 4 {
 			continue
 		}
-		col := normalizeIdentifier(match[1])
+		start, end := match[2], match[3]
+		// Идентификатор внутри @name/@@name — переменная, а не колонка условия.
+		if start > 0 && expr[start-1] == '@' {
+			continue
+		}
+		col := normalizeIdentifier(expr[start:end])
 		if col == "" {
 			continue
 		}

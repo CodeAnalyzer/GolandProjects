@@ -394,6 +394,50 @@ func TestCheckIndexWrong_Coverage(t *testing.T) {
 	}
 }
 
+func TestCheckIndexWrong_VariableInConditionIsNotColumn(t *testing.T) {
+	const prefix = "delete pBPConsCoolingOff\n" +
+		"  from pBPConsCoolingOff M_ROWLOCK_INDEX(XPKpBPConsCoolingOff)\n" +
+		" where SPID = @@spid\n"
+
+	cases := []ruleCase{
+		{
+			name:      "self compared variable is not a column predicate",
+			content:   prefix + "   and @BankProductID = @BankProductID\nM_KEEPPLAN\n",
+			wantCount: 0,
+		},
+		{
+			name:       "real column predicate suggests XIE1",
+			content:    prefix + "   and BankProductID = @BankProductID\nM_KEEPPLAN\n",
+			wantCount:  1,
+			wantLine:   1,
+			wantObject: "pbpconscoolingoff.xpkpbpconscoolingoff",
+		},
+	}
+	if err := validateRuleCases(RuleIndexWrong, cases); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			file := newRuleTestFile(t, tc.content)
+			runner := &Runner{}
+			runner.exec = newRuleTestExec(file.Path, tc.content)
+			runner.indexCandCache = map[string][]tableIndexCandidate{
+				"pbpconscoolingoff": {
+					{Name: "XPKpBPConsCoolingOff", Fields: []string{"SPID", "AutoID"}, IsUnique: true},
+					{Name: "XIE1pBPConsCoolingOff", Fields: []string{"SPID", "BankProductID", "AmountMin"}},
+				},
+			}
+			findings, err := runner.checkIndexWrong(context.Background(), file)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			assertRuleFindings(t, RuleIndexWrong, tc, findings)
+		})
+	}
+}
+
 func TestCheckForeignPTablesUsing_Coverage(t *testing.T) {
 	cases := []ruleCase{
 		{name: "foreign p table", content: "select * from pForeign", wantCount: 1, wantObject: "pForeign"},

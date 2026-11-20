@@ -150,6 +150,100 @@ func TestAnalyzeConditionForEqColumn_DetectsSelfComparison(t *testing.T) {
 			lines:     []string{"where 0=0"},
 			wantCount: 0,
 		},
+		{
+			name:      "variable equals itself",
+			lines:     []string{"where SPID = @@spid and @BankProductID = @BankProductID"},
+			wantCount: 1,
+			wantObj:   "@bankproductid",
+		},
+		{
+			name:      "variable equals itself on separate line",
+			lines:     []string{"where", "  @X = @X"},
+			wantCount: 1,
+			wantObj:   "@x",
+		},
+		{
+			name: "function call continuation inside parens does not truncate condition",
+			lines: []string{
+				"where (",
+				"  isnull(@a, 0) = @b",
+				"  and @X = @X)",
+			},
+			wantCount: 1,
+			wantObj:   "@x",
+		},
+		{
+			name:      "variable self comparison inside exists subquery",
+			lines:     []string{"where exists (select 1 from t where @X = @X)"},
+			wantCount: 1,
+			wantObj:   "@x",
+		},
+		{
+			name:      "system variable equals itself",
+			lines:     []string{"where @@spid = @@spid"},
+			wantCount: 0,
+		},
+		{
+			name:      "different variables",
+			lines:     []string{"where @LastPrcnt = @Prcnt and @LastParentID = @ParentID"},
+			wantCount: 0,
+		},
+		{
+			name:      "variable left column right",
+			lines:     []string{"where @BankProductID = BankProductID"},
+			wantCount: 0,
+		},
+		{
+			name:      "column left variable right",
+			lines:     []string{"where BankProductID = @BankProductID"},
+			wantCount: 0,
+		},
+		{
+			name:      "mixed variable and column self comparisons",
+			lines:     []string{"where @X = @X and A.ID = A.ID"},
+			wantCount: 2,
+			wantObj:   "@x",
+		},
+		{
+			name:      "bitwise mask",
+			lines:     []string{"where Flags & Mask = Mask"},
+			wantCount: 0,
+		},
+		{
+			name: "exec named args after condition are not predicate",
+			lines: []string{
+				"where SPID = @@spid",
+				"",
+				"exec Cons_Period_ObjectAlgDate",
+				"     @ObjectID = @ObjectID,",
+				"     @OperDate = @OperDate",
+			},
+			wantCount: 0,
+		},
+		{
+			name: "exec named args after if exists are not predicate",
+			lines: []string{
+				"where ps.ContractID = @BeginID",
+				")",
+				"begin",
+				"exec Cons_MassPaySchedule_Prepare",
+				"     @BranchID = @BranchID,",
+				"     @OperDate = @OperDate",
+			},
+			wantCount: 0,
+		},
+		{
+			name: "API_EXEC named args after condition are not predicate",
+			lines: []string{
+				"where SPID = @@spid",
+				"",
+				"API_EXEC(API_Audit_PackageAddObjects, @RetVal,",
+				"          [",
+				"            @PackageID = @PackageID",
+				"          ])",
+			},
+			wantCount: 0,
+		},
 	}
 
 	for _, tc := range cases {
@@ -165,6 +259,70 @@ func TestAnalyzeConditionForEqColumn_DetectsSelfComparison(t *testing.T) {
 				t.Fatalf("finding.Rule = %q, want %q", findings[0].Rule, RuleUseEqColumn)
 			}
 		})
+	}
+}
+
+func TestIsSelfComparedUserVariable(t *testing.T) {
+	cases := []struct {
+		name       string
+		text       string
+		leftStart  int
+		rightStart int
+		leftRaw    string
+		rightRaw   string
+		want       bool
+	}{
+		{"same variable", "@BankProductID = @BankProductID", 0, 17, "@BankProductID", "@BankProductID", true},
+		{"case insensitive", "@bankproductid = @BankProductID", 0, 17, "@bankproductid", "@BankProductID", true},
+		{"different variables", "@A = @B", 0, 5, "@A", "@B", false},
+		{"system variable", "@@spid = @@spid", 1, 10, "@spid", "@spid", false},
+		{"variable vs column", "@X = X", 0, 5, "@X", "X", false},
+		{"qualified with dot", "@a.b = @a.b", 0, 7, "@a.b", "@a.b", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isSelfComparedUserVariable(tc.text, tc.leftStart, tc.rightStart, tc.leftRaw, tc.rightRaw)
+			if got != tc.want {
+				t.Fatalf("isSelfComparedUserVariable() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAnalyzeConditionForEqColumn_VarSelfComparisonLineAndMessage(t *testing.T) {
+	file := &indexedFile{Path: "test.sql", DsProductID: 1}
+	lines := []string{
+		"where col1 = :param",
+		"  and @BankProductID = @BankProductID",
+	}
+
+	findings := analyzeConditionForEqColumn(lines, 10, file)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	f := findings[0]
+	if f.Line != 11 {
+		t.Fatalf("line = %d, want 11", f.Line)
+	}
+	if f.Object != "@bankproductid" {
+		t.Fatalf("object = %q, want @bankproductid", f.Object)
+	}
+	if f.Message != "Заведомо истинное сравнение: @BankProductID = @BankProductID" {
+		t.Fatalf("message = %q", f.Message)
+	}
+	if f.Severity != SeverityDeployStopper {
+		t.Fatalf("severity = %d, want %d", f.Severity, SeverityDeployStopper)
+	}
+}
+
+func TestRuleUseEqColumnDescription(t *testing.T) {
+	meta, ok := ruleCatalog[RuleUseEqColumn]
+	if !ok {
+		t.Fatal("RuleUseEqColumn missing from catalog")
+	}
+	if meta.Description != "Сравнение с самим собой" {
+		t.Fatalf("description = %q, want %q", meta.Description, "Сравнение с самим собой")
 	}
 }
 
@@ -200,6 +358,12 @@ func TestAnalyzeConditionForEqColumn_SelectAlias_NoFinding(t *testing.T) {
 			name: "subquery select alias",
 			lines: []string{
 				"where col = (select Alias = Alias from t)",
+			},
+		},
+		{
+			name: "subquery select variable assignment",
+			lines: []string{
+				"where col = (select @x = @x from t)",
 			},
 		},
 	}

@@ -241,3 +241,33 @@ func TestStripStandaloneMacroLines(t *testing.T) {
 		}
 	})
 }
+
+func TestExtractUnqualifiedConditionColumns_SkipsVariables(t *testing.T) {
+	cases := []struct {
+		name string
+		expr string
+		want []string
+	}{
+		{name: "variable self comparison", expr: "SPID = @@spid and @BankProductID = @BankProductID", want: []string{"spid"}},
+		{name: "variable left column right", expr: "@BankProductID = BankProductID", want: nil},
+		{name: "column left variable right", expr: "BankProductID = @BankProductID", want: []string{"bankproductid"}},
+		{name: "qualified column", expr: "p.BankProductID = @BankProductID", want: []string{"bankproductid"}},
+		{name: "literal right", expr: "BankProductID = 1", want: []string{"bankproductid"}},
+		{name: "function on right", expr: "BankProductID = cast(@x as int)", want: []string{"bankproductid"}},
+		{name: "adjacent conditions", expr: "a = 1 and @b = 2", want: []string{"a"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractUnqualifiedConditionColumns(tc.expr)
+			if len(got) != len(tc.want) {
+				t.Fatalf("columns = %#v, want %v", got, tc.want)
+			}
+			for _, want := range tc.want {
+				if _, ok := got[want]; !ok {
+					t.Fatalf("columns = %#v, want %q", got, want)
+				}
+			}
+		})
+	}
+}
