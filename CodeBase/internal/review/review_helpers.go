@@ -41,6 +41,7 @@ var (
 	reDeclareAssign    = regexp.MustCompile(`(?is)^\s*declare\s+(@[A-Za-z_][A-Za-z0-9_]*)\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)\s*=\s*(.+)$`)
 	reAPICreateProc    = regexp.MustCompile(`(?i)API_CREATE_PROC\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)`)
 	reBeginProcedure   = regexp.MustCompile(`(?i)__BEGIN_PROCEDURE__\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)`)
+	reDclProcBody      = regexp.MustCompile(`(?i)DCL_PROC_BODY\s*\(`)
 
 	// Regexes для join/condition парсинга.
 	reHelperJoinEq               = regexp.MustCompile(`(?i)\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b\s*=\s*\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b`)
@@ -2015,7 +2016,42 @@ func collectVariableTypes(parsed *sqlparser.ParseResult, content string) map[str
 		}
 	}
 
+	applyMacroServiceVarDefaults(result, content)
+
 	return result
+}
+
+// applyMacroServiceVarDefaults заполняет встроенные типы сервисных переменных
+// Diasoft-макросов, оставшихся в контенте нераскрытыми: replaceMacros собирает
+// #define только из самого файла, а #include <macros.h> не резолвится, поэтому
+// декларации из ядрового макроса недостижимы для extractDeclareBlocks.
+// Источник таблицы — fa-commonfiles\CommonFiles\SERVER\Include\MACROS.H:
+//   - __BEGIN_PROCEDURE__ (строка 1346): declare @RetVal int, @trancount int;
+//   - DCL_PROC_BODY, PG-стиль (строка 751): declare @tran_count int,
+//     @err_code int, @msg varchar(255).
+// Набор стабилен: по препроцессированным .t01 из fa-contracts 43 из 47 файлов,
+// использующих @RetVal, содержат ровно этот declare. Заполняет только пробелы:
+// явные declares и параметры сигнатуры анализируемого файла приоритетны.
+func applyMacroServiceVarDefaults(result map[string]string, content string) {
+	if result == nil {
+		return
+	}
+	if reBeginProcedure.MatchString(content) {
+		setDefaultVariableType(result, "retval", "int")
+		setDefaultVariableType(result, "trancount", "int")
+	}
+	if reDclProcBody.MatchString(content) {
+		setDefaultVariableType(result, "tran_count", "int")
+		setDefaultVariableType(result, "err_code", "int")
+		setDefaultVariableType(result, "msg", "varchar(255)")
+	}
+}
+
+func setDefaultVariableType(result map[string]string, name string, typeName string) {
+	if _, exists := result[name]; exists {
+		return
+	}
+	result[name] = typeName
 }
 
 // extractCurrentProcName определяет имя текущей процедуры из parsed-результата

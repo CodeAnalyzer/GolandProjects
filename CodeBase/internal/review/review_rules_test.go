@@ -1947,6 +1947,83 @@ func TestCollectVariableTypes_ExecOutputDoesNotOverwriteDeclareType(t *testing.T
 	}
 }
 
+func TestCollectVariableTypes_MacroServiceVarDefaults(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    map[string]string
+		notWant []string
+	}{
+		{
+			name: "unexpanded __BEGIN_PROCEDURE__ provides retval and trancount",
+			content: `DCL_PROC_BEGIN(MyProc)
+                 @Param DSIDENTIFIER
+as
+  __BEGIN_PROCEDURE__(MyProc)
+
+  select @RetVal = max(NTFID)
+    from pTable
+   where SPID = @@spid`,
+			want: map[string]string{"retval": "int", "trancount": "int"},
+		},
+		{
+			name: "unexpanded DCL_PROC_BODY provides PG service vars",
+			content: `DCL_PROC_BEGIN(MyProc)
+as
+  DCL_PROC_BODY(MyProc)
+
+  select @err_code = max(ErrID) from pTable`,
+			want: map[string]string{"tran_count": "int", "err_code": "int", "msg": "varchar(255)"},
+		},
+		{
+			name: "explicit declare overrides builtin msg type",
+			content: `DCL_PROC_BEGIN(MyProc)
+as
+  DCL_PROC_BODY(MyProc)
+
+  declare @msg varchar(1000)
+
+  select @err_code = 0`,
+			want: map[string]string{"msg": "varchar(1000)", "err_code": "int"},
+		},
+		{
+			name: "explicit declare overrides builtin retval type",
+			content: `  __BEGIN_PROCEDURE__(MyProc)
+
+  declare @RetVal DSIDENTIFIER
+
+  select @RetVal = 1`,
+			want: map[string]string{"retval": "DSIDENTIFIER"},
+		},
+		{
+			name: "no macros - no builtin types",
+			content: `  declare @LocalVar DSINT_KEY
+
+  select @RetVal = 1
+  select @trancount = @@trancount
+  select @err_code = 0`,
+			want:    map[string]string{"localvar": "DSINT_KEY"},
+			notWant: []string{"retval", "trancount", "tran_count", "err_code", "msg"},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			types := collectVariableTypes(&sqlparser.ParseResult{}, tc.content)
+			for name, wantType := range tc.want {
+				if got := types[name]; got != wantType {
+					t.Fatalf("types[%q] = %q, want %q", name, got, wantType)
+				}
+			}
+			for _, name := range tc.notWant {
+				if got, exists := types[name]; exists {
+					t.Fatalf("types[%q] = %q, want absent", name, got)
+				}
+			}
+		})
+	}
+}
+
 func TestHasExplicitConversion_DetectsConvertAndCast(t *testing.T) {
 	cases := []struct {
 		expr      string

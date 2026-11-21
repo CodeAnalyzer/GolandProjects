@@ -592,6 +592,83 @@ func TestCheckDatatype_BranchesCoverage(t *testing.T) {
 	}
 }
 
+func TestCheckDatatype_MacroServiceVars(t *testing.T) {
+	cases := []struct {
+		name       string
+		content    string
+		fragments  []*model.QueryFragment
+		colTypes   map[string]string
+		wantCount  int
+		wantObject string
+	}{
+		{
+			name:    "retval builtin int, max of DSIDENTIFIER column",
+			content: "  __BEGIN_PROCEDURE__(MyProc)\n\n  select @RetVal = max(NTFID)\n    from pTable\n   where SPID = @@spid",
+			fragments: []*model.QueryFragment{{
+				QueryText:  "select @RetVal = max(NTFID)\n    from pTable\n   where SPID = @@spid",
+				LineNumber: 3,
+			}},
+			colTypes:   map[string]string{"ptable|ntfid": "DSIDENTIFIER"},
+			wantCount:  1,
+			wantObject: "@RetVal",
+		},
+		{
+			name:    "retval builtin int, explicit convert suppresses finding",
+			content: "  __BEGIN_PROCEDURE__(MyProc)\n\n  select @RetVal = convert(int, NTFID)\n    from pTable",
+			fragments: []*model.QueryFragment{{
+				QueryText:  "select @RetVal = convert(int, NTFID)\n    from pTable",
+				LineNumber: 3,
+			}},
+			colTypes:  map[string]string{"ptable|ntfid": "DSIDENTIFIER"},
+			wantCount: 0,
+		},
+		{
+			name:    "no macro - retval type unknown, no finding",
+			content: "  select @RetVal = max(NTFID)\n    from pTable",
+			fragments: []*model.QueryFragment{{
+				QueryText:  "select @RetVal = max(NTFID)\n    from pTable",
+				LineNumber: 1,
+			}},
+			colTypes:  map[string]string{"ptable|ntfid": "DSIDENTIFIER"},
+			wantCount: 0,
+		},
+		{
+			name:    "err_code builtin int from DCL_PROC_BODY, max of DSBIGINT column",
+			content: "  DCL_PROC_BODY(MyProc)\n\n  select @err_code = max(ErrID)\n    from pTable",
+			fragments: []*model.QueryFragment{{
+				QueryText:  "select @err_code = max(ErrID)\n    from pTable",
+				LineNumber: 3,
+			}},
+			colTypes:   map[string]string{"ptable|errid": "DSBIGINT"},
+			wantCount:  1,
+			wantObject: "@err_code",
+		},
+	}
+	parser := sqlparser.NewParser()
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := parser.ParseContent(tc.content)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if tc.fragments != nil {
+				parsed.Fragments = tc.fragments
+			}
+			file := newRuleTestFile(t, tc.content)
+			runner := &Runner{}
+			runner.exec = newRuleTestExec(file.Path, tc.content)
+			runner.colTypeCache = tc.colTypes
+			runner.macroTypeCache = map[string]string{"max": ""}
+			findings, err := runner.checkDatatype(context.Background(), parsed, file)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			assertRuleFindings(t, RuleDatatype, ruleCase{name: tc.name, wantCount: tc.wantCount, wantObject: tc.wantObject}, findings)
+		})
+	}
+}
+
 func TestCheckExecNotExistsProcedures_Coverage(t *testing.T) {
 	cases := []ruleCase{
 		{name: "missing procedure", content: "exec pMissing", wantCount: 1, wantObject: "pMissing"},
