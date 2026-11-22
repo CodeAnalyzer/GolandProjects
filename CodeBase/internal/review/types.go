@@ -139,7 +139,13 @@ var nullComparisonBinaryRe = regexp.MustCompile(`(?i)(?:^|[^a-zA-Z_])((?:=|<>|!=
 
 // nullParamDefaultRe соответствует строкам объявления параметра или переменной с дефолтом = null:
 // @Name   DSTYPE = null,   или   @Name DSTYPE = null,   или   @Name varchar(20) = null,
-var nullParamDefaultRe = regexp.MustCompile(`(?i)@\w+\s+\w+(?:\s*\([^)]*\))?\s*=\s*null\s*(?:output\s*)?,?\s*$`)
+// Направление выходного параметра задаётся синонимами out/output (как и при разборе
+// направлений exec-аргументов, см. isSQLKeywordNotType в review_helpers.go). Пропуск действует, только
+// если объявление завершает строку: якорь $ допускает хвост из запятой и пробелов
+// (строчный комментарий удалён stripLineComments до проверки); варианты вида
+// "= null out)" или несколько параметров в одной строке не покрываются —
+// в корпусе FA таких вхождений нет.
+var nullParamDefaultRe = regexp.MustCompile(`(?i)@\w+\s+\w+(?:\s*\([^)]*\))?\s*=\s*null\s*(?:out(?:put)?\s*)?,?\s*$`)
 
 // nullSelectAssignRe соответствует строкам присвоения в SELECT: @Var = null  или  @Var = null,
 // (без объявления типа — это continuation-строка многострочного SELECT @var = ...)
