@@ -1677,10 +1677,96 @@ func collectExecCallLines(lines []string, startLine int) string {
 	return strings.Join(collected, "\n")
 }
 
-// splitStatementsWithOffsets аналогична splitStatementsForHintType, но дополнительно
-// сохраняет байтовый offset начала каждого оператора в исходном тексте.
+// maskLexemes — общий байтовый автомат sanitizeSQLForMacroScan и
+// maskSQLComments: один проход по []byte с состояниями normal/string/
+// line-comment/block-comment. Комментарии (-- до конца строки и /* */)
+// заменяются пробелами; \n и \r сохраняются на своих позициях; состояние
+// литерала (экранирование — удвоенная кавычка) переносится через \n, как в
+// splitStatementsWithOffsets. Инвариант len(результат) == len(вход) в байтах
+// критичен: контент декодирован CP866→UTF-8 (кириллица — 2 байта), и
+// offset-арифметика splitStatementsWithOffsets с подсчётом Line по исходному
+// тексту разъехалась бы при rune-маскировке. При maskStringLiterals
+// содержимое литералов заменяется на '?', иначе байты литералов сохраняются.
+func maskLexemes(s string, maskStringLiterals bool) string {
+	result := []byte(s)
+	const (
+		stateNormal = iota
+		stateInString
+		stateLineComment
+		stateBlockComment
+	)
+	state := stateNormal
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch state {
+		case stateNormal:
+			if ch == '\'' {
+				state = stateInString
+			} else if ch == '-' && i+1 < len(s) && s[i+1] == '-' {
+				state = stateLineComment
+				result[i], result[i+1] = ' ', ' '
+				i++
+			} else if ch == '/' && i+1 < len(s) && s[i+1] == '*' {
+				state = stateBlockComment
+				result[i], result[i+1] = ' ', ' '
+				i++
+			}
+		case stateInString:
+			if ch == '\'' {
+				if i+1 < len(s) && s[i+1] == '\'' {
+					i++ // экранированная кавычка '' — оставляем обе
+					continue
+				}
+				state = stateNormal
+				continue
+			}
+			if maskStringLiterals && ch != '\n' && ch != '\r' {
+				result[i] = '?'
+			}
+		case stateLineComment:
+			if ch == '\n' || ch == '\r' {
+				state = stateNormal
+				continue
+			}
+			result[i] = ' '
+		case stateBlockComment:
+			if ch == '*' && i+1 < len(s) && s[i+1] == '/' {
+				result[i], result[i+1] = ' ', ' '
+				i++
+				state = stateNormal
+				continue
+			}
+			if ch != '\n' && ch != '\r' {
+				result[i] = ' '
+			}
+		}
+	}
+	return string(result)
+}
+
+// maskSQLComments маскирует SQL-комментарии (-- и /* */) пробелами с
+// сохранением байтовой длины, \n и \r; строковые литералы сохраняются
+// (в отличие от sanitizeSQLForMacroScan). Применяется на входе
+// splitStatementsWithOffsets и построчных сканеров (insertRowLock,
+// useSelectAll, truncTbl, varUseAfterCursor) — закомментированный SQL-код
+// не должен давать findings. Принятое ограничение (как у остальных сканеров
+// пакета): bracket-quoted идентификаторы ([a--b], "a--b") не распознаются
+// как литералы — их содержимое может быть ошибочно принято за комментарий.
+func maskSQLComments(text string) string {
+	return maskLexemes(text, false)
+}
+
+// splitStatementsWithOffsets разбивает текст на отдельные операторы
+// SELECT/UPDATE/DELETE на нулевом уровне вложенности; аналогична
+// splitStatementsForHintType, но дополнительно сохраняет байтовый offset
+// начала каждого оператора в исходном тексте. Все потребители —
+// правила review (deferredUpdate, memoryUniqueIndexUpdate, inSubQuery,
+// tooManyJoins); внешних зависимостей от текста комментариев нет, поэтому
+// вход маскируется maskSQLComments: фантомные операторы из закомментированного
+// кода не создаются, байтовые offset и подсчёт \n не меняются.
 func splitStatementsWithOffsets(text string) []stmtWithOffset {
-	lower := toLowerASCII(text)
+	masked := maskSQLComments(text)
+	lower := toLowerASCII(masked)
 	result := make([]stmtWithOffset, 0)
 	depth := 0
 	inString := false
@@ -1711,7 +1797,7 @@ func splitStatementsWithOffsets(text string) []stmtWithOffset {
 			if keywordMatchAt(lower, i, "select") || keywordMatchAt(lower, i, "update") || keywordMatchAt(lower, i, "delete") {
 				if i > 0 && isCharWordBoundary(lower[i-1]) {
 					if startIdx < i {
-						stmt := strings.TrimSpace(text[startIdx:i])
+						stmt := strings.TrimSpace(masked[startIdx:i])
 						if stmt != "" {
 							result = append(result, stmtWithOffset{stmt: stmt, offset: startIdx})
 						}
@@ -1721,8 +1807,8 @@ func splitStatementsWithOffsets(text string) []stmtWithOffset {
 			}
 		}
 	}
-	if startIdx < len(text) {
-		stmt := strings.TrimSpace(text[startIdx:])
+	if startIdx < len(masked) {
+		stmt := strings.TrimSpace(masked[startIdx:])
 		if stmt != "" {
 			result = append(result, stmtWithOffset{stmt: stmt, offset: startIdx})
 		}

@@ -1596,62 +1596,10 @@ var apiExecMacroRe = regexp.MustCompile(`(?i)\bAPI_EXEC\s*\(`)
 // корректен. Лексемы разбираются в точке сканирования, что устраняет
 // взаимовлияние «комментарий с апострофом» и «литерал с --» (двухфазная
 // схема removeComments → mask давала на них false negative).
+// Автомат — общий с maskSQLComments (maskLexemes); различие только в
+// маскировке литералов.
 func sanitizeSQLForMacroScan(s string) string {
-	result := []byte(s)
-	const (
-		stateNormal = iota
-		stateInString
-		stateLineComment
-		stateBlockComment
-	)
-	state := stateNormal
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		switch state {
-		case stateNormal:
-			if ch == '\'' {
-				state = stateInString
-			} else if ch == '-' && i+1 < len(s) && s[i+1] == '-' {
-				state = stateLineComment
-				result[i], result[i+1] = ' ', ' '
-				i++
-			} else if ch == '/' && i+1 < len(s) && s[i+1] == '*' {
-				state = stateBlockComment
-				result[i], result[i+1] = ' ', ' '
-				i++
-			}
-		case stateInString:
-			if ch == '\n' || ch == '\r' {
-				continue
-			}
-			if ch == '\'' {
-				if i+1 < len(s) && s[i+1] == '\'' {
-					i++ // экранированная кавычка '' — оставляем обе
-					continue
-				}
-				state = stateNormal
-				continue
-			}
-			result[i] = '?'
-		case stateLineComment:
-			if ch == '\n' || ch == '\r' {
-				state = stateNormal
-				continue
-			}
-			result[i] = ' '
-		case stateBlockComment:
-			if ch == '*' && i+1 < len(s) && s[i+1] == '/' {
-				result[i], result[i+1] = ' ', ' '
-				i++
-				state = stateNormal
-				continue
-			}
-			if ch != '\n' && ch != '\r' {
-				result[i] = ' '
-			}
-		}
-	}
-	return string(result)
+	return maskLexemes(s, true)
 }
 
 func (r *Runner) checkAPIExecOutsideFacade(ctx context.Context, file *indexedFile) ([]Finding, error) {
@@ -2497,19 +2445,15 @@ func (r *Runner) checkUseSelectAll(ctx context.Context, file *indexedFile) ([]Fi
 	if err != nil {
 		return nil, err
 	}
-	contentStr := macroResult.Content
+	// Маскировка комментариев: закомментированный SQL-код (/* */ и хвостовые
+	// --) не должен давать findings; длина и строки сохраняются.
+	contentStr := maskSQLComments(macroResult.Content)
 	lines := strings.Split(contentStr, "\n")
 
 	for i, line := range lines {
 		lineNum := i + 1
 
-		// Пропускаем комментарии (trim и проверяем --)
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
-			continue
-		}
-
-		// Ищем SELECT *
+		// Ищем SELECT * (комментарии замаскированы)
 		if selectAllRe.MatchString(line) {
 			findings = append(findings, Finding{
 				Rule:             RuleUseSelectAll,
@@ -2533,16 +2477,12 @@ func (r *Runner) checkTruncTbl(ctx context.Context, file *indexedFile) ([]Findin
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(string(content), "\n")
+	// Маскировка комментариев: закомментированный SQL-код (/* */ и хвостовые
+	// --) не должен давать findings; длина и строки сохраняются.
+	lines := strings.Split(maskSQLComments(string(content)), "\n")
 
 	for i, line := range lines {
 		lineNum := i + 1
-
-		// Пропускаем комментарии (trim и проверяем --)
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
-			continue
-		}
 
 		// Ищем TRUNCATE TABLE и извлекаем имя таблицы
 		matches := truncateTblRe.FindStringSubmatch(line)
@@ -3127,7 +3067,10 @@ func (r *Runner) checkInsertRowLock(ctx context.Context, file *indexedFile) ([]F
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(string(content), "\n")
+	// Маскировка комментариев: закомментированный SQL-код (/* */ и хвостовые
+	// --) не должен давать findings; длина и строки сохраняются, в том числе
+	// внутри буфера INSERT (комментарий не завершает оператор).
+	lines := strings.Split(maskSQLComments(string(content)), "\n")
 
 	// Состояние парсера
 	inInsert := false
@@ -3138,9 +3081,9 @@ func (r *Runner) checkInsertRowLock(ctx context.Context, file *indexedFile) ([]F
 	for i, line := range lines {
 		lineNum := i + 1
 
-		// Пропускаем комментарии целиком (но учитываем если мы внутри INSERT)
+		// Пропускаем пустые (в том числе замаскированные) строки
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
+		if trimmed == "" {
 			continue
 		}
 
@@ -5185,7 +5128,15 @@ func (r *Runner) checkVarUseAfterCursor(ctx context.Context, file *indexedFile) 
 	if err != nil {
 		return nil, err
 	}
-	text := macroResult.Content
+	// Маскировка комментариев: парсеры курсора (parseAllFetchIntoStatements,
+	// parseDeallocateStatements, parseCursorDeclarations) матчат сырые строки
+	// без состояния блока, поэтому закомментированные fetch/deallocate/declare
+	// cursor считались операторами. Длина и строки сохраняются, Line-координаты
+	// валидны. Расширение skip-спана fetchVariablesLineEnd по упоминанию
+	// переменной в комментарии после маскировки неактуально, но
+	// непротиворечиво: парсер и скан использования работают по одному
+	// маскированному тексту.
+	text := maskSQLComments(macroResult.Content)
 	lines := strings.Split(text, "\n")
 
 	fetches := parseAllFetchIntoStatements(text)
