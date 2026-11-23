@@ -4327,6 +4327,329 @@ as
 	}
 }
 
+func TestCheckVarUseAfterCursor_MultilineSelectReassignBelowDeallocate_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare @b varchar(10)
+  declare c cursor for select A, B from tX
+  open c
+  fetch c into @a, @b
+  deallocate c
+  select @a    = isnull(Value,0),
+         @b = isnull(Brief,'')
+  PROFILE_TIME_VAR1('val: @a = %1!', @a)
+  if @a in (1, 2)
+    print @b
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (выровненный «=» и строка-продолжение списка — переопределение; чтения ниже — использование переопределённых переменных)", len(findings))
+	}
+}
+
+func TestCheckVarUseAfterCursor_SetIndented_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare c cursor for select A from tX
+  fetch c into @a
+  deallocate c
+      set @a = 5
+  print @a
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (присваивание set с отступом распознаётся как переопределение)", len(findings))
+	}
+}
+
+func TestCheckVarUseAfterCursor_SetCompoundOp_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare c cursor for select A from tX
+  fetch c into @a
+  deallocate c
+  set @a += 1
+  print @a
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (составной оператор присваивания — переопределение)", len(findings))
+	}
+}
+
+func TestCheckVarUseAfterCursor_SetCompoundOpNoSpace_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare c cursor for select A from tX
+  fetch c into @a
+  deallocate c
+  set @a+=1
+  print @a
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (составной оператор без пробела — переопределение, R1)", len(findings))
+	}
+}
+
+func TestCheckVarUseAfterCursor_SetRhsUsage_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare c cursor for select A from tX
+  fetch c into @a
+  deallocate c
+  set @other = @a
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (вхождение в правой части присваивания — использование)", len(findings))
+	}
+	if findings[0].Object != "@a" {
+		t.Fatalf("object = %q, want @a", findings[0].Object)
+	}
+}
+
+func TestCheckVarUseAfterCursor_FetchOtherCursorReassign_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare c1 cursor for select A from tX
+  fetch c1 into @a
+  deallocate c1
+  declare c2 cursor for select B from tX
+  fetch c2 into @a
+  print @a
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (FETCH другого курсора переопределяет переменную)", len(findings))
+	}
+}
+
+func TestCheckVarUseAfterCursor_ReadBeforeReassign_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare c cursor for select A from tX
+  fetch c into @a
+  deallocate c
+  PROFILE_TIME_VAR1('x @a = %1!', @a)
+  select @a = 0
+  print @a
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (переопределение прекращает отслеживание только для строк ниже себя)", len(findings))
+	}
+	if findings[0].Object != "@a" {
+		t.Fatalf("object = %q, want @a", findings[0].Object)
+	}
+	if findings[0].Line != 7 {
+		t.Fatalf("line = %d, want 7 (строка чтения до переопределения)", findings[0].Line)
+	}
+}
+
+func TestCheckVarUseAfterCursor_ComparisonNotReassign_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare c cursor for select A from tX
+  fetch c into @a
+  deallocate c
+  if @a = 1
+    print 1
+  select case when @a = 1 then 1 else 0 end
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("findings count = %d, want 2 (сравнение в условии — не переопределение)", len(findings))
+	}
+	for _, f := range findings {
+		if f.Object != "@a" {
+			t.Fatalf("object = %q, want @a", f.Object)
+		}
+	}
+	if findings[0].Line != 7 || findings[1].Line != 9 {
+		t.Fatalf("lines = %d,%d, want 7,9", findings[0].Line, findings[1].Line)
+	}
+}
+
+func TestCheckVarUseAfterCursor_DeclareBelowDeallocate_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare c cursor for select A from tX
+  fetch c into @a
+  deallocate c
+go
+create proc TestProc2
+as
+  declare @a int
+  print @a
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings count = %d, want 0 (переменная объявлена заново ниже DEALLOCATE)", len(findings))
+	}
+}
+
+func TestCheckVarUseAfterCursor_ExecParamNotReassign_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare c cursor for select A from tX
+  fetch c into @a
+  deallocate c
+  exec MyProc
+         @a = @a output,
+         @b = 5
+  print @a
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("findings count = %d, want 2 (именованный параметр EXEC — использование, а не переопределение)", len(findings))
+	}
+	for _, f := range findings {
+		if f.Object != "@a" {
+			t.Fatalf("object = %q, want @a", f.Object)
+		}
+	}
+	if findings[0].Line != 8 || findings[1].Line != 10 {
+		t.Fatalf("lines = %d,%d, want 8,10 (строка параметра и строка чтения)", findings[0].Line, findings[1].Line)
+	}
+}
+
+func TestCheckVarUseAfterCursor_ProfilerLiteralNotReassign_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @a int
+  declare c cursor for select A from tX
+  fetch c into @a
+  deallocate c
+  PROFILE_TIME_VAR1('insert into t, @a = %1!', @a)
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (вхождение @a = внутри литерала переопределением не считается)", len(findings))
+	}
+	if findings[0].Object != "@a" {
+		t.Fatalf("object = %q, want @a", findings[0].Object)
+	}
+	if findings[0].Line != 7 {
+		t.Fatalf("line = %d, want 7 (строка профайлера)", findings[0].Line)
+	}
+}
+
+func TestCheckVarUseAfterCursor_SubstringAnchorWordBoundary_Finding(t *testing.T) {
+	content := `create proc TestProc
+as
+  declare @ChangedBrief varchar(100)
+  declare c cursor for select A from tX
+  fetch c into @ChangedBrief
+  deallocate c
+  select @ChangedBriefs = 1
+`
+	r := &Runner{}
+	path := normalizePath("test.sql")
+	r.exec = &reviewExecContext{filePath: path, content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+	findings, err := r.checkVarUseAfterCursor(context.Background(), &indexedFile{Path: path, DsProductID: 1})
+	r.exec = nil
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1 (kill по word-boundary: @ChangedBriefs — другое имя; скан использований подстрочный — якорь сохраняется)", len(findings))
+	}
+	if findings[0].Object != "@ChangedBrief" {
+		t.Fatalf("object = %q, want @ChangedBrief", findings[0].Object)
+	}
+	if findings[0].Line != 7 {
+		t.Fatalf("line = %d, want 7", findings[0].Line)
+	}
+}
+
 func TestCheckCursorFetchArguments_TrailingCommentCounted_NoFinding(t *testing.T) {
 	content := `create proc TestProc
 as

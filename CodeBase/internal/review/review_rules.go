@@ -5116,11 +5116,81 @@ func inFetchSkipSpan(lineNumber int, spans [][2]int) bool {
 	return false
 }
 
+// Регэкспы kill-детектора правила varUseAfterCursor: присваивание
+// отслеживаемой переменной в окне ниже DEALLOCATE прекращает её отслеживание.
+// Матчатся по стрипнутой строке в нижнем регистре текста с маскированными
+// строковыми литералами (length-preserving).
+var (
+	// Строка-объявление (declare @var / declare cursor).
+	reVuacDeclareStart = regexp.MustCompile(`^declare\b`)
+	// SET-оператор (любой отступ).
+	reVuacSetStart = regexp.MustCompile(`^set\b`)
+	// Заголовок SELECT-присваивания: @var в позиции первого элемента списка
+	// (сразу после select [top N]).
+	reVuacSelectHeader = regexp.MustCompile(`^select(\s+top\s+[^\s,=]+)?\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*(\+=|-=|\*=|/=|%=|&=|\|=|\^=|=)`)
+	// Строка-продолжение открытого списка SELECT-присваиваний: @var в начале
+	// строки (запятая необязательна — она может закрывать предыдущую строку).
+	reVuacSelectCont = regexp.MustCompile(`^,?\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*(\+=|-=|\*=|/=|%=|&=|\|=|\^=|=)`)
+	// @var в позиции левой части присваивания (якорь к началу фрагмента).
+	reVuacAssignCandidate = regexp.MustCompile(`^(@[A-Za-z_][A-Za-z0-9_]*)\s*(\+=|-=|\*=|/=|%=|&=|\|=|\^=|=)`)
+	// Секции, завершающие список SELECT-присваиваний.
+	reVuacNewSection = regexp.MustCompile(`^(from|where|group|order|having|union|option|compute|for)\b`)
+	// Новый SQL-оператор: закрывает список присваиваний и сам список не
+	// открывает (кроме select — обрабатывается заголовком выше).
+	reVuacNewOperator = regexp.MustCompile(`^(exec|execute|select|set|declare|if|else|while|insert|update|delete|print|fetch|__fetch_next__|open|close|deallocate|__deallocate_cursor__|__declare_cursor__|return|begin|end|goto|break|continue|create|drop|alter|grant|revoke|truncate|merge|waitfor|raiserror|use|go)\b`)
+	// Standalone-вызов макроса/профайлера: закрывает список присваиваний.
+	reVuacStandaloneCall = regexp.MustCompile(`^(m_[a-z0-9_]+|profile_time_[a-z0-9_]+|__[a-z0-9_]+)\s*\(`)
+)
+
+// vuacSameLineAssignments возвращает имена переменных (нижний регистр, с @),
+// стоящих в левой части присваиваний на той же строке после запятых верхнего
+// уровня: select @a = 1, @b = 2. Запятые внутри скобок (аргументы функций,
+// подзапросы) позиций присваивания не создают — сравнения вида
+// iif(@c = 1, 2, 3) kill не дают. Скан идёт от индекса from (конец
+// предыдущего матча) до конца строки.
+func vuacSameLineAssignments(line string, from int) []string {
+	names := make([]string, 0)
+	depth := 0
+	i := from
+	for i < len(line) {
+		switch line[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth != 0 {
+				break
+			}
+			rest := strings.TrimLeft(line[i+1:], " \t")
+			if m := reVuacAssignCandidate.FindStringSubmatchIndex(rest); m != nil {
+				names = append(names, rest[m[2]:m[3]])
+				// Продолжаем скан за концом матча: позиция в line равна
+				// i+1 + (число пропущенных пробелов) + m[1].
+				i = i + 1 + (len(line) - i - 1 - len(rest)) + m[1]
+				continue
+			}
+		}
+		i++
+	}
+	return names
+}
+
 // checkVarUseAfterCursor ищет использование переменных курсора после его
 // деалокации. Окно анализа после DEALLOCATE ограничивается сверху следующей
 // декларацией того же имени (переобъявление открывает новую жизнь курсора);
 // переменные берутся из FETCH'ей текущей жизни — между предыдущей декларацией
 // и DEALLOCATE. Все структуры парсятся на одном expanded-тексте.
+//
+// Переопределение переменной в окне ниже DEALLOCATE прекращает её
+// отслеживание (kill-семантика): присваивание set/select (включая
+// многострочные списки и составные операторы), объявление declare и FETCH
+// другого курсора удаляют переменную из активного множества; строки ниже
+// переопределения finding для неё не формируют. Kill-детектор работает по
+// тексту с маскированными строковыми литералами (содержимое '...' не даёт
+// kill); скан использований остаётся на comment-masked тексте и подстрочным.
 func (r *Runner) checkVarUseAfterCursor(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	seen := make(map[string]struct{})
@@ -5138,6 +5208,11 @@ func (r *Runner) checkVarUseAfterCursor(ctx context.Context, file *indexedFile) 
 	// маскированному тексту.
 	text := maskSQLComments(macroResult.Content)
 	lines := strings.Split(text, "\n")
+	// Дополнительная маскировка строковых литералов для kill-детектора:
+	// length-preserving ('\n' сохраняются), координаты строк совпадают.
+	// Тексты профайлера вида ', @var = %1!' внутри литералов переопределением
+	// не являются; скан использований ниже идёт по lines (литералы видны).
+	litLines := strings.Split(sanitizeSQLForMacroScan(text), "\n")
 
 	fetches := parseAllFetchIntoStatements(text)
 	if len(fetches) == 0 {
@@ -5188,11 +5263,113 @@ func (r *Runner) checkVarUseAfterCursor(ctx context.Context, file *indexedFile) 
 			continue
 		}
 
+		// Активное множество переменных на окно DEALLOCATE: сет нижних имён
+		// (дубликаты из нескольких FETCH'ей жизни схлопываются) с сохранением
+		// исходного написания для findings; orderedVars фиксирует порядок.
+		orderedVars := make([]string, 0, len(vars))
+		active := make(map[string]string, len(vars))
+		for _, v := range vars {
+			key := strings.ToLower(v)
+			if _, ok := active[key]; ok {
+				continue
+			}
+			active[key] = v
+			orderedVars = append(orderedVars, key)
+		}
+
+		// Kill по FETCH других курсоров окна: FETCH с другим именем курсора
+		// переприсваивает свои переменные — kill привязан к строке FETCH
+		// (LineStart), продолжения многострочного INTO накрываются удалением
+		// переменных из активного множества.
+		fetchKills := make(map[int]map[string]struct{})
+		for _, fetch := range fetches {
+			if normalizeIdentifier(fetch.CursorName) == cursorName {
+				continue
+			}
+			if fetch.LineStart <= da.Line || fetch.LineStart >= nextDeclLine {
+				continue
+			}
+			for _, v := range fetch.Variables {
+				key := strings.ToLower(v)
+				if _, ok := active[key]; !ok {
+					continue
+				}
+				if fetchKills[fetch.LineStart] == nil {
+					fetchKills[fetch.LineStart] = make(map[string]struct{})
+				}
+				fetchKills[fetch.LineStart][key] = struct{}{}
+			}
+		}
+
 		// Сканируем строки окна после DEALLOCATE (i 0-based, поэтому окно
-		// 1-based — da.Line+1 .. nextDeclLine-1).
+		// 1-based — da.Line+1 .. nextDeclLine-1) последовательно: сначала
+		// детекторы переопределения (kill), затем поиск использований
+		// оставшихся переменных. Машина состояний SELECT-списка обязана
+		// видеть каждую строку окна (включая строки FETCH), поэтому проверка
+		// skip-спанов стоит после kill-детекторов.
+		selectListOpen := false
 		for i := da.Line; i < len(lines) && i+1 < nextDeclLine; i++ {
 			line := lines[i]
 			lower := strings.ToLower(line)
+
+			killLine := strings.ToLower(litLines[i])
+			killTrimmed := strings.TrimSpace(killLine)
+
+			// Kill по FETCH другого курсора.
+			if fk, ok := fetchKills[i+1]; ok {
+				for name := range fk {
+					delete(active, name)
+				}
+			}
+
+			if killTrimmed != "" {
+				// declare @var ниже DEALLOCATE — повторное объявление
+				// перезапускает жизнь переменной.
+				if reVuacDeclareStart.MatchString(killTrimmed) {
+					for name := range active {
+						if containsWord(killLine, name) {
+							delete(active, name)
+						}
+					}
+				}
+
+				// SET-оператор с любым отступом: @var перед = или составным
+				// оператором присваивания. Убивается только левая часть.
+				if reVuacSetStart.MatchString(killTrimmed) {
+					rest := strings.TrimLeft(killTrimmed[len("set"):], " \t")
+					if m := reVuacAssignCandidate.FindStringSubmatchIndex(rest); m != nil {
+						delete(active, rest[m[2]:m[3]])
+					}
+				}
+
+				// SELECT-присваивание в контексте оператора: заголовок
+				// select [top N] @var = открывает список; строки-продолжения
+				// ^,?\s*@var = действуют, пока список не закрыт новой секцией
+				// (from/where/...), новым оператором или standalone-макросом.
+				// Именованные параметры EXEC (@p = @v output) контекстом
+				// SELECT не накрываются: exec закрывает список, а строки
+				// параметров ниже exec-а списком не являются.
+				if m := reVuacSelectHeader.FindStringSubmatchIndex(killTrimmed); m != nil {
+					delete(active, killTrimmed[m[4]:m[5]])
+					for _, name := range vuacSameLineAssignments(killTrimmed, m[1]) {
+						delete(active, name)
+					}
+					selectListOpen = true
+				} else if selectListOpen {
+					if reVuacNewSection.MatchString(killTrimmed) || reVuacNewOperator.MatchString(killTrimmed) || reVuacStandaloneCall.MatchString(killTrimmed) {
+						selectListOpen = false
+					} else if cm := reVuacSelectCont.FindStringSubmatchIndex(killTrimmed); cm != nil {
+						delete(active, killTrimmed[cm[2]:cm[3]])
+						for _, name := range vuacSameLineAssignments(killTrimmed, cm[1]) {
+							delete(active, name)
+						}
+					}
+				}
+			}
+
+			if len(active) == 0 {
+				break
+			}
 
 			if inFetchSkipSpan(i+1, skipSpans) {
 				continue
@@ -5221,27 +5398,21 @@ func (r *Runner) checkVarUseAfterCursor(ctx context.Context, file *indexedFile) 
 				continue
 			}
 
-			// Ищем использование любой переменной из курсора
-			for _, v := range vars {
-				varLower := strings.ToLower(v)
-				// Проверяем что переменная используется как слово (не declare/fetch etc)
-				if !strings.Contains(lower, varLower) {
+			// Ищем использование оставшихся активных переменных курсора
+			for _, name := range orderedVars {
+				orig, ok := active[name]
+				if !ok {
+					continue
+				}
+				if !strings.Contains(lower, name) {
 					continue
 				}
 				// Проверяем что это не declare с инициализацией той же переменной
-				if strings.Contains(lower, "declare") && strings.Contains(lower, varLower) {
-					continue
-				}
-				// Проверяем что это не set/fetch с той же переменной (переопределение)
-				if strings.HasPrefix(lower, "set") && strings.Contains(lower, varLower) {
-					continue
-				}
-				// Проверяем что это не select @var = ... (переопределение)
-				if strings.Contains(lower, "select") && strings.Contains(lower, varLower+"=") {
+				if strings.Contains(lower, "declare") && strings.Contains(lower, name) {
 					continue
 				}
 
-				key := fmt.Sprintf("%d|%s|%s", i+1, normalizeVariableName(v), cursorName)
+				key := fmt.Sprintf("%d|%s|%s", i+1, normalizeVariableName(orig), cursorName)
 				if _, exists := seen[key]; exists {
 					continue
 				}
@@ -5250,10 +5421,10 @@ func (r *Runner) checkVarUseAfterCursor(ctx context.Context, file *indexedFile) 
 				findings = append(findings, Finding{
 					Rule:             RuleVarUseAfterCursor,
 					Severity:         SeverityPostgreReq,
-					Message:          fmt.Sprintf("Использование переменной %s из курсора %s после его деалокации", v, da.CursorName),
+					Message:          fmt.Sprintf("Использование переменной %s из курсора %s после его деалокации", orig, da.CursorName),
 					File:             file.Path,
 					Line:             i + 1,
-					Object:           v,
+					Object:           orig,
 					CurrentProductID: file.DsProductID,
 				})
 			}
