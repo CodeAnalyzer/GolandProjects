@@ -937,6 +937,8 @@ func TestCheckSaveTran_Coverage(t *testing.T) {
 		{name: "save transaction", content: "save transaction sp1", wantCount: 1},
 		{name: "no save tran", content: "begin tran\ncommit", wantCount: 0},
 		{name: "comment", content: "-- save tran sp1", wantCount: 0},
+		{name: "literal in macro arg", content: "PROFILE_TIME_EX('BEGIN tran and SAVE tran trnCardAccRelation_MassLoad...')\n__BEGIN_TRAN__(trnCardAccRelation_MassLoad)", wantCount: 0},
+		{name: "escaped quote literal and real save tran", content: "select @s = 'save tran ''quoted'' text'\nSAVE TRAN MySavePoint", wantCount: 1, wantLine: 2},
 	})
 }
 

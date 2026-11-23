@@ -993,7 +993,7 @@ func (r *Runner) checkSaveTran(ctx context.Context, file *indexedFile) ([]Findin
 			continue
 		}
 
-		lower := strings.ToLower(line)
+		lower := strings.ToLower(stripQuotedSegments(line))
 
 		// Ищем SAVE TRAN или SAVE TRANSACTION
 		if hasSaveTran(lower) {
