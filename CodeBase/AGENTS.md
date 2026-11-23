@@ -82,7 +82,7 @@ post-processing → spec-профили → LSA.
   `.trc`/`.xml`/`.xel`.
 - Если `--config` не задан, `codebase.toml` ищется **рядом с executable**.
 - Комментарии и документация в коде — на русском; код — idiomatic Go.
-- Для тестовых прогонов используй каталог D:\GITHUB\GolandProjects\CodeBase\Tests\Temp
+- Для временных скриптов, тестовых прогонов, выгрузки диффа и т.п. используй каталог D:\GITHUB\GolandProjects\CodeBase\Tests\Temp
 
 ## Внешние зависимости
 

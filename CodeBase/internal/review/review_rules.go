@@ -5656,11 +5656,12 @@ func (r *Runner) checkDuplicateOutputVariable(ctx context.Context, parsed *sqlpa
 
 // checkUseOnlyDeclaredCursors проверяет, что все используемые курсоры были объявлены в том же scope
 func (r *Runner) checkUseOnlyDeclaredCursors(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
-	_ = ctx
 	findings := make([]Finding, 0)
 
-	// Читаем файл построчно
-	content, err := os.ReadFile(file.Path)
+	// Читаем expanded-контент review-сессии: как и границы процедур
+	// (proc.LineStart/LineEnd), он живёт в expanded-пространстве; номера строк
+	// findings ремапятся к исходному файлу централизованно в RunSQLFileCtx.
+	content, err := r.fileContent(ctx, file.Path)
 	if err != nil {
 		return nil, err
 	}

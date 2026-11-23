@@ -2029,6 +2029,7 @@ func collectVariableTypes(parsed *sqlparser.ParseResult, content string) map[str
 //   - __BEGIN_PROCEDURE__ (строка 1346): declare @RetVal int, @trancount int;
 //   - DCL_PROC_BODY, PG-стиль (строка 751): declare @tran_count int,
 //     @err_code int, @msg varchar(255).
+//
 // Набор стабилен: по препроцессированным .t01 из fa-contracts 43 из 47 файлов,
 // использующих @RetVal, содержат ровно этот declare. Заполняет только пробелы:
 // явные declares и параметры сигнатуры анализируемого файла приоритетны.

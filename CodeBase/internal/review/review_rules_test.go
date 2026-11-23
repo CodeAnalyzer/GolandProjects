@@ -4944,6 +4944,30 @@ as
 	}
 }
 
+// newCursorRuleRunner готовит Runner с exec-контекстом expanded-контента
+// (как в RunSQLFileCtx) и результатом парсинга expanded-текста для прямого
+// вызова checkUseOnlyDeclaredCursors. Возвращает Runner, parse-результат,
+// нормализованный путь и результат replaceMacros (SourceMap нужен тестам
+// координатного ремапа).
+func newCursorRuleRunner(t *testing.T, content string) (*Runner, *sqlparser.ParseResult, string, macroReplaceResult) {
+	t.Helper()
+	path := normalizePath("test.sql")
+	mr := replaceMacros(content)
+	r := &Runner{}
+	r.exec = &reviewExecContext{
+		filePath:    path,
+		content:     []byte(mr.Content),
+		lines:       strings.Split(mr.Content, "\n"),
+		macroResult: mr,
+	}
+	t.Cleanup(func() { r.exec = nil })
+	parsed, err := sqlparser.NewParser().ParseContent(mr.Content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	return r, parsed, path, mr
+}
+
 func TestCheckUseOnlyDeclaredCursors_DeclaredAndUsed_NoFinding(t *testing.T) {
 	content := `create proc TestProc
 as
@@ -4953,24 +4977,8 @@ as
   close cur1
   deallocate cur1
 `
-	r := &Runner{}
-	parser := sqlparser.NewParser()
-	parsed, err := parser.ParseContent(content)
-	if err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-
-	tmpFile, err := os.CreateTemp("", "test_cursor_*.sql")
-	if err != nil {
-		t.Fatalf("failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	if _, err := tmpFile.WriteString(content); err != nil {
-		t.Fatalf("failed to write to temp file: %v", err)
-	}
-	tmpFile.Close()
-
-	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	r, parsed, path, _ := newCursorRuleRunner(t, content)
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4984,24 +4992,8 @@ func TestCheckUseOnlyDeclaredCursors_UndeclaredOpen_Finding(t *testing.T) {
 as
   open cur1
 `
-	r := &Runner{}
-	parser := sqlparser.NewParser()
-	parsed, err := parser.ParseContent(content)
-	if err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-
-	tmpFile, err := os.CreateTemp("", "test_cursor_*.sql")
-	if err != nil {
-		t.Fatalf("failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	if _, err := tmpFile.WriteString(content); err != nil {
-		t.Fatalf("failed to write to temp file: %v", err)
-	}
-	tmpFile.Close()
-
-	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	r, parsed, path, _ := newCursorRuleRunner(t, content)
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5021,24 +5013,8 @@ func TestCheckUseOnlyDeclaredCursors_UndeclaredFetch_Finding(t *testing.T) {
 as
   fetch next from cur2 into @val
 `
-	r := &Runner{}
-	parser := sqlparser.NewParser()
-	parsed, err := parser.ParseContent(content)
-	if err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-
-	tmpFile, err := os.CreateTemp("", "test_cursor_*.sql")
-	if err != nil {
-		t.Fatalf("failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	if _, err := tmpFile.WriteString(content); err != nil {
-		t.Fatalf("failed to write to temp file: %v", err)
-	}
-	tmpFile.Close()
-
-	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	r, parsed, path, _ := newCursorRuleRunner(t, content)
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5058,24 +5034,8 @@ as
   fetch next from cur1 into @val
   __DEALLOCATE_CURSOR__(cur1)
 `
-	r := &Runner{}
-	parser := sqlparser.NewParser()
-	parsed, err := parser.ParseContent(content)
-	if err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-
-	tmpFile, err := os.CreateTemp("", "test_cursor_*.sql")
-	if err != nil {
-		t.Fatalf("failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	if _, err := tmpFile.WriteString(content); err != nil {
-		t.Fatalf("failed to write to temp file: %v", err)
-	}
-	tmpFile.Close()
-
-	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	r, parsed, path, _ := newCursorRuleRunner(t, content)
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5090,24 +5050,8 @@ func TestCheckUseOnlyDeclaredCursors_SystemCursor_NoFinding(t *testing.T) {
 as
   select @@FETCH_STATUS
 `
-	r := &Runner{}
-	parser := sqlparser.NewParser()
-	parsed, err := parser.ParseContent(content)
-	if err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-
-	tmpFile, err := os.CreateTemp("", "test_cursor_*.sql")
-	if err != nil {
-		t.Fatalf("failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	if _, err := tmpFile.WriteString(content); err != nil {
-		t.Fatalf("failed to write to temp file: %v", err)
-	}
-	tmpFile.Close()
-
-	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	r, parsed, path, _ := newCursorRuleRunner(t, content)
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5122,24 +5066,8 @@ func TestCheckUseOnlyDeclaredCursors_TempCursor_NoFinding(t *testing.T) {
 as
   open #tempCur
 `
-	r := &Runner{}
-	parser := sqlparser.NewParser()
-	parsed, err := parser.ParseContent(content)
-	if err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-
-	tmpFile, err := os.CreateTemp("", "test_cursor_*.sql")
-	if err != nil {
-		t.Fatalf("failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	if _, err := tmpFile.WriteString(content); err != nil {
-		t.Fatalf("failed to write to temp file: %v", err)
-	}
-	tmpFile.Close()
-
-	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	r, parsed, path, _ := newCursorRuleRunner(t, content)
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5157,24 +5085,8 @@ as
   CLOSE CUR1
   DEALLOCATE cur1
 `
-	r := &Runner{}
-	parser := sqlparser.NewParser()
-	parsed, err := parser.ParseContent(content)
-	if err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-
-	tmpFile, err := os.CreateTemp("", "test_cursor_*.sql")
-	if err != nil {
-		t.Fatalf("failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	if _, err := tmpFile.WriteString(content); err != nil {
-		t.Fatalf("failed to write to temp file: %v", err)
-	}
-	tmpFile.Close()
-
-	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	r, parsed, path, _ := newCursorRuleRunner(t, content)
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5192,24 +5104,8 @@ as
   open MyCursor_Cur
   fetch MyCursor_Cu into @val
 `
-	r := &Runner{}
-	parser := sqlparser.NewParser()
-	parsed, err := parser.ParseContent(content)
-	if err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-
-	tmpFile, err := os.CreateTemp("", "test_cursor_*.sql")
-	if err != nil {
-		t.Fatalf("failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	if _, err := tmpFile.WriteString(content); err != nil {
-		t.Fatalf("failed to write to temp file: %v", err)
-	}
-	tmpFile.Close()
-
-	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	r, parsed, path, _ := newCursorRuleRunner(t, content)
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5231,24 +5127,8 @@ as
   open RealCursor_Cur
   __FETCH_NEXT__ RealCursor_Cu into @val
 `
-	r := &Runner{}
-	parser := sqlparser.NewParser()
-	parsed, err := parser.ParseContent(content)
-	if err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-
-	tmpFile, err := os.CreateTemp("", "test_cursor_*.sql")
-	if err != nil {
-		t.Fatalf("failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	if _, err := tmpFile.WriteString(content); err != nil {
-		t.Fatalf("failed to write to temp file: %v", err)
-	}
-	tmpFile.Close()
-
-	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	r, parsed, path, _ := newCursorRuleRunner(t, content)
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5258,6 +5138,86 @@ as
 	}
 	if !strings.Contains(findings[0].Message, "RealCursor_Cu") {
 		t.Fatalf("message should contain typo cursor name 'RealCursor_Cu': %s", findings[0].Message)
+	}
+}
+
+func TestCheckUseOnlyDeclaredCursors_MultilineDefine_DeclaredCursor_NoFinding(t *testing.T) {
+	// Многострочный #define перед процедурой вырезается из expanded-контента;
+	// окно проверки должно жить в expanded-пространстве, как и границы процедур
+	content := `#define __BALANCE_CLEAR__(@AccountID) \
+  update tAccount set Balance = 0 \
+  where AccountID = @AccountID
+
+create proc TestProc
+as
+  __DECLARE_CURSOR__(cur1)
+  open cur1
+  fetch next from cur1 into @val
+  close cur1
+`
+	r, parsed, path, _ := newCursorRuleRunner(t, content)
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings, got %d: %v", len(findings), findings)
+	}
+}
+
+func TestCheckUseOnlyDeclaredCursors_MultilineDefine_UndeclaredCursor_OriginalLine(t *testing.T) {
+	// Правило возвращает строку в expanded-пространстве; как и RunSQLFileCtx,
+	// тест ремапит её к исходному файлу через SourceMap
+	content := `#define __BALANCE_CLEAR__(@AccountID) \
+  update tAccount set Balance = 0 \
+  where AccountID = @AccountID
+
+create proc TestProc
+as
+  open cur1
+`
+	r, parsed, path, mr := newCursorRuleRunner(t, content)
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %v", len(findings), findings)
+	}
+	origLine := mapExpandedLineToOriginal(findings[0].Line, mr.SourceMap)
+	if origLine != 7 {
+		t.Fatalf("original line = %d, want 7 (строка 'open cur1' в исходном файле)", origLine)
+	}
+}
+
+func TestCheckUseOnlyDeclaredCursors_PerProcedureScope(t *testing.T) {
+	// Курсор, объявленный в первой процедуре, не засчитывается во второй
+	content := `create proc ProcOne
+as
+  declare cur1 cursor for select ID from tContract
+  open cur1
+  fetch next from cur1 into @val
+  close cur1
+X_ANYMODE(ProcOne)
+
+create proc ProcTwo
+as
+  open cur1
+X_ANYMODE(ProcTwo)
+`
+	r, parsed, path, _ := newCursorRuleRunner(t, content)
+	findings, err := r.checkUseOnlyDeclaredCursors(context.Background(), parsed, &indexedFile{Path: path, DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %v", len(findings), findings)
+	}
+	if findings[0].Object != "ProcTwo" {
+		t.Fatalf("object = %q, want ProcTwo", findings[0].Object)
+	}
+	if findings[0].Line != 11 {
+		t.Fatalf("line = %d, want 11 (строка 'open cur1' в ProcTwo)", findings[0].Line)
 	}
 }
 
