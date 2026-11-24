@@ -57,6 +57,10 @@ type Runner struct {
 	// правил (включая негативные записи false); правила только читают его —
 	// ленивый fallback не пишет в общий map (data race).
 	tableCreatorCache map[string]bool
+	// tableEvidenceCache — то же для свидетельств изменения структуры
+	// (ALTER ADD / M_ADD_FIELD / CREATE INDEX / M_CRT_INDEX): заполняется
+	// prewarmTableEvidence до старта правил, только читается ими.
+	tableEvidenceCache map[string]bool
 	// scope-инвариантные кэши пакетного режима (включаются только в RunSQLFilesCtx).
 	scopeCacheEnabled bool
 	productIDsCache   []int64
@@ -137,6 +141,7 @@ func (r *Runner) runSQLFileCtx(ctx context.Context, path string, opts Options) (
 	r.procProductIDCache = nil
 	r.tableProductIDCache = nil
 	r.tableCreatorCache = nil
+	r.tableEvidenceCache = nil
 
 	normalizedPath := normalizePath(path)
 	file, err := r.getIndexedFile(ctx, normalizedPath)
@@ -207,12 +212,18 @@ func (r *Runner) runSQLFileCtx(ctx context.Context, path string, opts Options) (
 	r.prewarmProcCaches(ctx, parsed)
 	r.prewarmTableProductIDs(ctx, parsed)
 
-	// Признак «таблица создана» нужен только правилу tableExistsInMetadata —
-	// при его отключении через --rules batch-запрос не выполняется. Кэш
-	// заполняется ДО старта параллельных правил, с негативными записями
-	// (см. D4 модели конкурентности в design add-table-exists-in-metadata).
-	if ruleSet[RuleTableExistsInMetadata] {
+	// Признак «таблица создана» нужен правилам tableExistsInMetadata и
+	// indexExistsInDB (гейт проверяемости индексов, design D4 change
+	// table-existence-evidence) — при их отключении через --rules batch-запрос
+	// не выполняется. Кэши заполняются ДО старта параллельных правил, с
+	// негативными записями (см. D4 модели конкурентности в design
+	// add-table-exists-in-metadata). Свидетельства изменения структуры
+	// нужны только tableExistsInMetadata.
+	if ruleSet[RuleTableExistsInMetadata] || ruleSet[RuleIndexExistsInDB] {
 		r.prewarmTableCreators(ctx, parsed)
+	}
+	if ruleSet[RuleTableExistsInMetadata] {
+		r.prewarmTableEvidence(ctx, parsed)
 	}
 	tasks := r.buildRuleTasks(ctx, ruleSet, parsed, file)
 	maxWorkers := r.maxRuleWorkers(ctx, len(tasks))

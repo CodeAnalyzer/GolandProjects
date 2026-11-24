@@ -356,3 +356,175 @@ as
 		t.Fatalf("expected 0 findings, got %d: %v", len(findings), findings)
 	}
 }
+
+// assertDMLReference — guard: имя реально извлечено парсером в DML-контексте,
+// иначе тест свидетельств проверял бы только кэш.
+func assertDMLReference(t *testing.T, parsed *sqlparser.ParseResult, name string) {
+	t.Helper()
+	for _, tbl := range parsed.Tables {
+		if tableExistsDMLContexts[tbl.Context] && normalizeIdentifier(tbl.TableName) == name {
+			return
+		}
+	}
+	t.Fatalf("guard failed: %q должен быть извлечён парсером в DML-контексте", name)
+}
+
+// TestCheckTableExistsInMetadata_Evidence_NoFinding: таблица без создающего
+// источника, но со свидетельством изменения структуры в индексе (M_ADD_FIELD,
+// ALTER TABLE ADD, индексный патч) finding не даёт.
+func TestCheckTableExistsInMetadata_Evidence_NoFinding(t *testing.T) {
+	cases := []struct {
+		name     string
+		content  string
+		table    string
+		evidence string // ключ записи в кэше свидетельств
+	}{
+		{
+			name: "M_ADD_FIELD",
+			content: `M_ADD_FIELD('tRequisitParticipantSB', 'InstitutionID DSIDENTIFIER')
+select InstitutionID from tRequisitParticipantSB
+`,
+			table:    "trequisitparticipantsb",
+			evidence: "trequisitparticipantsb",
+		},
+		{
+			name: "ALTER TABLE ADD",
+			content: `alter table tClientService add NewCol DSIDENTIFIER
+update tClientService set NewCol = 1
+`,
+			table:    "tclientservice",
+			evidence: "tclientservice",
+		},
+		{
+			name: "индексный патч",
+			content: `M_CRT_INDEX('XIE1tWebUser', 'tWebUser', 'WebUserID')
+delete from tWebUser
+`,
+			table:    "twebuser",
+			evidence: "twebuser",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r, parsed, file := newTableExistsTestRunner(t, c.content, map[string]bool{c.table: false})
+			assertDMLReference(t, parsed, c.table)
+			r.tableEvidenceCache = map[string]bool{c.evidence: true}
+			findings, err := r.checkTableExistsInMetadata(context.Background(), parsed, file)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(findings) != 0 {
+				t.Fatalf("expected 0 findings, got %d: %v", len(findings), findings)
+			}
+		})
+	}
+}
+
+// TestCheckTableExistsInMetadata_NoEvidence_FindingNewMessage: без создателя и
+// без свидетельств — finding с перечислением расширенного набора источников.
+func TestCheckTableExistsInMetadata_NoEvidence_FindingNewMessage(t *testing.T) {
+	content := `create proc TestProc
+as
+  insert pAPI_Account_MassClose (SPID, AccountID)
+  select @@spid, @AccountID
+`
+	r, parsed, file := newTableExistsTestRunner(t, content, map[string]bool{
+		"papi_account_massclose": false,
+	})
+	r.tableEvidenceCache = map[string]bool{"papi_account_massclose": false}
+	findings, err := r.checkTableExistsInMetadata(context.Background(), parsed, file)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %v", len(findings), findings)
+	}
+	want := "Таблица pAPI_Account_MassClose отсутствует в метаданных: не найден создающий DDL, изменение структуры патчем, SELECT INTO или объявление DSArchitect"
+	if findings[0].Message != want {
+		t.Fatalf("message = %q, want %q", findings[0].Message, want)
+	}
+}
+
+// TestCheckTableExistsInMetadata_SameFileEvidence: свидетельство берётся из
+// снимка индекса, а не из текста файла. Файл сам добавляет колонку
+// используемой таблице: при записи в индексе (кэш true) finding подавлен;
+// при устаревшем индексе (записи нет, db == nil) — finding остаётся.
+func TestCheckTableExistsInMetadata_SameFileEvidence(t *testing.T) {
+	content := `M_ADD_FIELD('tLegacyRef', 'NewCol DSIDENTIFIER')
+update tLegacyRef set NewCol = 1
+`
+	t.Run("fresh index: evidence cached", func(t *testing.T) {
+		r, parsed, file := newTableExistsTestRunner(t, content, map[string]bool{"tlegacyref": false})
+		assertDMLReference(t, parsed, "tlegacyref")
+		r.tableEvidenceCache = map[string]bool{"tlegacyref": true}
+		findings, err := r.checkTableExistsInMetadata(context.Background(), parsed, file)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(findings) != 0 {
+			t.Fatalf("expected 0 findings, got %d: %v", len(findings), findings)
+		}
+	})
+	t.Run("stale index: no evidence record", func(t *testing.T) {
+		r, parsed, file := newTableExistsTestRunner(t, content, map[string]bool{"tlegacyref": false})
+		assertDMLReference(t, parsed, "tlegacyref")
+		r.tableEvidenceCache = map[string]bool{"tlegacyref": false}
+		findings, err := r.checkTableExistsInMetadata(context.Background(), parsed, file)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(findings) != 1 || findings[0].Object != "tLegacyRef" {
+			t.Fatalf("expected 1 finding for tLegacyRef, got %v", findings)
+		}
+	})
+}
+
+// TestCachedLookupTableEvidence_CacheAndFallback: положительная/негативная
+// записи читаются из кэша; при промахе (без БД) возвращается false и общий
+// кэш не пополняется.
+func TestCachedLookupTableEvidence_CacheAndFallback(t *testing.T) {
+	r := &Runner{tableEvidenceCache: map[string]bool{
+		"tevidenced":  true,
+		"tnoevidence": false,
+	}}
+	if !r.cachedLookupTableEvidence(context.Background(), "TEvidenced") {
+		t.Fatal("tevidenced: want true (регистронезависимый ключ)")
+	}
+	if r.cachedLookupTableEvidence(context.Background(), "tNoEvidence") {
+		t.Fatal("tnoeevidence: want false (негативная запись)")
+	}
+	if r.cachedLookupTableEvidence(context.Background(), "tAbsent") {
+		t.Fatal("tabsent: want false (промах без БД)")
+	}
+	if len(r.tableEvidenceCache) != 2 {
+		t.Fatalf("ленивый путь не должен писать в общий кэш: size = %d, want 2", len(r.tableEvidenceCache))
+	}
+}
+
+// TestDMLTableNames: уникальные нормализованные имена только из DML-контекстов.
+func TestDMLTableNames(t *testing.T) {
+	content := `create table tCreated (ID DSIDENTIFIER)
+select ID from tSelected
+insert tSelected (ID) values (1)
+update tUpdated set ID = 1
+delete from tDeleted
+`
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	got := dmlTableNames(parsed)
+	want := []string{"tselected", "tupdated", "tdeleted"}
+	if len(got) != len(want) {
+		t.Fatalf("dmlTableNames = %v, want %v (parsed contexts: %v)", got, want, parsed.Tables)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("dmlTableNames[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if dmlTableNames(nil) != nil {
+		t.Fatal("dmlTableNames(nil) must return nil")
+	}
+}

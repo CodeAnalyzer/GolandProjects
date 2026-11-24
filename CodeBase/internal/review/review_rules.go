@@ -1435,6 +1435,12 @@ func (r *Runner) analyzeStatementForIndexExists(ctx context.Context, lines []str
 		}
 		seen[key] = struct{}{}
 
+		// Таблица без создающего источника: набор индексов в индексе неполон,
+		// проверка неверифицируема (design D4 change table-existence-evidence).
+		if !r.indexCheckVerifiable(ctx, tableName) {
+			continue
+		}
+
 		exists, err := r.lookupIndexExists(ctx, tableName, indexName)
 		if err != nil {
 			return nil, err
@@ -1486,6 +1492,10 @@ func (r *Runner) checkDeletePtableMacros(ctx context.Context, lines []string, so
 			continue
 		}
 		seen[key] = struct{}{}
+
+		if !r.indexCheckVerifiable(ctx, tableName) {
+			continue
+		}
 
 		exists, err := r.lookupIndexExists(ctx, tableName, indexName)
 		if err != nil {
@@ -1956,7 +1966,10 @@ func isTableExistsNoiseName(name string, cursorDecls map[string]cursorDeclaratio
 // каждой таблицы, к которой скрипт обращается в DML-контексте, проверяет
 // наличие в индексе источника, создающего таблицу (DDL-патч/TmpTbl,
 // SELECT ... INTO, объявление DSArchitect), с учётом создателей в самом
-// анализируемом файле (защита от устаревшего индекса).
+// анализируемом файле (защита от устаревшего индекса). Без создающего
+// источника существование подтверждает свидетельство изменения структуры
+// (ALTER ADD / M_ADD_FIELD / CREATE INDEX / M_CRT_INDEX) из снимка индекса
+// (change table-existence-evidence, design D2).
 func (r *Runner) checkTableExistsInMetadata(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	if parsed == nil {
 		return []Finding{}, nil
@@ -2022,6 +2035,12 @@ func (r *Runner) checkTableExistsInMetadata(ctx context.Context, parsed *sqlpars
 		if r.cachedLookupTableCreator(ctx, name) {
 			continue
 		}
+		// Свидетельство изменения структуры: базовая таблица, DDL которой
+		// поставляется вне исходников. Берётся из индекса, а не из parsed —
+		// при устаревшем индексе finding остаётся до codebase update.
+		if r.cachedLookupTableEvidence(ctx, name) {
+			continue
+		}
 		// Обращение к представлению: атрибутируется правилу
 		// viewUsageInServerCode, а не «таблица отсутствует». Fail-open:
 		// при ошибке загрузки множества view имя не распознано и работает
@@ -2033,7 +2052,7 @@ func (r *Runner) checkTableExistsInMetadata(ctx context.Context, parsed *sqlpars
 		findings = append(findings, Finding{
 			Rule:             RuleTableExistsInMetadata,
 			Severity:         SeverityDeployStopper,
-			Message:          fmt.Sprintf("Таблица %s отсутствует в метаданных: не найден создающий DDL, SELECT INTO или объявление DSArchitect", table.TableName),
+			Message:          fmt.Sprintf("Таблица %s отсутствует в метаданных: не найден создающий DDL, изменение структуры патчем, SELECT INTO или объявление DSArchitect", table.TableName),
 			File:             file.Path,
 			Line:             table.LineNumber,
 			Object:           table.TableName,

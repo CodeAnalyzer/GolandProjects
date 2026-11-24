@@ -132,6 +132,18 @@ func seedReviewScopeFixture(t *testing.T, db *store.DB) *reviewScopeFixture {
 	insertMacro(f.devFileA, "RV_Macro", "DSVARCHAR")
 	insertMacro(f.spFileA, "RV_Macro", "DSINT")
 
+	// Свидетельства изменения структуры (change table-existence-evidence):
+	// создателя нет, таблица изменена патчем только в одной ветке.
+	insertEvidence := func(fileID int64, table, column, kind string) {
+		if _, err := db.Exec(`INSERT INTO sql_column_definitions (file_id, table_name, column_name, data_type, definition_kind) VALUES ($1, $2, $3, 'DSIDENTIFIER', $4)`, fileID, table, column, kind); err != nil {
+			t.Fatalf("insert evidence %s (%s): %v", table, kind, err)
+		}
+	}
+	insertEvidence(f.devFileA, "tRvEvDevOnly", "EvCol", "macro_add_field")
+	insertEvidence(f.spFileA, "tRvEvSpOnly", "EvCol", "alter_add")
+	insertEvidence(f.extDevFile, "tRvExtEvDev", "EvCol", "macro_add_field")
+	insertEvidence(f.extPrjBFile, "tRvExtEvPrjB", "EvCol", "alter_add")
+
 	return f
 }
 
@@ -502,6 +514,66 @@ as
 	}
 }
 
+// TestCheckTableExistsInMetadataEvidenceScope: свидетельство изменения
+// структуры подчиняется той же области, что и создатель: develop-свидетельство
+// не видно SP-файлу, SP-свидетельство подтверждает; EXT prj-файлу виден
+// ext-develop (union), prj/bank-b — нет. Оба пути: prewarm-кэш и ленивый.
+func TestCheckTableExistsInMetadataEvidenceScope(t *testing.T) {
+	db := testutil.Open(t)
+	f := seedReviewScopeFixture(t, db)
+	ctx := context.Background()
+
+	run := func(r *Runner, content string, file *indexedFile, prewarm bool) map[string]bool {
+		t.Helper()
+		parsed := parseContent(t, content)
+		r.exec = &reviewExecContext{filePath: normalizePath(file.Path), content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+		if prewarm {
+			r.prewarmTableCreators(ctx, parsed)
+			r.prewarmTableEvidence(ctx, parsed)
+		}
+		findings, err := r.checkTableExistsInMetadata(ctx, parsed, file)
+		if err != nil {
+			t.Fatalf("checkTableExistsInMetadata: %v", err)
+		}
+		return findingObjects(findings)
+	}
+
+	for _, prewarm := range []bool{true, false} {
+		got := run(scopedRunner(db, f), `create proc RV_Evidence_Review
+as
+  select ID from tRvEvSpOnly
+  select ID from tRvEvDevOnly
+  return`, f.spFile("/repo-review-scope/fa-rv-11017/Sp1.sql"), prewarm)
+		if got["tRvEvSpOnly"] {
+			t.Fatalf("prewarm=%v: tRvEvSpOnly: свидетельство в SP — finding не нужен", prewarm)
+		}
+		if !got["tRvEvDevOnly"] {
+			t.Fatalf("prewarm=%v: tRvEvDevOnly: свидетельство только в develop — нужен finding tableExistsInMetadata", prewarm)
+		}
+
+		extRunner := NewRunner(db)
+		extRunner.scope = ReviewScope{
+			FileID: f.extPrjAFile, ProductID: f.extID, BranchID: f.extPrjA,
+			ProductBranch: map[int64][]int64{
+				f.productID: {f.spBranch},
+				f.otherID:   {f.otherBranch},
+				f.extID:     {f.extPrjA, f.extDev},
+			},
+		}
+		got = run(extRunner, `create proc RV_Ext_Evidence_Review
+as
+  select ID from tRvExtEvDev
+  select ID from tRvExtEvPrjB
+  return`, &indexedFile{ID: f.extPrjAFile, Path: "/repo-review-scope/fa-rv-ext/prj-bank-a/ExtA.sql", DsProductID: f.extID, DsProductBranchID: f.extPrjA}, prewarm)
+		if got["tRvExtEvDev"] {
+			t.Fatalf("prewarm=%v: tRvExtEvDev: ext-develop входит в область prj-файла (union) — finding не нужен", prewarm)
+		}
+		if !got["tRvExtEvPrjB"] {
+			t.Fatalf("prewarm=%v: tRvExtEvPrjB: prj-ветка другого банка вне области — нужен finding", prewarm)
+		}
+	}
+}
+
 // TestIndexLookupsScope: индексы существующей области; first-wins дедуп полей
 // не смешивает ветки; ленивый lookupIndexFieldsByName даёт поля целевой ветки.
 func TestIndexLookupsScope(t *testing.T) {
@@ -762,5 +834,101 @@ as
 	}
 	if objects[RuleForeignTablesUsing]["tRvDevOnly"] {
 		t.Fatal("foreignTablesUsing: таблица своего продукта из другой ветки не чужая")
+	}
+}
+
+// TestIndexExistsInDBGateScopedEndToEnd: гейт indexExistsInDB по создающему
+// источнику в реальном прогоне RunSQLFileCtx (design D4 change
+// table-existence-evidence): без создателя в области правило молчит (хинт и
+// M_DELETE_PTABLE_INDEX), с создателем (DDL или DSArchitect в области) —
+// finding по отсутствующему индексу; свидетельство изменения структуры гейт
+// не открывает; опечатка таблицы остаётся за tableExistsInMetadata.
+func TestIndexExistsInDBGateScopedEndToEnd(t *testing.T) {
+	db := testutil.Open(t)
+	f := seedReviewScopeFixture(t, db)
+	ctx := context.Background()
+
+	// API-таблица, объявленная в SP-области (файл SP-ветки своего продукта).
+	if _, err := db.Exec(`INSERT INTO api_business_object_tables (file_id, business_object, table_name) VALUES ($1, 'RvObj', 'pRvApiTbl')`, f.spFileA); err != nil {
+		t.Fatalf("insert api_business_object_tables: %v", err)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Sp1.sql")
+	if err := os.WriteFile(path, []byte("-- placeholder\n"), 0o644); err != nil {
+		t.Fatalf("write temp sql: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE files SET path = $1, rel_path = $1 WHERE id = $2`, path, f.spFileA); err != nil {
+		t.Fatalf("update file path: %v", err)
+	}
+
+	run := func(content string) *Result {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write temp sql: %v", err)
+		}
+		result, err := NewRunner(db).RunSQLFileCtx(ctx, path, Options{Rules: []RuleID{RuleIndexExistsInDB, RuleTableExistsInMetadata}})
+		if err != nil {
+			t.Fatalf("RunSQLFileCtx: %v", err)
+		}
+		return result
+	}
+	byRule := func(result *Result) map[RuleID]map[string]bool {
+		objects := map[RuleID]map[string]bool{}
+		for _, fnd := range result.Findings {
+			if objects[fnd.Rule] == nil {
+				objects[fnd.Rule] = map[string]bool{}
+			}
+			objects[fnd.Rule][strings.ToLower(fnd.Object)] = true
+		}
+		return objects
+	}
+
+	// (а) нет создателя + хинт: indexExistsInDB молчит, таблица — за
+	// tableExistsInMetadata.
+	got := byRule(run("select ID\n  from tRvNoCreator t M_NOLOCK_INDEX(XPKtRvNoCreator)\n where t.SPID = 1\n"))
+	if len(got[RuleIndexExistsInDB]) != 0 {
+		t.Fatalf("(а) без создателя indexExistsInDB не формируется, got %+v", got[RuleIndexExistsInDB])
+	}
+	if !got[RuleTableExistsInMetadata]["trvnocreator"] {
+		t.Fatalf("(а) опечатка таблицы ловится tableExistsInMetadata, got %+v", got[RuleTableExistsInMetadata])
+	}
+
+	// (б) создатель в SP-области + отсутствующий индекс: finding.
+	got = byRule(run("select ID\n  from tRvSpOnly t M_NOLOCK_INDEX(XPKtRvSpOnly)\n where t.SPID = 1\n"))
+	if !got[RuleIndexExistsInDB]["trvsponly.xpktrvsponly"] {
+		t.Fatalf("(б) создатель есть — нужен finding indexExistsInDB, got %+v", got[RuleIndexExistsInDB])
+	}
+
+	// (в) M_DELETE_PTABLE_INDEX на таблице без создателя: молчит.
+	got = byRule(run("M_DELETE_PTABLE_INDEX(tRvNoCreator, XPKtRvNoCreator)\n"))
+	if len(got[RuleIndexExistsInDB]) != 0 {
+		t.Fatalf("(в) M_DELETE_PTABLE_INDEX без создателя не проверяется, got %+v", got[RuleIndexExistsInDB])
+	}
+
+	// (г) API-таблица в разрешённой области: гейт пройден, finding.
+	got = byRule(run("select ID\n  from pRvApiTbl t M_NOLOCK_INDEX(XPKpRvApiTbl)\n where t.SPID = 1\n"))
+	if !got[RuleIndexExistsInDB]["prvapitbl.xpkprvapitbl"] {
+		t.Fatalf("(г) API-таблица в области — нужен finding indexExistsInDB, got %+v", got[RuleIndexExistsInDB])
+	}
+	if got[RuleTableExistsInMetadata]["prvapitbl"] {
+		t.Fatalf("(г) API-таблица объявлена — tableExistsInMetadata не нужен, got %+v", got[RuleTableExistsInMetadata])
+	}
+
+	// (д) таблица только со свидетельством (alter_add в SP): гейт не открыт,
+	// оба правила молчат.
+	got = byRule(run("select ID\n  from tRvEvSpOnly t M_NOLOCK_INDEX(XPKtRvEvSpOnly)\n where t.SPID = 1\n"))
+	if len(got[RuleIndexExistsInDB]) != 0 || len(got[RuleTableExistsInMetadata]) != 0 {
+		t.Fatalf("(д) свидетельство не открывает гейт и подтверждает таблицу, got %+v", got)
+	}
+
+	// (е) создатель только в develop, файл SP: гейт закрыт, tableExistsInMetadata
+	// — единственный finding.
+	got = byRule(run("select ID\n  from tRvDevOnly t M_NOLOCK_INDEX(XPKtRvDevOnly)\n where t.SPID = 1\n"))
+	if len(got[RuleIndexExistsInDB]) != 0 {
+		t.Fatalf("(е) создатель вне области — indexExistsInDB не формируется, got %+v", got[RuleIndexExistsInDB])
+	}
+	if !got[RuleTableExistsInMetadata]["trvdevonly"] {
+		t.Fatalf("(е) нужен finding tableExistsInMetadata, got %+v", got[RuleTableExistsInMetadata])
 	}
 }

@@ -118,6 +118,7 @@ func TestInitSchema_IdempotentAndHasRequiredObjects(t *testing.T) {
 		"uniq_ds_products_branch_path",
 		"idx_ds_products_branch_product",
 		"idx_files_ds_product_branch_id",
+		"idx_sql_index_definitions_table_name_lower",
 	}
 	for _, idx := range requiredIndexes {
 		var exists bool
@@ -660,5 +661,40 @@ func TestInitSchema_MemoryTablesV7(t *testing.T) {
 	}
 	if remaining != 0 {
 		t.Fatalf("memory_tables rows survived file deletion: %d", remaining)
+	}
+}
+
+// TestInitSchema_IndexDefinitionsLowerV8 — миграция v7→v8: на БД без
+// lower-индекса sql_index_definitions (и без маркера актуальной версии)
+// повторный InitSchemaCtx создаёт индекс по выражению LOWER(table_name).
+func TestInitSchema_IndexDefinitionsLowerV8(t *testing.T) {
+	db := testutil.Open(t)
+
+	// Легаси-БД версии v7: индекса ещё нет, маркер актуальной версии отсутствует.
+	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_sql_index_definitions_table_name_lower`); err != nil {
+		t.Fatalf("drop index (emulate v7): %v", err)
+	}
+	testutil.ResetSchemaVersion(t, db)
+
+	if err := db.InitSchemaCtx(context.Background()); err != nil {
+		t.Fatalf("InitSchema migration v8: %v", err)
+	}
+
+	var indexDef string
+	if err := db.QueryRow(`SELECT indexdef FROM pg_indexes WHERE schemaname='public' AND indexname=$1`,
+		"idx_sql_index_definitions_table_name_lower").Scan(&indexDef); err != nil {
+		t.Fatalf("index idx_sql_index_definitions_table_name_lower was not created by v8 migration: %v", err)
+	}
+	// pg_indexes приводит выражение индекса к нижнему регистру: lower(table_name).
+	if !strings.Contains(strings.ToLower(indexDef), "lower(table_name)") {
+		t.Fatalf("indexdef = %q, want expression index on LOWER(table_name)", indexDef)
+	}
+
+	var marker bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)`, store.CurrentSchemaVersion).Scan(&marker); err != nil {
+		t.Fatalf("check schema marker: %v", err)
+	}
+	if !marker {
+		t.Fatalf("schema marker %s not written by v8 migration", store.CurrentSchemaVersion)
 	}
 }

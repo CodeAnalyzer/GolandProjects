@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"strings"
 
@@ -718,6 +719,35 @@ func (db *DB) BatchLookupTableProductIDs(ctx context.Context, names []string) (m
 	return result, nil
 }
 
+// tableSourceAreaFilter — предикат принадлежности файла источника таблицы
+// (alias f) разрешённой области (режим existence, design D3/D4 change
+// branch-aware-lookup). Подставляется в lookup'ы таблиц только при непустых
+// pairs.
+const tableSourceAreaFilter = ` AND EXISTS (
+       SELECT 1 FROM unnest($2::bigint[], $3::bigint[]) AS pb(pid, bid)
+       WHERE pb.pid = f.ds_product_id
+         AND (pb.bid = 0 OR pb.bid = f.ds_product_branch_id)
+   )`
+
+// normalizeTableLookupNames приводит имена таблиц lookup'а к нижнему регистру,
+// отбрасывает пустые и дубликаты, сохраняя порядок первого вхождения.
+func normalizeTableLookupNames(names []string) []string {
+	normalized := make([]string, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, key)
+	}
+	return normalized
+}
+
 // BatchLookupTableCreators возвращает map: LOWER(table_name) -> true для всех
 // указанных таблиц, имеющих источник создания в индексе: DDL-скрипт
 // (sql_tables.context IN ('create','select_into')), SELECT ... INTO
@@ -733,31 +763,13 @@ func (db *DB) BatchLookupTableProductIDs(ctx context.Context, names []string) (m
 // внутриветвевой фильтр гарантирует использование индексов lower(table_name).
 // Дедупликация имён выполняется Go-мапой (без DISTINCT).
 func (db *DB) BatchLookupTableCreators(ctx context.Context, names []string, pairs ProductBranchPairs) (map[string]bool, error) {
-	normalized := make([]string, 0, len(names))
-	seen := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		key := strings.ToLower(strings.TrimSpace(name))
-		if key == "" {
-			continue
-		}
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		normalized = append(normalized, key)
-	}
+	normalized := normalizeTableLookupNames(names)
 	result := make(map[string]bool, len(normalized))
 	if len(normalized) == 0 {
 		return result, nil
 	}
 
-	// areaFilter — предикат принадлежности файла источника разрешённой
-	// области (alias f). Подставляется только при непустых pairs.
-	const areaFilter = ` AND EXISTS (
-		       SELECT 1 FROM unnest($2::bigint[], $3::bigint[]) AS pb(pid, bid)
-		       WHERE pb.pid = f.ds_product_id
-		         AND (pb.bid = 0 OR pb.bid = f.ds_product_branch_id)
-		   )`
+	const areaFilter = tableSourceAreaFilter
 
 	if pairs.IsEmpty() {
 		rows, err := db.QueryContext(ctx, `
@@ -810,6 +822,62 @@ func (db *DB) BatchLookupTableCreators(ctx context.Context, names []string, pair
 		WHERE LOWER(abt.table_name) = ANY($1)`+areaFilter+`
 	`, pq.Array(normalized),
 		pq.Array(pairs.Products), pq.Array(pairs.Branches))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		result[name] = true
+	}
+	return result, rows.Err()
+}
+
+// BatchLookupTableExistenceEvidence возвращает map: LOWER(table_name) -> true
+// для указанных таблиц, имеющих в индексе свидетельство изменения структуры
+// (change table-existence-evidence, design D1): добавление колонки — ALTER
+// TABLE … ADD (sql_column_definitions.definition_kind='alter_add') или
+// M_ADD_FIELD ('macro_add_field'); создание индекса — CREATE INDEX
+// (sql_index_definitions.definition_kind='create_index') или M_CRT_INDEX
+// ('macro_create_index'). Создающие источники сюда не входят — их даёт
+// BatchLookupTableCreators. Область — тот же tableSourceAreaFilter по файлу
+// источника, что и у создателей (свидетельство вне разрешённой области
+// существование не подтверждает); пустые pairs — глобальный поиск.
+func (db *DB) BatchLookupTableExistenceEvidence(ctx context.Context, names []string, pairs ProductBranchPairs) (map[string]bool, error) {
+	normalized := normalizeTableLookupNames(names)
+	result := make(map[string]bool, len(normalized))
+	if len(normalized) == 0 {
+		return result, nil
+	}
+
+	const areaFilter = tableSourceAreaFilter
+	var rows *sql.Rows
+	var err error
+	if pairs.IsEmpty() {
+		rows, err = db.QueryContext(ctx, `
+		SELECT LOWER(scd.table_name) FROM sql_column_definitions scd
+		 WHERE scd.definition_kind IN ('alter_add','macro_add_field') AND LOWER(scd.table_name) = ANY($1)
+		UNION ALL
+		SELECT LOWER(i.table_name) FROM sql_index_definitions i
+		 WHERE i.definition_kind IN ('create_index','macro_create_index') AND LOWER(i.table_name) = ANY($1)
+	`, pq.Array(normalized))
+	} else {
+		rows, err = db.QueryContext(ctx, `
+		SELECT LOWER(scd.table_name)
+		FROM sql_column_definitions scd
+		JOIN files f ON f.id = scd.file_id
+		WHERE scd.definition_kind IN ('alter_add','macro_add_field') AND LOWER(scd.table_name) = ANY($1)`+areaFilter+`
+		UNION ALL
+		SELECT LOWER(i.table_name)
+		FROM sql_index_definitions i
+		JOIN files f ON f.id = i.file_id
+		WHERE i.definition_kind IN ('create_index','macro_create_index') AND LOWER(i.table_name) = ANY($1)`+areaFilter+`
+	`, pq.Array(normalized),
+			pq.Array(pairs.Products), pq.Array(pairs.Branches))
+	}
 	if err != nil {
 		return nil, err
 	}

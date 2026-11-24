@@ -10,7 +10,7 @@ import (
 // КОНТРАКТ: любое изменение DDL-списка InitSchemaCtx (колонки, индексы,
 // ограничения, миграции) требует bump этой версии — иначе fast-path
 // пропустит проход и новое DDL молча не применится на существующих БД.
-const CurrentSchemaVersion = "codebase_schema_v7"
+const CurrentSchemaVersion = "codebase_schema_v8"
 
 const schemaInitLockKey = "codebase/schema-init"
 
@@ -1084,6 +1084,9 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_sql_column_definitions_lower_table_col ON sql_column_definitions(LOWER(table_name), LOWER(column_name))`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_index_definitions_file_id ON sql_index_definitions(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_index_definitions_table_name ON sql_index_definitions(table_name)`,
+		// LOWER(table_name): lookup свидетельств существования таблиц по видам
+		// create_index/macro_create_index (BatchLookupTableExistenceEvidence).
+		`CREATE INDEX IF NOT EXISTS idx_sql_index_definitions_table_name_lower ON sql_index_definitions(LOWER(table_name))`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_index_definitions_name ON sql_index_definitions(index_name)`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_index_definition_fields_index_id ON sql_index_definition_fields(table_index_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_pas_units_file_id ON pas_units(file_id)`,

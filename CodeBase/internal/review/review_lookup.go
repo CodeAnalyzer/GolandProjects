@@ -461,26 +461,17 @@ func (r *Runner) prewarmTableProductIDs(ctx context.Context, parsed *sqlparser.P
 	}
 }
 
-// prewarmTableCreators загружает признак «таблица создана» всех уникальных
-// таблиц файла из DML-контекстов одним batch-запросом ДО старта параллельных
-// правил. create-контекст правилу не нужен: создатели того же файла
-// учитываются в правиле напрямую из parsed. Для запрошенных и не найденных
-// имён записывается false — ленивый путь cachedLookupTableCreator в проде
-// не срабатывает вовсе.
-func (r *Runner) prewarmTableCreators(ctx context.Context, parsed *sqlparser.ParseResult) {
-	_ = ctx
-	if r == nil || r.db == nil || parsed == nil {
-		return
+// dmlTableNames возвращает уникальные нормализованные имена таблиц файла из
+// DML-контекстов (tableExistsDMLContexts) в порядке первого вхождения — общий
+// набор имён для prewarm'а создающих источников и свидетельств существования.
+func dmlTableNames(parsed *sqlparser.ParseResult) []string {
+	if parsed == nil {
+		return nil
 	}
 	seen := make(map[string]struct{})
 	names := make([]string, 0)
 	for _, table := range parsed.Tables {
-		if table == nil {
-			continue
-		}
-		switch table.Context {
-		case "select", "insert", "update", "delete", "log":
-		default:
+		if table == nil || !tableExistsDMLContexts[table.Context] {
 			continue
 		}
 		key := normalizeIdentifier(table.TableName)
@@ -493,6 +484,21 @@ func (r *Runner) prewarmTableCreators(ctx context.Context, parsed *sqlparser.Par
 		seen[key] = struct{}{}
 		names = append(names, key)
 	}
+	return names
+}
+
+// prewarmTableCreators загружает признак «таблица создана» всех уникальных
+// таблиц файла из DML-контекстов одним batch-запросом ДО старта параллельных
+// правил. create-контекст правилу не нужен: создатели того же файла
+// учитываются в правиле напрямую из parsed. Для запрошенных и не найденных
+// имён записывается false — ленивый путь cachedLookupTableCreator в проде
+// не срабатывает вовсе.
+func (r *Runner) prewarmTableCreators(ctx context.Context, parsed *sqlparser.ParseResult) {
+	_ = ctx
+	if r == nil || r.db == nil || parsed == nil {
+		return
+	}
+	names := dmlTableNames(parsed)
 	if len(names) == 0 {
 		r.tableCreatorCache = make(map[string]bool)
 		return
@@ -507,6 +513,83 @@ func (r *Runner) prewarmTableCreators(ctx context.Context, parsed *sqlparser.Par
 		cache[name] = creators[name]
 	}
 	r.tableCreatorCache = cache
+}
+
+// prewarmTableEvidence загружает признак «есть свидетельство изменения
+// структуры» (ALTER ADD / M_ADD_FIELD / CREATE INDEX / M_CRT_INDEX) для тех же
+// DML-имён файла одним batch-запросом до старта правил (change
+// table-existence-evidence, design D3). Негативные записи false закрывают
+// ленивый путь; при ошибке кэш остаётся nil.
+func (r *Runner) prewarmTableEvidence(ctx context.Context, parsed *sqlparser.ParseResult) {
+	_ = ctx
+	if r == nil || r.db == nil || parsed == nil {
+		return
+	}
+	names := dmlTableNames(parsed)
+	if len(names) == 0 {
+		r.tableEvidenceCache = make(map[string]bool)
+		return
+	}
+	evidence, err := r.db.BatchLookupTableExistenceEvidence(context.Background(), names, r.scope.Pairs())
+	if err != nil {
+		return
+	}
+	cache := make(map[string]bool, len(names))
+	for _, name := range names {
+		cache[name] = evidence[name]
+	}
+	r.tableEvidenceCache = cache
+}
+
+// cachedLookupTableEvidence возвращает, есть ли в индексе свидетельство
+// изменения структуры таблицы (существование без создающего источника).
+// Паттерн cachedLookupTableCreator: чтение prewarm-кэша, при промахе —
+// одиночный batch-запрос без записи в общий кэш. При ошибке БД возвращается
+// false (fail-closed: finding формируется, а не пропускается дефект).
+func (r *Runner) cachedLookupTableEvidence(ctx context.Context, name string) bool {
+	key := normalizeIdentifier(name)
+	if key == "" {
+		return false
+	}
+	if r.tableEvidenceCache != nil {
+		if exists, ok := r.tableEvidenceCache[key]; ok {
+			return exists
+		}
+	}
+	if r.db == nil {
+		return false
+	}
+	evidence, err := r.db.BatchLookupTableExistenceEvidence(ctx, []string{key}, r.scope.Pairs())
+	if err != nil {
+		return false
+	}
+	return evidence[key]
+}
+
+// indexCheckVerifiable — гейт правила indexExistsInDB (change
+// table-existence-evidence, design D4): проверка индексов таблицы верифицируема
+// только при создающем источнике в индексе (CREATE TABLE, SELECT ... INTO,
+// объявление DSArchitect) — без него набор индексов неполон. Свидетельства
+// изменения структуры гейт намеренно не учитывает. Порядок разрешения:
+// запись в непустом tableCreatorCache (включая false) → она; иначе без БД
+// (unit-тесты) → true, гейт инертен; иначе ленивый lookup создателя (имена
+// p-таблиц из M_DELETE_PTABLE* в DML-наборе prewarm'а отсутствуют). Ошибка
+// БД → false → finding подавлен (fail-open; table-level finding остаётся
+// fail-closed в tableExistsInMetadata).
+func (r *Runner) indexCheckVerifiable(ctx context.Context, tableName string) bool {
+	key := normalizeIdentifier(tableName)
+	if key == "" {
+		return true
+	}
+	if r.tableCreatorCache != nil {
+		if exists, ok := r.tableCreatorCache[key]; ok {
+			return exists
+		}
+	}
+	if r.db == nil {
+		return true
+	}
+	return r.cachedLookupTableCreator(ctx, key)
 }
 
 // cachedLookupTableCreator возвращает, существует ли в индексе источник,

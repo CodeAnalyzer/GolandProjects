@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/codebase/internal/model"
 	"github.com/codebase/internal/store"
 	"github.com/codebase/internal/store/testutil"
 )
@@ -330,6 +331,102 @@ func TestBatchLookupTableCreators_BranchArea(t *testing.T) {
 	}
 	if !creators["tareadevonly"] {
 		t.Fatal("legacy: без пар областей создатель виден глобально")
+	}
+}
+
+// TestBatchLookupTableExistenceEvidence: все четыре вида свидетельств
+// (alter_add, macro_add_field, create_index, macro_create_index) дают true;
+// создающие источники без свидетельств (create_table, select_into) — false;
+// свидетельство подчиняется области (develop-свидетельство не видно в SP,
+// ext-develop виден prj-файлу, prj/bank-b вне области); пустые pairs —
+// глобальный поиск.
+func TestBatchLookupTableExistenceEvidence(t *testing.T) {
+	db := testutil.Open(t)
+	f := seedBranchScopeFixture(t, db)
+	ctx := context.Background()
+
+	insertEvidence := func(fileID int64, table, kind string) {
+		t.Helper()
+		if err := db.BatchInsertSQLColumnDefinitions(ctx, []*model.SQLColumnDefinition{
+			{FileID: fileID, TableName: table, ColumnName: "EvidenceCol", DataType: "DSINT", DefinitionKind: kind},
+		}, 100); err != nil {
+			t.Fatalf("insert column evidence %s (%s): %v", table, kind, err)
+		}
+	}
+	insertIndexEvidence := func(fileID int64, table, index, kind string) {
+		t.Helper()
+		if _, err := db.Exec(`
+			INSERT INTO sql_index_definitions (file_id, table_name, index_name, index_fields, definition_kind)
+			VALUES ($1, $2, $3, 'ID', $4)`, fileID, table, index, kind); err != nil {
+			t.Fatalf("insert index evidence %s (%s): %v", table, kind, err)
+		}
+	}
+	insertEvidence(f.devFileA, "tEvAlterAdd", "alter_add")
+	insertEvidence(f.devFileA, "tEvMacroAddField", "macro_add_field")
+	insertIndexEvidence(f.devFileA, "tEvCreateIndex", "XIE_tEvCreateIndex", "create_index")
+	insertIndexEvidence(f.devFileA, "tEvMacroCreateIndex", "XIE_tEvMacroCreateIndex", "macro_create_index")
+	// Свидетельство только в SP-ветке и только в prj/bank-b EXT-продукта.
+	insertEvidence(f.spFileA, "tEvSpOnly", "macro_add_field")
+	insertEvidence(f.extDevFile, "tExtEvDevOnly", "alter_add")
+	insertEvidence(f.extPrjBFile, "tExtEvPrjBOnly", "alter_add")
+	// Только создающие источники: tAreaDevOnly (create, фикстура) и pAreaList
+	// (create_table-колонки фикстуры) — свидетельств нет.
+
+	all := []string{
+		"TEVALTERADD", "tEvMacroAddField", "tEvCreateIndex", "tEvMacroCreateIndex",
+		"tEvSpOnly", "tExtEvDevOnly", "tExtEvPrjBOnly", "tAreaDevOnly", "pAreaList", "pNotDeclaredAnywhere",
+	}
+
+	// Глобальный поиск (пустые pairs): все свидетельства видны, создатели — нет.
+	evidence, err := db.BatchLookupTableExistenceEvidence(ctx, all, store.ProductBranchPairs{})
+	if err != nil {
+		t.Fatalf("BatchLookupTableExistenceEvidence (global): %v", err)
+	}
+	for _, name := range []string{"tevalteradd", "tevmacroaddfield", "tevcreateindex", "tevmacrocreateindex", "tevsponly", "textevdevonly", "textevprjbonly"} {
+		if !evidence[name] {
+			t.Fatalf("global: evidence[%s] = false, want true", name)
+		}
+	}
+	for _, name := range []string{"tareadevonly", "parealist", "pnotdeclaredanywhere"} {
+		if evidence[name] {
+			t.Fatalf("global: evidence[%s] = true, want false (нет свидетельств изменения структуры)", name)
+		}
+	}
+
+	// Scope SP: свидетельство в develop не подтверждает, в SP — подтверждает.
+	evidence, err = db.BatchLookupTableExistenceEvidence(ctx, all,
+		areasPairs(map[int64][]int64{f.productID: {f.spBranch}}))
+	if err != nil {
+		t.Fatalf("BatchLookupTableExistenceEvidence (SP): %v", err)
+	}
+	if evidence["tevalteradd"] || evidence["tevcreateindex"] {
+		t.Fatal("SP scope: свидетельства develop не должны подтверждать существование")
+	}
+	if !evidence["tevsponly"] {
+		t.Fatal("SP scope: свидетельство SP должно подтверждать существование")
+	}
+
+	// EXT prj-файл (union {prjA, develop}): ext-develop виден, prj/bank-b — нет.
+	evidence, err = db.BatchLookupTableExistenceEvidence(ctx, all,
+		areasPairs(map[int64][]int64{f.extID: {f.extPrjA, f.extDev}}))
+	if err != nil {
+		t.Fatalf("BatchLookupTableExistenceEvidence (EXT): %v", err)
+	}
+	if !evidence["textevdevonly"] {
+		t.Fatal("EXT: свидетельство ext-develop должно входить в область prj-файла (union)")
+	}
+	if evidence["textevprjbonly"] {
+		t.Fatal("EXT: prj-ветка другого банка вне области")
+	}
+
+	// Product-scope {0}: любая ветка продукта.
+	evidence, err = db.BatchLookupTableExistenceEvidence(ctx, []string{"tEvAlterAdd"},
+		areasPairs(map[int64][]int64{f.productID: {0}}))
+	if err != nil {
+		t.Fatalf("BatchLookupTableExistenceEvidence (product scope): %v", err)
+	}
+	if !evidence["tevalteradd"] {
+		t.Fatal("product scope: свидетельство в любой ветке должно подтверждать существование")
 	}
 }
 
