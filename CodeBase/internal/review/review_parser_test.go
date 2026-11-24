@@ -524,6 +524,38 @@ func TestReplaceIdentifierToken_TokenPasteMatrix(t *testing.T) {
 	}
 }
 
+func TestStripImplicitSelectAlias(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"qualified with implicit alias", "u.Brief meUser", "u.Brief"},
+		{"qualified table alias", "t.c alias", "t.c"},
+		{"function with implicit alias", "isnull(a,0) total", "isnull(a,0)"},
+		{"literal with implicit alias", "1 flag", "1"},
+		{"case end with implicit alias", "case when a then b else c end x", "case when a then b else c end"},
+		{"string literal with implicit alias", "'hello world' alias", "'hello world'"},
+		{"top number", "TOP 10 col", "col"},
+		{"top expression percent with ties", "TOP (@n) PERCENT WITH TIES col", "col"},
+		{"distinct column", "DISTINCT col", "col"},
+		{"distinct implicit alias", "DISTINCT tA.a myAlias", "tA.a"},
+		{"operator plus is not alias", "a + b", "a + b"},
+		{"operator multiply is not alias", "a * b", "a * b"},
+		{"single column unchanged", "col", "col"},
+		{"literal plus number unchanged", "dt.Confirmed + 1", "dt.Confirmed + 1"},
+		{"case end without alias unchanged", "case when a then b else c end", "case when a then b else c end"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripImplicitSelectAlias(tc.in)
+			if got != tc.want {
+				t.Fatalf("stripImplicitSelectAlias(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHasStatementEnded_SemicolonInsideStringLiteral_DoesNotEnd(t *testing.T) {
 	stmtBuffer := []string{
 		"update pCNENP_LoanExt_CollateralInfo",

@@ -46,16 +46,30 @@ var (
 	reParserCommentSingleLineC   = regexp.MustCompile(`//[^\n]*`)
 	reParserCommentSingleLineSQL = regexp.MustCompile(`--[^\n]*`)
 	reParserCommentBlock         = regexp.MustCompile(`(?s)/\*.*?\*/`)
-	reParserQualifiedRef         = regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*\b`)
+	reParserQualifiedRef         = regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*[ \t]*\.[ \t]*[a-z_][a-z0-9_]*\b`)
 	reParserAtVar                = regexp.MustCompile(`(?i)@@?[a-z_][a-z0-9_]*`)
 	reParserStringLiteral        = regexp.MustCompile(`'[^']*'`)
 	reParserNumberLiteral        = regexp.MustCompile(`\b\d+(\.\d+)?\b`)
 	reParserIndexMacro           = regexp.MustCompile(`(?i)\bM_\w+_INDEX\s*\([^)]*\)`)
 	reParserIdentifier           = regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\b`)
 	reParserTopN                 = regexp.MustCompile(`(?i)^\s*top\s+\d+\s+`)
-	reParserAsAlias              = regexp.MustCompile(`(?i)\bas\s+([a-z_][a-z0-9_]*)\s*$`)
-	reParserIdentifierOnly       = regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`)
-	reParserOrderAscDesc         = regexp.MustCompile(`(?i)\s+(asc|desc)\s*$`)
+	// reParserSelectTopPrefix распознаёт ведущий модификатор TOP с необязательными
+	// PERCENT / WITH TIES и выражением в скобках (@n). Используется при снятии
+	// неявного алиаса, чтобы не принять реальную колонку за алиас.
+	reParserSelectTopPrefix = regexp.MustCompile(`(?i)^top\s+(?:\(\s*@?[a-z_][a-z0-9_]*\s*\)|\d+)(?:\s+percent)?(?:\s+with\s+ties)?\s+`)
+	// reParserSelectAssignAlias распознаёт assignment-style алиас столбца
+	// в списке выборки T-SQL: `alias = expression`. LHS — плейн-идентификатор,
+	// поэтому `@var = ...` и `case when a = b` сюда не попадают.
+	reParserSelectAssignAlias = regexp.MustCompile(`(?is)^\s*([a-z_][a-z0-9_]*)\s*=\s*(.+)$`)
+	// reParserPreprocessorDirective удаляет строки препроцессора (#ifdef/#else/#endif
+	// и т.п.) с их аргументами — они не являются ссылками на столбцы.
+	reParserPreprocessorDirective = regexp.MustCompile(`(?im)^[ \t]*#[ \t]*(?:ifdef|ifndef|else|elif|endif|define|undef|include)\b[^\n]*`)
+	// reParserDeletePTableMacro удаляет вызовы макросов управления p-таблицами
+	// вместе с аргументом-именем таблицы (не колонкой).
+	reParserDeletePTableMacro = regexp.MustCompile(`(?i)\bM_DELETE_PTABLE(?:_SPID_INDEX|_INDEX)?\s*\([^)]*\)`)
+	reParserAsAlias           = regexp.MustCompile(`(?i)\bas\s+([a-z_][a-z0-9_]*)\s*$`)
+	reParserIdentifierOnly    = regexp.MustCompile(`(?i)^[a-z_][a-z0-9_]*$`)
+	reParserOrderAscDesc      = regexp.MustCompile(`(?i)\s+(asc|desc)\s*$`)
 
 	reParserMacro = regexp.MustCompile(`(?i)\bM_\w+\b`)
 
@@ -2348,6 +2362,10 @@ func findAllUnqualifiedColumnRefs(expr string) []string {
 	// Удаляем подзапросы в скобках (select ...) — алиасы и имена таблиц внутри
 	// не должны считаться неквалифицированными колонками
 	cleaned := stripSubqueries(expr)
+	// Удаляем строки препроцессора (#ifdef/#else/#endif и аргументы-макросы)
+	cleaned = reParserPreprocessorDirective.ReplaceAllString(cleaned, "")
+	// Удаляем вызовы M_DELETE_PTABLE(...) с аргументом-именем p-таблицы
+	cleaned = reParserDeletePTableMacro.ReplaceAllString(cleaned, "")
 	// Удаляем однострочные комментарии //...
 	cleaned = reParserCommentSingleLineC.ReplaceAllString(cleaned, "")
 	// Удаляем однострочные комментарии --...
@@ -2391,6 +2409,134 @@ func findAllUnqualifiedColumnRefs(expr string) []string {
 	return result
 }
 
+// stripImplicitSelectAlias удаляет неявный алиас столбца (`expr alias` без AS)
+// из элемента списка выборки, чтобы алиас не трактовался как ссылка на столбец.
+// Сначала снимаются ведущие модификаторы DISTINCT/ALL/TOP; затем хвостовой
+// идентификатор признаётся алиасом только при строгом guard'е: перед ним на
+// верхнем уровне (вне скобок и строковых литералов) стоит «конец значения»
+// (буква/цифра/_/)/]/кавычка), а сам он не ключевое слово/функция/тип.
+// Если условия не выполнены, элемент возвращается без изменений.
+func stripImplicitSelectAlias(expr string) string {
+	working := stripSelectModifiers(strings.TrimSpace(expr))
+	if working == "" {
+		return working
+	}
+
+	end := len(working)
+	if !isIdentByte(working[end-1]) {
+		return working
+	}
+	start := end
+	for start > 0 && isIdentByte(working[start-1]) {
+		start--
+	}
+	// Токен-кандидат должен начинаться с буквы или '_'.
+	if !isIdentStartByte(working[start]) {
+		return working
+	}
+	// Перед токеном должен быть пробельный разделитель.
+	if start == 0 || !isSpaceByte(working[start-1]) {
+		return working
+	}
+	// Символ перед пробельным разделителем — «конец значения».
+	prev := start - 1
+	for prev >= 0 && isSpaceByte(working[prev]) {
+		prev--
+	}
+	if prev < 0 || !isValueEndByte(working[prev]) {
+		return working
+	}
+	candidate := strings.ToLower(working[start:end])
+	if sqlKeywordsMap[candidate] || sqlFunctionsMap[candidate] || sqlDataTypesMap[candidate] {
+		return working
+	}
+	if !isTopLevelAt(working, start) {
+		return working
+	}
+	return strings.TrimSpace(working[:prev+1])
+}
+
+// stripSelectModifiers снимает ведущие модификаторы списка выборки
+// (DISTINCT, ALL, TOP n / TOP (@n) [PERCENT] [WITH TIES]), чтобы они не мешали
+// распознаванию неявного алиаса.
+func stripSelectModifiers(s string) string {
+	for {
+		trimmed := strings.TrimLeft(s, " \t\r\n")
+		lower := strings.ToLower(trimmed)
+		if hasSelectModifierPrefix(lower, "distinct") {
+			s = trimmed[len("distinct"):]
+			continue
+		}
+		if hasSelectModifierPrefix(lower, "all") {
+			s = trimmed[len("all"):]
+			continue
+		}
+		if loc := reParserSelectTopPrefix.FindStringIndex(trimmed); loc != nil && loc[0] == 0 {
+			s = trimmed[loc[1]:]
+			continue
+		}
+		return strings.TrimSpace(s)
+	}
+}
+
+// hasSelectModifierPrefix сообщает, начинается ли строка с ключевого слова
+// модификатора на границе слова.
+func hasSelectModifierPrefix(s, keyword string) bool {
+	if !strings.HasPrefix(s, keyword) {
+		return false
+	}
+	if len(s) == len(keyword) {
+		return true
+	}
+	return isSpaceByte(s[len(keyword)])
+}
+
+// isTopLevelAt сообщает, находится ли позиция pos вне скобок и строковых литералов.
+func isTopLevelAt(s string, pos int) bool {
+	depth := 0
+	inString := false
+	for i := 0; i < pos && i < len(s); i++ {
+		c := s[i]
+		if inString {
+			if c == '\'' {
+				if i+1 < len(s) && s[i+1] == '\'' {
+					i++
+					continue
+				}
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '\'':
+			inString = true
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return depth == 0 && !inString
+}
+
+func isIdentByte(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+func isIdentStartByte(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isSpaceByte(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+func isValueEndByte(c byte) bool {
+	return isIdentByte(c) || c == ')' || c == ']' || c == '\'' || c == '"'
+}
+
 // truncateAtStatementBoundary обрезает выражение на первой границе оператора
 // (end, else, begin, insert, select, update, delete, exec, if, while и т.д.)
 // на верхнем уровне (глубина скобок = 0). Это предотвращает захват кода
@@ -2400,8 +2546,10 @@ func truncateAtStatementBoundary(expr string) string {
 	isUpdate := strings.HasPrefix(lower, "update")
 	boundaries := []string{"end", "else", "begin", "insert", "select", "update",
 		"delete", "exec", "execute", "if", "while", "print", "goto", "return",
-		"break", "continue", "waitfor", "raiserror", "commit", "rollback", "set"}
+		"break", "continue", "waitfor", "raiserror", "commit", "rollback", "set",
+		"m_delete_ptable", "m_delete_ptable_index", "m_delete_ptable_spid_index"}
 	depth := 0
+	caseDepth := 0
 	for i := 0; i < len(lower); i++ {
 		c := lower[i]
 		if c == '(' {
@@ -2414,7 +2562,21 @@ func truncateAtStatementBoundary(expr string) string {
 			}
 			continue
 		}
+		// CASE…END — часть выражения, а не граница оператора. Учитываем
+		// вложенность (как findTopLevelKeywordPosition), чтобы «end»/«else»
+		// внутри CASE не обрезали запрос преждевременно.
+		if isWordBoundary(lower, i-1) && hasPrefixFold(lower[i:], "case") && isWordBoundary(lower, i+4) {
+			caseDepth++
+			continue
+		}
+		if isWordBoundary(lower, i-1) && hasPrefixFold(lower[i:], "end") && isWordBoundary(lower, i+3) && caseDepth > 0 {
+			caseDepth--
+			continue
+		}
 		if depth > 0 {
+			continue
+		}
+		if caseDepth > 0 {
 			continue
 		}
 		// Не обрезаем в самом начале выражения — первый ключевое слово

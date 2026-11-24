@@ -6042,6 +6042,38 @@ as
 	}
 }
 
+func TestCheckUsageVarInSameSelect_VarInComment_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  select @a = 2,
+         @b = 3 --@a
+`
+	r := &Runner{}
+	parser := sqlparser.NewParser()
+	parsed, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_usage_var_comment_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkUsageVarInSameSelect(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings for @var inside comment, got %d: %v", len(findings), findings)
+	}
+}
+
 func TestCheckUsageVarInSameSelect_FromClause_Finding(t *testing.T) {
 	content := `create proc TestProc
 as
@@ -8247,5 +8279,205 @@ func TestMemoryUniqueNormalizeTableKey(t *testing.T) {
 		if got := normalizeTableKey(input); got != want {
 			t.Fatalf("normalizeTableKey(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func runStatementsWithJoinsRequireAliases(t *testing.T, content string) []Finding {
+	t.Helper()
+	r := &Runner{}
+	parsed, err := sqlparser.NewParser().ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "test_joins_implicit_alias_*.sql")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	findings, err := r.checkStatementsWithJoinsRequireAliases(context.Background(), parsed, &indexedFile{Path: tmpFile.Name(), DsProductID: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	return findings
+}
+
+func assertFindingObjects(t *testing.T, findings []Finding, want ...string) {
+	t.Helper()
+	if len(findings) != len(want) {
+		objs := make([]string, 0, len(findings))
+		for _, f := range findings {
+			objs = append(objs, f.Object)
+		}
+		t.Fatalf("findings count = %d (%v), want %d (%v)", len(findings), objs, len(want), want)
+	}
+	for _, w := range want {
+		lw := strings.ToLower(w)
+		found := 0
+		for _, f := range findings {
+			if strings.ToLower(f.Object) == lw {
+				found++
+			}
+		}
+		if found == 0 {
+			t.Fatalf("expected finding for object %q, got %v", w, findings)
+		}
+	}
+}
+
+func TestCheckStatementsWithJoinsRequireAliases_ImplicitAliasScenarios(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{
+			name: "reference implicit alias",
+			content: `create proc TestProc
+as
+  select dt.FundID as flFund, u.Brief meUser
+    from hDealTransact dt, pAPI_User_FindLst u
+   where dt.UserID = u.UserID
+`,
+			want: nil,
+		},
+		{
+			name: "function and literal implicit alias",
+			content: `create proc TestProc
+as
+  select 1 flag, isnull(t.b, 0) total
+    from tA t join tB x on t.id = x.id
+`,
+			want: nil,
+		},
+		{
+			name: "distinct implicit alias",
+			content: `create proc TestProc
+as
+  select distinct tA.a myAlias from tA join tB on tA.id = tB.id
+`,
+			want: nil,
+		},
+		{
+			name: "unqualified column with implicit alias",
+			content: `create proc TestProc
+as
+  select col alias from tA join tB on tA.id = tB.id
+`,
+			want: []string{"col"},
+		},
+		{
+			name: "operator operands are not aliases",
+			content: `create proc TestProc
+as
+  select a + b from tA join tB on tA.id = tB.id
+`,
+			want: []string{"a", "b"},
+		},
+		{
+			name: "top modifier keeps column",
+			content: `create proc TestProc
+as
+  select top 10 col from tA join tB on tA.id = tB.id
+`,
+			want: []string{"col"},
+		},
+		{
+			name: "distinct modifier keeps column",
+			content: `create proc TestProc
+as
+  select distinct col from tA join tB on tA.id = tB.id
+`,
+			want: []string{"col"},
+		},
+		{
+			name: "case end without alias keeps operands",
+			content: `create proc TestProc
+as
+  select case when a then b else c end from tA join tB on tA.id = tB.id
+`,
+			want: []string{"a", "b", "c"},
+		},
+		{
+			name: "case end with implicit alias keeps operands",
+			content: `create proc TestProc
+as
+  select case when a then b else c end myAlias from tA join tB on tA.id = tB.id
+`,
+			want: []string{"a", "b", "c"},
+		},
+		{
+			name: "assignment-style alias is not a column",
+			content: `create proc TestProc
+as
+  select Alias = b from tA join tB on tA.id = tB.id
+`,
+			want: []string{"b"},
+		},
+		{
+			name: "assignment-style alias with qualified rhs",
+			content: `create proc TestProc
+as
+  select Alias = tA.b from tA join tB on tA.id = tB.id
+`,
+			want: nil,
+		},
+		{
+			name: "preprocessor directives are not columns",
+			content: `create proc TestProc
+as
+  select case when a then
+#ifdef PG_CONVERT
+  b
+#else
+  c
+#endif
+  end from tA join tB on tA.id = tB.id
+`,
+			want: []string{"a", "b", "c"},
+		},
+		{
+			name: "space after dot is qualified ref",
+			content: `create proc TestProc
+as
+  select i. Name from tA i join tB x on i.id = x.id
+`,
+			want: nil,
+		},
+		{
+			name: "p-table macro argument is not a column",
+			content: `create proc TestProc
+as
+  update pCmnt set Comment1 = t.Str
+    from pCmnt pp join pAPI t on t.LinkID = pp.OperationID
+   where pp.SPID = @X
+  M_DELETE_PTABLE(pAPI_Translit_List_In)
+`,
+			want: nil,
+		},
+		{
+			name: "order by output alias is not scanned",
+			content: `create proc TestProc
+as
+  select dt.Date, count(*) Cnt
+    from tA dt join tB x on dt.id = x.id
+   where dt.SPID = @X
+   group by dt.Date
+   order by Cnt, dt.Date
+`,
+			want: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := runStatementsWithJoinsRequireAliases(t, tc.content)
+			assertFindingObjects(t, findings, tc.want...)
+		})
 	}
 }

@@ -6092,6 +6092,11 @@ func (r *Runner) checkUsageVarInSameSelect(ctx context.Context, parsed *sqlparse
 		// оператором, не являются частью SELECT-выражений — вырезаем до разбора,
 		// сохраняя нумерацию строк для поиска offset'а якоря.
 		queryText = stripStandaloneMacroLines(queryText)
+		// Комментарии не должны попадать в разбор assignment'ов: иначе упоминание
+		// @var внутри `-- ...` ложно считается использованием переменной.
+		// removeComments заменяет текст пробелами с сохранением переводов строк,
+		// поэтому нумерация строк не меняется.
+		queryText = removeComments(queryText)
 		queryText = truncateAtStatementBoundary(queryText)
 
 		stmt, ok := parseSelectAssignStatement(queryText)
@@ -6224,6 +6229,14 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(ctx context.Context, par
 			continue
 		}
 
+		// ORDER BY может ссылаться на выходные алиасы SELECT (не на столбцы),
+		// поэтому хвост WHERE не должен захватывать ORDER BY-часть.
+		if wherePart != "" {
+			if orderPos := findTopLevelKeywordPosition(wherePart, "order"); orderPos >= 0 {
+				wherePart = strings.TrimSpace(wherePart[:orderPos])
+			}
+		}
+
 		tables := extractTablesFromFromClause(queryText)
 		if len(tables) < 2 {
 			continue
@@ -6255,10 +6268,19 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(ctx context.Context, par
 						trimmed = strings.TrimSpace(trimmed[eqIdx+1:])
 					}
 				}
+				// offsetPart сохраняет исходную часть для корректного расчёта
+				// номера строки: findColLineOffsetInPart ищет подстроку в queryText.
+				offsetPart := trimmed
 				if !isUpdate {
+					// Assignment-style алиас T-SQL: `alias = expression` —
+					// LHS является определением имени, а не ссылкой на столбец.
+					if m := reParserSelectAssignAlias.FindStringSubmatch(trimmed); len(m) == 3 {
+						trimmed = strings.TrimSpace(m[2])
+					}
 					if asIdx := findTopLevelKeywordPosition(trimmed, "as"); asIdx >= 0 {
 						trimmed = strings.TrimSpace(trimmed[:asIdx])
 					}
+					trimmed = stripImplicitSelectAlias(trimmed)
 				}
 				if trimmed == "" {
 					continue
@@ -6267,7 +6289,7 @@ func (r *Runner) checkStatementsWithJoinsRequireAliases(ctx context.Context, par
 				colNames = r.filterKnownNames(ctx, colNames)
 				colNames = filterOutTableNames(colNames, knownTableNames)
 				for _, colName := range colNames {
-					lineOffset := findColLineOffsetInPart(queryText, trimmed, colName)
+					lineOffset := findColLineOffsetInPart(queryText, offsetPart, colName)
 					findings = append(findings, Finding{
 						Rule:             RuleStatementsWithJoinsRequireAliases,
 						Severity:         SeverityPostgreReq,
