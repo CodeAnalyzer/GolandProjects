@@ -1082,7 +1082,7 @@ codebase review --files list.txt --json
 - `modifyOutProc` — модификация выходных параметров процедуры
 - `emptyReturn` — пустой `RETURN` без значения
 - `rawTransactionControl` — прямое управление транзакциями (`BEGIN TRAN`/`COMMIT`/`ROLLBACK`)
-- `postgreLabelGotoLevel` — использование `GOTO` и меток
+- `postgreLabelGotoLevel` — обратный переход `GOTO` к метке выше перехода в том же батче
 - `dateIntoString` — приведение даты к строке
 - `emptyStringDate` — сравнение даты с пустой строкой
 - `varUseAfterCursor` — использование переменной после закрытия курсора

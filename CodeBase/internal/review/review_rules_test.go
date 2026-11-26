@@ -3692,6 +3692,70 @@ func TestCheckPostgreLabelGotoLevel(t *testing.T) {
 			content: "/* Label1: */\ngoto Label1\nLabel1:\nselect 1",
 			wantN:   0,
 		},
+		{
+			name:    "cross-batch label invisible - Trunc_Inst style",
+			content: "create proc p1\nas\ngoto _FINISH\nselect 1\n_FINISH:\ngo\ncreate proc p2\nas\ngoto _FINISH\nselect 2\n_FINISH:",
+			wantN:   0,
+		},
+		{
+			name:    "foreign label above goto in next batch ignored",
+			content: "create proc p1\nas\n_FINISH:\nselect 1\ngo\ncreate proc p2\nas\ngoto _FINISH\nselect 2\n_FINISH:",
+			wantN:   0,
+		},
+		{
+			name:    "go N splits batch",
+			content: "Label1:\nselect 1\ngo 5\ngoto Label1",
+			wantN:   0,
+		},
+		{
+			name:     "label above goto after go N - finding",
+			content:  "go 5\nLabel1:\nselect 1\ngoto Label1",
+			wantN:    1,
+			wantLine: 4,
+		},
+		{
+			name:    "uppercase GO splits batch",
+			content: "Label1:\nselect 1\nGO\ngoto Label1",
+			wantN:   0,
+		},
+		{
+			name:    "CRLF batch separator recognized",
+			content: "L:\r\nselect 1\r\ngo\r\ngoto L\r\n",
+			wantN:   0,
+		},
+		{
+			name:     "CRLF same batch backward goto - finding",
+			content:  "L:\r\ngoto L\r\n",
+			wantN:    1,
+			wantLine: 2,
+		},
+		{
+			name:    "ARC_PROC_END macro splits batch - archiver style",
+			content: "ARC_PROC_BEGIN(P1)\nas\nEXIT_PROC:\nselect 1\nARC_PROC_END(P1)\nARC_PROC_BEGIN(P2)\nas\ngoto EXIT_PROC\nselect 2\nEXIT_PROC:\nARC_PROC_END(P2)",
+			wantN:   0,
+		},
+		{
+			name:     "label above goto within macro batch - finding",
+			content:  "ARC_PROC_BEGIN(P1)\nas\nL:\nselect 1\ngoto L\nARC_PROC_END(P1)",
+			wantN:    1,
+			wantLine: 5,
+		},
+		{
+			name:    "DCL_PROC_END with spaces splits batch",
+			content: "L:\nselect 1\nDCL_PROC_END( P1 )\ngoto L\n",
+			wantN:   0,
+		},
+		{
+			name:    "PROC_END macro call splits batch",
+			content: "L:\nselect 1\nPROC_END(P1)\ngoto L\n",
+			wantN:   0,
+		},
+		{
+			name:     "PROC_END label is not a batch separator",
+			content:  "PROC_END:\nselect 1\ngoto PROC_END\n",
+			wantN:    1,
+			wantLine: 3,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -278,6 +278,27 @@ func TestBlockCommentHeaderScanners(t *testing.T) {
 				return r.checkPostgreLabelGotoLevel(ctx, f)
 			}),
 		},
+		{
+			ruleCase: ruleCase{name: "postgreLabelGotoLevel dashed go does not split batch", content: "MyLabel:\n-- go\ngoto MyLabel\n", wantCount: 1, wantLine: 3, wantObject: "goto MyLabel"},
+			rule:     RulePostgreLabelGotoLevel,
+			run: fileRun(func(ctx context.Context, r *Runner, f *indexedFile) ([]Finding, error) {
+				return r.checkPostgreLabelGotoLevel(ctx, f)
+			}),
+		},
+		{
+			ruleCase: ruleCase{name: "postgreLabelGotoLevel inline block go does not split batch", content: "MyLabel:\n/* go */\ngoto MyLabel\n", wantCount: 1, wantLine: 3, wantObject: "goto MyLabel"},
+			rule:     RulePostgreLabelGotoLevel,
+			run: fileRun(func(ctx context.Context, r *Runner, f *indexedFile) ([]Finding, error) {
+				return r.checkPostgreLabelGotoLevel(ctx, f)
+			}),
+		},
+		{
+			ruleCase: ruleCase{name: "postgreLabelGotoLevel go inside multiline block comment", content: "MyLabel:\n/* header\n go\n*/\ngoto MyLabel\n", wantCount: 1, wantLine: 5, wantObject: "goto MyLabel"},
+			rule:     RulePostgreLabelGotoLevel,
+			run: fileRun(func(ctx context.Context, r *Runner, f *indexedFile) ([]Finding, error) {
+				return r.checkPostgreLabelGotoLevel(ctx, f)
+			}),
+		},
 	}
 
 	byRule := make(map[RuleID][]ruleCase)

@@ -4744,6 +4744,22 @@ func (r *Runner) checkColumnInsert(ctx context.Context, file *indexedFile) ([]Fi
 	return findings, nil
 }
 
+// reGoBatchSeparator — граница батча T-SQL: строка, состоящая только из "go"
+// (допускается форма "go N" — повтор батча N раз). Поддержка "go N" — намеренное
+// расширение относительно SQL-парсера (sql_parser.go проверяет строгое
+// EqualFold(trimmed, "go") без счётчика).
+var reGoBatchSeparator = regexp.MustCompile(`^go(\s+\d+)?$`)
+
+// reProcEndMacroSeparator — вызов макроса-завершителя процедуры
+// (ARC_PROC_END / DCL_PROC_END / PROC_END с аргументом в скобках). Макросы
+// раскрываются в хвост с "go" (archive.h:162 — ARC_PROC_END → go … go;
+// MACROS.H:762 — DCL_PROC_END → … end \ go \ X_ANYMODE(NAME) \ go \ grant … \ go),
+// но replaceMacros резолвит только in-file #define и не раскрывает #include,
+// поэтому в анализируемом контенте граница батча остаётся литеральным вызовом.
+// Открывающая скобка обязательна: отличает вызов макроса PROC_END(имя) от метки
+// PROC_END: (встречается в Exponent_ShiftNumber.sql и в раскрытии DCL_PROC_END).
+var reProcEndMacroSeparator = regexp.MustCompile(`^(arc_proc_end|dcl_proc_end|proc_end)\s*\(`)
+
 func (r *Runner) checkPostgreLabelGotoLevel(ctx context.Context, file *indexedFile) ([]Finding, error) {
 	findings := make([]Finding, 0)
 	content, err := r.fileContent(ctx, file.Path)
@@ -4753,13 +4769,19 @@ func (r *Runner) checkPostgreLabelGotoLevel(ctx context.Context, file *indexedFi
 	lines := strings.Split(string(content), "\n")
 
 	type gotoRef struct {
-		name string
-		line int
+		name  string
+		line  int
+		batch int
+	}
+	type labelRef struct {
+		line  int
+		batch int
 	}
 
 	gotos := make([]gotoRef, 0)
-	labels := make(map[string][]int)
+	labels := make(map[string][]labelRef)
 	inBlockComment := false
+	batch := 0
 
 	for i, line := range lines {
 		lineNum := i + 1
@@ -4819,6 +4841,17 @@ func (r *Runner) checkPostgreLabelGotoLevel(ctx context.Context, file *indexedFi
 		cleanLine := cleaned.String()
 		lower := strings.ToLower(cleanLine)
 
+		// Граница батча: строка "go" (или "go N") либо вызов макроса-завершителя
+		// процедуры (ARC_PROC_END/DCL_PROC_END/PROC_END с аргументом) на зачищенной
+		// строке. TrimSpace обязателен: файлы FA — CRLF, Split("\n") оставляет
+		// хвостовой "\r". В T-SQL метка видима только в своём батче, поэтому метки
+		// предыдущих батчей не должны давать findings для goto последующих батчей.
+		trimmed := strings.TrimSpace(lower)
+		if reGoBatchSeparator.MatchString(trimmed) || reProcEndMacroSeparator.MatchString(trimmed) {
+			batch++
+			continue
+		}
+
 		for j := 0; j < len(lower); j++ {
 			if keywordMatchAt(lower, j, "goto") {
 				k := j + len("goto")
@@ -4831,7 +4864,7 @@ func (r *Runner) checkPostgreLabelGotoLevel(ctx context.Context, file *indexedFi
 				}
 				if nameStart < k {
 					labelName := cleanLine[nameStart:k]
-					gotos = append(gotos, gotoRef{name: labelName, line: lineNum})
+					gotos = append(gotos, gotoRef{name: labelName, line: lineNum, batch: batch})
 				}
 			}
 		}
@@ -4844,7 +4877,7 @@ func (r *Runner) checkPostgreLabelGotoLevel(ctx context.Context, file *indexedFi
 				}
 				if j < len(lower) && lower[j] == ':' {
 					labelName := cleanLine[nameStart:j]
-					labels[labelName] = append(labels[labelName], lineNum)
+					labels[labelName] = append(labels[labelName], labelRef{line: lineNum, batch: batch})
 				}
 			}
 		}
@@ -4855,8 +4888,11 @@ func (r *Runner) checkPostgreLabelGotoLevel(ctx context.Context, file *indexedFi
 		if !ok {
 			continue
 		}
-		for _, labelLine := range positions {
-			if labelLine <= g.line {
+		for _, lr := range positions {
+			if lr.batch != g.batch {
+				continue // метка из другого батча невидима для goto
+			}
+			if lr.line <= g.line {
 				findings = append(findings, Finding{
 					Rule:             RulePostgreLabelGotoLevel,
 					Severity:         SeverityPostgreReq,
