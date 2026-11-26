@@ -170,8 +170,13 @@ func (r *Runner) runSQLFileCtx(ctx context.Context, path string, opts Options) (
 		return nil, err
 	}
 
+	// Маскируем dollar-quoted plpgsql-области ДО подстановки макросов:
+	// line-preserving (число строк совпадает с raw), правила не видят PG-код.
+	// rawContent ниже остаётся немаскированным (для сырых анализов).
+	maskedContent := maskDollarQuotedBlocks(fileContent)
+
 	// Выполняем подстановку макросов ДО парсинга
-	macroResult := replaceMacros(fileContent)
+	macroResult := replaceMacros(maskedContent)
 
 	// Парсим expanded-контент (с раскрытыми макросами)
 	parsed, err := r.parser.ParseContent(macroResult.Content)
