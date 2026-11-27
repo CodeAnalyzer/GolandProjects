@@ -21,7 +21,7 @@ var codebaseResetTables = []string{
 	"files", "symbols", "ds_products", "ds_products_branch", "stats_snapshot",
 	// SQL
 	"sql_procedures", "sql_tables", "sql_columns", "sql_column_definitions",
-	"sql_index_definitions", "sql_index_definition_fields",
+	"sql_index_definitions", "sql_index_definition_fields", "reg_table_name",
 	// PAS/H/JS/SMF/DFM
 	"pas_units", "pas_classes", "pas_methods", "pas_fields", "h_files_defines",
 	"js_functions", "js_constants", "smf_instruments", "dfm_forms", "dfm_components",

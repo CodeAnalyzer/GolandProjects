@@ -477,7 +477,7 @@ index-хинтам, ни по индексам макросов `M_DELETE_PTABLE
 продукта вне разрешённой области, MUST NOT подтверждать существование таблицы.
 
 Создающим источником таблицы считается любое из:
-- DDL-скрипт с `CREATE TABLE` (патч постоянной t-таблицы или TmpTbl-скрипт p-таблицы);
+- DDL-скрипт с `CREATE TABLE` (патч постоянной t-таблицы или TmpTbl-скрипт p-таблицы), включая форму с schema/db-префиксом имени (`dbo.tSeed`, `MIDDLE..dcSubcontoConnect`) и модификаторы (`UNLOGGED`, `TEMP`, `TEMPORARY`, `GLOBAL TEMPORARY`);
 - таблица, объявленная в метаданных DSArchitect как таблица API-контракта или таблица бизнес-объекта;
 - создание через `SELECT ... INTO`;
 - `CREATE TABLE` в самом анализируемом файле.
@@ -487,7 +487,8 @@ index-хинтам, ни по индексам макросов `M_DELETE_PTABLE
 поставляется вне исходников): изменение существующей таблицы не выполняется на
 несуществующей. Свидетельством считается любое из:
 - добавление колонки — `ALTER TABLE … ADD` или `M_ADD_FIELD` с именем таблицы;
-- создание индекса — `CREATE INDEX … ON <таблица>` или `M_CRT_INDEX` с именем таблицы.
+- создание индекса — `CREATE INDEX … ON <таблица>` или `M_CRT_INDEX` с именем таблицы;
+- регистрация таблицы в реестре продукта — `__REG_TABLE_NAME__` в `DB/ProductTable.sql` (таблицы, принадлежащие продукту, чей DDL поставляется вне исходников).
 
 Свидетельства берутся из индекса, а не из текста анализируемого файла:
 свидетельство, появившееся в файле после индексации, учитывается только после
@@ -509,7 +510,7 @@ index-хинтам, ни по индексам макросов `M_DELETE_PTABLE
 - placeholder-токены генераторов (имена из подчёркиваний, содержащие `##` или начинающиеся с `__`);
 - имена, встречающиеся на строке обращения только внутри строковых литералов (например, профилировочные сообщения вида `PROFILE_TIME_EX('update contract')`).
 
-Сравнение имён таблиц MUST быть регистронезависимым. Finding MUST указывать имя таблицы, файл и строку обращения; сообщение finding MUST перечислять проверенные виды источников (создающий DDL, изменение структуры патчем, SELECT INTO, объявление DSArchitect).
+Сравнение имён таблиц MUST быть регистронезависимым. Finding MUST указывать имя таблицы, файл и строку обращения; сообщение finding MUST перечислять проверенные виды источников (создающий DDL, изменение структуры патчем, реестр таблиц продукта, SELECT INTO, объявление DSArchitect).
 
 #### Scenario: t-таблица создана патчем
 
@@ -538,6 +539,20 @@ index-хинтам, ни по индексам макросов `M_DELETE_PTABLE
 - **WHEN** выполняется review
 - **THEN** finding `tableExistsInMetadata` не формируется
 
+#### Scenario: Таблица создана с schema-префиксом
+
+- **GIVEN** SQL-скрипт использует `tReplTables` в DML
+- **AND** в индексе есть скрипт `DB/eis_5nt.sql` со строкой `create table dbo.tReplTables (...)`
+- **WHEN** выполняется review
+- **THEN** finding `tableExistsInMetadata` для `tReplTables` не формируется
+
+#### Scenario: Таблица создана CREATE UNLOGGED TABLE
+
+- **GIVEN** SQL-скрипт использует `pAPI_ExpProperty_Type` в DML
+- **AND** в индексе есть скрипт с `CREATE UNLOGGED TABLE pAPI_ExpProperty_Type (...)`
+- **WHEN** выполняется review
+- **THEN** finding `tableExistsInMetadata` для `pAPI_ExpProperty_Type` не формируется
+
 #### Scenario: Базовая таблица без DDL с патчем добавления поля
 
 - **GIVEN** SQL-скрипт `ParticipantSB_Delete.sql` читает `tRequisitParticipantSB` в `SELECT`
@@ -558,6 +573,20 @@ index-хинтам, ни по индексам макросов `M_DELETE_PTABLE
 - **AND** в индексе нет `create table tWebUser` и записей добавления колонок, но есть `M_CRT_INDEX(…, 'XIE1tWebUser', 'tWebUser', …)` или `create index … on tWebUser`
 - **WHEN** выполняется review
 - **THEN** finding `tableExistsInMetadata` для `tWebUser` не формируется
+
+#### Scenario: Системная таблица зарегистрирована в реестре продукта
+
+- **GIVEN** SQL-скрипт продукта `fa-payments` использует `tKey` в `UPDATE`
+- **AND** в индексе нет `create table tKey` и патчей изменения структуры, но в `reg_table_name` есть регистрация `tKey` из `Payments/SERVER/DB/ProductTable.sql` продукта `fa-payments`
+- **WHEN** выполняется review
+- **THEN** finding `tableExistsInMetadata` для `tKey` не формируется
+
+#### Scenario: Реестр чужого продукта вне разрешённой области
+
+- **GIVEN** SQL-скрипт продукта `fa-contracts` использует `tKey` в DML
+- **AND** регистрация `tKey` в `reg_table_name` есть только в продукте `fa-payments` вне разрешённой области для проверяемого файла
+- **WHEN** выполняется review
+- **THEN** сформирован finding с rule `tableExistsInMetadata`, severity 1
 
 #### Scenario: Свидетельство патча есть только в другой ветке своего продукта
 
@@ -582,7 +611,7 @@ index-хинтам, ни по индексам макросов `M_DELETE_PTABLE
 #### Scenario: Использование несуществующей таблицы
 
 - **GIVEN** SQL-скрипт использует `pAPI_Account_MassClose` в `INSERT`
-- **AND** ни один DDL-скрипт, патч изменения структуры, API-контракт или бизнес-объект в разрешённой области не создаёт, не изменяет и не объявляет `pAPI_Account_MassClose`
+- **AND** ни один DDL-скрипт, патч изменения структуры, реестр продукта, API-контракт или бизнес-объект в разрешённой области не создаёт, не изменяет, не регистрирует и не объявляет `pAPI_Account_MassClose`
 - **WHEN** выполняется review
 - **THEN** сформирован finding с rule `tableExistsInMetadata`, severity 1
 - **AND** в finding указаны имя `pAPI_Account_MassClose`, файл и строка `INSERT`
@@ -844,10 +873,11 @@ review (`.sql`, `.h`).
 `create [or replace] view <имя>` (SQL-скрипт любого продукта или ветки:
 представления живут в общем namespace БД, сопоставление по имени без
 product-scope). Схемный префикс в определении (`public.`) MUST
-отбрасываться; в обращении префикс (`dbo.`) MUST отбрасываться, если парсер
-сохранил его в извлечённом имени — текущий SQL-парсер срезает
-qualified-ссылки до первого токена (`from dbo.X` даёт таблицу `dbo`),
-известное ограничение, квалифицированные обращения к view — FN. Сравнение
+отбрасываться. В обращении SQL-парсер извлекает последний сегмент
+dotted-имени (`from dbo.X` даёт ссылку на `X`), поэтому квалифицированные
+обращения к view распознаются и дают finding (прежде — известный FN
+срезания до первого токена). Если парсер сохранил префикс в извлечённом
+имени, префикс (`dbo.`) MUST отбрасываться при сопоставлении. Сравнение
 имён MUST быть регистронезависимым. Findings дедуплицируются по имени и
 строке обращения (как у `tableExistsInMetadata`).
 
@@ -858,7 +888,7 @@ qualified-ссылки до первого токена (`from dbo.X` даёт �
 
 Ошибка получения множества имён представлений из БД MUST приводить к
 пропуску проверки без падения review (fail-open: бан-правило при сбое не
-формирует ложные findings).
+формирует ложных findings).
 
 #### Scenario: SELECT из представления в серверной процедуре
 
@@ -866,6 +896,13 @@ qualified-ссылки до первого токена (`from dbo.X` даёт �
 - **WHEN** выполняется review
 - **THEN** сформирован finding с rule `viewUsageInServerCode`, severity 1
 - **AND** в finding указаны имя `tfund`, файл и строка обращения
+
+#### Scenario: Квалифицированное обращение к view
+
+- **GIVEN** SQL-файл содержит `select ... from dbo.tfund`, и в индексе есть фрагмент `create view tfund`
+- **WHEN** выполняется review
+- **THEN** сформирован finding с rule `viewUsageInServerCode` для `tfund`
+- **AND** префикс `dbo` не попадает в findings
 
 #### Scenario: UPDATE представления
 

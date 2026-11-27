@@ -1969,7 +1969,9 @@ func isTableExistsNoiseName(name string, cursorDecls map[string]cursorDeclaratio
 // анализируемом файле (защита от устаревшего индекса). Без создающего
 // источника существование подтверждает свидетельство изменения структуры
 // (ALTER ADD / M_ADD_FIELD / CREATE INDEX / M_CRT_INDEX) из снимка индекса
-// (change table-existence-evidence, design D2).
+// (change table-existence-evidence, design D2) и регистрация в реестре
+// продукта __REG_TABLE_NAME__ (reg_table_name, change
+// table-existence-source-fixes, design D4).
 func (r *Runner) checkTableExistsInMetadata(ctx context.Context, parsed *sqlparser.ParseResult, file *indexedFile) ([]Finding, error) {
 	if parsed == nil {
 		return []Finding{}, nil
@@ -2052,7 +2054,7 @@ func (r *Runner) checkTableExistsInMetadata(ctx context.Context, parsed *sqlpars
 		findings = append(findings, Finding{
 			Rule:             RuleTableExistsInMetadata,
 			Severity:         SeverityDeployStopper,
-			Message:          fmt.Sprintf("Таблица %s отсутствует в метаданных: не найден создающий DDL, изменение структуры патчем, SELECT INTO или объявление DSArchitect", table.TableName),
+			Message:          fmt.Sprintf("Таблица %s отсутствует в метаданных: не найден создающий DDL, изменение структуры патчем, реестр таблиц продукта, SELECT INTO или объявление DSArchitect", table.TableName),
 			File:             file.Path,
 			Line:             table.LineNumber,
 			Object:           table.TableName,

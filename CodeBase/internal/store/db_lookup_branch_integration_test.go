@@ -334,12 +334,12 @@ func TestBatchLookupTableCreators_BranchArea(t *testing.T) {
 	}
 }
 
-// TestBatchLookupTableExistenceEvidence: все четыре вида свидетельств
-// (alter_add, macro_add_field, create_index, macro_create_index) дают true;
-// создающие источники без свидетельств (create_table, select_into) — false;
-// свидетельство подчиняется области (develop-свидетельство не видно в SP,
-// ext-develop виден prj-файлу, prj/bank-b вне области); пустые pairs —
-// глобальный поиск.
+// TestBatchLookupTableExistenceEvidence: все пять видов свидетельств
+// (alter_add, macro_add_field, create_index, macro_create_index, реестр
+// reg_table_name) дают true; создающие источники без свидетельств
+// (create_table, select_into) — false; свидетельство подчиняется области
+// (develop-свидетельство не видно в SP, ext-develop виден prj-файлу,
+// prj/bank-b вне области); пустые pairs — глобальный поиск.
 func TestBatchLookupTableExistenceEvidence(t *testing.T) {
 	db := testutil.Open(t)
 	f := seedBranchScopeFixture(t, db)
@@ -361,6 +361,14 @@ func TestBatchLookupTableExistenceEvidence(t *testing.T) {
 			t.Fatalf("insert index evidence %s (%s): %v", table, kind, err)
 		}
 	}
+	insertReg := func(fileID int64, table string) {
+		t.Helper()
+		if _, err := db.Exec(`
+			INSERT INTO reg_table_name (file_id, table_name, line_number)
+			VALUES ($1, $2, 1)`, fileID, table); err != nil {
+			t.Fatalf("insert reg evidence %s: %v", table, err)
+		}
+	}
 	insertEvidence(f.devFileA, "tEvAlterAdd", "alter_add")
 	insertEvidence(f.devFileA, "tEvMacroAddField", "macro_add_field")
 	insertIndexEvidence(f.devFileA, "tEvCreateIndex", "XIE_tEvCreateIndex", "create_index")
@@ -369,12 +377,18 @@ func TestBatchLookupTableExistenceEvidence(t *testing.T) {
 	insertEvidence(f.spFileA, "tEvSpOnly", "macro_add_field")
 	insertEvidence(f.extDevFile, "tExtEvDevOnly", "alter_add")
 	insertEvidence(f.extPrjBFile, "tExtEvPrjBOnly", "alter_add")
+	// Регистрации реестра — по тем же веткам.
+	insertReg(f.devFileA, "tRegDev")
+	insertReg(f.spFileA, "tRegSpOnly")
+	insertReg(f.extDevFile, "tExtRegDev")
+	insertReg(f.extPrjBFile, "tExtRegPrjB")
 	// Только создающие источники: tAreaDevOnly (create, фикстура) и pAreaList
 	// (create_table-колонки фикстуры) — свидетельств нет.
 
 	all := []string{
 		"TEVALTERADD", "tEvMacroAddField", "tEvCreateIndex", "tEvMacroCreateIndex",
-		"tEvSpOnly", "tExtEvDevOnly", "tExtEvPrjBOnly", "tAreaDevOnly", "pAreaList", "pNotDeclaredAnywhere",
+		"tEvSpOnly", "tExtEvDevOnly", "tExtEvPrjBOnly", "tRegDev", "tRegSpOnly", "tExtRegDev", "tExtRegPrjB",
+		"tAreaDevOnly", "pAreaList", "pNotDeclaredAnywhere",
 	}
 
 	// Глобальный поиск (пустые pairs): все свидетельства видны, создатели — нет.
@@ -382,7 +396,7 @@ func TestBatchLookupTableExistenceEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BatchLookupTableExistenceEvidence (global): %v", err)
 	}
-	for _, name := range []string{"tevalteradd", "tevmacroaddfield", "tevcreateindex", "tevmacrocreateindex", "tevsponly", "textevdevonly", "textevprjbonly"} {
+	for _, name := range []string{"tevalteradd", "tevmacroaddfield", "tevcreateindex", "tevmacrocreateindex", "tevsponly", "textevdevonly", "textevprjbonly", "tregdev", "tregsponly", "textregdev", "textregprjb"} {
 		if !evidence[name] {
 			t.Fatalf("global: evidence[%s] = false, want true", name)
 		}
@@ -399,10 +413,10 @@ func TestBatchLookupTableExistenceEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BatchLookupTableExistenceEvidence (SP): %v", err)
 	}
-	if evidence["tevalteradd"] || evidence["tevcreateindex"] {
+	if evidence["tevalteradd"] || evidence["tevcreateindex"] || evidence["tregdev"] {
 		t.Fatal("SP scope: свидетельства develop не должны подтверждать существование")
 	}
-	if !evidence["tevsponly"] {
+	if !evidence["tevsponly"] || !evidence["tregsponly"] {
 		t.Fatal("SP scope: свидетельство SP должно подтверждать существование")
 	}
 
@@ -412,10 +426,10 @@ func TestBatchLookupTableExistenceEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BatchLookupTableExistenceEvidence (EXT): %v", err)
 	}
-	if !evidence["textevdevonly"] {
-		t.Fatal("EXT: свидетельство ext-develop должно входить в область prj-файла (union)")
+	if !evidence["textevdevonly"] || !evidence["textregdev"] {
+		t.Fatal("EXT: свидетельства ext-develop должны входить в область prj-файла (union)")
 	}
-	if evidence["textevprjbonly"] {
+	if evidence["textevprjbonly"] || evidence["textregprjb"] {
 		t.Fatal("EXT: prj-ветка другого банка вне области")
 	}
 

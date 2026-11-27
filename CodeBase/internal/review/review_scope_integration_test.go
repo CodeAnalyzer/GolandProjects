@@ -15,27 +15,30 @@ import (
 )
 
 // reviewScopeFixture — веточная фикстура review: продукт fa-rv
-// (develop default + sup-линия), fa-rv-other (develop) и EXT-продукт
-// fa-rv-ext (develop + prj/bank-a + prj/bank-b). SP-ветка продукта fa-rv
-// содержит два файла (для дублирования процедур внутри области).
+// (develop default + sup-линия), fa-rv-other (develop + SP-линия) и
+// EXT-продукт fa-rv-ext (develop + prj/bank-a + prj/bank-b). SP-ветка
+// продукта fa-rv содержит два файла (для дублирования процедур внутри
+// области).
 type reviewScopeFixture struct {
-	scanID      int64
-	productID   int64
-	otherID     int64
-	extID       int64
-	devBranch   int64
-	spBranch    int64
-	otherBranch int64
-	extDev      int64
-	extPrjA     int64
-	extPrjB     int64
-	devFileA    int64
-	spFileA     int64
-	spFileA2    int64
-	otherFile   int64
-	extDevFile  int64
-	extPrjAFile int64
-	extPrjBFile int64
+	scanID        int64
+	productID     int64
+	otherID       int64
+	extID         int64
+	devBranch     int64
+	spBranch      int64
+	otherBranch   int64
+	otherSpBranch int64
+	extDev        int64
+	extPrjA       int64
+	extPrjB       int64
+	devFileA      int64
+	spFileA       int64
+	spFileA2      int64
+	otherFile     int64
+	otherSpFile   int64
+	extDevFile    int64
+	extPrjAFile   int64
+	extPrjBFile   int64
 }
 
 func seedReviewScopeFixture(t *testing.T, db *store.DB) *reviewScopeFixture {
@@ -73,6 +76,7 @@ func seedReviewScopeFixture(t *testing.T, db *store.DB) *reviewScopeFixture {
 	f.devBranch = insertBranch(f.productID, "fa-rv", "develop", "develop", true)
 	f.spBranch = insertBranch(f.productID, "fa-rv", "FA-Rv-11-01-7", "fa-rv-11-01-7", false)
 	f.otherBranch = insertBranch(f.otherID, "fa-rv-other", "develop", "develop", true)
+	f.otherSpBranch = insertBranch(f.otherID, "fa-rv-other", "FA-RvOther-11-01-7", "fa-rv-other-11-01-7", false)
 	f.extDev = insertBranch(f.extID, "fa-rv-ext", "develop", "develop", true)
 	f.extPrjA = insertBranch(f.extID, "fa-rv-ext", "prj bank a", "prj/bank-a", false)
 	f.extPrjB = insertBranch(f.extID, "fa-rv-ext", "prj bank b", "prj/bank-b", false)
@@ -92,6 +96,7 @@ func seedReviewScopeFixture(t *testing.T, db *store.DB) *reviewScopeFixture {
 	f.spFileA = insertFile(f.productID, f.spBranch, "/repo-review-scope/fa-rv-11017/Sp1.sql")
 	f.spFileA2 = insertFile(f.productID, f.spBranch, "/repo-review-scope/fa-rv-11017/Sp2.sql")
 	f.otherFile = insertFile(f.otherID, f.otherBranch, "/repo-review-scope/fa-rv-other/develop/Other.sql")
+	f.otherSpFile = insertFile(f.otherID, f.otherSpBranch, "/repo-review-scope/fa-rv-other-11017/OtherSp.sql")
 	f.extDevFile = insertFile(f.extID, f.extDev, "/repo-review-scope/fa-rv-ext/develop/Ext.sql")
 	f.extPrjAFile = insertFile(f.extID, f.extPrjA, "/repo-review-scope/fa-rv-ext/prj-bank-a/ExtA.sql")
 	f.extPrjBFile = insertFile(f.extID, f.extPrjB, "/repo-review-scope/fa-rv-ext/prj-bank-b/ExtB.sql")
@@ -570,6 +575,89 @@ as
 		}
 		if !got["tRvExtEvPrjB"] {
 			t.Fatalf("prewarm=%v: tRvExtEvPrjB: prj-ветка другого банка вне области — нужен finding", prewarm)
+		}
+	}
+}
+
+// TestCheckTableExistsInMetadataRegistryScope: регистрация в реестре
+// продукта (reg_table_name) подтверждает существование с той же областной
+// привязкой, что и свидетельства патчей: реестр в разворачиваемой ветке —
+// нет finding; реестр только в чужой ветке своего продукта или в чужом
+// продукте — finding; EXT prj-файлу виден ext-develop (union), prj/bank-b —
+// нет. Оба пути: prewarm-кэш и ленивый (change table-existence-source-fixes,
+// design D4).
+func TestCheckTableExistsInMetadataRegistryScope(t *testing.T) {
+	db := testutil.Open(t)
+	f := seedReviewScopeFixture(t, db)
+	ctx := context.Background()
+
+	insertReg := func(fileID int64, table string) {
+		t.Helper()
+		if _, err := db.Exec(`INSERT INTO reg_table_name (file_id, table_name, line_number) VALUES ($1, $2, 1)`, fileID, table); err != nil {
+			t.Fatalf("insert reg %s: %v", table, err)
+		}
+	}
+	// SP-файл продукта fa-rv: реестр в SP — подтверждает; в develop — нет;
+	// в чужом продукте fa-rv-other — вне области, если в его НЕ-default ветке
+	// (default-ветка чужого продукта входит в разрешённую область).
+	insertReg(f.spFileA, "tRvRegSpOnly")
+	insertReg(f.devFileA, "tRvRegDevOnly")
+	insertReg(f.otherSpFile, "tRvRegOther")
+	// EXT: реестр в ext-develop и prj/bank-b.
+	insertReg(f.extDevFile, "tRvExtRegDev")
+	insertReg(f.extPrjBFile, "tRvExtRegPrjB")
+
+	run := func(r *Runner, content string, file *indexedFile, prewarm bool) map[string]bool {
+		t.Helper()
+		parsed := parseContent(t, content)
+		r.exec = &reviewExecContext{filePath: normalizePath(file.Path), content: []byte(content), lines: strings.Split(content, "\n"), macroResult: replaceMacros(content)}
+		if prewarm {
+			r.prewarmTableCreators(ctx, parsed)
+			r.prewarmTableEvidence(ctx, parsed)
+		}
+		findings, err := r.checkTableExistsInMetadata(ctx, parsed, file)
+		if err != nil {
+			t.Fatalf("checkTableExistsInMetadata: %v", err)
+		}
+		return findingObjects(findings)
+	}
+
+	for _, prewarm := range []bool{true, false} {
+		got := run(scopedRunner(db, f), `create proc RV_Registry_Review
+as
+  select ID from tRvRegSpOnly
+  select ID from tRvRegDevOnly
+  select ID from tRvRegOther
+  return`, f.spFile("/repo-review-scope/fa-rv-11017/Sp1.sql"), prewarm)
+		if got["tRvRegSpOnly"] {
+			t.Fatalf("prewarm=%v: tRvRegSpOnly: реестр в SP — finding не нужен", prewarm)
+		}
+		if !got["tRvRegDevOnly"] {
+			t.Fatalf("prewarm=%v: tRvRegDevOnly: реестр только в develop — нужен finding tableExistsInMetadata", prewarm)
+		}
+		if !got["tRvRegOther"] {
+			t.Fatalf("prewarm=%v: tRvRegOther: реестр чужого продукта вне области — нужен finding", prewarm)
+		}
+
+		extRunner := NewRunner(db)
+		extRunner.scope = ReviewScope{
+			FileID: f.extPrjAFile, ProductID: f.extID, BranchID: f.extPrjA,
+			ProductBranch: map[int64][]int64{
+				f.productID: {f.spBranch},
+				f.otherID:   {f.otherBranch},
+				f.extID:     {f.extPrjA, f.extDev},
+			},
+		}
+		got = run(extRunner, `create proc RV_Ext_Registry_Review
+as
+  select ID from tRvExtRegDev
+  select ID from tRvExtRegPrjB
+  return`, &indexedFile{ID: f.extPrjAFile, Path: "/repo-review-scope/fa-rv-ext/prj-bank-a/ExtA.sql", DsProductID: f.extID, DsProductBranchID: f.extPrjA}, prewarm)
+		if got["tRvExtRegDev"] {
+			t.Fatalf("prewarm=%v: tRvExtRegDev: ext-develop входит в область prj-файла (union) — finding не нужен", prewarm)
+		}
+		if !got["tRvExtRegPrjB"] {
+			t.Fatalf("prewarm=%v: tRvExtRegPrjB: prj-ветка другого банка вне области — нужен finding", prewarm)
 		}
 	}
 }

@@ -446,3 +446,56 @@ func (db *DB) insertRelationsBatch(ctx context.Context, relations []*model.Relat
 		return err
 	})
 }
+
+// BatchInsertRegTables пакетная вставка регистраций таблиц продукта (__REG_TABLE_NAME__)
+func (db *DB) BatchInsertRegTables(ctx context.Context, regTables []*model.SQLRegTable, batchSize int) error {
+	if len(regTables) == 0 {
+		return nil
+	}
+
+	if len(regTables) <= batchSize {
+		return db.insertRegTablesBatch(ctx, regTables)
+	}
+
+	for i := 0; i < len(regTables); i += batchSize {
+		end := i + batchSize
+		if end > len(regTables) {
+			end = len(regTables)
+		}
+
+		batch := regTables[i:end]
+		if err := db.insertRegTablesBatch(ctx, batch); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// insertRegTablesBatch вставляет одну пачку регистраций таблиц продукта
+func (db *DB) insertRegTablesBatch(ctx context.Context, regTables []*model.SQLRegTable) error {
+	if len(regTables) == 0 {
+		return nil
+	}
+
+	return db.withCopyInTxCtx(ctx, func(tx *sql.Tx) error {
+		stmt, err := tx.Prepare(pq.CopyIn("reg_table_name", "file_id", "table_name", "line_number"))
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+
+		for _, regTable := range regTables {
+			_, err := stmt.Exec(
+				regTable.FileID,
+				sanitizeUTF8String(regTable.Name),
+				regTable.LineNumber,
+			)
+			if err != nil {
+				return err
+			}
+		}
+
+		_, err = stmt.Exec()
+		return err
+	})
+}

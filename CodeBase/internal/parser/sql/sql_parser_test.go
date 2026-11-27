@@ -931,3 +931,451 @@ select tal.TypeAccLinkID as RuleID,    --- Идентификатор прави
 		t.Fatal("missing select_into column TypeRule (should be extracted from 'lat.Brief as TypeRule')")
 	}
 }
+
+// --- change table-existence-source-fixes ---
+
+// helper: собрать контексты таблицы по имени
+func tableContextsByName(result *ParseResult, name string) []string {
+	var ctxs []string
+	for _, t := range result.Tables {
+		if strings.EqualFold(t.TableName, name) {
+			ctxs = append(ctxs, t.Context)
+		}
+	}
+	return ctxs
+}
+
+func hasTable(result *ParseResult, name string) bool {
+	for _, t := range result.Tables {
+		if strings.EqualFold(t.TableName, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// CREATE TABLE с schema/db-префиксом и модификаторами: имя таблицы —
+// последний сегмент dotted-имени, префикс не попадает в sql_tables (design D1)
+func TestParseContent_CreateTableSchemaPrefix(t *testing.T) {
+	parser := NewParser()
+	content := `create table dbo.tReplTables (Tbl varchar(30) NOT NULL)
+go
+create table MIDDLE..dcSubcontoConnect (ID DSIDENTIFIER)
+go
+CREATE UNLOGGED TABLE pAPI_ExpProperty_Type (spid DSSPID)
+go
+create table dbo.pSeed (
+ SPID DSIDENTIFIER,
+ Type char(25) null
+)
+go
+create table tContract (ID int NOT NULL)
+`
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	for _, junk := range []string{"dbo", "MIDDLE", "unlogged", "UNLOGGED"} {
+		if hasTable(result, junk) {
+			t.Fatalf("junk table name %q extracted: %+v", junk, result.Tables)
+		}
+	}
+	if ctxs := tableContextsByName(result, "tReplTables"); len(ctxs) != 1 || ctxs[0] != "create" {
+		t.Fatalf("tReplTables not extracted as creator: %+v", result.Tables)
+	}
+	if ctxs := tableContextsByName(result, "dcSubcontoConnect"); len(ctxs) != 1 || ctxs[0] != "create" {
+		t.Fatalf("MIDDLE..dcSubcontoConnect not extracted: %+v", result.Tables)
+	}
+	if ctxs := tableContextsByName(result, "pAPI_ExpProperty_Type"); len(ctxs) != 1 || ctxs[0] != "create" {
+		t.Fatalf("CREATE UNLOGGED TABLE not extracted: %+v", result.Tables)
+	}
+	if !hasTable(result, "tContract") {
+		t.Fatalf("plain create table regression: %+v", result.Tables)
+	}
+
+	// Колонки таблицы с префиксом привязаны к реальному имени (pSeed)
+	var pSeedCols int
+	for _, cd := range result.ColumnDefinitions {
+		if strings.EqualFold(cd.TableName, "pSeed") {
+			pSeedCols++
+		}
+		if strings.EqualFold(cd.TableName, "dbo") {
+			t.Fatalf("column definition bound to 'dbo': %+v", cd)
+		}
+	}
+	if pSeedCols != 2 {
+		t.Fatalf("pSeed column definitions: got=%d want=2", pSeedCols)
+	}
+}
+
+// ALTER TABLE ADD <constraint-семья> не записывается в sql_column_definitions;
+// ведущее слово COLUMN — noise-word (design D2)
+func TestParseContent_AlterTableAddConstraintFamily(t *testing.T) {
+	parser := NewParser()
+	content := `alter table pAPI_ExpProperty_Type add constraint XPK unique (spid, ExpPropertyType) deferrable
+go
+alter table tContract add primary key (ContractID)
+go
+alter table tContract add foreign key (A) references tB (A)
+go
+alter table tContract add check (A > 0)
+go
+alter table tContract add default 0 for A
+go
+alter table tContract add NewCol numeric(15,2) null
+go
+alter table tContract add column NewCol2 int
+`
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if len(result.ColumnDefinitions) != 2 {
+		t.Fatalf("unexpected column definitions: %+v", result.ColumnDefinitions)
+	}
+	byName := map[string]*model.SQLColumnDefinition{}
+	for _, cd := range result.ColumnDefinitions {
+		byName[cd.ColumnName] = cd
+	}
+	if cd := byName["NewCol"]; cd == nil || cd.TableName != "tContract" || cd.DefinitionKind != "alter_add" || cd.DataType != "numeric(15,2)" {
+		t.Fatalf("NewCol definition wrong: %+v", cd)
+	}
+	if cd := byName["NewCol2"]; cd == nil || cd.TableName != "tContract" || cd.DefinitionKind != "alter_add" || cd.DataType != "int" {
+		t.Fatalf("ADD COLUMN NewCol2 definition wrong: %+v", cd)
+	}
+}
+
+// Ссылочная экстракция с schema-префиксом: FROM/JOIN/INSERT/DELETE/UPDATE,
+// CREATE INDEX ON, CREATE PROCEDURE, ALTER TABLE (design D1)
+func TestParseContent_ReferenceSchemaPrefix(t *testing.T) {
+	parser := NewParser()
+	content := `select c.ParamName
+from dbo.tConfigParam c
+left join dbo.tDoc d on d.id = c.doc_id
+go
+insert into dbo.tX (a, b)
+values (1, 2)
+go
+update dbo.tX set a = 1, b = 2
+go
+delete dbo.tX where a = 1
+go
+create index IX1 on MIDDLE..dcSubcontoConnect(F1)
+go
+create procedure dbo.MyProc
+as
+begin
+	select 1
+end
+go
+alter table dbo.tX add C int
+go
+select *
+from t1,
+t2,
+t3
+`
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	for _, junk := range []string{"dbo", "MIDDLE"} {
+		if hasTable(result, junk) {
+			t.Fatalf("junk table name %q extracted: %+v", junk, result.Tables)
+		}
+	}
+	if !hasTable(result, "tConfigParam") || !hasTable(result, "tDoc") {
+		t.Fatalf("from/join with prefix not extracted: %+v", result.Tables)
+	}
+	if ctxs := tableContextsByName(result, "tX"); len(ctxs) < 2 {
+		t.Fatalf("tX contexts (insert/update/delete): %+v", result.Tables)
+	}
+	for _, want := range []string{"insert", "update", "delete"} {
+		found := false
+		for _, c := range tableContextsByName(result, "tX") {
+			if c == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("tX context %q missing: %+v", want, result.Tables)
+		}
+	}
+
+	// UPDATE-SET-колонки привязаны к реальному имени tX (sql_columns);
+	// поля INSERT-списка (a, b) тоже пишутся в sql_columns для tX — итог ≥ 2
+	var setCols int
+	for _, col := range result.Columns {
+		if strings.EqualFold(col.TableName, "tX") {
+			setCols++
+		}
+		if strings.EqualFold(col.TableName, "dbo") {
+			t.Fatalf("SET-column bound to 'dbo': %+v", col)
+		}
+	}
+	if setCols < 2 {
+		t.Fatalf("tX SET columns: got=%d want>=2 (a, b): %+v", setCols, result.Columns)
+	}
+
+	// Индекс на MIDDLE..-таблицу
+	var idxOnTable bool
+	for _, idx := range result.IndexDefinitions {
+		if strings.EqualFold(idx.TableName, "dcSubcontoConnect") {
+			idxOnTable = true
+		}
+		if strings.EqualFold(idx.TableName, "MIDDLE") {
+			t.Fatalf("index bound to 'MIDDLE': %+v", idx)
+		}
+	}
+	if !idxOnTable {
+		t.Fatalf("index on MIDDLE..dcSubcontoConnect not extracted: %+v", result.IndexDefinitions)
+	}
+
+	// Процедура с префиксом
+	var procFound bool
+	for _, proc := range result.Procedures {
+		if proc.ProcName == "MyProc" {
+			procFound = true
+		}
+		if strings.EqualFold(proc.ProcName, "dbo") {
+			t.Fatalf("junk procedure 'dbo': %+v", proc)
+		}
+	}
+	if !procFound {
+		t.Fatalf("create procedure dbo.MyProc not extracted: %+v", result.Procedures)
+	}
+
+	// ALTER на таблицу с префиксом
+	var alterOnTX bool
+	for _, cd := range result.ColumnDefinitions {
+		if strings.EqualFold(cd.TableName, "tX") && cd.ColumnName == "C" && cd.DefinitionKind == "alter_add" {
+			alterOnTX = true
+		}
+		if strings.EqualFold(cd.TableName, "dbo") {
+			t.Fatalf("alter_add bound to 'dbo': %+v", cd)
+		}
+	}
+	if !alterOnTX {
+		t.Fatalf("alter table dbo.tX add C not extracted: %+v", result.ColumnDefinitions)
+	}
+
+	// Регресс: список FROM через запятую без префикса
+	for _, want := range []string{"t1", "t2", "t3"} {
+		if !hasTable(result, want) {
+			t.Fatalf("comma-separated FROM list regression: %q missing: %+v", want, result.Tables)
+		}
+	}
+	// Регресс: VALUES не сохраняются как таблицы
+	if hasTable(result, "values") {
+		t.Fatalf("VALUES extracted as table: %+v", result.Tables)
+	}
+}
+
+// Реестр __REG_TABLE_NAME__: построчное извлечение, допускает скобки,
+// закомментированные строки не извлекаются (design D3, M1, L7)
+func TestParseContent_RegTableName(t *testing.T) {
+	parser := NewParser()
+	content := `#include <macros.h>
+#define CURRENT_MODULEID 190
+__MASS_DELETE_TABLE_NAME__
+go
+__REG_TABLE_NAME__(hDocument)
+go
+__REG_TABLE_NAME__(tKey)
+go
+__REG_TABLE_NAME__([tPoolAccountLimitTable])
+go
+-- __REG_TABLE_NAME__(tCommented)
+go
+`
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	type regEntry struct {
+		name string
+		line int
+	}
+	want := []regEntry{
+		{"hDocument", 5},
+		{"tKey", 7},
+		{"tPoolAccountLimitTable", 9},
+	}
+	if len(result.RegTables) != len(want) {
+		t.Fatalf("unexpected reg tables: %+v", result.RegTables)
+	}
+	for i, w := range want {
+		rt := result.RegTables[i]
+		if rt.Name != w.name || rt.LineNumber != w.line {
+			t.Fatalf("reg entry %d: got {%s %d} want {%s %d}", i, rt.Name, rt.LineNumber, w.name, w.line)
+		}
+	}
+	if len(result.Tables) != 0 {
+		t.Fatalf("reg lines must not become sql_tables: %+v", result.Tables)
+	}
+}
+
+func TestParseContent_ReferenceSysCatalogSkip(t *testing.T) {
+	parser := NewParser()
+	content := `select distinct t.name, ind.name
+  from sys.indexes ind
+ inner join sys.index_columns ic
+            on ind.object_id = ic.object_id
+ inner join sys.columns col
+            on ic.object_id = col.object_id
+ inner join sys.tables t
+            on ind.object_id = t.object_id
+ inner join sys.schemas sch
+            on  t.schema_id=sch.schema_id
+ where sch.name= 'dbo'
+insert into sys.tables (name) select name from dbo.tSource
+delete sys.tables where 1=0
+select a, b into sys.sometmp from dbo.tSource2
+select * from information_schema.columns
+go
+select * from dbo.tConfigParam
+`
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	names := map[string]bool{}
+	for _, tb := range result.Tables {
+		names[tb.TableName] = true
+	}
+	for _, bad := range []string{"indexes", "index_columns", "columns", "tables", "schemas", "sometmp"} {
+		if names[bad] {
+			t.Errorf("system catalog %q extracted as table reference", bad)
+		}
+	}
+	for _, want := range []string{"tSource", "tSource2", "tConfigParam"} {
+		if !names[want] {
+			t.Errorf("table %q not extracted", want)
+		}
+	}
+}
+
+func TestParseContent_ReferenceContinuationAliasColumn(t *testing.T) {
+	parser := NewParser()
+	// Тело макроса M_TAG_ERROR (Cons_CalculateTags.sql): строка-продолжение
+	// условия начинается с пары alias.column — это не таблица списка FROM.
+	content := `update pCreditDocument
+   set DocErrCode = 29914
+  from pCreditDocument cd  M_UPDLOCK_INDEX(XIE0pCreditDocument)
+ inner join pContractCredit c  M_NOLOCK_INDEX(XPKpContractCredit)
+         on c.SPID               = @@spid
+        and c.ContractID         = cd.ContractID
+        and ((@InterfaceObjectID in (DEALTYPE_CREDITLINE_ALL)
+               and
+              c.InterfaceObjectID not in (DEALTYPE_CREDITLINEPAYMNT_ALL))
+             or
+              @InterfaceObjectID not in (DEALTYPE_CREDITLINE_ALL))
+ inner join pCreditDebt     cc M_NOLOCK_INDEX(XPKpCreditDebt)
+         on cc.SPID              = @@spid
+        and cc.ContractID        = cd.ContractID
+        and cc.AmountDebt        <> cd.Amount
+   where cd.SPID          = @@spid
+     and cd.OperationType = 4
+M_FORCEORDER
+`
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	names := map[string]bool{}
+	for _, tb := range result.Tables {
+		names[tb.TableName] = true
+	}
+	for _, bad := range []string{"InterfaceObjectID", "c", "cc", "cd"} {
+		if names[bad] {
+			t.Errorf("%q extracted as table reference", bad)
+		}
+	}
+	for _, want := range []string{"pCreditDocument", "pContractCredit", "pCreditDebt"} {
+		if !names[want] {
+			t.Errorf("table %q not extracted", want)
+		}
+	}
+}
+
+func TestParseContent_ReferenceContinuationSchemaQualified(t *testing.T) {
+	parser := NewParser()
+	content := `select *
+  from t1,
+       dbo.tConfigParam c,
+       MIDDLE..dcSubcontoConnect
+ where t1.a = c.a
+`
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	names := map[string]bool{}
+	for _, tb := range result.Tables {
+		names[tb.TableName] = true
+	}
+	for _, want := range []string{"t1", "tConfigParam", "dcSubcontoConnect"} {
+		if !names[want] {
+			t.Errorf("table %q not extracted", want)
+		}
+	}
+}
+
+// code-review C1: межстрочная квалифицированная ссылка — пара «schema.table»
+// на строке-продолжении условия, где таблица уже не видна построчному
+// lineSeenTables, не должна попадать в sql_columns как колонка.
+func TestParseContent_PendingColumnMultiLineSchemaTable(t *testing.T) {
+	parser := NewParser()
+	content := `select a.x
+  from t a
+ where a.x = 1
+   and dbo.t.id = 2
+`
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	for _, col := range result.Columns {
+		if strings.EqualFold(col.TableName, "dbo") {
+			t.Errorf("qualified reference (dbo, %s) leaked into sql_columns", col.ColumnName)
+		}
+	}
+	found := 0
+	for _, col := range result.Columns {
+		if strings.EqualFold(col.TableName, "t") && strings.EqualFold(col.ColumnName, "x") {
+			found++
+		}
+	}
+	if found == 0 {
+		t.Errorf("column t.x not extracted (alias resolution lost)")
+	}
+}
+
+// code-review C4: колонка, одноимённая таблице той же строки
+// (select a.tKey from tKey a), не теряется: левый сегмент — алиас,
+// пара легитимна и разрешается в реальную таблицу.
+func TestParseContent_AliasColumnNamedAsTable(t *testing.T) {
+	parser := NewParser()
+	content := `select a.tKey from tKey a
+`
+	result, err := parser.ParseContent(content)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	found := 0
+	for _, col := range result.Columns {
+		if strings.EqualFold(col.TableName, "a") {
+			t.Errorf("column pair (a, %s) written with unresolved alias as table", col.ColumnName)
+		}
+		if strings.EqualFold(col.TableName, "tKey") && strings.EqualFold(col.ColumnName, "tKey") {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Errorf("column tKey.tKey extracted %d times, want 1 (resolved through alias)", found)
+	}
+}

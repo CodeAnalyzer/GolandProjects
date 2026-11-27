@@ -10,7 +10,7 @@ import (
 // КОНТРАКТ: любое изменение DDL-списка InitSchemaCtx (колонки, индексы,
 // ограничения, миграции) требует bump этой версии — иначе fast-path
 // пропустит проход и новое DDL молча не применится на существующих БД.
-const CurrentSchemaVersion = "codebase_schema_v8"
+const CurrentSchemaVersion = "codebase_schema_v9"
 
 const schemaInitLockKey = "codebase/schema-init"
 
@@ -592,6 +592,12 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		table_name TEXT NOT NULL,
 		line_number INTEGER NOT NULL DEFAULT 0
 	)`,
+		`CREATE TABLE IF NOT EXISTS reg_table_name (
+		id BIGSERIAL PRIMARY KEY,
+		file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+		table_name TEXT NOT NULL,
+		line_number INTEGER NOT NULL DEFAULT 0
+	)`,
 		`CREATE TABLE IF NOT EXISTS rti_sessions (
 			id BIGSERIAL PRIMARY KEY,
 			file_path TEXT NOT NULL,
@@ -1151,6 +1157,8 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ds_return_codes_code ON ds_return_codes(ret_code)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_tables_table ON memory_tables(LOWER(table_name))`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_tables_file_id ON memory_tables(file_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_reg_table_name_lower ON reg_table_name(LOWER(table_name))`,
+		`CREATE INDEX IF NOT EXISTS idx_reg_table_name_file_id ON reg_table_name(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_sessions_parsed_at ON rti_sessions(parsed_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_calls_session_proc ON rti_calls(session_id, procedure)`,
 		`CREATE INDEX IF NOT EXISTS idx_rti_calls_session_elapsed ON rti_calls(session_id, elapsed_ms DESC)`,
@@ -1314,6 +1322,94 @@ func (db *DB) InitSchemaCtx(ctx context.Context) error {
 	// (легаси-апгрейды); на актуальной схеме fast-path их пропускает
 	if err := applyMigrationTx(ctx, tx, "pas_entities_file_id_v1", nil); err != nil {
 		return fmt.Errorf("failed to record migration pas_entities_file_id_v1: %w", err)
+	}
+	// reg_table_name_backfill_v1: однократный backfill регистраций таблиц
+	// продукта (__REG_TABLE_NAME__, DB/ProductTable.sql) из query_fragments —
+	// для файлов, проиндексированных до введения таблицы reg_table_name.
+	// Допускаются имена в квадратных скобках; полные -- строки вырезаются,
+	// как их пропускает парсер; line_number — стартовая строка фрагмента
+	// (для однострочных операторов точна, выравнивается при переиндексации).
+	// Новые регистрации пишет индексатор при вставке; повторные прогоны —
+	// no-op по маркеру.
+	if err := applyMigrationTx(ctx, tx, "reg_table_name_backfill_v1", []string{
+		`INSERT INTO reg_table_name (file_id, table_name, line_number)
+		 SELECT DISTINCT qf.file_id, (m.n)[1], qf.line_number
+		 FROM query_fragments qf
+		 CROSS JOIN LATERAL regexp_matches(
+		   regexp_replace(qf.query_text, '(?m)^[ \t]*--[^\n]*', '', 'g'),
+		   '(?i)__REG_TABLE_NAME__\s*\(\s*\[?([A-Za-z_#][A-Za-z0-9_#]*)\]?\s*\)', 'g') AS m(n)
+		 WHERE qf.query_text ILIKE '%__REG_TABLE_NAME__%'`,
+	}); err != nil {
+		return fmt.Errorf("failed to apply migration reg_table_name_backfill_v1: %w", err)
+	}
+	// sql_table_creators_backfill_v1: однократный backfill создателей таблиц
+	// для операторов CREATE [модификаторы] TABLE с schema/db-префиксом имени
+	// (dbo.<t>, MIDDLE..<t>) или модификатором (UNLOGGED/TEMP), проиндексированных
+	// до исправления регэкспов парсера. Обе формы UNION ALL — копия createTableRe
+	// с полной непрозрачной префикс-группой и обязательной отличительной частью
+	// (модификатор либо префикс): корректные plain-create не матчатся, дубликаты
+	// с существующими строками не создаются; пересечение форм схлопывается
+	// DISTINCT; NOT EXISTS — предохранитель от нештатного повторного применения;
+	// -- строки вырезаются; line_number — старт фрагмента; symbols зеркалят
+	// вставки индексатора (symbol_type='table', entity_type='sql', signature=имя).
+	if err := applyMigrationTx(ctx, tx, "sql_table_creators_backfill_v1", []string{
+		`WITH ins AS (
+		   INSERT INTO sql_tables (file_id, table_name, context, is_temporary, line_number, column_number)
+		   SELECT DISTINCT file_id, table_name, 'create', false, line_number, 0
+		   FROM (
+		     SELECT qf.file_id, (m.n)[1] AS table_name, qf.line_number
+		     FROM query_fragments qf
+		     CROSS JOIN LATERAL regexp_matches(
+		       regexp_replace(qf.query_text, '(?m)^[ \t]*--[^\n]*', '', 'g'),
+		       '(?i)create\s+(?:(?:global\s+)?temp(?:orary)?\s+|unlogged\s+)+table\s+(?:[A-Za-z_#][A-Za-z0-9_#]*(?:\s*\.\s*)+)*([A-Za-z_#][A-Za-z0-9_#]*)',
+		       'g') AS m(n)
+		     UNION ALL
+		     SELECT qf.file_id, (m.n)[1], qf.line_number
+		     FROM query_fragments qf
+		     CROSS JOIN LATERAL regexp_matches(
+		       regexp_replace(qf.query_text, '(?m)^[ \t]*--[^\n]*', '', 'g'),
+		       '(?i)create\s+(?:(?:global\s+)?temp(?:orary)?\s+|unlogged\s+)*table\s+(?:[A-Za-z_#][A-Za-z0-9_#]*(?:\s*\.\s*)+)+([A-Za-z_#][A-Za-z0-9_#]*)',
+		       'g') AS m(n)
+		   ) matches
+		   WHERE NOT EXISTS (SELECT 1 FROM sql_tables t
+		                     WHERE t.file_id = matches.file_id AND t.context = 'create'
+		                       AND LOWER(t.table_name) = LOWER(matches.table_name)
+		                       AND t.line_number = matches.line_number)
+		   RETURNING id, file_id, table_name, line_number
+		 )
+		 INSERT INTO symbols (file_id, symbol_name, symbol_type, entity_type, entity_id, line_number, signature)
+		 SELECT file_id, table_name, 'table', 'sql', id, line_number, table_name FROM ins`,
+	}); err != nil {
+		return fmt.Errorf("failed to apply migration sql_table_creators_backfill_v1: %w", err)
+	}
+	// sql_tables_prefix_garbage_cleanup_v1: однократная очистка унаследованного
+	// мусора префиксной экстракции имён (dbo./MIDDLE..) из всех таблиц,
+	// где он осел до исправления регэкспов. Порядок важен: сначала зависимые
+	// рёбра и строки (relations, sql_procedures с её calls_procedure-рёбрами,
+	// symbols, sql_columns, sql_column_definitions, sql_index_definitions —
+	// поля индексов каскадно по FK table_index_id), затем сами sql_tables-строки.
+	// Предикат IN ('dbo','middle') во всех DELETE: реальные таблицы с такими
+	// именами в FA отсутствуют, MIDDLE — имя БД из формы db..table; предикат
+	// symbols ограничен типами table/procedure — легитимные define MIDDLE и
+	// column_definition Middle не затрагиваются. Последний DELETE — кривые
+	// alter_add-определения constraint-семьи (до D2) и срезанный noise-word
+	// COLUMN (после D2 новых не появляется).
+	if err := applyMigrationTx(ctx, tx, "sql_tables_prefix_garbage_cleanup_v1", []string{
+		`DELETE FROM relations WHERE
+		   (target_type = 'sql_procedure'
+		    AND target_id IN (SELECT id FROM sql_procedures WHERE LOWER(proc_name) = 'dbo'))
+		   OR (target_type = 'sql_table'
+		    AND target_id IN (SELECT id FROM sql_tables WHERE LOWER(table_name) IN ('dbo','middle')))`,
+		`DELETE FROM sql_procedures WHERE LOWER(proc_name) = 'dbo'`,
+		`DELETE FROM symbols WHERE symbol_type IN ('table','procedure') AND LOWER(symbol_name) IN ('dbo','middle')`,
+		`DELETE FROM sql_columns WHERE LOWER(table_name) IN ('dbo','middle')`,
+		`DELETE FROM sql_column_definitions WHERE LOWER(table_name) IN ('dbo','middle')`,
+		`DELETE FROM sql_index_definitions WHERE LOWER(table_name) IN ('dbo','middle')`,
+		`DELETE FROM sql_tables WHERE LOWER(table_name) IN ('dbo','middle')`,
+		`DELETE FROM sql_column_definitions WHERE definition_kind = 'alter_add'
+		   AND UPPER(column_name) IN ('CONSTRAINT','PRIMARY','FOREIGN','UNIQUE','CHECK','DEFAULT','COLUMN')`,
+	}); err != nil {
+		return fmt.Errorf("failed to apply migration sql_tables_prefix_garbage_cleanup_v1: %w", err)
 	}
 	if err := applyMigrationTx(ctx, tx, CurrentSchemaVersion, nil); err != nil {
 		return fmt.Errorf("failed to record schema version: %w", err)

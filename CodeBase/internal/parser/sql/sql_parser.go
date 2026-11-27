@@ -16,25 +16,25 @@ import (
 var (
 	procBeginRe        = regexp.MustCompile(`(?i)(?:DCL_PROC_BEGIN\s*[\(]?|__BEGIN_PROCEDURE__\s*\()([A-Za-z_][A-Za-z0-9_]*)[\)]?`)
 	procEndRe          = regexp.MustCompile(`(?i)(?:__END_PROCEDURE__|X_ANYMODE)\s*\(([A-Za-z_][A-Za-z0-9_]*)\)`)
-	procDeclRe         = regexp.MustCompile(`(?i)create\s+(?:procedure|proc)\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	procDeclRe         = regexp.MustCompile(`(?i)create\s+(?:procedure|proc)\s+(?:[A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*)+)*([A-Za-z_][A-Za-z0-9_]*)`)
 	procCreateRe       = regexp.MustCompile(`(?i)API_CREATE_PROC\s*\(([A-Za-z_][A-Za-z0-9_]*)\)`)
-	createTableRe      = regexp.MustCompile(`(?i)\bcreate\s+table\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
-	alterTableAddRe    = regexp.MustCompile(`(?i)^\s*alter\s+table\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+add\s+(.+?)\s*$`)
-	createIndexRe      = regexp.MustCompile(`(?i)^\s*create\s+(unique\s+)?index\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+on\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*\(([^\)]*)\)`)
+	createTableRe      = regexp.MustCompile(`(?i)\bcreate\s+(?:(?:global\s+)?temp(?:orary)?\s+|unlogged\s+)*table\s+(?:[A-Za-z_#][A-Za-z0-9_#]*(?:\s*\.\s*)+)*([A-Za-z_#][A-Za-z0-9_#]*)`)
+	alterTableAddRe    = regexp.MustCompile(`(?i)^\s*alter\s+table\s+(?:[A-Za-z_#][A-Za-z0-9_#]*(?:\s*\.\s*)+)*([A-Za-z_#][A-Za-z0-9_#]*)\s+add\s+(.+?)\s*$`)
+	createIndexRe      = regexp.MustCompile(`(?i)^\s*create\s+(unique\s+)?index\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+on\s+(?:[A-Za-z_#][A-Za-z0-9_#]*(?:\s*\.\s*)+)*([A-Za-z_#][A-Za-z0-9_#]*)\s*\(([^\)]*)\)`)
 	createIndexStartRe = regexp.MustCompile(`(?i)^\s*create\s+(unique\s+)?index\s+([A-Za-z_#][A-Za-z0-9_#]*)\b(.*)$`)
-	createIndexOnRe    = regexp.MustCompile(`(?i)^\s*on\s+([A-Za-z_#][A-Za-z0-9_#]*)\b(.*)$`)
+	createIndexOnRe    = regexp.MustCompile(`(?i)^\s*on\s+(?:[A-Za-z_#][A-Za-z0-9_#]*(?:\s*\.\s*)+)*([A-Za-z_#][A-Za-z0-9_#]*)\b(.*)$`)
 	mAddFieldRe        = regexp.MustCompile(`(?i)\bM_ADD_FIELD\s*\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)`)
 	mCreateIndexRe     = regexp.MustCompile(`(?i)\bM_CRT_INDEX\s*\(\s*'([^']*)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']*)'\s*\)`)
-	selectIntoRe       = regexp.MustCompile(`(?i)\bselect\b.*\binto\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
+	selectIntoRe       = regexp.MustCompile(`(?i)\bselect\b.*\binto\s+(?:[A-Za-z_#][A-Za-z0-9_#]*(?:\s*\.\s*)+)*([A-Za-z_#][A-Za-z0-9_#]*)`)
 	selectIntoTableRe  = regexp.MustCompile(`(?i)\binto\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
-	insertTableRe      = regexp.MustCompile(`(?i)^\s*insert\s+(?:into\s+)?([A-Za-z_#][A-Za-z0-9_#]*)\b`)
-	deleteTableRe      = regexp.MustCompile(`(?i)^\s*delete\s+([A-Za-z_#][A-Za-z0-9_#]*)\b`)
+	insertTableRe      = regexp.MustCompile(`(?i)^\s*insert\s+(?:into\s+)?(?:[A-Za-z_#][A-Za-z0-9_#]*(?:\s*\.\s*)+)*([A-Za-z_#][A-Za-z0-9_#]*)\b`)
+	deleteTableRe      = regexp.MustCompile(`(?i)^\s*delete\s+(?:[A-Za-z_#][A-Za-z0-9_#]*(?:\s*\.\s*)+)*([A-Za-z_#][A-Za-z0-9_#]*)\b`)
 	deletePTableRe     = regexp.MustCompile(`(?i)\bM_DELETE_PTABLE(?:_INDEX)?\s*\(\s*([A-Za-z_#][A-Za-z0-9_#]*)\s*(?:,\s*[A-Za-z_#][A-Za-z0-9_#]*)?\)`)
 	logTableRe         = regexp.MustCompile(`(?i)\bM_LOG_TABLE\s*\(\s*([A-Za-z_#][A-Za-z0-9_#]*)\s*\)`)
 	selectTempRe       = regexp.MustCompile(`(?i)\bSELECT_TEMP\s*\(\s*([A-Za-z_#][A-Za-z0-9_#]*)\s*\)`)
-	tableNameRe        = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
-	continuedTableRe   = regexp.MustCompile(`^\s*,?\s*([A-Za-z_#][A-Za-z0-9_#]*)\b`)
-	tableAliasRe       = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|UPDATE)\s+([A-Za-z_#][A-Za-z0-9_#]*)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b`)
+	tableNameRe        = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:[A-Za-z_#][A-Za-z0-9_#]*(?:\s*\.\s*)+)*([A-Za-z_#][A-Za-z0-9_#]*)`)
+	continuedTableRe   = regexp.MustCompile(`^\s*,?\s*(?:[A-Za-z_#][A-Za-z0-9_#]*(?:\s*\.\s*)+)*([A-Za-z_#][A-Za-z0-9_#]*)\b`)
+	tableAliasRe       = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|UPDATE)\s+(?:[A-Za-z_#][A-Za-z0-9_#]*(?:\s*\.\s*)+)*([A-Za-z_#][A-Za-z0-9_#]*)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b`)
 	columnNameRe       = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)`)
 	insertColumnsRe    = regexp.MustCompile(`(?i)^\s*insert\s+(?:into\s+)?[A-Za-z_#][A-Za-z0-9_#]*\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*\s*\)`)
 	updateColumnsRe    = regexp.MustCompile(`(?i)^\s*update\s+[A-Za-z_#][A-Za-z0-9_#]*\s+set\s+([A-Za-z_][A-Za-z0-9_]*\s*=\s*[^,]+(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*[^,]+)*)`)
@@ -59,7 +59,7 @@ var (
 	// helperRegexes используются при извлечении имен столбцов и SET-колонок UPDATE.
 	asAliasRe = regexp.MustCompile(`(?i)\bas\s+([A-Za-z_#][A-Za-z0-9_#]*)\s*$`)
 	// Аккумуляция SET-части UPDATE-стейтмента: колонки присваиваний → sql_columns
-	updateSetTargetRe = regexp.MustCompile(`(?i)^\s*update\s+([A-Za-z_#][A-Za-z0-9_#]*)`)
+	updateSetTargetRe = regexp.MustCompile(`(?i)^\s*update\s+(?:[A-Za-z_#][A-Za-z0-9_#]*(?:\s*\.\s*)+)*([A-Za-z_#][A-Za-z0-9_#]*)`)
 	setKeywordRe      = regexp.MustCompile(`(?i)\bset\b`)
 	setClausePrefixRe = regexp.MustCompile(`(?i)^\s*set\b\s*(.*)$`)
 	stmtStartRe       = regexp.MustCompile(`(?i)^\s*(select|insert|delete|if|while|begin|exec|execute|declare|return)\b`)
@@ -69,6 +69,13 @@ var (
 	hintMacroRe = regexp.MustCompile(`^#?M_[A-Z0-9_]+$`)
 	// LHS-идентификатор присваивания SET (без квалификации и @-переменных)
 	sqlColumnIdentRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	// Реестр таблиц продукта: __REG_TABLE_NAME__([имя]) в DB/ProductTable.sql
+	// (имя MAY быть заключено в квадратные скобки — change-review M1)
+	regTableNameRe = regexp.MustCompile(`(?i)__REG_TABLE_NAME__\s*\(\s*\[?([A-Za-z_#][A-Za-z0-9_#]*)\]?\s*\)`)
+	// Constraint-семья ALTER TABLE … ADD — не колонка (design D2)
+	alterAddConstraintRe = regexp.MustCompile(`(?i)^(?:constraint|primary\s+key|foreign\s+key|unique|check|default)\b`)
+	// Ведущее слово COLUMN в ADD COLUMN x int (PostgreSQL) — noise-word
+	alterAddColumnWordRe = regexp.MustCompile(`(?i)^column\s+`)
 )
 
 // Parser SQL-парсер
@@ -494,6 +501,7 @@ type ParseResult struct {
 	IndexFields       []*model.SQLIndexDefinitionField
 	Calls             []*model.SQLProcedureCall
 	Fragments         []*model.QueryFragment
+	RegTables         []*model.SQLRegTable
 	Includes          []model.IncludeRef
 	Defines           []*model.HDefine
 	Errors            []ParseError
@@ -794,6 +802,11 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 
 	tableContexts := make(map[string]string) // table -> context (select, insert, update, delete)
 	tableAliases := make(map[string]string)  // alias -> real table name
+	// Таблицы текущего стейтмента (lowercase), сбрасываются в
+	// resetStatementState: пары «schema.table» в pending-колонках
+	// пропускаются и на строках-продолжениях, где таблица уже не
+	// «видна» построчному lineSeenTables (code-review C1)
+	stmtSeenTables := make(map[string]bool)
 	flushPendingColumns := func() {
 		for _, pending := range pendingColumns {
 			tableName := pending.TableAlias
@@ -946,6 +959,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 			tableContexts["current"] = ""
 		}
 		tableAliases = make(map[string]string)
+		stmtSeenTables = make(map[string]bool)
 	}
 
 	// Потребление continuation-строк многострочных #define-макросов:
@@ -1047,6 +1061,18 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 				inMultiStatement = false
 			}
 			continue
+		}
+
+		// Реестр таблиц продукта: __REG_TABLE_NAME__([имя]) → reg_table_name
+		// (строки ProductTable.sql; отдельный срез — в Tables и
+		// fragment.TablesReferenced не попадает, design D3)
+		if regMatches := regTableNameRe.FindAllStringSubmatch(line, -1); regMatches != nil {
+			for _, rm := range regMatches {
+				result.RegTables = append(result.RegTables, &model.SQLRegTable{
+					Name:       rm[1],
+					LineNumber: lineNum,
+				})
+			}
 		}
 
 		// Аккумуляция SET-части UPDATE-стейтмента: LHS-идентификаторы присваиваний
@@ -1365,10 +1391,21 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 			}
 		}
 
+		// Цель ALTER TABLE … ADD регистрируется в таблицах стейтмента:
+		// для пропуска пар «schema.table» в pending-колонках
+		// (alter table dbo.tX add C int → пара dbo.tX — не колонка tX
+		// таблицы dbo)
 		if matches := p.alterTableAddRe.FindStringSubmatch(trimmed); matches != nil {
 			tableName := strings.TrimSpace(matches[1])
+			stmtSeenTables[strings.ToLower(tableName)] = true
 			definition := strings.TrimSpace(matches[2])
-			appendColumnDefinition(tableName, definition, "alter_add", lineNum, 0)
+			// Constraint-семья (CONSTRAINT/PRIMARY KEY/FOREIGN KEY/UNIQUE/CHECK/DEFAULT)
+			// — не колонка, в sql_column_definitions не записывается (design D2)
+			if !alterAddConstraintRe.MatchString(definition) {
+				// Ведущее слово COLUMN (PostgreSQL ADD COLUMN x int) — noise-word
+				definition = strings.TrimSpace(alterAddColumnWordRe.ReplaceAllString(definition, ""))
+				appendColumnDefinition(tableName, definition, "alter_add", lineNum, 0)
+			}
 		}
 		if matches := p.mAddFieldRe.FindStringSubmatch(trimmed); matches != nil {
 			tableName := strings.TrimSpace(matches[1])
@@ -1454,6 +1491,12 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		// Таблицы и поля извлекаются независимо от того, находимся ли мы внутри процедуры:
 		// это позволяет индексировать и процедурный код, и standalone SQL scripts.
 		lineSeenTables := make(map[string]bool)
+		// Каждая таблица строки регистрируется и в множестве стейтмента
+		markSeenTable := func(name string) {
+			lower := strings.ToLower(name)
+			lineSeenTables[lower] = true
+			stmtSeenTables[lower] = true
+		}
 
 		if matches := p.createTableRe.FindStringSubmatch(line); matches != nil {
 			tableName := matches[1]
@@ -1472,14 +1515,16 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 				inCreateTableDefinition = true
 				currentCreateTableName = tableName
 				currentCreateTableOrder = 0
-				lineSeenTables[strings.ToLower(tableName)] = true
+				markSeenTable(tableName)
 			}
 		}
 		if matches := p.selectIntoRe.FindStringSubmatch(line); matches != nil {
 			tableName := matches[1]
-			if !p.isKeyword(tableName) && isNewContext(tableName, "select") {
+			matchIndexes := p.selectIntoRe.FindStringSubmatchIndex(line)
+			sysQualified := len(matchIndexes) >= 4 && isSystemSchemaQualified(line, matchIndexes[0], matchIndexes[2])
+			if !p.isKeyword(tableName) && !sysQualified && isNewContext(tableName, "select") {
 				colNumber := 0
-				if matchIndexes := p.selectIntoRe.FindStringSubmatchIndex(line); len(matchIndexes) >= 4 {
+				if len(matchIndexes) >= 4 {
 					colNumber = matchIndexes[2] + 1
 				}
 				result.Tables = append(result.Tables, &model.SQLTable{
@@ -1489,14 +1534,16 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 					LineNumber:  lineNum,
 					ColNumber:   colNumber,
 				})
-				lineSeenTables[strings.ToLower(tableName)] = true
+				markSeenTable(tableName)
 			}
 		}
 		if matches := p.insertTableRe.FindStringSubmatch(line); matches != nil {
 			tableName := matches[1]
-			if !p.isKeyword(tableName) && !p.isIgnoredTableName(tableName) && isNewContext(tableName, "insert") {
+			matchIndexes := p.insertTableRe.FindStringSubmatchIndex(line)
+			sysQualified := len(matchIndexes) >= 4 && isSystemSchemaQualified(line, matchIndexes[0], matchIndexes[2])
+			if !p.isKeyword(tableName) && !p.isIgnoredTableName(tableName) && !sysQualified && isNewContext(tableName, "insert") {
 				colNumber := 0
-				if matchIndexes := p.insertTableRe.FindStringSubmatchIndex(line); len(matchIndexes) >= 4 {
+				if len(matchIndexes) >= 4 {
 					colNumber = matchIndexes[2] + 1
 				}
 				result.Tables = append(result.Tables, &model.SQLTable{
@@ -1506,7 +1553,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 					LineNumber:  lineNum,
 					ColNumber:   colNumber,
 				})
-				lineSeenTables[strings.ToLower(tableName)] = true
+				markSeenTable(tableName)
 
 				// Начинаем сбор полей, если найдена открывающая скобка
 				openParen := strings.Index(line, "(")
@@ -1563,9 +1610,11 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 		}
 		if matches := p.deleteTableRe.FindStringSubmatch(line); matches != nil {
 			tableName := matches[1]
-			if !p.isKeyword(tableName) && !p.isIgnoredTableName(tableName) && isNewContext(tableName, "delete") {
+			matchIndexes := p.deleteTableRe.FindStringSubmatchIndex(line)
+			sysQualified := len(matchIndexes) >= 4 && isSystemSchemaQualified(line, matchIndexes[0], matchIndexes[2])
+			if !p.isKeyword(tableName) && !p.isIgnoredTableName(tableName) && !sysQualified && isNewContext(tableName, "delete") {
 				colNumber := 0
-				if matchIndexes := p.deleteTableRe.FindStringSubmatchIndex(line); len(matchIndexes) >= 4 {
+				if len(matchIndexes) >= 4 {
 					colNumber = matchIndexes[2] + 1
 				}
 				result.Tables = append(result.Tables, &model.SQLTable{
@@ -1575,7 +1624,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 					LineNumber:  lineNum,
 					ColNumber:   colNumber,
 				})
-				lineSeenTables[strings.ToLower(tableName)] = true
+				markSeenTable(tableName)
 			}
 		}
 		if matches := p.deletePTableRe.FindStringSubmatch(line); matches != nil {
@@ -1592,7 +1641,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 					LineNumber:  lineNum,
 					ColNumber:   colNumber,
 				})
-				lineSeenTables[strings.ToLower(tableName)] = true
+				markSeenTable(tableName)
 			}
 		}
 		if matches := p.logTableRe.FindStringSubmatch(line); matches != nil {
@@ -1609,7 +1658,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 					LineNumber:  lineNum,
 					ColNumber:   colNumber,
 				})
-				lineSeenTables[strings.ToLower(tableName)] = true
+				markSeenTable(tableName)
 			}
 		}
 		if matches := p.selectTempRe.FindStringSubmatch(line); matches != nil {
@@ -1626,7 +1675,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 					LineNumber:  lineNum,
 					ColNumber:   colNumber,
 				})
-				lineSeenTables[strings.ToLower(tableName)] = true
+				markSeenTable(tableName)
 			}
 		}
 		matchIndexes := p.tableNameRe.FindAllStringSubmatchIndex(line, -1)
@@ -1644,6 +1693,11 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 				}
 				// Пропускаем ключевые слова
 				if p.isKeyword(tableName) || p.isIgnoredTableName(tableName) {
+					continue
+				}
+				// Ссылки на системные каталоги (sys./information_schema.) не индексируются
+				if i < len(matchIndexes) && len(matchIndexes[i]) >= 4 &&
+					isSystemSchemaQualified(line, matchIndexes[i][0], matchIndexes[i][2]) {
 					continue
 				}
 
@@ -1682,7 +1736,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 					LineNumber:  lineNum,
 					ColNumber:   colNumber,
 				})
-				lineSeenTables[strings.ToLower(tableName)] = true
+				markSeenTable(tableName)
 			}
 			// После UPDATE идёт SET, а не список таблиц через запятую (список за
 			// FROM матчится своей строкой FROM) — list-режим не включаем, иначе
@@ -1730,31 +1784,45 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 					inFromTableList = false
 				} else if matches := p.continuedTableRe.FindStringSubmatch(line); matches != nil {
 					tableName := matches[1]
-					normalizedLine := strings.TrimSpace(line)
-					normalizedLine = strings.TrimSpace(strings.TrimLeft(normalizedLine, ","))
-					if aliasMatches := p.tableAliasRe.FindAllStringSubmatch("from "+normalizedLine, -1); aliasMatches != nil {
-						for _, aliasMatch := range aliasMatches {
-							aliasTableName := aliasMatch[1]
-							aliasName := aliasMatch[2]
-							if p.isKeyword(aliasTableName) || p.isKeyword(aliasName) {
-								continue
-							}
-							tableAliases[strings.ToLower(aliasName)] = aliasTableName
+					cti := p.continuedTableRe.FindStringSubmatchIndex(line)
+					sysQualified := len(cti) >= 4 && isSystemSchemaQualified(line, cti[0], cti[2])
+					// Dotted-старт строки x.y: если x — зарегистрированный алиас
+					// таблицы, это пара alias.column продолжения условия (ON/WHERE),
+					// а не таблица списка FROM; иначе — schema-квалифицированная таблица.
+					qualifierIsAlias := false
+					if len(cti) >= 4 && strings.Contains(line[cti[0]:cti[2]], ".") {
+						qual := strings.Trim(strings.TrimSpace(line[cti[0]:cti[2]]), ".")
+						if _, ok := tableAliases[strings.ToLower(qual)]; ok {
+							qualifierIsAlias = true
 						}
 					}
-					if !p.isKeyword(tableName) && !p.isIgnoredTableName(tableName) && !lineSeenTables[strings.ToLower(tableName)] {
-						colNumber := 0
-						if matchIndexes := p.continuedTableRe.FindStringSubmatchIndex(line); len(matchIndexes) >= 4 {
-							colNumber = matchIndexes[2] + 1
+					if !qualifierIsAlias {
+						normalizedLine := strings.TrimSpace(line)
+						normalizedLine = strings.TrimSpace(strings.TrimLeft(normalizedLine, ","))
+						if aliasMatches := p.tableAliasRe.FindAllStringSubmatch("from "+normalizedLine, -1); aliasMatches != nil {
+							for _, aliasMatch := range aliasMatches {
+								aliasTableName := aliasMatch[1]
+								aliasName := aliasMatch[2]
+								if p.isKeyword(aliasTableName) || p.isKeyword(aliasName) {
+									continue
+								}
+								tableAliases[strings.ToLower(aliasName)] = aliasTableName
+							}
 						}
-						result.Tables = append(result.Tables, &model.SQLTable{
-							TableName:   tableName,
-							Context:     context,
-							IsTemporary: p.isTemporaryTableName(tableName),
-							LineNumber:  lineNum,
-							ColNumber:   colNumber,
-						})
-						lineSeenTables[strings.ToLower(tableName)] = true
+						if !p.isKeyword(tableName) && !p.isIgnoredTableName(tableName) && !lineSeenTables[strings.ToLower(tableName)] && !sysQualified {
+							colNumber := 0
+							if len(cti) >= 4 {
+								colNumber = cti[2] + 1
+							}
+							result.Tables = append(result.Tables, &model.SQLTable{
+								TableName:   tableName,
+								Context:     context,
+								IsTemporary: p.isTemporaryTableName(tableName),
+								LineNumber:  lineNum,
+								ColNumber:   colNumber,
+							})
+							markSeenTable(tableName)
+						}
 					}
 				}
 			}
@@ -1806,7 +1874,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 					LineNumber:  lineNum,
 					ColNumber:   colNumber,
 				})
-				lineSeenTables[strings.ToLower(tableName)] = true
+				markSeenTable(tableName)
 			}
 		}
 
@@ -1849,7 +1917,7 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 					LineNumber:  lineNum,
 					ColNumber:   colNumber,
 				})
-				lineSeenTables[strings.ToLower(tableName)] = true
+				markSeenTable(tableName)
 			}
 		}
 
@@ -1871,6 +1939,18 @@ func (p *Parser) ParseContent(content string) (*ParseResult, error) {
 					continue
 				}
 				if tablePos >= 0 && p.isInsideBlockComment(content, lineNum, tablePos) {
+					continue
+				}
+				// Пара «schema.table» (dbo.tConfigParam): правый сегмент уже
+				// извлечён как таблица этой строки или текущего стейтмента
+				// (включая цель ALTER TABLE) — это квалифицированная ссылка,
+				// а не table.column; колонкой не записываем (закрывает мусор
+				// table_name='dbo' в sql_columns, design D1). Если левый сегмент —
+				// известный алиас (select a.tKey from tKey a), пара легитимна
+				// и не пропускается: колонка, одноимённая таблице, не теряется
+				// (code-review C4)
+				if (lineSeenTables[strings.ToLower(m[2])] || stmtSeenTables[strings.ToLower(m[2])]) &&
+					tableAliases[strings.ToLower(tableName)] == "" {
 					continue
 				}
 				if realTableName, ok := tableAliases[strings.ToLower(tableName)]; ok {
@@ -2068,6 +2148,31 @@ func (p *Parser) isInsideBlockComment(content string, lineNum int, pos int) bool
 			i++
 			continue
 		}
+	}
+	return false
+}
+
+// isSystemSchemaQualified сообщает, квалифицировано ли захваченное имя таблицы
+// системной схемой (sys. или information_schema.): такая ссылка указывает на
+// системный каталог SQL Server/PostgreSQL, а не таблицу продукта, и ссылкой
+// не индексируется. Квалификатор — слово непосредственно перед точкой,
+// отделяющей его от имени (форма MIDDLE..t остаётся ссылкой: sys не в
+// квалификаторе).
+func isSystemSchemaQualified(line string, fullStart, nameStart int) bool {
+	if nameStart <= fullStart || nameStart > len(line) || fullStart < 0 {
+		return false
+	}
+	prefix := strings.TrimRight(line[fullStart:nameStart], " \t")
+	if !strings.HasSuffix(prefix, ".") {
+		return false
+	}
+	qualifier := prefix[:len(prefix)-1]
+	if idx := strings.LastIndexAny(qualifier, " \t"); idx >= 0 {
+		qualifier = qualifier[idx+1:]
+	}
+	switch strings.ToLower(qualifier) {
+	case "sys", "information_schema":
+		return true
 	}
 	return false
 }

@@ -56,6 +56,7 @@ func (idx *Indexer) parseSQLLikeFile(ctx context.Context, file fswalk.FileInfo, 
 	indexDefinitionFieldsBatch := make([]*model.SQLIndexDefinitionField, 0, len(result.IndexFields))
 	fragmentsBatch := make([]*model.QueryFragment, 0, len(result.Fragments))
 	definesBatch := make([]*model.HDefine, 0, len(result.Defines))
+	regTablesBatch := make([]*model.SQLRegTable, 0, len(result.RegTables))
 	symbolsBatch := make([]*model.Symbol, 0, len(result.Procedures)+len(result.Tables)+len(result.Defines))
 
 	// Собираем процедуры в batch
@@ -148,6 +149,14 @@ func (idx *Indexer) parseSQLLikeFile(ctx context.Context, file fswalk.FileInfo, 
 			LineNumber: define.LineNumber,
 			Signature:  define.DefineValue,
 		})
+	}
+
+	for _, regTable := range result.RegTables {
+		if regTable == nil {
+			continue
+		}
+		regTable.FileID = fileID
+		regTablesBatch = append(regTablesBatch, regTable)
 	}
 
 	// Выполняем batch-вставку процедур
@@ -299,6 +308,15 @@ func (idx *Indexer) parseSQLLikeFile(ctx context.Context, file fswalk.FileInfo, 
 			return err
 		}
 		stats.Defines += len(definesBatch)
+	}
+
+	// Выполняем batch-вставку регистраций таблиц продукта (__REG_TABLE_NAME__)
+	if len(regTablesBatch) > 0 {
+		if err := idx.db.BatchInsertRegTables(ctx, regTablesBatch, idx.config.Indexer.BatchSize); err != nil {
+			idx.logError(path, "Error batch inserting reg tables: %v", err)
+			stats.Errors += len(regTablesBatch)
+			return err
+		}
 	}
 
 	procedureIDs, err := idx.db.FindSQLProcedureIDsByFile(ctx, fileID)

@@ -837,15 +837,18 @@ func (db *DB) BatchLookupTableCreators(ctx context.Context, names []string, pair
 }
 
 // BatchLookupTableExistenceEvidence возвращает map: LOWER(table_name) -> true
-// для указанных таблиц, имеющих в индексе свидетельство изменения структуры
+// для указанных таблиц, имеющих в индексе свидетельство существования
 // (change table-existence-evidence, design D1): добавление колонки — ALTER
 // TABLE … ADD (sql_column_definitions.definition_kind='alter_add') или
 // M_ADD_FIELD ('macro_add_field'); создание индекса — CREATE INDEX
 // (sql_index_definitions.definition_kind='create_index') или M_CRT_INDEX
-// ('macro_create_index'). Создающие источники сюда не входят — их даёт
+// ('macro_create_index'); регистрация в реестре продукта —
+// __REG_TABLE_NAME__ (reg_table_name, change table-existence-source-fixes,
+// design D4). Создающие источники сюда не входят — их даёт
 // BatchLookupTableCreators. Область — тот же tableSourceAreaFilter по файлу
-// источника, что и у создателей (свидетельство вне разрешённой области
-// существование не подтверждает); пустые pairs — глобальный поиск.
+// источника, что и у создателей (свидетельство, в том числе регистрация
+// реестра, вне разрешённой области существование не подтверждает); пустые
+// pairs — глобальный поиск.
 func (db *DB) BatchLookupTableExistenceEvidence(ctx context.Context, names []string, pairs ProductBranchPairs) (map[string]bool, error) {
 	normalized := normalizeTableLookupNames(names)
 	result := make(map[string]bool, len(normalized))
@@ -863,6 +866,9 @@ func (db *DB) BatchLookupTableExistenceEvidence(ctx context.Context, names []str
 		UNION ALL
 		SELECT LOWER(i.table_name) FROM sql_index_definitions i
 		 WHERE i.definition_kind IN ('create_index','macro_create_index') AND LOWER(i.table_name) = ANY($1)
+		UNION ALL
+		SELECT LOWER(rt.table_name) FROM reg_table_name rt
+		 WHERE LOWER(rt.table_name) = ANY($1)
 	`, pq.Array(normalized))
 	} else {
 		rows, err = db.QueryContext(ctx, `
@@ -875,6 +881,11 @@ func (db *DB) BatchLookupTableExistenceEvidence(ctx context.Context, names []str
 		FROM sql_index_definitions i
 		JOIN files f ON f.id = i.file_id
 		WHERE i.definition_kind IN ('create_index','macro_create_index') AND LOWER(i.table_name) = ANY($1)`+areaFilter+`
+		UNION ALL
+		SELECT LOWER(rt.table_name)
+		FROM reg_table_name rt
+		JOIN files f ON f.id = rt.file_id
+		WHERE LOWER(rt.table_name) = ANY($1)`+areaFilter+`
 	`, pq.Array(normalized),
 			pq.Array(pairs.Products), pq.Array(pairs.Branches))
 	}

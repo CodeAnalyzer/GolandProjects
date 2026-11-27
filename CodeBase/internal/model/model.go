@@ -133,6 +133,15 @@ type SQLColumnDefinition struct {
 	ColumnOrder    int
 }
 
+// SQLRegTable регистрация таблицы продукта в реестре __REG_TABLE_NAME__
+// (DB/ProductTable.sql)
+type SQLRegTable struct {
+	ID         int64
+	FileID     int64
+	Name       string
+	LineNumber int
+}
+
 // SQLIndexDefinition определение индекса обычной SQL-таблицы.
 type SQLIndexDefinition struct {
 	ID             int64

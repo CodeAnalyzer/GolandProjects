@@ -12,12 +12,12 @@ import (
 	"github.com/codebase/internal/store/testutil"
 )
 
-// resetTables — эталонный список усекаемых таблиц (61), синхронизирован с
+// resetTables — эталонный список усекаемых таблиц (62), синхронизирован с
 // store-списком усечения; тест-сторож сверяет его с фактической схемой БД.
 var resetTables = []string{
 	"files", "symbols", "ds_products", "ds_products_branch", "stats_snapshot",
 	"sql_procedures", "sql_tables", "sql_columns", "sql_column_definitions",
-	"sql_index_definitions", "sql_index_definition_fields",
+	"sql_index_definitions", "sql_index_definition_fields", "reg_table_name",
 	"pas_units", "pas_classes", "pas_methods", "pas_fields", "h_files_defines",
 	"js_functions", "js_constants", "smf_instruments", "dfm_forms", "dfm_components",
 	"report_forms", "report_fields", "report_params", "vb_functions",

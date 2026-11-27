@@ -439,9 +439,35 @@ as
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d: %v", len(findings), findings)
 	}
-	want := "Таблица pAPI_Account_MassClose отсутствует в метаданных: не найден создающий DDL, изменение структуры патчем, SELECT INTO или объявление DSArchitect"
+	want := "Таблица pAPI_Account_MassClose отсутствует в метаданных: не найден создающий DDL, изменение структуры патчем, реестр таблиц продукта, SELECT INTO или объявление DSArchitect"
 	if findings[0].Message != want {
 		t.Fatalf("message = %q, want %q", findings[0].Message, want)
+	}
+}
+
+// TestCheckTableExistsInMetadata_RegistryEvidence_NoFinding: таблица без
+// создающего источника и патчей, но зарегистрированная в реестре продукта
+// (reg_table_name → та же ветка tableEvidenceCache), finding не даёт.
+// Специфика реестра: свидетельство существует только в индексе — в тексте
+// файла нет ни DDL, ни патча (кейс tKey из Payments ProductTable.sql).
+func TestCheckTableExistsInMetadata_RegistryEvidence_NoFinding(t *testing.T) {
+	content := `create proc TestProc
+as
+  update tKey
+     set KeyValue = 1
+   where SPID = @@spid
+`
+	r, parsed, file := newTableExistsTestRunner(t, content, map[string]bool{
+		"tkey": false, // негативная запись prewarm создателей
+	})
+	assertDMLReference(t, parsed, "tkey")
+	r.tableEvidenceCache = map[string]bool{"tkey": true} // регистрация реестра
+	findings, err := r.checkTableExistsInMetadata(context.Background(), parsed, file)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings, got %d: %v", len(findings), findings)
 	}
 }
 

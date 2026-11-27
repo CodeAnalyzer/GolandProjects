@@ -478,8 +478,11 @@ func (idx *Indexer) parseHFile(ctx context.Context, file fswalk.FileInfo, fileID
 	// Парсим их SQL-парсером, но отбрасываем процедуры, попавшие внутрь #define-макросов
 	// (например, #define DCL_PROC_BEGIN(NAME) ... или #define ARC_PROC_BEGIN(p) DCL_PROC_BEGIN(p)).
 	// Pre-check: SQL-парсер запускается только при наличии маркеров процедур
-	// (~5% .h-файлов по FA); файлы без маркеров не дают ни процедур, ни вызовов.
-	if hasHFileSQLProcedureMarkers(content) {
+	// (~5% .h-файлов по FA) либо маркера реестра таблиц __REG_TABLE_NAME__
+	// (code-review C2: реестр из .h также вставляется в reg_table_name,
+	// симметрично .sql-пайплайну и backfill'у из фрагментов);
+	// файлы без маркеров не дают ни процедур, ни вызовов.
+	if hasHFileSQLProcedureMarkers(content) || strings.Contains(content, "__REG_TABLE_NAME__") {
 		sqlParser := sqlparser.NewParser()
 		sqlResult, err := sqlParser.ParseContent(content)
 		if err != nil {
@@ -492,6 +495,7 @@ func (idx *Indexer) parseHFile(ctx context.Context, file fswalk.FileInfo, fileID
 			symbolsBatch := make([]*model.Symbol, 0, len(sqlResult.Procedures)+len(sqlResult.Tables))
 			tablesBatch := make([]*model.SQLTable, 0, len(sqlResult.Tables))
 			columnsBatch := make([]*model.SQLColumn, 0, len(sqlResult.Columns))
+			regTablesBatch := make([]*model.SQLRegTable, 0, len(sqlResult.RegTables))
 			fragmentsBatch := make([]*model.QueryFragment, 0, len(sqlResult.Fragments))
 
 			for _, proc := range sqlResult.Procedures {
@@ -533,6 +537,14 @@ func (idx *Indexer) parseHFile(ctx context.Context, file fswalk.FileInfo, fileID
 				}
 				column.FileID = fileID
 				columnsBatch = append(columnsBatch, column)
+			}
+
+			for _, regTable := range sqlResult.RegTables {
+				if regTable == nil {
+					continue
+				}
+				regTable.FileID = fileID
+				regTablesBatch = append(regTablesBatch, regTable)
 			}
 
 			for _, fragment := range sqlResult.Fragments {
@@ -588,6 +600,14 @@ func (idx *Indexer) parseHFile(ctx context.Context, file fswalk.FileInfo, fileID
 					return err
 				}
 				stats.Columns += len(columnsBatch)
+			}
+
+			if len(regTablesBatch) > 0 {
+				if err := idx.db.BatchInsertRegTables(ctx, regTablesBatch, idx.config.Indexer.BatchSize); err != nil {
+					idx.logError(path, "Error batch inserting H-file registry tables: %v", err)
+					stats.Errors += len(regTablesBatch)
+					return err
+				}
 			}
 
 			procedureIDs, err := idx.db.FindSQLProcedureIDsByFile(ctx, fileID)

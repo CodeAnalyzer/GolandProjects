@@ -239,11 +239,11 @@ end
 	}
 }
 
-// TestCheckViewUsageInServerCode_QualifiedReferenceParserLimitation: пин
-// известного ограничения парсера — tableNameRe срезает qualified-ссылку до
-// первого токена (`from dbo.tfund` даёт таблицу `dbo`), поэтому обращение к
-// view со схемным префиксом — документированный FN (0 находок).
-func TestCheckViewUsageInServerCode_QualifiedReferenceParserLimitation(t *testing.T) {
+// TestCheckViewUsageInServerCode_QualifiedReference: qualified-ссылка
+// (`from dbo.tfund`) распознаётся парсером по последнему сегменту
+// dotted-имени (change table-existence-source-fixes) — обращение к view
+// со схемным префиксом даёт finding, прежний FN закрыт.
+func TestCheckViewUsageInServerCode_QualifiedReference(t *testing.T) {
 	content := `create proc TestProc
 as
 begin
@@ -253,23 +253,32 @@ end
 	r, parsed, file := newViewUsageTestRunner(t, content,
 		map[string]struct{}{"tfund": {}}, nil)
 
-	// Guard: парсер извлекает "dbo", а не "dbo.tfund".
-	sawDbo := false
+	// Парсер извлекает tfund (последний сегмент), а не префикс dbo.
+	sawTfund, sawDbo := false, false
 	for _, tbl := range parsed.Tables {
-		if tableExistsDMLContexts[tbl.Context] && normalizeIdentifier(tbl.TableName) == "dbo" {
+		if !tableExistsDMLContexts[tbl.Context] {
+			continue
+		}
+		switch normalizeIdentifier(tbl.TableName) {
+		case "tfund":
+			sawTfund = true
+		case "dbo":
 			sawDbo = true
 		}
 	}
-	if !sawDbo {
-		t.Fatalf("guard failed: parser must extract %q as first token, parsed: %+v", "dbo", parsed.Tables)
+	if !sawTfund {
+		t.Fatalf("parser must extract %q from qualified reference, parsed: %+v", "tfund", parsed.Tables)
+	}
+	if sawDbo {
+		t.Fatalf("parser must not extract schema prefix %q, parsed: %+v", "dbo", parsed.Tables)
 	}
 
 	findings, err := r.checkViewUsageInServerCode(context.Background(), parsed, file)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(findings) != 0 {
-		t.Fatalf("qualified reference is a documented FN, got %+v", findings)
+	if len(findings) != 1 {
+		t.Fatalf("qualified reference must fire viewUsageInServerCode, got %+v", findings)
 	}
 }
 

@@ -664,7 +664,7 @@ func TestInitSchema_MemoryTablesV7(t *testing.T) {
 	}
 }
 
-// TestInitSchema_IndexDefinitionsLowerV8 — миграция v7→v8: на БД без
+// TestInitSchema_IndexDefinitionsLowerV8 — миграция v7→v8+: на БД без
 // lower-индекса sql_index_definitions (и без маркера актуальной версии)
 // повторный InitSchemaCtx создаёт индекс по выражению LOWER(table_name).
 func TestInitSchema_IndexDefinitionsLowerV8(t *testing.T) {
@@ -677,13 +677,13 @@ func TestInitSchema_IndexDefinitionsLowerV8(t *testing.T) {
 	testutil.ResetSchemaVersion(t, db)
 
 	if err := db.InitSchemaCtx(context.Background()); err != nil {
-		t.Fatalf("InitSchema migration v8: %v", err)
+		t.Fatalf("InitSchema migration to %s: %v", store.CurrentSchemaVersion, err)
 	}
 
 	var indexDef string
 	if err := db.QueryRow(`SELECT indexdef FROM pg_indexes WHERE schemaname='public' AND indexname=$1`,
 		"idx_sql_index_definitions_table_name_lower").Scan(&indexDef); err != nil {
-		t.Fatalf("index idx_sql_index_definitions_table_name_lower was not created by v8 migration: %v", err)
+		t.Fatalf("index idx_sql_index_definitions_table_name_lower was not created by schema migration: %v", err)
 	}
 	// pg_indexes приводит выражение индекса к нижнему регистру: lower(table_name).
 	if !strings.Contains(strings.ToLower(indexDef), "lower(table_name)") {
@@ -695,6 +695,6 @@ func TestInitSchema_IndexDefinitionsLowerV8(t *testing.T) {
 		t.Fatalf("check schema marker: %v", err)
 	}
 	if !marker {
-		t.Fatalf("schema marker %s not written by v8 migration", store.CurrentSchemaVersion)
+		t.Fatalf("schema marker %s not written by schema migration", store.CurrentSchemaVersion)
 	}
 }
