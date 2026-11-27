@@ -566,3 +566,105 @@ func TestHasStatementEnded_SemicolonInsideStringLiteral_DoesNotEnd(t *testing.T)
 		t.Fatalf("hasStatementEnded should not end statement on semicolon inside string literal")
 	}
 }
+
+// --- fix-cyrillic-macro-names: идентификация макросов с Unicode-именами ---
+
+// TestReplaceMacros_CyrillicMacroIdentification: кириллический define
+// парсится полным именем с параметрами; вызов раскрывается с подстановкой
+// аргумента; якорь раскрытой строки — строка вызова.
+func TestReplaceMacros_CyrillicMacroIdentification(t *testing.T) {
+	content := "#define _ЦелоеПолож_(_InpValue_)\\\ncase when _InpValue_ > 0 then convert(int,_InpValue_) else null end\n\nselect _ЦелоеПолож_(X) from t\n"
+	result := replaceMacros(content)
+
+	if strings.Contains(result.Content, "#define") {
+		t.Fatalf("macro declaration should be removed")
+	}
+	if !strings.Contains(result.Content, "case when X > 0 then convert(int,X) else null end") {
+		t.Fatalf("cyrillic macro should be expanded with argument substituted, got: %s", result.Content)
+	}
+	if strings.Contains(result.Content, "_ЦелоеПолож_") {
+		t.Fatalf("cyrillic macro call should be replaced, got: %s", result.Content)
+	}
+
+	if len(result.Macros) != 1 {
+		t.Fatalf("expected 1 used macro, got %d", len(result.Macros))
+	}
+	if result.Macros[0].Name != "_ЦелоеПолож_" {
+		t.Fatalf("macro name = %q, want %q", result.Macros[0].Name, "_ЦелоеПолож_")
+	}
+	if len(result.Macros[0].Params) != 1 || result.Macros[0].Params[0] != "_InpValue_" {
+		t.Fatalf("macro params = %#v, want [_InpValue_]", result.Macros[0].Params)
+	}
+
+	// Якорь исходной строки: вызов был на строке 4, раскрытие — на её месте
+	if mapProcessedLineNumber(result.SourceMap, 2) != 4 {
+		t.Fatalf("expanded line 2 should map to original call line 4, got %d", mapProcessedLineNumber(result.SourceMap, 2))
+	}
+}
+
+// TestReplaceMacros_CyrillicAdjacentUnderscore: '_' внутри кириллического
+// идентификатора — не самостоятельный вызов макроса.
+func TestReplaceMacros_CyrillicAdjacentUnderscore(t *testing.T) {
+	content := "#define _Цело_(_InpValue_)\\\nconvert(int,_InpValue_)\nselect Х_Цело_ from t\n"
+	result := replaceMacros(content)
+
+	if !strings.Contains(result.Content, "Х_Цело_") {
+		t.Fatalf("identifier Х_Цело_ should be preserved, got: %s", result.Content)
+	}
+	if strings.Contains(result.Content, "convert(int") {
+		t.Fatalf("macro must not expand inside a larger cyrillic identifier, got: %s", result.Content)
+	}
+}
+
+// TestCollectMacroDefinitions_CyrillicNamesNotTruncated: несколько
+// кириллических defines не коллапсируют в макрос '_'.
+func TestCollectMacroDefinitions_CyrillicNamesNotTruncated(t *testing.T) {
+	defs := "#define _ЦелоеПолож_(_InpValue_)\\\ncase when _InpValue_ > 0 then convert(int,_InpValue_) else null end\n" +
+		"#define _ДатаДок_(_InpValue_)\\\nconvert(varchar(10), _InpValue_,23)\n" +
+		"#define _ПризнакДК_МЛ_(_InpValue_)\\\ncase when _InpValue_ in (1, 2) then convert(varchar(1),_InpValue_) else null end\n"
+	macros := collectMacroDefinitions(strings.Split(defs, "\n"))
+
+	if len(macros) != 3 {
+		t.Fatalf("expected 3 macros, got %d", len(macros))
+	}
+	want := []string{"_ЦелоеПолож_", "_ДатаДок_", "_ПризнакДК_МЛ_"}
+	for i, name := range want {
+		if macros[i].Name != name {
+			t.Fatalf("macro %d name = %q, want %q", i, macros[i].Name, name)
+		}
+		if len(macros[i].Params) != 1 || macros[i].Params[0] != "_InpValue_" {
+			t.Fatalf("macro %q params = %#v, want [_InpValue_]", name, macros[i].Params)
+		}
+		if macros[i].Name == "_" {
+			t.Fatalf("truncated macro name '_' must not appear")
+		}
+	}
+}
+
+// TestReplaceMacros_ASCIIMacroAdjacentCyrillic: ASCII-имя макроса,
+// примыкающее слева к кириллической букве, — часть большего идентификатора.
+func TestReplaceMacros_ASCIIMacroAdjacentCyrillic(t *testing.T) {
+	content := "#define M_X(a) a + 1\nselect ЦелоM_X(1) from t\n"
+	result := replaceMacros(content)
+
+	if !strings.Contains(result.Content, "ЦелоM_X(1)") {
+		t.Fatalf("ASCII macro name adjacent to cyrillic letter is part of a larger identifier, got: %s", result.Content)
+	}
+	if strings.Contains(result.Content, "1 + 1") {
+		t.Fatalf("macro must not expand inside a larger identifier, got: %s", result.Content)
+	}
+}
+
+// TestReplaceMacros_DuplicateMacroNamesLastWins: одноимённые декларации
+// ведут себя как одна (last-wins), дубликаты не меняют результат.
+func TestReplaceMacros_DuplicateMacroNamesLastWins(t *testing.T) {
+	dup := "#define DUP select 1\n#define DUP select 2\nDUP\nselect 3"
+	single := "#define DUP select 2\nDUP\nselect 3"
+
+	dupResult := replaceMacros(dup)
+	singleResult := replaceMacros(single)
+
+	if dupResult.Content != singleResult.Content {
+		t.Fatalf("duplicate define must behave as last-wins: %q vs %q", dupResult.Content, singleResult.Content)
+	}
+}

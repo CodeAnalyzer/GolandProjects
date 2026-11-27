@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 var (
@@ -770,6 +772,34 @@ type macroReplaceResult struct {
 	Content   string
 	SourceMap []int
 	Macros    []macroDefinition
+
+	// fix-cyrillic-macro-names: маркеры остановок раскрытия.
+	// GuardTripped — бюджет роста (D4): раскрытие строки остановлено лимитом
+	// строк/байт, частично раскрытый текст ушёл в правила (fail-open).
+	// PassesExhausted — выход из проходного цикла с незавершёнными
+	// изменениями: вторая «тихая» остановка усечения, существовавшая и до
+	// изменения без наблюдаемости.
+	GuardTripped         bool
+	GuardTrippedLines    int
+	PassesExhausted      bool
+	PassesExhaustedLines int
+}
+
+// Бюджет роста раскрытия на исходную строку (design D4). Калибровка замером
+// на корпусе dq228+mixed45 (tasks 4.1-4.2): фактический максимум легитимного
+// раскрытия — 49 строк / 8823 байт на исходную строку (шаблонное семейство
+// ExportToXml/Delta_XML). Лимиты = максимум × запас ≥ 8: 512 строк (10.4×),
+// 1 МБ (118×). Замер и контрольный прогон: GuardTrippedLines = 0 по корпусу.
+const (
+	macroExpandLineBudget  = 512
+	macroExpandBytesBudget = 1 << 20 // 1 МБ
+	macroExpandMaxPasses   = 32
+)
+
+// macroExpandStats — статистика остановок раскрытия по файлу.
+type macroExpandStats struct {
+	GuardTrippedLines    int
+	PassesExhaustedLines int
 }
 
 func replaceMacros(content string) macroReplaceResult {
@@ -780,7 +810,7 @@ func replaceMacros(content string) macroReplaceResult {
 	macros := collectMacroDefinitions(lines)
 
 	withoutDecl, withoutDeclMap := stripMacroDeclarations(lines, macros)
-	expandedLines, expandedMap, usedNames := expandMacrosInLines(withoutDecl, withoutDeclMap, macros)
+	expandedLines, expandedMap, usedNames, stats := expandMacrosInLines(withoutDecl, withoutDeclMap, macros)
 
 	usedMacros := make([]macroDefinition, 0, len(usedNames))
 	for _, macro := range macros {
@@ -790,9 +820,13 @@ func replaceMacros(content string) macroReplaceResult {
 	}
 
 	return macroReplaceResult{
-		Content:   strings.Join(expandedLines, "\n"),
-		SourceMap: expandedMap,
-		Macros:    usedMacros,
+		Content:              strings.Join(expandedLines, "\n"),
+		SourceMap:            expandedMap,
+		Macros:               usedMacros,
+		GuardTripped:         stats.GuardTrippedLines > 0,
+		GuardTrippedLines:    stats.GuardTrippedLines,
+		PassesExhausted:      stats.PassesExhaustedLines > 0,
+		PassesExhaustedLines: stats.PassesExhaustedLines,
 	}
 }
 
@@ -850,14 +884,17 @@ func parseMacroDefinition(definitionLines []string) (string, []string, []string)
 		return "", nil, nil
 	}
 
+	// fix-cyrillic-macro-names: имя макроса — Unicode-идентификатор (буква
+	// любого алфавита, цифра, '_'). Байтовый ASCII-скан останавливался на
+	// первом байте кириллицы: `#define _ЦелоеПолож_(_InpValue_)` парсился
+	// как макрос `_` с потерянными параметрами.
 	nameEnd := 0
 	for nameEnd < len(header) {
-		ch := header[nameEnd]
-		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' {
-			nameEnd++
-			continue
+		r, size := utf8.DecodeRuneInString(header[nameEnd:])
+		if !isUnicodeIdentRune(r) {
+			break
 		}
-		break
+		nameEnd += size
 	}
 	if nameEnd == 0 {
 		return "", nil, nil
@@ -942,7 +979,8 @@ type macroCall struct {
 	Args  []string
 }
 
-func expandMacrosInLines(lines []string, sourceMap []int, macros []macroDefinition) ([]string, []int, map[string]struct{}) {
+func expandMacrosInLines(lines []string, sourceMap []int, macros []macroDefinition) ([]string, []int, map[string]struct{}, macroExpandStats) {
+	stats := macroExpandStats{}
 	byName := make(map[string]macroDefinition, len(macros))
 	names := make([]string, 0, len(macros))
 	for _, macro := range macros {
@@ -950,8 +988,12 @@ func expandMacrosInLines(lines []string, sourceMap []int, macros []macroDefiniti
 		if key == "" {
 			continue
 		}
+		// fix-cyrillic-macro-names: дедуп — одноимённые декларации не
+		// создают дубликатов в списке сканирования (byName остаётся last-wins).
+		if _, exists := byName[key]; !exists {
+			names = append(names, key)
+		}
 		byName[key] = macro
-		names = append(names, key)
 	}
 
 	sort.Slice(names, func(i, j int) bool {
@@ -974,7 +1016,10 @@ func expandMacrosInLines(lines []string, sourceMap []int, macros []macroDefiniti
 		currentLines := []string{lines[idx]}
 		currentMap := []int{lineSource}
 
-		for pass := 0; pass < 32; pass++ {
+		// stopped — раскрытие завершено (сходимость или бюджет);
+		// иначе после 32 проходов с изменениями — тихое усечение (маркер).
+		stopped := false
+		for pass := 0; pass < macroExpandMaxPasses; pass++ {
 			changedAny := false
 			nextLines := make([]string, 0, len(currentLines))
 			nextMap := make([]int, 0, len(currentMap))
@@ -992,15 +1037,36 @@ func expandMacrosInLines(lines []string, sourceMap []int, macros []macroDefiniti
 			currentLines = nextLines
 			currentMap = nextMap
 			if !changedAny {
+				stopped = true
 				break
 			}
+
+			// Бюджет роста (fail-open): частично раскрытая строка уходит
+			// дальше по пайплайну — обработка файла завершается всегда.
+			if len(currentLines) > macroExpandLineBudget || macroExpandTotalBytes(currentLines) > macroExpandBytesBudget {
+				stats.GuardTrippedLines++
+				stopped = true
+				break
+			}
+		}
+		if !stopped {
+			stats.PassesExhaustedLines++
 		}
 
 		resultLines = append(resultLines, currentLines...)
 		resultMap = append(resultMap, currentMap...)
 	}
 
-	return resultLines, resultMap, usedNames
+	return resultLines, resultMap, usedNames, stats
+}
+
+// macroExpandTotalBytes — суммарный объём строк для байтового лимита бюджета.
+func macroExpandTotalBytes(lines []string) int {
+	total := 0
+	for _, line := range lines {
+		total += len(line)
+	}
+	return total
 }
 
 func expandFirstMacroCall(line string, sourceLine int, names []string, byName map[string]macroDefinition, usedNames map[string]struct{}) ([]string, []int, bool) {
@@ -1076,7 +1142,10 @@ func findMacroCall(line string, macro macroDefinition) (macroCall, bool) {
 		idx += searchPos
 		afterName := idx + len(name)
 
-		if idx > 0 && isWordChar(line[idx-1]) {
+		// fix-cyrillic-macro-names: руна-границы токена. byte-скан isWordChar
+		// считает continuation-байты кириллицы «не словом» — `_` внутри
+		// кириллического слова ложно распознавался как самостоятельный вызов.
+		if idx > 0 && unicodeIdentRuneBefore(line, idx) {
 			searchPos = idx + 1
 			continue
 		}
@@ -1090,7 +1159,7 @@ func findMacroCall(line string, macro macroDefinition) (macroCall, bool) {
 		}
 
 		if len(macro.Params) == 0 {
-			if afterName < len(line) && isWordChar(line[afterName]) {
+			if unicodeIdentRuneAt(line, afterName) {
 				searchPos = idx + 1
 				continue
 			}
@@ -1119,6 +1188,33 @@ func findMacroCall(line string, macro macroDefinition) (macroCall, bool) {
 
 		return macroCall{Macro: macro, Start: startIdx, End: closePos + 1, Args: args}, true
 	}
+}
+
+// isUnicodeIdentRune — буква любого алфавита, цифра или '_': имя макроса и
+// границы его вызова трактуются как Unicode-идентификаторы (fix-cyrillic-macro-names).
+func isUnicodeIdentRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+}
+
+// unicodeIdentRuneBefore — руна, заканчивающаяся непосредственно перед idx,
+// является частью Unicode-идентификатора. Глобальный byte-скан isWordChar
+// не трогаем: он используется в keywordMatchAt и byte-индексных местах.
+func unicodeIdentRuneBefore(s string, idx int) bool {
+	if idx <= 0 {
+		return false
+	}
+	r, _ := utf8.DecodeLastRuneInString(s[:idx])
+	return isUnicodeIdentRune(r)
+}
+
+// unicodeIdentRuneAt — руна, начинающаяся в idx, является частью
+// Unicode-идентификатора.
+func unicodeIdentRuneAt(s string, idx int) bool {
+	if idx < 0 || idx >= len(s) {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(s[idx:])
+	return isUnicodeIdentRune(r)
 }
 
 func parseMacroCallArguments(line string, openPos int) (string, int, bool) {
